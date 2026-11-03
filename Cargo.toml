@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/soul-audio-service"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+embedded-io = "0.6"
+embedded-io-adapters = "0.6"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

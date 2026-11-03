@@ -1,0 +1,32 @@
+[package]
+name = "soul-audio-service"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Headless desktop-player backend service (actor around soul-audio-control::Player)."
+
+
+[lints]
+workspace = true
+[features]
+default = []
+# Plan 4: derive `specta::Type` on the IPC DTOs for tauri-specta. Off by
+# default so the headless crate + root workspace gate stay pure (only the
+# app crate enables it).
+specta = ["dep:specta"]
+
+[dependencies]
+soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+soul-audio-engine = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+soul-audio-queue = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["alloc"] }
+soul-audio-control = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+soul-audio-tags = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["std"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+embedded-io-adapters = { workspace = true, features = ["std"] }
+specta = { version = "=2.0.0-rc.25", features = ["derive"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"
