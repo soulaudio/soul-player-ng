@@ -1,0 +1,8 @@
+# Store text as LF and check it out as LF everywhere, so shell scripts keep
+# working on every platform (a CRLF `scripts/commit-msg.sh` breaks `sh`).
+* text=auto eol=lf
+*.sh text eol=lf
+
+# Binary assets must not be line-ending-munged.
+*.png binary
+*.ico binary

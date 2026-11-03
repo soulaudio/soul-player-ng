@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+
+# Tauri app (app/)
+/app/node_modules/
+/app/dist/
+/app/src-tauri/target/
+/app/src-tauri/gen/schemas/
+/app/.vitest/
+/app/e2e/node_modules/
