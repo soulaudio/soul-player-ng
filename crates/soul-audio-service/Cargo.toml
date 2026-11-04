@@ -17,12 +17,12 @@ default = []
 specta = ["dep:specta"]
 
 [dependencies]
-soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
-soul-audio-engine = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
-soul-audio-queue = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["alloc"] }
-soul-audio-control = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
-soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
-soul-audio-tags = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["std"] }
+soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", rev = "44b6dd3b3a9b22c2dd42ef495e823f233fa8cf7c" }
+soul-audio-engine = { git = "https://github.com/soulaudio/soul-audio-core", rev = "44b6dd3b3a9b22c2dd42ef495e823f233fa8cf7c" }
+soul-audio-queue = { git = "https://github.com/soulaudio/soul-audio-core", rev = "44b6dd3b3a9b22c2dd42ef495e823f233fa8cf7c", features = ["alloc"] }
+soul-audio-control = { git = "https://github.com/soulaudio/soul-audio-core", rev = "44b6dd3b3a9b22c2dd42ef495e823f233fa8cf7c" }
+soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", rev = "44b6dd3b3a9b22c2dd42ef495e823f233fa8cf7c" }
+soul-audio-tags = { git = "https://github.com/soulaudio/soul-audio-core", rev = "44b6dd3b3a9b22c2dd42ef495e823f233fa8cf7c", features = ["std"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 embedded-io-adapters = { workspace = true, features = ["std"] }

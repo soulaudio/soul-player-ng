@@ -25,7 +25,8 @@ pub struct Library {
 
 /// Extensions the decoders support (lower-cased comparison).
 const SUPPORTED: &[&str] = &[
-    "wav", "flac", "mp3", "m4a", "aac", "ogg", "opus", "dsf", "dff",
+    "wav", "flac", "mp3", "m4a", "aac", "ogg", "oga", "opus", "aiff", "aif", "dsf", "dff", "mka",
+    "webm", "wv", "caf",
 ];
 
 /// Hard cap on folder nesting: a symlink cycle or pathological tree cannot
@@ -140,6 +141,17 @@ impl Library {
         self.tracks.get(id as usize).map(|t| t.path.as_path())
     }
 
+    /// The tag-derived duration (seconds) for `id`, if known (> 0). Used to fill
+    /// a playback Tick when the decoder can't report a length (e.g. Matroska,
+    /// CAF-ALAC), keeping the progress bar consistent with the track list.
+    #[must_use]
+    pub fn duration_of(&self, id: u32) -> Option<f64> {
+        self.tracks
+            .get(id as usize)
+            .map(|t| t.duration_secs)
+            .filter(|&d| d > 0.0)
+    }
+
     /// The UI-facing view of every track (no paths).
     #[must_use]
     pub fn views(&self) -> Vec<TrackView> {
@@ -147,7 +159,15 @@ impl Library {
             .iter()
             .map(|t| TrackView {
                 id: t.id,
-                title: t.title.clone(),
+                // Display fallback: a file with no title tag (raw ADTS, an
+                // untagged DSD, …) shows its filename rather than "untitled".
+                // The stored `Track.title` stays `None` — this is view-only.
+                title: t.title.clone().or_else(|| {
+                    t.path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .map(str::to_owned)
+                }),
                 artist: t.artist.clone(),
                 album: t.album.clone(),
                 duration_secs: t.duration_secs,

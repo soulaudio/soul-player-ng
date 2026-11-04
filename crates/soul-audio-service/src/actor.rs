@@ -210,7 +210,18 @@ fn pump_thread<K, Mk, Ev>(
 
         // 4. Emit throttled state (immediately on change, else ~8 Hz).
         if changed || last_tick.elapsed() >= tick_every {
-            on_event(Event::Tick(project_tick(&player, volume)));
+            let mut tick = project_tick(&player, volume);
+            // The deck's duration comes from the decoder; some containers
+            // (Matroska, CAF-ALAC) can't report a length, so fall back to the
+            // library's tag-derived duration — keeping the progress bar
+            // consistent with the track-list length.
+            if tick.duration_secs.is_none()
+                && let Some(id) = tick.now_playing_id
+                && let Some(d) = library.lock().expect("library mutex").duration_of(id)
+            {
+                tick.duration_secs = Some(d);
+            }
+            on_event(Event::Tick(tick));
             on_event(Event::Queue(project_queue(&player)));
             last_tick = Instant::now();
         }
