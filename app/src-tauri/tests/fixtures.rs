@@ -66,13 +66,16 @@ fn playable_fixtures_decode_nonsilent() {
 }
 
 #[test]
-fn dsd_rates_decimate_eight_to_one() {
-    // Fixed 8:1 decimation: each DSD rate → rate / 8 PCM.
-    assert_eq!(decode_all("tone.dsf").2, 352_800); // DSD64
-    assert_eq!(decode_all("tone-dsd128.dsf").2, 705_600); // DSD128
-    assert_eq!(decode_all("tone-dsd256.dsf").2, 1_411_200); // DSD256
-    assert_eq!(decode_all("tone-dsd512.dsf").2, 2_822_400); // DSD512
-    assert_eq!(decode_all("tone.dff").2, 352_800); // DSD64 via DSDIFF
+fn dsd_rates_decimate_to_native_44k_family() {
+    // Playback decimates DSD to its native 44.1 kHz family (64:1 = two cascaded
+    // 8:1 stages), so the deck's device-rate resample stays real-time — the
+    // single-stage 352.8 kHz path was sub-real-time and stuttered. Each rate
+    // lands at DSD_bitrate / 64.
+    assert_eq!(decode_all("tone.dsf").2, 44_100); // DSD64
+    assert_eq!(decode_all("tone-dsd128.dsf").2, 88_200); // DSD128
+    assert_eq!(decode_all("tone-dsd256.dsf").2, 176_400); // DSD256
+    assert_eq!(decode_all("tone-dsd512.dsf").2, 352_800); // DSD512
+    assert_eq!(decode_all("tone.dff").2, 44_100); // DSD64 via DSDIFF
 }
 
 #[test]

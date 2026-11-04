@@ -65,8 +65,154 @@ fn per_format_durations_are_reported() {
     let pcm = secs.iter().filter(|d| (**d - 2.0).abs() < 0.16).count();
     let untagged = secs.iter().filter(|d| **d == 0.0).count();
     assert_eq!(dsd, 3, "three DSD fixtures ~0.5s: {secs:?}");
-    assert_eq!(pcm, 7, "seven PCM fixtures ~2.0s (incl. ADTS + Vorbis): {secs:?}");
+    assert_eq!(
+        pcm, 7,
+        "seven PCM fixtures ~2.0s (incl. ADTS + Vorbis): {secs:?}"
+    );
     assert_eq!(untagged, 0, "ADTS now has a frame-scan duration: {secs:?}");
+}
+
+/// Verify the dogfooding fixes through the app's real `load_folder` command: the
+/// previously-"untitled" containers (WAV `LIST`/`INFO`, AIFF, Ogg-FLAC, and
+/// moov-after-mdat M4A) now report their title, and every fixture — including
+/// raw ADTS (frame-scan) and Ogg-FLAC (STREAMINFO total 0 → granule) — reports a
+/// ~1.5 s duration (none degrades to 0.0). The `meta.*` set is one source track
+/// muxed into each container with identical TITLE/ARTIST/ALBUM.
+#[test]
+fn fixed_formats_report_title_and_duration() {
+    let dir = library_of(&[
+        "meta.wav",
+        "meta.flac",
+        "meta.mp3",
+        "meta.ogg",
+        "meta.opus",
+        "meta-aac.m4a",  // moov after mdat (ffmpeg default)
+        "meta-alac.m4a", // moov after mdat
+        "meta-oggflac.oga",
+        "meta.mka",  // Matroska (EBML tags)
+        "meta.webm", // WebM (EBML tags)
+        "meta.caf",  // CAF (`info` chunk)
+        "meta.wv",   // WavPack (APEv2)
+        "meta.aiff",
+        "meta.aac", // raw ADTS — no tags (title falls back to filename)
+    ]);
+    let app = mock_app();
+    let state = app.state::<PlayerState>();
+    let views = load_folder(state.inner(), app.handle(), dir.path()).unwrap();
+    assert_eq!(views.len(), 14);
+
+    // Thirteen taggable containers all carry TITLE=Aria (raw ADTS carries none;
+    // its view title falls back to the filename "meta", not "Aria").
+    let titled = views
+        .iter()
+        .filter(|v| v.title.as_deref() == Some("Aria"))
+        .count();
+    assert_eq!(
+        titled,
+        13,
+        "titles: {:?}",
+        views.iter().map(|v| &v.title).collect::<Vec<_>>()
+    );
+
+    // Twelve also carry ARTIST (ffmpeg gives AIFF only a NAME/title; ADTS none).
+    let with_artist = views
+        .iter()
+        .filter(|v| v.artist.as_deref() == Some("Kimiko Ishizaka"))
+        .count();
+    assert_eq!(
+        with_artist,
+        12,
+        "artists: {:?}",
+        views.iter().map(|v| &v.artist).collect::<Vec<_>>()
+    );
+
+    // Every fixture is the same ~1.5 s clip — incl. ADTS (frame-scan) and
+    // Ogg-FLAC (granule fallback); none degrades to 0.0.
+    let secs: Vec<f64> = views.iter().map(|v| v.duration_secs).collect();
+    assert!(
+        secs.iter().all(|d| (1.4..1.7).contains(d)),
+        "durations: {secs:?}"
+    );
+}
+
+/// The headline "AAC/ALAC doesn't start playing" bug: a moov-after-mdat M4A
+/// (ffmpeg's default muxing) failed to open at all. As the only library track
+/// the actor auto-plays it; a now-playing Tick carrying its ~1.5 s duration
+/// proves `open_track` opened + decoded it via the seekable path, end to end
+/// through the app's load → play flow.
+#[test]
+fn moov_after_mdat_m4a_plays_through_the_app() {
+    let dir = library_of(&["meta-aac.m4a"]);
+    let app = mock_app();
+    let events = capture_events(&app);
+    let state = app.state::<PlayerState>();
+    load_folder(state.inner(), app.handle(), dir.path()).unwrap();
+    let playing = |t: &soul_audio_service::Tick| {
+        t.now_playing_id.is_some() && t.duration_secs.is_some_and(|d| (1.3..1.7).contains(&d))
+    };
+    let t = wait_for_tick(&events, |t| playing(t), TIMEOUT);
+    assert!(
+        playing(&t),
+        "moov-at-end AAC didn't start playing with a ~1.5 s length: {:?}",
+        t.duration_secs
+    );
+}
+
+/// The formerly-"untitled" formats (report "6/15/16 show no metadata") must now
+/// surface title/artist/album through the library scan: raw ADTS fronted by an
+/// ID3v2 tag (`meta-id3.aac`), and tagged DSD (`meta.dsf` trailing ID3,
+/// `meta.dff` DIIN + ID3). Small synthesized fixtures carrying Aria tags.
+#[test]
+fn id3_adts_and_dsd_tags_surface_through_the_library() {
+    let dir = library_of(&["meta-id3.aac", "meta.dsf", "meta.dff"]);
+    let app = mock_app();
+    let state = app.state::<PlayerState>();
+    let views = load_folder(state.inner(), app.handle(), dir.path()).unwrap();
+    assert_eq!(views.len(), 3);
+    for v in &views {
+        assert_eq!(v.title.as_deref(), Some("Aria"), "title: {:?}", v.title);
+        assert_eq!(
+            v.artist.as_deref(),
+            Some("Kimiko Ishizaka"),
+            "artist: {:?}",
+            v.artist
+        );
+        assert_eq!(
+            v.album.as_deref(),
+            Some("Open Goldberg Variations"),
+            "album: {:?}",
+            v.album
+        );
+    }
+}
+
+/// Length-source consistency: a Matroska/WebM (or CAF-ALAC) decoder can't report
+/// a length, so the playing Tick's `duration_secs` would be `None` — a blank
+/// progress bar while the track list shows a duration. The actor fills it from
+/// the library, so the two agree. Regression for "list length vs playing length
+/// inconsistent".
+#[test]
+fn progress_bar_duration_matches_track_list() {
+    for fixture in ["meta.mka", "meta.caf"] {
+        let dir = library_of(&[fixture]);
+        let app = mock_app();
+        let events = capture_events(&app);
+        let state = app.state::<PlayerState>();
+        let views = load_folder(state.inner(), app.handle(), dir.path()).unwrap();
+        let list_dur = views[0].duration_secs;
+        assert!(list_dur > 1.0, "{fixture}: list duration {list_dur}");
+
+        let t = wait_for_tick(
+            &events,
+            |t| t.now_playing_id.is_some() && t.duration_secs.is_some(),
+            TIMEOUT,
+        );
+        let play_dur = t.duration_secs.expect("progress-bar duration");
+        assert!(
+            (play_dur - list_dur).abs() < 0.1,
+            "{fixture}: progress-bar {play_dur}s != list {list_dur}s"
+        );
+    }
 }
 
 #[test]
@@ -285,10 +431,11 @@ fn track_art_resolves_embedded_and_missing() {
     let url = track_art(app.state::<PlayerState>(), arted.id).unwrap();
     assert!(url.unwrap().starts_with("data:image/"));
 
-    // The plain WAV (no tags → no title) has no art.
+    // The plain WAV (no tags) has no art. Its title falls back to the filename
+    // stem ("tone") in the view layer, so find it by that.
     let plain = views
         .iter()
-        .find(|v| v.title.is_none())
+        .find(|v| v.title.as_deref() == Some("tone"))
         .expect("plain wav view");
     assert_eq!(
         track_art(app.state::<PlayerState>(), plain.id).unwrap(),

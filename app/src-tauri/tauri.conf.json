@@ -13,6 +13,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "soul-player",
         "width": 1100,
         "height": 720,
@@ -29,6 +30,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "category": "Music",
     "shortDescription": "Soul Audio desktop player",
     "longDescription": "Soul Audio desktop player shell over the soul-audio-service backend.",
@@ -37,10 +39,30 @@
       "icons/128x128.png",
       "icons/icon.ico"
     ],
+    "macOS": {
+      "minimumSystemVersion": "10.15",
+      "signingIdentity": "-"
+    },
     "windows": {
       "certificateThumbprint": "",
       "digestAlgorithm": "sha256",
-      "timestampUrl": "http://timestamp.digicert.com"
+      "timestampUrl": "http://timestamp.digicert.com",
+      "nsis": {
+        "compression": "lzma",
+        "installMode": "currentUser"
+      },
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/soulaudio/soul-player-ng/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY0NEQ4MUUzNTU2NTFBNEIKUldSTEdtVlY0NEZOWkkvMGxVd0lQMlRsZC96UnJia1Z0UlNlZU1yd2dwa1FHaVBYTEVRVEhyZmMK"
     }
   }
 }

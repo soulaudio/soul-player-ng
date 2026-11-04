@@ -1,0 +1,37 @@
+# cargo-deny policy. Advisory (CVE) scanning is owned by the `cargo audit` job;
+# this gate enforces license compliance, dependency-source pinning, and ban
+# rules across the full feature graph.
+
+[licenses]
+version = 2
+# Permissive-only allow-list (MIT / Apache / BSD / ISC / Unicode / Zlib family),
+# deliberately blocking copyleft. Entries not actually present only warn, so the
+# list stays broad enough to cover Tauri, the webview bindings, and cpal's
+# per-platform audio backends.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "MPL-2.0",
+]
+# Skip this workspace's own publish = false crates.
+private = { ignore = true }
+
+[bans]
+# Duplicate versions are informational (Tauri's tree pulls a few), not fatal.
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# The audio engine is consumed from the sibling library repo as a git dependency.
+allow-git = ["https://github.com/soulaudio/soul-audio-core"]
