@@ -8,3 +8,6 @@
 /app/src-tauri/gen/schemas/
 /app/.vitest/
 /app/e2e/node_modules/
+
+# Tauri updater signing keys — private key must never be committed
+/.tauri/

@@ -1,0 +1,19 @@
+# GitHub auto-generated release-notes grouping (read when a release is created
+# with generate_release_notes / tauri-action). Categorises merged PRs by label.
+changelog:
+  exclude:
+    labels: [dependencies, chore, internal, skip-changelog]
+    authors: [dependabot, "dependabot[bot]"]
+  categories:
+    - title: New Features
+      labels: [feat, feature, enhancement]
+    - title: Bug Fixes
+      labels: [fix, bug, bugfix]
+    - title: Performance
+      labels: [perf, performance]
+    - title: Documentation
+      labels: [docs, documentation]
+    - title: Build & CI
+      labels: [build, ci]
+    - title: Other Changes
+      labels: ["*"]

@@ -7,6 +7,7 @@ pub mod actor;
 pub mod commands;
 pub mod ipc;
 pub mod offline;
+pub mod updater;
 
 use actor::PlayerState;
 
@@ -24,8 +25,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(PlayerState::new())
         .invoke_handler(bindings.invoke_handler())
+        .setup(|app| {
+            updater::spawn_startup_check(app.handle());
+            Ok(())
+        })
         .run(tauri::generate_context!())
         .expect("error while running soul-player");
 }

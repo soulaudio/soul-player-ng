@@ -1,5 +1,6 @@
 # Git hooks for the Soul Audio desktop player (Tauri 2 + Svelte over
-# soul-audio-service). Requires the lefthook binary.
+# soul-audio-service). Requires the lefthook binary; enable per clone with
+# `lefthook install`.
 
 # Commit-message policy: Conventional Commits + a clean history (no AI /
 # attribution trailers). `{1}` is the commit-message file git passes in.
@@ -8,13 +9,31 @@ commit-msg:
     policy:
       run: sh scripts/commit-msg.sh {1}
 
-# Rust side (the service crate in this repo's workspace). The Tauri app crate is
-# an isolated sub-workspace under app/src-tauri with its own checks.
+# Fast pre-commit. Format-check the Rust in BOTH workspaces (the service crate
+# in this repo's root workspace and the isolated Tauri app under app/src-tauri)
+# and clippy the service crate. The app crate's clippy compiles the whole audio
+# stack (the private git dependency), so it's deferred to pre-push / CI.
 pre-commit:
+  parallel: true
   commands:
-    fmt:
-      glob: "*.rs"
+    fmt-service:
+      glob: "*.{rs,toml}"
       run: cargo fmt --all -- --check
-    clippy:
-      glob: "*.rs"
+    fmt-app:
+      glob: "*.{rs,toml}"
+      run: cargo fmt --manifest-path app/src-tauri/Cargo.toml --all -- --check
+    clippy-service:
+      glob: "*.{rs,toml}"
       run: cargo clippy --all-targets -- -D warnings
+
+# Thorough gate before pushing: service tests + the Svelte type-check. The
+# browser unit tests (vitest), the full app/Tauri build, and e2e run in CI —
+# they need a headed webview / Playwright browser and the private core crate, so
+# they don't belong in a fast, browserless local push gate.
+pre-push:
+  parallel: true
+  commands:
+    test-service:
+      run: cargo test
+    svelte-check:
+      run: npm --prefix app run check

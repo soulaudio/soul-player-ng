@@ -38,6 +38,10 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 specta-typescript = "0.0.12"
 specta = "=2.0.0-rc.25"
 tauri-plugin-dialog = "2"
+# Auto-update: the updater fetches + verifies (minisign) the signed bundle from
+# the GitHub release `latest.json`; `process` provides the relaunch after apply.
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 [dev-dependencies]
 # The mock runtime for Rust product-e2e (Tier 1). Dev-only: `cargo build

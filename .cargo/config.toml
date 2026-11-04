@@ -1,0 +1,16 @@
+# Applies to both workspaces in this repo (the service crate here and the
+# isolated Tauri app under app/src-tauri) — cargo discovers config by directory
+# ancestry, so this root file governs nested workspaces too.
+
+[env]
+# soul-audio-core's by-value `OwnedDecoder`/`AnyDecoder` enum is large (sized by
+# its multichannel Vorbis/AAC variants). Debug builds move it through the decode
+# construction chain on libtest's default 2 MiB test threads and overflow; the
+# library's own tests and the player's loader thread already run on a big stack,
+# so match it here (16 MiB) for `cargo test`.
+RUST_MIN_STACK = "16777216"
+
+[net]
+# The audio engine is a private git dependency (soul-audio-core). Use the git
+# CLI so an ambient credential helper / CI token authenticates the fetch.
+git-fetch-with-cli = true
