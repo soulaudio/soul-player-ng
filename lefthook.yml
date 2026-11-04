@@ -26,9 +26,10 @@ pre-commit:
       glob: "*.{rs,toml}"
       run: cargo clippy --all-targets -- -D warnings
 
-# Thorough gate before pushing: service tests, the Svelte type-check, and the
-# frontend unit tests. The full app/Tauri build + Playwright e2e run in CI
-# (they need the private core crate and a headed webview).
+# Thorough gate before pushing: service tests + the Svelte type-check. The
+# browser unit tests (vitest), the full app/Tauri build, and e2e run in CI —
+# they need a headed webview / Playwright browser and the private core crate, so
+# they don't belong in a fast, browserless local push gate.
 pre-push:
   parallel: true
   commands:
@@ -36,5 +37,3 @@ pre-push:
       run: cargo test
     svelte-check:
       run: npm --prefix app run check
-    frontend-test:
-      run: npm --prefix app run test
