@@ -65,7 +65,10 @@ fn per_format_durations_are_reported() {
     let pcm = secs.iter().filter(|d| (**d - 2.0).abs() < 0.16).count();
     let untagged = secs.iter().filter(|d| **d == 0.0).count();
     assert_eq!(dsd, 3, "three DSD fixtures ~0.5s: {secs:?}");
-    assert_eq!(pcm, 7, "seven PCM fixtures ~2.0s (incl. ADTS + Vorbis): {secs:?}");
+    assert_eq!(
+        pcm, 7,
+        "seven PCM fixtures ~2.0s (incl. ADTS + Vorbis): {secs:?}"
+    );
     assert_eq!(untagged, 0, "ADTS now has a frame-scan duration: {secs:?}");
 }
 

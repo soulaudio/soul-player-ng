@@ -1,0 +1,8 @@
+# Pinned to the toolchain soul-audio-core is validated against, so the player
+# compiles its git dependency on the exact compiler the library's CI uses — and
+# so `clippy -D warnings` can't break locally/CI when a new stable sharpens a
+# lint. Desktop-only: no embedded target (that lives in soul-dap-ng). Bump
+# deliberately, in lockstep with the library.
+[toolchain]
+channel = "1.93.1"
+components = ["rustfmt", "clippy"]

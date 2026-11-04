@@ -1,0 +1,48 @@
+name: Auto-release on version bump
+
+# When the app version in tauri.conf.json changes on main and no matching tag
+# exists yet, create + push `v<version>`. That tag triggers release.yml. Keeps
+# releasing to a single action: bump the version, merge.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/src-tauri/tauri.conf.json"
+
+concurrency:
+  group: auto-release-version-bump
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Read app version
+        id: ver
+        run: |
+          set -eu
+          VERSION=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "App version: $VERSION"
+
+      - name: Tag if new
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -eu
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Tag v$VERSION already exists — nothing to do."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release v$VERSION"
+          git push origin "v$VERSION"
+          echo "Pushed tag v$VERSION — release.yml will build it."
