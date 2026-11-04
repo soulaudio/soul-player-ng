@@ -25,8 +25,8 @@ pub struct Library {
 
 /// Extensions the decoders support (lower-cased comparison).
 const SUPPORTED: &[&str] = &[
-    "wav", "flac", "mp3", "m4a", "aac", "ogg", "oga", "opus", "aiff", "aif", "dsf", "dff", "mka",
-    "webm", "wv", "caf",
+    "wav", "flac", "mp3", "mp2", "mp1", "m4a", "aac", "ogg", "oga", "opus", "aiff", "aif", "dsf",
+    "dff", "mka", "webm", "wv", "caf",
 ];
 
 /// Hard cap on folder nesting: a symlink cycle or pathological tree cannot
@@ -328,6 +328,22 @@ mod tests {
             t.duration_secs > 0.0,
             "tagged fixture has a real duration, got {}",
             t.duration_secs
+        );
+    }
+
+    #[test]
+    fn scan_lists_mp2_with_duration() {
+        // `.mp2` is in SUPPORTED, and the core's layer-aware frame scan gives a
+        // tagless Layer II stream a duration — so it lists like any other track
+        // (previously `.mp2` was invisible and would have shown 00:00).
+        let root = tmpdir("mp2");
+        std::fs::copy(fixture("tone.mp2"), root.join("t.mp2")).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        assert_eq!(lib.tracks.len(), 1, "mp2 not scanned");
+        assert!(
+            lib.tracks[0].duration_secs > 0.0,
+            "mp2 has no duration: {}",
+            lib.tracks[0].duration_secs
         );
     }
 
