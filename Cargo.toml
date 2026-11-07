@@ -11,5 +11,10 @@ license = "MIT OR Apache-2.0"
 embedded-io = "0.7"
 embedded-io-adapters = "0.7"
 
+[workspace.lints.rust]
+# The headless service carries all the logic — keep it provably memory-safe so
+# it can be trusted (and, long-term, reused on firmware). No `unsafe` escape.
+unsafe_code = "forbid"
+
 [workspace.lints.clippy]
-all = { level = "warn", priority = -1 }
+all = { level = "deny", priority = -1 }

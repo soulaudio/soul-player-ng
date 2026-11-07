@@ -1,0 +1,68 @@
+# Dependabot keeps dependencies and pinned action SHAs current. Grouped,
+# weekly updates so the noise is one batched PR per ecosystem, not a flood.
+#
+# Note: the `soul-audio-core` crates are consumed as a git dependency pinned to
+# `branch = "main"`, which Dependabot does not bump (it tracks registry/path
+# versions, not git branches) — those move when core's `main` moves and the
+# lockfiles are refreshed.
+version: 2
+updates:
+  # --- Rust: root (headless `soul-audio-service`) workspace ---
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "rust"]
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # --- Rust: Tauri app workspace (separate Cargo.lock) ---
+  - package-ecosystem: cargo
+    directory: /app/src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "rust", "app"]
+    groups:
+      cargo-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # --- Frontend (Svelte / Tauri / Vite) ---
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "frontend"]
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # --- e2e harness (wdio) ---
+  - package-ecosystem: npm
+    directory: /app/e2e
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "frontend", "e2e"]
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+
+  # --- GitHub Actions (keep pinned SHAs fresh) ---
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "ci"]
+    groups:
+      actions:
+        patterns: ["*"]
