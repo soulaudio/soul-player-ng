@@ -347,6 +347,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scan_lists_mp1_with_duration() {
+        // `.mp1` (MPEG Layer I) is in SUPPORTED but — unlike `.mp2` — shipped
+        // with no fixture or test; this proves it actually scans. The core's
+        // layer-aware frame scan gives a tagless Layer I stream a duration, so
+        // it lists like any other track (previously `.mp1` was invisible and
+        // would have shown 00:00). Fixture is core's `tone-layer1.mp1`
+        // conformance vector (ffmpeg has no Layer I encoder).
+        let root = tmpdir("mp1");
+        std::fs::copy(fixture("tone.mp1"), root.join("t.mp1")).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        assert_eq!(lib.tracks.len(), 1, "mp1 not scanned");
+        assert!(
+            lib.tracks[0].duration_secs > 0.0,
+            "mp1 has no duration: {}",
+            lib.tracks[0].duration_secs
+        );
+    }
+
     /// A minimal FLAC container: `fLaC` marker, STREAMINFO, a
     /// VORBIS_COMMENT block (title/artist/album), and a PICTURE block (front
     /// cover, 1x1 jpeg stub). Mirrors the fixture builders in
