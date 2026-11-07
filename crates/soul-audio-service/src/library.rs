@@ -366,6 +366,57 @@ mod tests {
         );
     }
 
+    /// Every `SUPPORTED` extension has a committed `testdata/` fixture that
+    /// scans into exactly one listed track. This is the 1:1 guard between the
+    /// `SUPPORTED` list and real fixtures: adding an extension to `SUPPORTED`
+    /// without a fixture (or a fixture whose format the decoder can't open)
+    /// fails here. Formats whose tag header carries no frame count (MP3, Opus —
+    /// see the `read_tags` note) still *list*; duration coverage for the layer
+    /// scan lives in the mp1/mp2 cases above.
+    #[test]
+    fn every_supported_format_scans_to_one_track() {
+        // (extension, committed fixture name). One representative per format.
+        let cases: &[(&str, &str)] = &[
+            ("wav", "tone.wav"),
+            ("flac", "tone.flac"),
+            ("mp3", "tone.mp3"),
+            ("mp2", "tone.mp2"),
+            ("mp1", "tone.mp1"),
+            ("m4a", "tone.m4a"),
+            ("aac", "tone.aac"),
+            ("ogg", "tone-vorbis.ogg"),
+            ("oga", "meta-oggflac.oga"),
+            ("opus", "tone.opus"),
+            ("aiff", "meta.aiff"),
+            ("aif", "tone.aif"),
+            ("dsf", "tone.dsf"),
+            ("dff", "tone.dff"),
+            ("mka", "meta.mka"),
+            ("webm", "meta.webm"),
+            ("wv", "meta.wv"),
+            ("caf", "meta.caf"),
+        ];
+        // 1:1 — every SUPPORTED extension is represented by a case.
+        for ext in SUPPORTED {
+            assert!(
+                cases.iter().any(|(e, _)| e == ext),
+                "SUPPORTED extension {ext:?} has no fixture case in this test"
+            );
+        }
+        // And every case's fixture scans into exactly one listed track.
+        for (ext, name) in cases {
+            let root = tmpdir(&format!("fmt_{ext}"));
+            std::fs::copy(fixture(name), root.join(format!("clip.{ext}")))
+                .unwrap_or_else(|e| panic!("copy fixture {name}: {e}"));
+            let lib = Library::scan(&root).unwrap();
+            assert_eq!(
+                lib.tracks.len(),
+                1,
+                "{ext}: fixture {name} did not scan to one track"
+            );
+        }
+    }
+
     /// A minimal FLAC container: `fLaC` marker, STREAMINFO, a
     /// VORBIS_COMMENT block (title/artist/album), and a PICTURE block (front
     /// cover, 1x1 jpeg stub). Mirrors the fixture builders in
