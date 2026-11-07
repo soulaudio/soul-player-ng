@@ -1,108 +1,66 @@
-import path from 'path';
+// End-to-end smoke + per-format coverage for the Tauri shell.
+//
+// The e2e build auto-loads `SOUL_PLAYER_E2E_FOLDER` at startup
+// (commands::e2e_autoload) and freezes on Repeat::One, so the library is
+// already present when the webview mounts. The suite therefore drives the app
+// with ONLY native WebDriver DOM commands (findElement / click / getText) and
+// never injects Tauri IPC via `browser.execute`: WebView2 runs
+// WebDriver-injected scripts with an opaque origin, and Tauri's IPC handler
+// rejects that ("Origin header is not a valid URL"). The frontend's own
+// mount-time IPC runs in the page's real origin and works, which is what
+// renders the rows below.
 
-const FIXTURE = path.resolve(process.cwd(), '../../testdata').replace(/\\/g, '/');
+// The all-formats fixture folder holds one tagless file per SUPPORTED
+// extension, named `fmt-<ext>` so each row's title (filename-stem fallback) is
+// unique and assertable. Keep in sync with the folder and the SUPPORTED list
+// in soul-audio-service/src/library.rs.
+const EXPECTED_FORMATS = [
+  'fmt-aac', 'fmt-aif', 'fmt-aiff', 'fmt-caf', 'fmt-dff', 'fmt-dsf',
+  'fmt-flac', 'fmt-m4a', 'fmt-mka', 'fmt-mp1', 'fmt-mp2', 'fmt-mp3',
+  'fmt-oga', 'fmt-ogg', 'fmt-opus', 'fmt-wav', 'fmt-webm', 'fmt-wv',
+].sort();
 
-describe('soul-player smoke', () => {
+const rowTitles = async (): Promise<string[]> =>
+  $$('[data-testid="track-row"] .title').map((el) => el.getText());
+
+describe('soul-player e2e', () => {
   it('renders the shell', async () => {
     await expect($('body')).toBeExisting();
   });
 
-  it('loads a folder and shows tracks + transport', async () => {
-    await browser.execute((dir) => {
-      // @ts-ignore — page context
-      return window.__TAURI_INTERNALS__.invoke('load_folder_path', { dir });
-    }, FIXTURE);
-
-    // Freeze on Repeat::One. Under SOUL_PLAYER_OFFLINE, the sink is a
-    // backpressure-free NullSink (soul-player/src/offline.rs) — the whole
-    // fixture queue decodes and "plays" in a fraction of a millisecond. With
-    // the default Repeat::Off, `TwoLevelQueue::advance` clears `cur` to
-    // `None` the instant a non-repeating source runs out
-    // (soul-audio-queue/src/queue.rs), so by the time WebDriver's next poll
-    // lands, now-playing has already reverted to nothing — unobservable, not
-    // a real bug. Repeat::One freezes `cur` on natural end instead of
-    // clearing it, giving the assertions below a stable target.
-    await browser.execute(() => {
-      // @ts-ignore — page context
-      return window.__TAURI_INTERNALS__.invoke('send_command', { cmd: { SetRepeat: 'One' } });
-    });
-
-    // `load_folder_path` (like `open_folder`) only returns the scanned views
-    // to its caller — it doesn't push them into the Svelte store, and the
-    // "player" event channel deliberately never carries the library (see
-    // store.svelte.ts). The app's own hydration path (`bindPlayerEvents`,
-    // run from `App.svelte`'s `onMount`) re-fetches `library_views` on
-    // mount ("fast path after re-open"). A webview reload re-runs that
-    // mount against the same in-process backend state (the scan we just
-    // injected), which is the same path a real re-open of the app takes.
-    await browser.refresh();
-
-    // Library rows appear (adapt the selector to Library.svelte's markup).
+  it('renders the auto-loaded library (no WebDriver IPC)', async () => {
+    // Rows appear only if the frontend's normal mount-time `library_views` IPC
+    // succeeded against the backend state injected at startup — the heart of
+    // the Origin-header fix.
     await browser.waitUntil(async () => (await $$('[data-testid="track-row"]')).length > 0, {
-      timeout: 10000,
-      timeoutMsg: 'no track rows rendered after load_folder_path',
+      timeout: 15000,
+      timeoutMsg: 'no track rows rendered from the auto-loaded folder',
     });
-
-    // Now-playing title shows in the player bar (adapt selector).
+    // Auto-play + Repeat::One freezes now-playing on the first track.
     await expect($('[data-testid="now-playing-title"]')).toBeExisting();
-  });
-
-  it('clicking a row changes now-playing', async () => {
-    const rows = await $$('[data-testid="track-row"]');
-    const title = await $('[data-testid="now-playing-title"]');
-    const before = await title.getText();
-    await rows[rows.length - 1].click();
-    await browser.waitUntil(async () => (await title.getText()) !== before, { timeout: 5000 });
-  });
-});
-
-// Explicit per-format coverage for the two MPEG audio layers the player claims
-// to support but that are otherwise only implicit rows in the mixed-format
-// smoke scan above. Uses a dedicated two-file fixture folder whose stems
-// ("layer-1" / "layer-2") render as unique track titles — the mixed testdata/
-// scan can't single them out because every tagless `tone.*` file falls back to
-// the same "tone" stem. The `.mp1` fixture is core's Layer I conformance vector
-// (ffmpeg has no Layer I encoder); the `.mp2` is the committed Layer II tone.
-describe('MPEG layer-1 / layer-2 playback', () => {
-  const MPEG_FIXTURE = path.resolve(process.cwd(), 'fixtures/mpeg-layers').replace(/\\/g, '/');
-
-  it('scans and lists both an MP1 (Layer I) and MP2 (Layer II) track', async () => {
-    await browser.execute((dir) => {
-      // @ts-ignore — page context
-      return window.__TAURI_INTERNALS__.invoke('load_folder_path', { dir });
-    }, MPEG_FIXTURE);
-    // Freeze now-playing on natural end (see the smoke test above for why).
-    await browser.execute(() => {
-      // @ts-ignore — page context
-      return window.__TAURI_INTERNALS__.invoke('send_command', { cmd: { SetRepeat: 'One' } });
-    });
-    await browser.refresh();
-
-    // Exactly the two MPEG-layer fixtures — nothing else in that folder.
-    await browser.waitUntil(async () => (await $$('[data-testid="track-row"]')).length === 2, {
-      timeout: 10000,
-      timeoutMsg: 'expected exactly the two MPEG-layer rows',
-    });
-
-    const titles = await $$('[data-testid="track-row"] .title').map((el) => el.getText());
-    expect(titles).toContain('layer-1'); // the .mp1 (Layer I) fixture
-    expect(titles).toContain('layer-2'); // the .mp2 (Layer II) fixture
-  });
-
-  it('plays the MP2 track when its row is clicked', async () => {
-    // load_folder auto-plays track 0 (sorted: layer-1.mp1), so the MP1 is
-    // already the now-playing track — clicking the MP2 row proves Layer II
-    // playback switches independently.
-    const titles = await $$('[data-testid="track-row"] .title').map((el) => el.getText());
-    const rows = await $$('[data-testid="track-row"]');
-    const mp2Index = titles.indexOf('layer-2');
-    expect(mp2Index).toBeGreaterThanOrEqual(0);
-
-    const npTitle = $('[data-testid="now-playing-title"]');
-    await rows[mp2Index].click();
-    await browser.waitUntil(async () => (await npTitle.getText()) === 'layer-2', {
+    await browser.waitUntil(async () => (await $('[data-testid="now-playing-title"]').getText()) !== 'No track', {
       timeout: 5000,
-      timeoutMsg: 'now-playing did not switch to the MP2 (layer-2) track',
+      timeoutMsg: 'now-playing never populated',
     });
+  });
+
+  it('lists every supported format exactly once (1:1)', async () => {
+    const titles = (await rowTitles()).sort();
+    expect(titles).toEqual(EXPECTED_FORMATS);
+  });
+
+  it('plays a clicked track — MP1 (Layer I) and MP2 (Layer II)', async () => {
+    const npTitle = $('[data-testid="now-playing-title"]');
+    for (const target of ['fmt-mp1', 'fmt-mp2']) {
+      const titles = await rowTitles();
+      const rows = await $$('[data-testid="track-row"]');
+      const idx = titles.indexOf(target);
+      expect(idx).toBeGreaterThanOrEqual(0);
+      await rows[idx].click();
+      await browser.waitUntil(async () => (await npTitle.getText()) === target, {
+        timeout: 5000,
+        timeoutMsg: `now-playing did not switch to ${target}`,
+      });
+    }
   });
 });
