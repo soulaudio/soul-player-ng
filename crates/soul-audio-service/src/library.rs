@@ -348,6 +348,22 @@ mod tests {
     }
 
     #[test]
+    fn scan_reads_id3_tags_from_mp2() {
+        // An MPEG Layer II (`.mp2`) file carrying a leading ID3v2 tag must read
+        // like any tagged track — `locate::sniff` routes an ID3-prefixed stream
+        // to the id3v2 reader regardless of MPEG layer. Guards the demo
+        // library's tagged `.mp2` (and the player's mp2-metadata path).
+        let root = tmpdir("mp2tags");
+        std::fs::copy(fixture("tagged.mp2"), root.join("t.mp2")).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        assert_eq!(lib.tracks.len(), 1);
+        let t = &lib.tracks[0];
+        assert_eq!(t.title.as_deref(), Some("Soul Test Track"));
+        assert_eq!(t.artist.as_deref(), Some("Test Artist"));
+        assert_eq!(t.album.as_deref(), Some("Test Album"));
+    }
+
+    #[test]
     fn scan_lists_mp1_with_duration() {
         // `.mp1` (MPEG Layer I) is in SUPPORTED but — unlike `.mp2` — shipped
         // with no fixture or test; this proves it actually scans. The core's
