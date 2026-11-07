@@ -364,6 +364,20 @@ mod tests {
     }
 
     #[test]
+    fn scan_reads_id3_tags_from_mp1() {
+        // Same as the mp2 case, for MPEG Layer I (`.mp1`). Guards the demo
+        // library's tagged `18-aria.mp1`.
+        let root = tmpdir("mp1tags");
+        std::fs::copy(fixture("tagged.mp1"), root.join("t.mp1")).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        assert_eq!(lib.tracks.len(), 1);
+        let t = &lib.tracks[0];
+        assert_eq!(t.title.as_deref(), Some("Soul Test Track"));
+        assert_eq!(t.artist.as_deref(), Some("Test Artist"));
+        assert_eq!(t.album.as_deref(), Some("Test Album"));
+    }
+
+    #[test]
     fn scan_lists_mp1_with_duration() {
         // `.mp1` (MPEG Layer I) is in SUPPORTED but — unlike `.mp2` — shipped
         // with no fixture or test; this proves it actually scans. The core's
