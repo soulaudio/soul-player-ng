@@ -49,7 +49,10 @@ jobs:
         run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2
         with:
-          tool: cargo-deny
+          # Pinned: cargo-deny moved `--config` between a global flag and a
+          # `check` subcommand flag across releases; pin so the invocation below
+          # (`check --config …`) matches what CI installs.
+          tool: cargo-deny@0.19.0
       # The root (headless `soul-audio-service`) workspace bans GUI/platform
       # crates via deny.toml; the Tauri app workspace legitimately uses them, so
       # it gets its own deny.app.toml (no such ban). See docs/ARCHITECTURE.md.
