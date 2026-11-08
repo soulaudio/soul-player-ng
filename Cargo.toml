@@ -8,8 +8,11 @@ rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
-embedded-io = "0.7"
-embedded-io-adapters = "0.7"
+# Pinned to 0.6 to match soul-audio-core's embedded-io major (the core data layer
+# passes `embedded-io` source types across the boundary). A coordinated 0.6 -> 0.7
+# bump across core + this app is a separate follow-up.
+embedded-io = "0.6"
+embedded-io-adapters = "0.6"
 
 [workspace.lints.rust]
 # The headless service carries all the logic — keep it provably memory-safe so
