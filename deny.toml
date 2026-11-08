@@ -1,6 +1,12 @@
-# cargo-deny policy. Advisory (CVE) scanning is owned by the `cargo audit` job;
-# this gate enforces license compliance, dependency-source pinning, and ban
-# rules across the full feature graph.
+# cargo-deny policy for the ROOT (headless `soul-audio-service`) workspace.
+# Advisory (CVE) scanning is owned by the `cargo audit` job; this gate enforces
+# license compliance, dependency-source pinning, and ban rules across the full
+# feature graph. The app (Tauri) workspace uses `deny.app.toml` instead.
+#
+# ARCHITECTURE BOUNDARY (see docs/ARCHITECTURE.md): the service is headless —
+# all logic, no visualization. The `[bans]` list below forbids GUI/windowing
+# crates so the layer can never become platform-coupled; if a change pulls
+# `tauri`/`wry`/`tao` into this workspace, `cargo deny check bans` fails in CI.
 
 [licenses]
 version = 2
@@ -29,6 +35,14 @@ private = { ignore = true }
 # Duplicate versions are informational (Tauri's tree pulls a few), not fatal.
 multiple-versions = "warn"
 wildcards = "allow"
+# The headless service must never pull in a GUI/windowing stack — that belongs
+# only in the `app/src-tauri` shell. This is the machine-enforced half of the
+# "Tauri is just visualization; all logic lives outside it" rule.
+deny = [
+  { name = "tauri" },
+  { name = "wry" },
+  { name = "tao" },
+]
 
 [sources]
 unknown-registry = "deny"
