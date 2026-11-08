@@ -102,7 +102,7 @@ fn loader_thread(
         let opened = {
             let lib = library.lock().expect("library mutex").clone();
             match lib.path_of(id) {
-                Some(path) => open_track(path),
+                Some(path) => open_track(&path),
                 None => Err(anyhow::anyhow!("no path for track id {id}")),
             }
         };
