@@ -62,6 +62,47 @@ pub fn load_folder_path(
     load_folder(&state, &app, Path::new(&dir))
 }
 
+/// Test-only startup auto-load, run from `lib::run`'s `setup` hook under the
+/// `e2e` feature. If `SOUL_PLAYER_E2E_FOLDER` is set, scan it into the actor at
+/// launch and freeze on `Repeat::One`.
+///
+/// Why not just call `load_folder_path` from the test? WebView2 runs
+/// WebDriver-injected scripts (`browser.execute`) with an *opaque* origin, so
+/// the IPC `fetch` carries `Origin: null`, which Tauri's IPC protocol handler
+/// rejects ("Origin header is not a valid URL"). Loading the library here —
+/// from the app's own process, before the webview mounts — lets the frontend's
+/// normal mount-time `library_views` IPC (which runs in the page's real origin)
+/// render it, with no WebDriver-injected IPC anywhere in the suite.
+#[cfg(feature = "e2e")]
+pub fn e2e_autoload<R: Runtime>(app: &AppHandle<R>) {
+    use soul_audio_service::{Command, Library, RepeatMode};
+    use tauri::Manager;
+
+    let Some(dir) = std::env::var_os("SOUL_PLAYER_E2E_FOLDER") else {
+        return;
+    };
+    let dir = Path::new(&dir);
+    let lib = match Library::scan(dir) {
+        Ok(l) => std::sync::Arc::new(l),
+        Err(e) => {
+            eprintln!("e2e autoload: scan failed for {dir:?}: {e:#}");
+            return;
+        }
+    };
+    let ids: Vec<u32> = lib.views().iter().map(|v| v.id).collect();
+    if ids.is_empty() {
+        eprintln!("e2e autoload: no supported files in {dir:?}");
+        return;
+    }
+    let state = app.state::<PlayerState>();
+    state.set_library(lib);
+    // Repeat::One BEFORE PlayContext: the offline NullSink drains a track
+    // instantly, so without the freeze now-playing would clear before WebDriver
+    // could observe it. Freezing first pins now-playing on the started track.
+    state.send_command(app, Command::SetRepeat(RepeatMode::One));
+    state.send_command(app, Command::PlayContext { ids, start: 0 });
+}
+
 /// The current library's views (used to render the list without re-scanning).
 #[tauri::command]
 #[specta::specta]
