@@ -1,0 +1,35 @@
+# cargo-deny policy for the TAURI APP workspace (`app/src-tauri`). Identical to
+# the root `deny.toml` minus the "no GUI crates" ban — the app is the one place
+# Tauri/wry/tao legitimately live (see docs/ARCHITECTURE.md). Advisory (CVE)
+# scanning is owned by the `cargo audit` job; this gate enforces license
+# compliance, dependency-source pinning, and ban rules across the feature graph.
+
+[licenses]
+version = 2
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "MPL-2.0",
+  # webpki-root-certs ships Mozilla's CA bundle under CDLA-Permissive-2.0
+  # (pulled in transitively by the Tauri updater's TLS stack).
+  "CDLA-Permissive-2.0",
+]
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/soulaudio/soul-audio-core"]

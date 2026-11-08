@@ -6,6 +6,8 @@ resolver = "3"
 name = "soul-player"
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
 description = "Soul Audio desktop player shell (Tauri 2) over soul-audio-service."
 
 [lib]
@@ -15,6 +17,9 @@ path = "src/lib.rs"
 [[bin]]
 name = "soul-player"
 path = "src/main.rs"
+
+[lints]
+workspace = true
 
 [features]
 # Exposes the test-only `load_folder_path` command (bypasses the native folder
@@ -75,3 +80,10 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.soul-audio-queue]
 opt-level = 2
+
+# The app's `src/` files keep their own `#![forbid(unsafe_code)]`; we don't
+# forbid at the workspace level because the test harness needs the (edition-2024
+# `unsafe`) `std::env::set_var`. The headless service forbids unsafe outright —
+# that's the layer that must stay firmware-trustworthy (see docs/ARCHITECTURE.md).
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }

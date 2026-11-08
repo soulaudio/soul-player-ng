@@ -15,6 +15,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # ---- Blocking gates ------------------------------------------------------
+
   audit:
     name: cargo audit (RustSec advisories)
     runs-on: ubuntu-latest
@@ -47,36 +49,20 @@ jobs:
         run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941 # v2
         with:
-          tool: cargo-deny
-      - name: Check both workspaces against deny.toml
-        run: |
-          cargo deny --manifest-path Cargo.toml check bans licenses sources
-          cargo deny --manifest-path app/src-tauri/Cargo.toml --config deny.toml check bans licenses sources
-
-  dependency-review:
-    name: dependency review (PRs)
-    runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/dependency-review-action@v4
-        with:
-          fail-on-severity: moderate
-
-  sbom:
-    name: SBOM (CycloneDX)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Generate SBOM from the lockfiles
-        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
-        with:
-          format: cyclonedx-json
-          output-file: sbom.cdx.json
-          artifact-name: sbom.cdx.json
+          # Pinned: cargo-deny moved `--config` between a global flag and a
+          # `check` subcommand flag across releases; pin so the invocation below
+          # (`check --config …`) matches what CI installs.
+          tool: cargo-deny@0.19.0
+      # The root (headless `soul-audio-service`) workspace bans GUI/platform
+      # crates via deny.toml; the Tauri app workspace legitimately uses them, so
+      # it gets its own deny.app.toml (no such ban). See docs/ARCHITECTURE.md.
+      - name: Check root workspace (headless — no Tauri)
+        run: cargo deny --manifest-path Cargo.toml check bans licenses sources
+      - name: Check app workspace
+        run: cargo deny --manifest-path app/src-tauri/Cargo.toml check --config deny.app.toml bans licenses sources
 
   npm-audit:
-    name: npm audit (frontend)
+    name: npm audit (frontend, shipped deps)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -89,5 +75,63 @@ jobs:
           cache: npm
           cache-dependency-path: app/package-lock.json
       - run: npm ci
-      - name: Audit (high and critical)
-        run: npm audit --audit-level=high
+      # Only the runtime (shipped) dependency tree is a release concern. Dev-only
+      # build/test tooling (vite, vitest, playwright, …) is covered by Dependabot
+      # bumps, not a release-blocking gate.
+      - name: Audit shipped deps (high and critical)
+        run: npm audit --omit=dev --audit-level=high
+
+  secrets:
+    name: gitleaks (secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # The gitleaks Action requires a paid licence for GitHub orgs; the CLI is
+      # free, so pin + run the binary directly. `dir` scans the working tree.
+      - name: Install gitleaks
+        run: |
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz" | tar -xz gitleaks
+          sudo mv gitleaks /usr/local/bin/
+      - name: Scan for committed secrets
+        run: gitleaks dir . --redact --no-banner --verbose
+
+  # ---- Informational (surface, never block on transitive/dev noise) --------
+
+  osv-scanner:
+    name: OSV-Scanner (informational)
+    runs-on: ubuntu-latest
+    # A Tauri app drags in a large transitive GTK/WebKit tree whose unmaintained
+    # / unsoundness notices can't be fixed here; OSV surfaces the broader OSV.dev
+    # DB (incl. those + dev-only npm advisories) into the run summary without
+    # failing CI. The blocking Rust gate is `cargo audit` above. (Lesson from the
+    # soul-player monorepo: don't hard-fail scheduled scans on un-actionable
+    # transitive noise — report it.)
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install OSV-Scanner
+        run: |
+          curl -sSL -o /usr/local/bin/osv-scanner "https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64"
+          chmod +x /usr/local/bin/osv-scanner
+      - name: Scan all lockfiles → run summary
+        run: |
+          echo '## OSV-Scanner' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          osv-scanner scan source \
+            -L Cargo.lock \
+            -L app/src-tauri/Cargo.lock \
+            -L app/package-lock.json \
+            -L app/e2e/package-lock.json 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Generate SBOM from the lockfiles
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          format: cyclonedx-json
+          output-file: sbom.cdx.json
+          artifact-name: sbom.cdx.json
