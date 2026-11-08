@@ -70,9 +70,14 @@ Unchanged behavior; only the name changes. Remains **cpal-free**,
 
 ### `crates/soul-player-host` (new waist)
 Desktop assembly. Depends on `soul-player-backend` + `soul-audio-desktop`
-(`playback`/cpal). Root workspace member (so `cargo test` at root covers it; it
-may carry cpal because only the backend crate holds the firmware-purity
-guarantee). Re-exports the backend DTOs so a head imports **one** crate.
+(`playback`/cpal). **Its own nested cargo workspace** (like `app/src-tauri`),
+*not* a root member — the repo convention is that cpal/platform-coupled crates
+live in their own workspace, keeping the root workspace headless/GUI-free (the
+`deny.toml` ban + `architecture.rs` gate, and the audio-lib-free root CI job, all
+stay as-is). Root `members` therefore stays **explicit** (`["crates/soul-player-backend"]`),
+never a `crates/*` glob that would vacuum host into the headless root. Host is
+tested via its own `--manifest-path`. Re-exports the backend DTOs so a head
+imports **one** crate.
 
 ```rust
 // soul-player-host
@@ -155,18 +160,24 @@ Rune's headless-PNG render + element-tree dump lets us snapshot programmatically
 ## Testing
 
 - **Backend:** existing service tests move with the rename, stay green.
-- **Host:** ~2 unit tests over `NullSink` + a `testdata/` fixture — `open_folder`
+- **Host:** ~2 unit tests over a `NullSink` + a tmp-dir WAV fixture — `open_folder`
   yields non-empty views; `subscribe` receives a `Tick` showing track 0 playing
-  (mirrors the current `actor.rs` tests).
+  (mirrors the current `actor.rs` tests). A `PlayerHandle::offline()` test
+  constructor forces the `NullSink` **without** mutating env (host `forbid`s
+  unsafe, so no `set_var`). Run: `cargo test --manifest-path crates/soul-player-host/Cargo.toml`.
 - **Rune head:** one headless smoke (boots, renders a frame); otherwise manual run.
-- **Gate:** root `cargo test` green; `cd app/tauri && npm run tauri build` still
-  works; `cd app/rune && cargo run` shows a working player.
+- **Gate:** root `cargo test` green; host workspace tests green;
+  `cd app/tauri && npm run tauri build` still works; `cd app/rune && cargo run`
+  shows a working player.
 
 ## Build order (each step independently green)
 
-1. **`git mv` `app/` → `app/tauri/`** (one isolated commit). Internal relative
-   paths are preserved; update the 6 outer references: `.github/dependabot.yml`,
-   `.github/workflows/{ci,release,security,auto-release-on-version-bump}.yml`,
+1. **`git mv` `app/` → `app/tauri/`** (one isolated commit). Paths *internal* to
+   the subtree are preserved (`../dist`, `../src/lib/bindings.ts`, the e2e→binary
+   path). The **one external path that breaks**: `src-tauri/Cargo.toml`'s
+   `path = "../../crates/soul-audio-service"` — once `src-tauri` is a level deeper
+   it must become `../../../crates/...`. Then update the 6 outer references:
+   `.github/dependabot.yml`, `.github/workflows/{ci,release,security,auto-release-on-version-bump}.yml`,
    `lefthook.yml` (+ prose in `README.md`, `docs/ARCHITECTURE.md`,
    `deny.app.toml` comment). Verify CI paths + local build.
 2. **Rename `soul-audio-service` → `soul-player-backend`** (mechanical: crate
@@ -186,8 +197,9 @@ behavior-identical. Only steps 3–4 add new surface.
 - **Rune is pre-release** (pinned `dev` rev, no releases, "no PRs" governance) —
   see the companion doc. This spike produces a *decision*, not a production
   commitment. If Tauri wins, the entire branch (move included) is discarded.
-- **Three cargo workspaces** (root + `app/tauri/src-tauri` + `app/rune`) means
-  `soul-player-host`/`-backend` compile once per workspace that references them —
-  the existing nested-workspace tradeoff, accepted for the spike.
+- **Four cargo workspaces** (root/backend + `crates/soul-player-host` +
+  `app/tauri/src-tauri` + `app/rune`) means `soul-player-host`/`-backend` compile
+  once per workspace that references them — the existing nested-workspace tradeoff,
+  accepted for the spike to keep the root headless and the Rune deps isolated.
 - **Non-goal:** unifying into a single workspace, or migrating the Tauri head onto
   `soul-player-host`. Both are deferred to "if Rune wins."
