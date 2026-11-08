@@ -33,7 +33,7 @@
     "createUpdaterArtifacts": true,
     "category": "Music",
     "shortDescription": "Soul Audio desktop player",
-    "longDescription": "Soul Audio desktop player shell over the soul-audio-service backend.",
+    "longDescription": "Soul Audio desktop player shell over soul-player-backend.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

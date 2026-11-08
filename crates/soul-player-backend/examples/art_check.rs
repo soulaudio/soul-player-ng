@@ -1,13 +1,13 @@
 //! Verify-loop harness for cover-art resolution (embedded + external).
 //!
-//! Run: cargo run -p soul-audio-service --example art_check -- <file-or-dir>
+//! Run: cargo run -p soul-player-backend --example art_check -- <file-or-dir>
 //! Walks a directory (or checks one file) and reports, per track, whether cover
 //! art resolves and how big it is — so a fix can be re-run and confirmed without
 //! launching the GUI.
 
 use std::path::Path;
 
-use soul_audio_service::art::{cover_bytes, external_cover};
+use soul_player_backend::art::{cover_bytes, external_cover};
 
 fn main() {
     let arg = std::env::args()

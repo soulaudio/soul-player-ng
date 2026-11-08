@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use soul_audio_core::Sink;
 use soul_audio_desktop::sink::CpalSink;
-use soul_audio_service::{AudioPlayer, Event, Library};
+use soul_player_backend::{AudioPlayer, Event, Library};
 use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::offline::NullSink;
@@ -82,7 +82,7 @@ impl PlayerState {
     }
 
     /// Fire a command at the actor (no-op if no folder opened yet).
-    pub fn send_command<R: Runtime>(&self, app: &AppHandle<R>, cmd: soul_audio_service::Command) {
+    pub fn send_command<R: Runtime>(&self, app: &AppHandle<R>, cmd: soul_player_backend::Command) {
         let _ = self.with_actor(app, |p| p.send(cmd));
     }
 }

@@ -53,7 +53,7 @@ jobs:
           # `check` subcommand flag across releases; pin so the invocation below
           # (`check --config …`) matches what CI installs.
           tool: cargo-deny@0.19.0
-      # The root (headless `soul-audio-service`) workspace bans GUI/platform
+      # The root (headless `soul-player-backend`) workspace bans GUI/platform
       # crates via deny.toml; the Tauri app workspace legitimately uses them, so
       # it gets its own deny.app.toml (no such ban). See docs/ARCHITECTURE.md.
       - name: Check root workspace (headless — no Tauri)

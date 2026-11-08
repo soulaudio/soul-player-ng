@@ -6,9 +6,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use common::{capture_events, mock_app, wait_for_tick, wait_for_tick_since, write_wav};
-use soul_audio_service::{Command, Event, QueueState};
 use soul_player::actor::PlayerState;
 use soul_player::commands::{load_folder, track_art};
+use soul_player_backend::{Command, Event, QueueState};
 use tauri::Manager;
 
 fn testdata(name: &str) -> PathBuf {
@@ -147,7 +147,7 @@ fn moov_after_mdat_m4a_plays_through_the_app() {
     let events = capture_events(&app);
     let state = app.state::<PlayerState>();
     load_folder(state.inner(), app.handle(), dir.path()).unwrap();
-    let playing = |t: &soul_audio_service::Tick| {
+    let playing = |t: &soul_player_backend::Tick| {
         t.now_playing_id.is_some() && t.duration_secs.is_some_and(|d| (1.3..1.7).contains(&d))
     };
     let t = wait_for_tick(&events, |t| playing(t), TIMEOUT);
@@ -237,7 +237,7 @@ fn folder_switch_loads_the_new_library() {
     assert!(dur_is(&t, 1.0), "after switch, duration is libB's 1.0s");
 }
 
-fn dur_is(t: &soul_audio_service::Tick, secs: f64) -> bool {
+fn dur_is(t: &soul_player_backend::Tick, secs: f64) -> bool {
     t.duration_secs
         .map(|d| (d - secs).abs() < 0.1)
         .unwrap_or(false)
@@ -246,7 +246,7 @@ fn dur_is(t: &soul_audio_service::Tick, secs: f64) -> bool {
 #[test]
 fn transport_commands_keep_the_actor_alive() {
     // NullSink free-runs, so we cannot catch a track mid-play to assert a seeked
-    // position (that is covered deterministically by soul-audio-service's
+    // position (that is covered deterministically by soul-player-backend's
     // driver.rs and core seek.rs). Instead prove the app→actor command path
     // handles EVERY transport variant — Seek included — without panicking the
     // pump thread: fire them all, then confirm the actor still processes a fresh
@@ -328,11 +328,11 @@ fn repeat_and_shuffle_reflect() {
 
     state.inner().send_command(
         app.handle(),
-        Command::SetRepeat(soul_audio_service::RepeatMode::All),
+        Command::SetRepeat(soul_player_backend::RepeatMode::All),
     );
     wait_for_tick(
         &events,
-        |t| t.repeat == soul_audio_service::RepeatMode::All,
+        |t| t.repeat == soul_player_backend::RepeatMode::All,
         TIMEOUT,
     );
     state

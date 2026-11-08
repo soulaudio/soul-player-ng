@@ -1,6 +1,6 @@
 # soul-player — desktop app shell (`app/tauri/`)
 
-The **Plan 4** Tauri 2 desktop player over the `soul-audio-service` headless
+The **Plan 4** Tauri 2 desktop player over the `soul-player-backend` headless
 backend (Plan 3). This directory is deliberately **NOT a member of the root
 Cargo workspace**: `app/tauri/src-tauri` declares its own `[workspace]`, so the
 `cpal`/`tauri` dependency tree never enters the root build or the
@@ -77,7 +77,7 @@ The app only depends on *where it lives* through three relative path deps in
 1. Copy the whole `app/tauri/` directory to the new repo (e.g.
    `soulaudio/soul-player`); keep the `[workspace]` isolation in `src-tauri`.
 2. In `app/tauri/src-tauri/Cargo.toml`, change the three path deps
-   (`soul-audio-core`, `soul-audio-service`, `soul-audio-desktop`) from
+   (`soul-audio-core`, `soul-player-backend`, `soul-audio-desktop`) from
    `path = "../../../crates/…"` to
    `git = "https://git.datadir.dev/soulaudio/soul-audio-core.git"`.
 3. Delete the `app/tauri/` tree from this repo (and its `.gitignore` lines).

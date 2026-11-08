@@ -1,11 +1,11 @@
-//! Tauri command layer over `soul-audio-service`: folder open → scan → actor,
+//! Tauri command layer over `soul-player-backend`: folder open → scan → actor,
 //! library views, and transport/queue command dispatch.
 #![forbid(unsafe_code)]
 
 use std::path::Path;
 use std::sync::Arc;
 
-use soul_audio_service::{Command, Library, TrackView};
+use soul_player_backend::{Command, Library, TrackView};
 use tauri::{AppHandle, Runtime, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -75,7 +75,7 @@ pub fn load_folder_path(
 /// render it, with no WebDriver-injected IPC anywhere in the suite.
 #[cfg(feature = "e2e")]
 pub fn e2e_autoload<R: Runtime>(app: &AppHandle<R>) {
-    use soul_audio_service::{Command, Library, RepeatMode};
+    use soul_player_backend::{Command, Library, RepeatMode};
     use tauri::Manager;
 
     let Some(dir) = std::env::var_os("SOUL_PLAYER_E2E_FOLDER") else {
@@ -124,7 +124,7 @@ pub fn send_command(
 
 /// Front-cover art for a track id as a `data:<mime>;base64,<…>` URL, or `None`.
 ///
-/// Resolution is delegated to `soul_audio_service::cover_bytes`, which tries the
+/// Resolution is delegated to `soul_player_backend::cover_bytes`, which tries the
 /// file's embedded art first and then an external cover image next to the track
 /// (e.g. `Scans/Front-1.jpg`, the common layout for DSD/SACD rips that carry
 /// only text tags). Missing library / path / art all resolve to `Ok(None)` —
@@ -140,7 +140,7 @@ pub fn track_art(state: State<'_, PlayerState>, id: u32) -> Result<Option<String
     let Some(path) = lib.path_of(id).map(|p| p.to_owned()) else {
         return Ok(None);
     };
-    match soul_audio_service::cover_bytes(&path) {
+    match soul_player_backend::cover_bytes(&path) {
         Some(cover) => Ok(Some(to_data_url(&cover.mime, &cover.bytes))),
         None => Ok(None),
     }

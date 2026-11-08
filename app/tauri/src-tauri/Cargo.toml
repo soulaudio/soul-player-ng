@@ -8,7 +8,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
-description = "Soul Audio desktop player shell (Tauri 2) over soul-audio-service."
+description = "Soul Audio desktop player shell (Tauri 2) over soul-player-backend."
 
 [lib]
 name = "soul_player"
@@ -37,7 +37,7 @@ anyhow = "1"
 # The audio engine + cpal sink come from the library repo (git); the headless
 # backend service lives in this repo (path).
 soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
-soul-audio-service = { path = "../../../crates/soul-audio-service", features = ["specta"] }
+soul-player-backend = { path = "../../../crates/soul-player-backend", features = ["specta"] }
 soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["playback"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 specta-typescript = "0.0.12"
@@ -72,7 +72,7 @@ opt-level = 2
 opt-level = 2
 [profile.dev.package.soul-audio-desktop]
 opt-level = 2
-[profile.dev.package.soul-audio-service]
+[profile.dev.package.soul-player-backend]
 opt-level = 2
 [profile.dev.package.soul-audio-engine]
 opt-level = 2

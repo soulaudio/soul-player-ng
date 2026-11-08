@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use soul_audio_core::Decoder;
 use soul_audio_desktop::decoder::open_track;
-use soul_audio_service::Library;
+use soul_player_backend::Library;
 
 fn testdata(name: &str) -> PathBuf {
     // app/tauri/src-tauri/tests -> repo-root/testdata
@@ -104,7 +104,7 @@ fn arted_flac_embedded_art_resolves() {
     let views = Library::scan(dir.path()).expect("scan").views();
     assert_eq!(views.len(), 1);
     assert!(
-        soul_audio_service::cover_bytes(&testdata("arted.flac")).is_some(),
+        soul_player_backend::cover_bytes(&testdata("arted.flac")).is_some(),
         "arted.flac embedded cover must resolve"
     );
 }

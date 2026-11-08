@@ -13,7 +13,7 @@
 // The all-formats fixture folder holds one tagless file per SUPPORTED
 // extension, named `fmt-<ext>` so each row's title (filename-stem fallback) is
 // unique and assertable. Keep in sync with the folder and the SUPPORTED list
-// in soul-audio-service/src/library.rs.
+// in soul-player-backend/src/library.rs.
 const EXPECTED_FORMATS = [
   'fmt-aac', 'fmt-aif', 'fmt-aiff', 'fmt-caf', 'fmt-dff', 'fmt-dsf',
   'fmt-flac', 'fmt-m4a', 'fmt-mka', 'fmt-mp1', 'fmt-mp2', 'fmt-mp3',

@@ -1,7 +1,7 @@
 //! Architecture boundary tests.
 //!
 //! The project rule (docs/ARCHITECTURE.md): **Tauri is just visualization; all
-//! logic lives outside it.** `soul-audio-service` is the headless logic layer —
+//! logic lives outside it.** `soul-player-backend` is the headless logic layer —
 //! it must never pull in a GUI/windowing stack, directly or transitively, so it
 //! stays reusable off the desktop (and, long-term, on firmware).
 //!
@@ -52,7 +52,7 @@ fn headless_service_has_no_gui_dependencies() {
 
     assert!(
         offenders.is_empty(),
-        "ARCHITECTURE VIOLATION: the headless `soul-audio-service` workspace pulled in \
+        "ARCHITECTURE VIOLATION: the headless `soul-player-backend` workspace pulled in \
          GUI/windowing crate(s) {offenders:?}. Tauri is just visualization — all logic \
          must stay outside it (in this service or soul-audio-core). Move the offending \
          code into the Tauri app (`app/tauri/src-tauri`) instead. See docs/ARCHITECTURE.md."

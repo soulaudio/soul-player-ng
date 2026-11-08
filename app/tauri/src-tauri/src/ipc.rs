@@ -32,7 +32,7 @@ pub fn builder() -> Builder<Wry> {
         commands::load_folder_path,
     ];
     Builder::<Wry>::new()
-        .typ::<soul_audio_service::Event>()
+        .typ::<soul_player_backend::Event>()
         .commands(commands)
 }
 

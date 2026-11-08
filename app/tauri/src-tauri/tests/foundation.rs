@@ -45,5 +45,5 @@ fn send_command_before_folder_is_noop() {
     // No panic, no library → the actor is never built.
     state
         .inner()
-        .send_command(app.handle(), soul_audio_service::Command::TogglePlay);
+        .send_command(app.handle(), soul_player_backend::Command::TogglePlay);
 }

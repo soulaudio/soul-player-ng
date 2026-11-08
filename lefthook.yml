@@ -1,5 +1,5 @@
 # Git hooks for the Soul Audio desktop player (Tauri 2 + Svelte over
-# soul-audio-service). Requires the lefthook binary; enable per clone with
+# soul-player-backend). Requires the lefthook binary; enable per clone with
 # `lefthook install`.
 
 # Commit-message policy: Conventional Commits + a clean history (no AI /

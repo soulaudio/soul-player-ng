@@ -7,8 +7,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, Once};
 use std::time::{Duration, Instant};
 
-use soul_audio_service::{Event, Tick};
 use soul_player::actor::PlayerState;
+use soul_player_backend::{Event, Tick};
 use tauri::test::{MockRuntime, mock_builder, mock_context, noop_assets};
 use tauri::{App, Listener};
 

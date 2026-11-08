@@ -7,7 +7,7 @@
 # lockfiles are refreshed.
 version: 2
 updates:
-  # --- Rust: root (headless `soul-audio-service`) workspace ---
+  # --- Rust: root (headless `soul-player-backend`) workspace ---
   - package-ecosystem: cargo
     directory: /
     schedule:

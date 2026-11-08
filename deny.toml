@@ -1,4 +1,4 @@
-# cargo-deny policy for the ROOT (headless `soul-audio-service`) workspace.
+# cargo-deny policy for the ROOT (headless `soul-player-backend`) workspace.
 # Advisory (CVE) scanning is owned by the `cargo audit` job; this gate enforces
 # license compliance, dependency-source pinning, and ban rules across the full
 # feature graph. The app (Tauri) workspace uses `deny.app.toml` instead.

@@ -13,7 +13,7 @@ export const commands = {
 	/**
 	 *  Front-cover art for a track id as a `data:<mime>;base64,<…>` URL, or `None`.
 	 * 
-	 *  Resolution is delegated to `soul_audio_service::cover_bytes`, which tries the
+	 *  Resolution is delegated to `soul_player_backend::cover_bytes`, which tries the
 	 *  file's embedded art first and then an external cover image next to the track
 	 *  (e.g. `Scans/Front-1.jpg`, the common layout for DSD/SACD rips that carry
 	 *  only text tags). Missing library / path / art all resolve to `Ok(None)` —
