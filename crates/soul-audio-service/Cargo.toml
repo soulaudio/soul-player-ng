@@ -23,6 +23,11 @@ soul-audio-queue = { git = "https://github.com/soulaudio/soul-audio-core", branc
 soul-audio-control = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 soul-audio-tags = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["std"] }
+# The shared data layer (new): the scan/model/index the de-fork consumes, now
+# that the desktop and the DAP read the one catalog/index built in core.
+soul-audio-catalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+soul-audio-index = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["build"] }
+soul-audio-import = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 embedded-io-adapters = { workspace = true, features = ["std"] }
