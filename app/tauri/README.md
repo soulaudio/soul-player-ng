@@ -1,8 +1,8 @@
-# soul-player — desktop app shell (`app/`)
+# soul-player — desktop app shell (`app/tauri/`)
 
 The **Plan 4** Tauri 2 desktop player over the `soul-audio-service` headless
 backend (Plan 3). This directory is deliberately **NOT a member of the root
-Cargo workspace**: `app/src-tauri` declares its own `[workspace]`, so the
+Cargo workspace**: `app/tauri/src-tauri` declares its own `[workspace]`, so the
 `cpal`/`tauri` dependency tree never enters the root build or the
 `cargo xtask verify` / CI gate that the library keeps device-free.
 
@@ -12,7 +12,7 @@ issue: soulaudio/soul-audio-core#20).
 ## Layout
 
 ```
-app/
+app/tauri/
   package.json          Svelte 5 + Vite + TypeScript frontend
   vite.config.ts        dev server on :1420 (Tauri convention)
   src/                  frontend (main.ts, App.svelte, app.css)
@@ -33,7 +33,7 @@ app/
 ## Dev loop
 
 ```sh
-cd app
+cd app/tauri
 npm install          # first time only
 npm run tauri dev    # launches the app window (hot-reloads UI + Rust)
 ```
@@ -42,7 +42,7 @@ npm run tauri dev    # launches the app window (hot-reloads UI + Rust)
 in debug builds. To regenerate headlessly (no window):
 
 ```sh
-cd app/src-tauri
+cd app/tauri/src-tauri
 SOUL_PLAYER_CODEGEN=1 cargo run
 ```
 
@@ -62,29 +62,29 @@ wants. Requires a folder of supported audio to open.
 ## Building / packaging
 
 ```sh
-cd app && npm run tauri build     # release bundle (Windows here)
+cd app/tauri && npm run tauri build     # release bundle (Windows here)
 ```
 
 Windows needs WebView2 (present on this machine). Linux/macOS bundling needs
 the per-OS webview toolchain — none of that is in the root CI, which stays
 device-free by design.
 
-## Moving `app/` into its own repo (future)
+## Moving `app/tauri/` into its own repo (future)
 
 The app only depends on *where it lives* through three relative path deps in
-`app/src-tauri/Cargo.toml`; nothing in the root depends on `app/`. To extract:
+`app/tauri/src-tauri/Cargo.toml`; nothing in the root depends on `app/tauri/`. To extract:
 
-1. Copy the whole `app/` directory to the new repo (e.g.
+1. Copy the whole `app/tauri/` directory to the new repo (e.g.
    `soulaudio/soul-player`); keep the `[workspace]` isolation in `src-tauri`.
-2. In `app/src-tauri/Cargo.toml`, change the three path deps
+2. In `app/tauri/src-tauri/Cargo.toml`, change the three path deps
    (`soul-audio-core`, `soul-audio-service`, `soul-audio-desktop`) from
-   `path = "../../crates/…"` to
+   `path = "../../../crates/…"` to
    `git = "https://git.datadir.dev/soulaudio/soul-audio-core.git"`.
-3. Delete the `app/` tree from this repo (and its `.gitignore` lines).
+3. Delete the `app/tauri/` tree from this repo (and its `.gitignore` lines).
 
 ## Verification gates
 
 - Root (library): `cargo xtask verify` stays green — the app never builds there.
-- App Rust: `cd app/src-tauri && cargo clippy`
-- Frontend: `cd app && npx svelte-check --tsconfig ./tsconfig.json && npm run build`
+- App Rust: `cd app/tauri/src-tauri && cargo clippy`
+- Frontend: `cd app/tauri && npx svelte-check --tsconfig ./tsconfig.json && npm run build`
 - Device QA is manual (real audio through `CpalSink`).

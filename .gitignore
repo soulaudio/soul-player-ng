@@ -1,13 +1,13 @@
 /target
 **/*.rs.bk
 
-# Tauri app (app/)
-/app/node_modules/
-/app/dist/
-/app/src-tauri/target/
-/app/src-tauri/gen/schemas/
-/app/.vitest/
-/app/e2e/node_modules/
+# Tauri app (app/tauri/)
+/app/tauri/node_modules/
+/app/tauri/dist/
+/app/tauri/src-tauri/target/
+/app/tauri/src-tauri/gen/schemas/
+/app/tauri/.vitest/
+/app/tauri/e2e/node_modules/
 
 # Tauri updater signing keys — private key must never be committed
 /.tauri/

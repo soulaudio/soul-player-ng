@@ -33,7 +33,7 @@ jobs:
       - name: Scan both lockfiles
         run: |
           cargo audit --file Cargo.lock
-          cargo audit --file app/src-tauri/Cargo.lock
+          cargo audit --file app/tauri/src-tauri/Cargo.lock
 
   deny:
     name: cargo-deny (licenses, bans, sources)
@@ -59,21 +59,21 @@ jobs:
       - name: Check root workspace (headless — no Tauri)
         run: cargo deny --manifest-path Cargo.toml check bans licenses sources
       - name: Check app workspace
-        run: cargo deny --manifest-path app/src-tauri/Cargo.toml check --config deny.app.toml bans licenses sources
+        run: cargo deny --manifest-path app/tauri/src-tauri/Cargo.toml check --config deny.app.toml bans licenses sources
 
   npm-audit:
     name: npm audit (frontend, shipped deps)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: app
+        working-directory: app/tauri
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@v7
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: app/package-lock.json
+          cache-dependency-path: app/tauri/package-lock.json
       - run: npm ci
       # Only the runtime (shipped) dependency tree is a release concern. Dev-only
       # build/test tooling (vite, vitest, playwright, …) is covered by Dependabot
@@ -119,9 +119,9 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           osv-scanner scan source \
             -L Cargo.lock \
-            -L app/src-tauri/Cargo.lock \
-            -L app/package-lock.json \
-            -L app/e2e/package-lock.json 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+            -L app/tauri/src-tauri/Cargo.lock \
+            -L app/tauri/package-lock.json \
+            -L app/tauri/e2e/package-lock.json 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   sbom:

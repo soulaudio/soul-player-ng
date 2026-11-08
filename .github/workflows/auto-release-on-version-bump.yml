@@ -7,7 +7,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "app/src-tauri/tauri.conf.json"
+      - "app/tauri/src-tauri/tauri.conf.json"
 
 concurrency:
   group: auto-release-version-bump
@@ -28,7 +28,7 @@ jobs:
         id: ver
         run: |
           set -eu
-          VERSION=$(node -p "require('./app/src-tauri/tauri.conf.json').version")
+          VERSION=$(node -p "require('./app/tauri/src-tauri/tauri.conf.json').version")
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "App version: $VERSION"
 

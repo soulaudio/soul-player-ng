@@ -13,7 +13,7 @@ use tauri::Manager;
 
 fn testdata(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../testdata")
+        .join("../../../testdata")
         .join(name)
 }
 

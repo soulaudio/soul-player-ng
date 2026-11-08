@@ -6,9 +6,9 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  app/src (Svelte)         visualization — talks over typed IPC │
+│  app/tauri/src (Svelte)   visualization — talks over typed IPC │
 ├─────────────────────────────────────────────────────────────┤
-│  app/src-tauri            thin Tauri shell: command handlers + │
+│  app/tauri/src-tauri      thin Tauri shell: command handlers + │
 │  (crate: soul-player)     wiring. No business logic.           │
 ├─────────────────────────────────────────────────────────────┤
 │  crates/soul-audio-service   headless desktop logic (std):     │
@@ -24,7 +24,7 @@
 Each layer may depend only on the ones below it. The dependency direction is
 the architecture: `soul-player` → `soul-audio-service` → `soul-audio-core`.
 The webview reaches the backend **only** through the typed IPC in
-`app/src/lib/bindings.ts` — never by embedding logic in the UI.
+`app/tauri/src/lib/bindings.ts` — never by embedding logic in the UI.
 
 ## Why
 
@@ -34,7 +34,7 @@ The webview reaches the backend **only** through the typed IPC in
 - **The core is reusable.** `soul-audio-core` is `no_std`-capable so the same
   decode/playback/tag code can run on firmware, not just the desktop app. Logic
   that could run there belongs in core, not in a platform crate.
-- **Tauri is a shell.** `app/src-tauri` exists to render and to marshal IPC. If
+- **Tauri is a shell.** `app/tauri/src-tauri` exists to render and to marshal IPC. If
   it starts making playback/library decisions, the boundary has leaked.
 
 ## Enforcement
@@ -53,7 +53,7 @@ Keep the `FORBIDDEN` list in the architecture test in sync with `deny.toml`'s
 
 The goal is for all **reusable** logic to live in `soul-audio-core` (where it can
 be `no_std` for firmware), leaving `soul-audio-service` as the thin std/desktop
-adapter and `app/src-tauri` as pure visualization.
+adapter and `app/tauri/src-tauri` as pure visualization.
 
 - **Already in core:** tag/metadata parsing (`soul-audio-tags`), decode,
   playback control, the queue.

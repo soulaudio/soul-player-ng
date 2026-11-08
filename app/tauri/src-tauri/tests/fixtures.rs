@@ -10,9 +10,9 @@ use soul_audio_desktop::decoder::open_track;
 use soul_audio_service::Library;
 
 fn testdata(name: &str) -> PathBuf {
-    // app/src-tauri/tests -> repo-root/testdata
+    // app/tauri/src-tauri/tests -> repo-root/testdata
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../testdata")
+        .join("../../../testdata")
         .join(name)
 }
 

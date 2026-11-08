@@ -36,7 +36,7 @@ private = { ignore = true }
 multiple-versions = "warn"
 wildcards = "allow"
 # The headless service must never pull in a GUI/windowing stack — that belongs
-# only in the `app/src-tauri` shell. This is the machine-enforced half of the
+# only in the `app/tauri/src-tauri` shell. This is the machine-enforced half of the
 # "Tauri is just visualization; all logic lives outside it" rule.
 deny = [
   { name = "tauri" },

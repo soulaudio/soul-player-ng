@@ -55,6 +55,6 @@ fn headless_service_has_no_gui_dependencies() {
         "ARCHITECTURE VIOLATION: the headless `soul-audio-service` workspace pulled in \
          GUI/windowing crate(s) {offenders:?}. Tauri is just visualization — all logic \
          must stay outside it (in this service or soul-audio-core). Move the offending \
-         code into the Tauri app (`app/src-tauri`) instead. See docs/ARCHITECTURE.md."
+         code into the Tauri app (`app/tauri/src-tauri`) instead. See docs/ARCHITECTURE.md."
     );
 }

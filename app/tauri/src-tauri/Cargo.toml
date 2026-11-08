@@ -37,7 +37,7 @@ anyhow = "1"
 # The audio engine + cpal sink come from the library repo (git); the headless
 # backend service lives in this repo (path).
 soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
-soul-audio-service = { path = "../../crates/soul-audio-service", features = ["specta"] }
+soul-audio-service = { path = "../../../crates/soul-audio-service", features = ["specta"] }
 soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["playback"] }
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript"] }
 specta-typescript = "0.0.12"

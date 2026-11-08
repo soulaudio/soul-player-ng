@@ -35,7 +35,7 @@ whenever you want to sanity-check the shipped UI end-to-end.
    installed WebView2 version into the current directory. Put that directory
    on `PATH` (or copy `msedgedriver.exe` into a directory already on `PATH`,
    e.g. `~/.cargo/bin`) before running the suite.
-4. **Node.js** (for WebdriverIO itself) — same version the rest of `app/`
+4. **Node.js** (for WebdriverIO itself) — same version the rest of `app/tauri`
    uses.
 
 On Linux, `tauri-driver` instead drives WebKitGTK via `WebKitWebDriver`
@@ -44,7 +44,7 @@ WebDriver target.
 
 ## Running
 
-From `app/e2e/`:
+From `app/tauri/e2e/`:
 
 ```sh
 npm install
@@ -54,8 +54,8 @@ npm test
 `npm test` runs `wdio run ./wdio.conf.ts`, which:
 
 1. (`onPrepare`) Runs `npm run tauri build -- --debug --no-bundle --features
-   e2e` in `app/` to produce
-   `app/src-tauri/target/debug/soul-player.exe` with the `load_folder_path`
+   e2e` in `app/tauri` to produce
+   `app/tauri/src-tauri/target/debug/soul-player.exe` with the `load_folder_path`
    test command compiled in.
 2. (`beforeSession`) Spawns `tauri-driver`, which in turn launches the app
    binary and speaks WebDriver to it (via `msedgedriver`/WebKitWebDriver).
@@ -77,7 +77,7 @@ smoke path already used elsewhere in the app.
 ## Troubleshooting
 
 - **"tauri build failed"**: run `npm run tauri build -- --debug --no-bundle
-  --features e2e` manually from `app/` to see the underlying Cargo error.
+  --features e2e` manually from `app/tauri` to see the underlying Cargo error.
 - **tauri-driver exits immediately / "unable to connect to msedgedriver"**:
   your `msedgedriver.exe` version doesn't match the installed WebView2
   runtime, or it isn't on `PATH`. Re-run `msedgedriver-tool` and confirm

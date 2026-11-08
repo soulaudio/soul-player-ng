@@ -10,7 +10,7 @@ commit-msg:
       run: sh scripts/commit-msg.sh {1}
 
 # Fast pre-commit. Format-check the Rust in BOTH workspaces (the service crate
-# in this repo's root workspace and the isolated Tauri app under app/src-tauri)
+# in this repo's root workspace and the isolated Tauri app under app/tauri/src-tauri)
 # and clippy the service crate. The app crate's clippy compiles the whole audio
 # stack (the private git dependency), so it's deferred to pre-push / CI.
 pre-commit:
@@ -21,7 +21,7 @@ pre-commit:
       run: cargo fmt --all -- --check
     fmt-app:
       glob: "*.{rs,toml}"
-      run: cargo fmt --manifest-path app/src-tauri/Cargo.toml --all -- --check
+      run: cargo fmt --manifest-path app/tauri/src-tauri/Cargo.toml --all -- --check
     clippy-service:
       glob: "*.{rs,toml}"
       run: cargo clippy --all-targets -- -D warnings
@@ -36,4 +36,4 @@ pre-push:
     test-service:
       run: cargo test
     svelte-check:
-      run: npm --prefix app run check
+      run: npm --prefix app/tauri run check
