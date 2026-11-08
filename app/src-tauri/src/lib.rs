@@ -31,6 +31,8 @@ pub fn run() {
         .invoke_handler(bindings.invoke_handler())
         .setup(|app| {
             updater::spawn_startup_check(app.handle());
+            #[cfg(feature = "e2e")]
+            commands::e2e_autoload(app.handle());
             Ok(())
         })
         .run(tauri::generate_context!())

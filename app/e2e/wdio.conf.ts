@@ -5,6 +5,10 @@ import { fileURLToPath } from 'url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const APP = path.resolve(__dirname, '../src-tauri/target/debug/soul-player.exe');
+// Folder the e2e build auto-loads at startup (commands::e2e_autoload). Injecting
+// the library in-process avoids driving Tauri IPC through `browser.execute`,
+// which WebView2 runs with an opaque origin that Tauri's IPC handler rejects.
+const E2E_FOLDER = path.resolve(__dirname, 'fixtures/all-formats');
 let tauriDriver: ChildProcess | undefined;
 let exiting = false;
 
@@ -23,6 +27,7 @@ export const config: WebdriverIO.Config = {
   // and run the actor device-free.
   onPrepare: () => {
     process.env.SOUL_PLAYER_OFFLINE = '1';
+    process.env.SOUL_PLAYER_E2E_FOLDER = E2E_FOLDER;
     const r = spawnSync(
       'npm',
       ['run', 'tauri', 'build', '--', '--debug', '--no-bundle', '--features', 'e2e'],
@@ -33,7 +38,7 @@ export const config: WebdriverIO.Config = {
   beforeSession: () => {
     tauriDriver = spawn(path.resolve(os.homedir(), '.cargo', 'bin', 'tauri-driver'), [], {
       stdio: [null, process.stdout, process.stderr],
-      env: { ...process.env, SOUL_PLAYER_OFFLINE: '1' },
+      env: { ...process.env, SOUL_PLAYER_OFFLINE: '1', SOUL_PLAYER_E2E_FOLDER: E2E_FOLDER },
     });
     tauriDriver.on('exit', (code) => {
       if (!exiting) { console.error('tauri-driver exited early:', code); process.exit(1); }
