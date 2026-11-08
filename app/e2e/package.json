@@ -9,6 +9,6 @@
     "@wdio/mocha-framework": "^9.19.0",
     "@wdio/spec-reporter": "^9.19.0",
     "ts-node": "^10",
-    "typescript": "~6.0.3"
+    "typescript": "~7.0.2"
   }
 }
