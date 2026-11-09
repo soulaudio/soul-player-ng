@@ -28,6 +28,9 @@ soul-audio-tags = { git = "https://github.com/soulaudio/soul-audio-core", branch
 soul-audio-catalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 soul-audio-index = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["build"] }
 soul-audio-import = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+# Aggregate N watched folders into one browse (the desktop's "library = union of
+# sources"); the DAP is the N=1 case and never links this.
+soul-audio-multicatalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 embedded-io-adapters = { workspace = true, features = ["std"] }
