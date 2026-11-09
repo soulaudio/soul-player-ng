@@ -24,13 +24,13 @@ gh secret set CORE_REPO_TOKEN             --body "<pat>"
 Generated once with `npx @tauri-apps/cli signer generate`:
 
 - **Private key**: `.tauri/soul-player-updater.key` — gitignored, **never commit it**. Register it as `TAURI_SIGNING_PRIVATE_KEY`.
-- **Public key**: `.tauri/soul-player-updater.key.pub`, already pasted into `app/src-tauri/tauri.conf.json` under `plugins.updater.pubkey`. The app verifies every update against it — a mismatched key makes all auto-updates fail.
+- **Public key**: `.tauri/soul-player-updater.key.pub`, already pasted into `app/tauri/src-tauri/tauri.conf.json` under `plugins.updater.pubkey`. The app verifies every update against it — a mismatched key makes all auto-updates fail.
 
 To rotate: regenerate, replace the `pubkey` in `tauri.conf.json`, and update the secret.
 
 ## Cutting a release
 
-The app version lives in `app/src-tauri/tauri.conf.json` (`version`) and `app/package.json`. Keep them in sync.
+The app version lives in `app/tauri/src-tauri/tauri.conf.json` (`version`) and `app/tauri/package.json`. Keep them in sync.
 
 1. Bump the version in both files.
 2. Merge to `main`. **auto-release-on-version-bump.yml** sees the changed `tauri.conf.json`, creates `v<version>`, and pushes it.

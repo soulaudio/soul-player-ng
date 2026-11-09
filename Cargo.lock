@@ -220,7 +220,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "soul-audio-service"
+name = "soul-audio-tags"
+version = "0.1.0"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#5d06935acd7c3e989bcbeac7af991e7dd8cd879d"
+dependencies = [
+ "embedded-io",
+ "soul-audio-core",
+]
+
+[[package]]
+name = "soul-player-backend"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -237,15 +246,6 @@ dependencies = [
  "soul-audio-queue",
  "soul-audio-tags",
  "specta",
-]
-
-[[package]]
-name = "soul-audio-tags"
-version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#5d06935acd7c3e989bcbeac7af991e7dd8cd879d"
-dependencies = [
- "embedded-io",
- "soul-audio-core",
 ]
 
 [[package]]

@@ -1,0 +1,26 @@
+[package]
+name = "soul-player-host"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Desktop assembly over soul-player-backend: sink selection, folder-open, and the PlayerHandle UI contract every head binds to."
+
+[workspace]
+resolver = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+
+[dependencies]
+soul-player-backend = { path = "../soul-player-backend" }
+soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["playback"] }
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
