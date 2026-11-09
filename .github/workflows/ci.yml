@@ -104,6 +104,10 @@ jobs:
     # wgpu+winit stack would otherwise need. The headless `Runtime` smoke test
     # draws nothing (fixed virtual clock, no GPU window), so no display is needed.
     runs-on: windows-latest
+    # Safety net: the uncached build is ~20 min; cap well above that so a hung
+    # test can never burn hours (as one timing-flaky test once did) before CI
+    # reports red.
+    timeout-minutes: 45
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
