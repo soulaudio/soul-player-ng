@@ -1,68 +1,110 @@
-//! Local music library, backed by the **shared** data layer.
+//! Local music library, backed by the shared data layer's baked `.soulidx`.
 //!
-//! The recursive folder scan + tag reading that used to live here now lives in
-//! [`soul_audio_import`] (shared 1:1 with the e-ink DAP through
-//! `soul-audio-catalog`'s model). This module is the thin desktop wrapper the
-//! actor and the Tauri commands already consume: [`Library::scan`] produces the
-//! shared in-memory catalog, and [`Library::path_of`] / [`Library::duration_of`]
-//! / [`Library::views`] read it. Folder-isolated albums/artists come for free
-//! from the shared importer; album/artist/folder *browse* is layered on next.
+//! The recursive folder scan + tag reading lives in [`soul_audio_import`] (shared
+//! 1:1 with the e-ink DAP). This desktop wrapper now **dogfoods the whole shared
+//! pipeline**: each watched folder is scanned + baked to a `.soulidx` and read
+//! back through the no-alloc [`IndexReader`] (over an *owning* in-memory source —
+//! no leak, no on-disk cache), and the folders are aggregated into one browse by
+//! [`MultiCatalog`]. The surface the actor + Tauri commands consume
+//! ([`scan`](Library::scan) / [`path_of`](Library::path_of) /
+//! [`duration_of`](Library::duration_of) / [`views`](Library::views)) is
+//! unchanged — only the backing store moved from an in-memory `CatalogInput` to
+//! the baked index the DAP also reads.
 
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
-use soul_audio_index::build::CatalogInput;
+use embedded_io_adapters::std::FromStd;
+use soul_audio_catalog::{BrowseAxis, Catalog, StrRef};
+use soul_audio_index::IndexReader;
+use soul_audio_multicatalog::{MultiCatalog, unpack};
 
 use crate::types::TrackView;
 
-/// An in-memory library: the shared scanned catalog, plus the root it was
-/// scanned from (needed to turn a track's `/`-separated folder path + file name
-/// back into an absolute path for the decoder).
+/// A `.soulidx` reader over an **owning** in-memory source: `Cursor` owns the
+/// baked bytes, so the reader is `'static` with no leak and no on-disk cache, and
+/// drops cleanly when the `Library` is swapped out on rescan.
+type MemReader = IndexReader<FromStd<Cursor<Vec<u8>>>>;
+
+/// The desktop library: the baked catalog (one source per watched folder,
+/// aggregated by [`MultiCatalog`]) plus each source's physical root, needed to
+/// turn a track's `/`-separated folder path + file name back into an absolute
+/// path for the decoder. Track ids are the aggregate's **compound** ids (source
+/// in the high bits); for a single folder they are the plain record ids.
 pub struct Library {
-    root: PathBuf,
-    input: CatalogInput,
+    /// Physical root per source, indexed by a compound id's source bits.
+    roots: Vec<PathBuf>,
+    /// The aggregate behind a `Mutex`: `MultiCatalog` is `Send` but not `Sync`
+    /// (its readers use single-threaded `RefCell` interior mutability), so the
+    /// shared `Arc<Library>` serializes catalog access here. The lock is held
+    /// only for the duration of one public call.
+    catalog: Mutex<MultiCatalog>,
 }
 
 impl Library {
-    /// Scan `root` recursively via the shared importer — folder-isolation, tag
-    /// reading, and every supported format — into an in-memory catalog. Track
-    /// ids are the scan order (stable for the session), matching the old flat
-    /// model so the actor/UI are unaffected. Robustness (unreadable tags degrade,
-    /// unreadable subdirs are skipped, symlink cycles terminate, only an
-    /// unreadable `root` errors) is the importer's, shared with the DAP.
+    /// Scan + bake a single watched folder, read back through the shared index —
+    /// the `N = 1` case of [`scan_many`](Library::scan_many).
     pub fn scan(root: &Path) -> anyhow::Result<Library> {
-        let input = soul_audio_import::scan(root)?;
+        Self::scan_many(&[root.to_owned()])
+    }
+
+    /// Scan + bake each watched folder (folder-isolation, tag reading, every
+    /// supported format — all the importer's, shared with the DAP), reading each
+    /// back through an owning [`IndexReader`] and aggregating them into one
+    /// browse. Robustness (unreadable tags degrade, unreadable subdirs skip,
+    /// symlink cycles terminate, only an unreadable root errors) is the
+    /// importer's. Errors if any root fails to scan.
+    pub fn scan_many(roots: &[PathBuf]) -> anyhow::Result<Library> {
+        let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(roots.len());
+        for root in roots {
+            let bytes = soul_audio_import::bake(root)?;
+            let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(bytes)));
+            members.push(Box::new(reader));
+        }
         Ok(Library {
-            root: root.to_owned(),
-            input,
+            roots: roots.to_vec(),
+            catalog: Mutex::new(MultiCatalog::new(members)),
         })
     }
 
-    /// Number of scanned tracks.
+    /// Lock the aggregate for one call.
+    fn cat(&self) -> std::sync::MutexGuard<'_, MultiCatalog> {
+        self.catalog.lock().expect("library catalog mutex poisoned")
+    }
+
+    /// Number of tracks across all sources.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.input.tracks.len()
+        self.cat().track_count() as usize
     }
 
     /// Whether the scan found no tracks.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.input.tracks.is_empty()
+        self.cat().track_count() == 0
     }
 
-    /// The absolute file path for track `id`: `root / folder.path / file_name`.
-    /// `folder.path` is the importer's `/`-separated, root-relative form, so it
-    /// is re-split into native components here.
+    /// The absolute file path for track `id`: `roots[source] / folder.path /
+    /// file_name`. The compound id's source selects the physical root; the
+    /// `/`-separated, root-relative `folder.path` is re-split into native
+    /// components.
     #[must_use]
     pub fn path_of(&self, id: u32) -> Option<PathBuf> {
-        let t = self.input.tracks.get(id as usize)?;
-        let folder = self.input.folders.get(t.folder as usize)?;
-        let mut p = self.root.clone();
-        if !folder.path.is_empty() {
-            for seg in folder.path.split('/') {
+        let (source, _) = unpack(id);
+        let root = self.roots.get(source as usize)?;
+        let cat = self.cat();
+        let t = cat.track(id).ok()?;
+        let folder = cat.folder(t.folder).ok()?;
+        let rel = resolve(&cat, folder.path)?;
+        let name = resolve(&cat, t.file_name)?;
+        let mut p = root.clone();
+        if !rel.is_empty() {
+            for seg in rel.split('/') {
                 p.push(seg);
             }
         }
-        p.push(&t.file_name);
+        p.push(&name);
         Some(p)
     }
 
@@ -71,36 +113,63 @@ impl Library {
     /// consistent with the track list.
     #[must_use]
     pub fn duration_of(&self, id: u32) -> Option<f64> {
-        let t = self.input.tracks.get(id as usize)?;
+        let t = self.cat().track(id).ok()?;
         (t.duration_ms > 0).then(|| f64::from(t.duration_ms) / 1000.0)
     }
 
-    /// The UI-facing view of every track (no paths). The importer already applies
-    /// the file-name fallback for a missing title, so `title` is always present.
+    /// The UI-facing view of every track, in **Album-Artist → Album → disc/track**
+    /// order (the baked `ArtistAlbumTrack` axis — the audiophile/player default;
+    /// leading articles are folded by the shared collation). The importer applies
+    /// the file-name fallback for a missing title, so `title` is present.
     #[must_use]
     pub fn views(&self) -> Vec<TrackView> {
-        self.input
-            .tracks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| TrackView {
-                id: i as u32,
-                title: Some(t.title.clone()),
-                artist: real_name(self.input.artists.get(t.artist as usize)),
-                album: real_name(self.input.albums.get(t.album as usize).map(|a| &a.title)),
-                duration_secs: f64::from(t.duration_ms) / 1000.0,
+        let cat = self.cat();
+        let axis = BrowseAxis::ArtistAlbumTrack;
+        (0..cat.order_len(axis))
+            .filter_map(|i| {
+                let id = cat.order(axis, i).ok()?;
+                let t = cat.track(id).ok()?;
+                Some(TrackView {
+                    id,
+                    title: resolve(&cat, t.title),
+                    artist: real_name(artist_name(&cat, t.artist)),
+                    album: real_name(album_title(&cat, t.album)),
+                    duration_secs: f64::from(t.duration_ms) / 1000.0,
+                })
             })
             .collect()
     }
 }
 
+/// Resolve a heap string ref (exact length known) into an owned `String`, routed
+/// through the aggregate so the owning source is honored.
+fn resolve(cat: &MultiCatalog, s: StrRef) -> Option<String> {
+    let mut buf = vec![0u8; s.len as usize];
+    let n = cat.resolve_str(s, &mut buf).ok()?;
+    buf.truncate(n);
+    String::from_utf8(buf).ok()
+}
+
+/// Resolve an artist name (length not known up front) into an owned `String`.
+fn artist_name(cat: &MultiCatalog, id: u32) -> Option<String> {
+    let mut buf = [0u8; 512];
+    let n = cat.artist_name(id, &mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
+}
+
+/// Resolve an album's title via its record.
+fn album_title(cat: &MultiCatalog, id: u32) -> Option<String> {
+    let album = cat.album(id).ok()?;
+    resolve(cat, album.title)
+}
+
 /// Map the importer's `"Unknown Artist"` / `"Unknown Album"` placeholders back to
 /// `None`, preserving the UI's "blank, not the word Unknown" presentation for an
 /// untagged file.
-fn real_name(s: Option<&String>) -> Option<String> {
-    match s.map(String::as_str) {
+fn real_name(s: Option<String>) -> Option<String> {
+    match s.as_deref() {
         None | Some("Unknown Artist" | "Unknown Album") => None,
-        Some(name) => Some(name.to_owned()),
+        Some(_) => s,
     }
 }
 
@@ -185,6 +254,35 @@ mod tests {
         assert_eq!(lib.len(), 1);
         let d = lib.duration_of(0).unwrap();
         assert!((d - 1.0).abs() < 0.05, "duration {d} not ~1.0 s");
+    }
+
+    #[test]
+    fn scan_many_aggregates_sources_and_routes_each_path_to_its_root() {
+        // Two independently-scanned folders aggregate into one library; every
+        // track locates back to ITS OWN source root (the per-source path_of).
+        let a = tmpdir("multi_a");
+        std::fs::write(a.join("alpha.wav"), wav(48_000, 48_000)).unwrap();
+        let b = tmpdir("multi_b");
+        std::fs::write(b.join("beta.wav"), wav(48_000, 96_000)).unwrap();
+
+        let lib = Library::scan_many(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(lib.len(), 2, "both sources' tracks aggregated");
+
+        let views = lib.views();
+        assert_eq!(views.len(), 2);
+        let mut sources = std::collections::BTreeSet::new();
+        for v in &views {
+            let (src, _) = soul_audio_multicatalog::unpack(v.id);
+            sources.insert(src);
+            let p = lib.path_of(v.id).expect("path");
+            let root = if src == 0 { &a } else { &b };
+            assert!(
+                p.starts_with(root),
+                "{p:?} not under source {src} root {root:?}"
+            );
+            assert!(p.is_file(), "located file exists: {p:?}");
+        }
+        assert_eq!(sources.len(), 2, "one track per distinct source");
     }
 
     #[test]
