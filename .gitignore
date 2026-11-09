@@ -9,5 +9,10 @@
 /app/tauri/.vitest/
 /app/tauri/e2e/node_modules/
 
+# soul-player-host is its own nested cargo workspace (cpal carries in here,
+# kept out of the root/headless workspace), so its build output lands in its
+# own target/, not the root /target above.
+/crates/soul-player-host/target/
+
 # Tauri updater signing keys — private key must never be committed
 /.tauri/
