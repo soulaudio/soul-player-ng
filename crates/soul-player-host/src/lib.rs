@@ -59,9 +59,18 @@ impl PlayerHandle {
         }
     }
 
-    /// (Task 4 replaces this stub with the real scan→play implementation.)
-    pub fn open_folder(&self, _dir: &Path) -> anyhow::Result<Vec<TrackView>> {
-        anyhow::bail!("open_folder not yet implemented")
+    /// Scan `dir` into a `Library`, swap it in, and start playing from track 0.
+    /// Returns the track views. Errors on scan failure or an empty folder.
+    pub fn open_folder(&self, dir: &Path) -> anyhow::Result<Vec<TrackView>> {
+        let lib = Arc::new(Library::scan(dir)?);
+        let views = lib.views();
+        if views.is_empty() {
+            anyhow::bail!("no supported audio files in {}", dir.display());
+        }
+        self.set_library(Arc::clone(&lib));
+        let ids: Vec<u32> = views.iter().map(|v| v.id).collect();
+        self.send(Command::PlayContext { ids, start: 0 });
+        Ok(views)
     }
 
     /// Register an event handler. Called on every backend event (Tick ~8 Hz +
@@ -115,10 +124,6 @@ impl PlayerHandle {
     /// Locks library then player, never both at once, to avoid a lock-order
     /// inversion with `ensure_actor` (which snapshots library before locking
     /// player).
-    ///
-    /// (Unused until Task 4's real `open_folder` calls it — the Task 3 stub
-    /// does not. `#[allow(dead_code)]` suppresses the resulting warning.)
-    #[allow(dead_code)]
     fn set_library(&self, lib: Arc<Library>) {
         {
             *self.inner.library.lock().expect("library mutex") = Some(Arc::clone(&lib));
@@ -165,5 +170,41 @@ mod tests {
         let h = PlayerHandle::offline();
         h.send(Command::TogglePlay); // no library yet → no actor → no panic
         assert!(h.views().is_empty());
+    }
+
+    /// Minimal stereo-16-bit WAV (mirrors the backend actor tests' writer).
+    fn wav(rate: u32, frames: u32) -> Vec<u8> {
+        let channels: u16 = 2;
+        let block_align = channels * 2;
+        let byte_rate = rate * u32::from(block_align);
+        let data_len = frames * u32::from(block_align);
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data_len).to_le_bytes());
+        v.extend_from_slice(b"WAVE");
+        v.extend_from_slice(b"fmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&channels.to_le_bytes());
+        v.extend_from_slice(&rate.to_le_bytes());
+        v.extend_from_slice(&byte_rate.to_le_bytes());
+        v.extend_from_slice(&block_align.to_le_bytes());
+        v.extend_from_slice(&16u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&data_len.to_le_bytes());
+        v.resize(v.len() + data_len as usize, 0);
+        v
+    }
+
+    #[test]
+    fn open_folder_scans_and_exposes_views() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.wav"), wav(48_000, 96_000)).unwrap();
+        std::fs::write(dir.path().join("b.wav"), wav(48_000, 96_000)).unwrap();
+
+        let h = PlayerHandle::offline();
+        let views = h.open_folder(dir.path()).expect("open_folder");
+        assert_eq!(views.len(), 2, "both wavs scanned");
+        assert_eq!(h.views().len(), 2, "views() reflects the opened library");
     }
 }
