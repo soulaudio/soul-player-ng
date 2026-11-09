@@ -37,8 +37,7 @@ pub fn slider(
 
     let step_commit = on_commit.clone();
     let drag_commit = on_commit;
-    el()
-        .key(key)
+    el().key(key)
         .role("slider")
         .label(key)
         .range_value(f64::from(v), 0.0, 1.0)
@@ -61,7 +60,11 @@ pub fn slider(
             Phase::Move => {
                 if live {
                     let knob = k / 2.0 + d.data * travel;
-                    let grab = if (d.start_x - knob).abs() <= k / 2.0 + 2.0 { d.start_x - knob } else { 0.0 };
+                    let grab = if (d.start_x - knob).abs() <= k / 2.0 + 2.0 {
+                        d.start_x - knob
+                    } else {
+                        0.0
+                    };
                     drag_commit(s, to_value(d.x - grab));
                     tx.instant();
                 }
@@ -73,14 +76,17 @@ pub fn slider(
                     }
                 } else {
                     let knob = k / 2.0 + d.data * travel;
-                    let grab = if (d.start_x - knob).abs() <= k / 2.0 + 2.0 { d.start_x - knob } else { 0.0 };
+                    let grab = if (d.start_x - knob).abs() <= k / 2.0 + 2.0 {
+                        d.start_x - knob
+                    } else {
+                        0.0
+                    };
                     drag_commit(s, to_value(d.x - grab));
                 }
             }
         })
         .child(
-            el()
-                .key("track")
+            el().key("track")
                 .size(w, bar)
                 .absolute(0.0, (h - bar) / 2.0)
                 .radius(bar / 2.0)
@@ -88,8 +94,7 @@ pub fn slider(
                 .a11y_hidden(),
         )
         .child(
-            el()
-                .key("fill")
+            el().key("fill")
                 .size(k / 2.0 + v * travel, bar)
                 .absolute(0.0, (h - bar) / 2.0)
                 .radius(bar / 2.0)
@@ -97,8 +102,7 @@ pub fn slider(
                 .a11y_hidden(),
         )
         .child(
-            el()
-                .key("knob")
+            el().key("knob")
                 .size(k, k)
                 .absolute(v * travel, (h - k) / 2.0)
                 .radius(k / 2.0)

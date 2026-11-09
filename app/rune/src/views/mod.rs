@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod library;
+pub mod open_folder;
 pub mod player;
 pub mod queue;
 pub mod sidebar;

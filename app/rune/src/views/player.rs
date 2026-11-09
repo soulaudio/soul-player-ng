@@ -180,8 +180,7 @@ fn transport_button(
     p: &Palette,
     on_press: impl Fn(&mut State) + 'static,
 ) -> El {
-    el()
-        .key(key)
+    el().key(key)
         .role("button")
         .label(label)
         .focusable(true)
@@ -196,8 +195,7 @@ fn transport_button(
 
 fn play_pause_button(s: &State, p: &Palette) -> El {
     let glyph = if s.playing { "⏸" } else { "▶" };
-    el()
-        .key("play-pause")
+    el().key("play-pause")
         .role("button")
         .label(if s.playing { "Pause" } else { "Play" })
         .focusable(true)
@@ -222,8 +220,7 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
 /// across five transport buttons, so these render a glyph instead. The
 /// descriptive `label`/`role` stay for accessibility regardless.
 fn shuffle_button(s: &State, p: &Palette) -> El {
-    el()
-        .key("shuffle")
+    el().key("shuffle")
         .role("switch")
         .label("Shuffle")
         .checked(s.shuffle)
@@ -234,11 +231,11 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
         .hover(p.muted)
         .press(p.border)
         .on_press(|st: &mut State| st.host.send(Command::SetShuffle(!st.shuffle)))
-        .child(
-            text("⤭")
-                .font(type_::TITLE)
-                .color(if s.shuffle { p.accent } else { p.text_secondary }),
-        )
+        .child(text("⤭").font(type_::TITLE).color(if s.shuffle {
+            p.accent
+        } else {
+            p.text_secondary
+        }))
 }
 
 fn repeat_button(s: &State, p: &Palette) -> El {
@@ -247,8 +244,7 @@ fn repeat_button(s: &State, p: &Palette) -> El {
         RepeatMode::All => ("⟳", "Repeat: All", true),
         RepeatMode::One => ("⟳¹", "Repeat: One", true),
     };
-    el()
-        .key("repeat")
+    el().key("repeat")
         .role("button")
         .label(label)
         .focusable(true)
@@ -281,13 +277,21 @@ fn transport_row(s: &State, p: &Palette) -> El {
         .gap(ROW_GAP)
         .center()
         .child(shuffle_button(s, p))
-        .child(transport_button("prev", "Previous", "◀◀", p, |st: &mut State| {
-            st.host.send(Command::Prev)
-        }))
+        .child(transport_button(
+            "prev",
+            "Previous",
+            "◀◀",
+            p,
+            |st: &mut State| st.host.send(Command::Prev),
+        ))
         .child(play_pause_button(s, p))
-        .child(transport_button("next", "Next", "▶▶", p, |st: &mut State| {
-            st.host.send(Command::Next)
-        }))
+        .child(transport_button(
+            "next",
+            "Next",
+            "▶▶",
+            p,
+            |st: &mut State| st.host.send(Command::Next),
+        ))
         .child(repeat_button(s, p))
 }
 

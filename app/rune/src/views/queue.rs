@@ -66,8 +66,10 @@ pub fn queue_section(s: &State, p: &Palette) -> El {
         .min_h(0.0)
         .child(text("Up Next").font(type_::SECTION).color(p.text_secondary))
         .child(
-            rows.scroll(ScrollSpec { stick_bottom: false })
-                .grow(1.0)
-                .min_h(0.0),
+            rows.scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .grow(1.0)
+            .min_h(0.0),
         )
 }

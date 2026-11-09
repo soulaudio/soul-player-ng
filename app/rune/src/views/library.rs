@@ -1,11 +1,13 @@
 //! Main-area track list: one row per library track, click to play.
 #![forbid(unsafe_code)]
 
+use rune::tok::type_;
 use rune::{El, ScrollSpec, col, row, text};
 use soul_player_host::Command;
 
 use crate::State;
 use crate::theme::Palette;
+use crate::views::open_folder::open_folder_button;
 
 fn fmt_dur(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -64,6 +66,19 @@ fn track_row(s: &State, p: &Palette, index: usize) -> El {
 /// remaining height (rather than its content's natural height) so it scrolls
 /// instead of overflowing — see `El::scroll`'s doc comment.
 pub fn track_list(s: &State, p: &Palette) -> El {
+    if s.library.is_empty() {
+        // Cold launch with no SOUL_PLAYER_FOLDER: a usable entry point rather
+        // than a blank list.
+        return col()
+            .key("empty")
+            .w_full()
+            .h_full()
+            .center()
+            .gap(12.0)
+            .child(text("No music loaded").font(type_::TITLE).color(p.fg))
+            .child(text("Open a folder to start playing").color(p.text_secondary))
+            .child(open_folder_button("Open Folder", p));
+    }
     let mut list = col().key("tracks").gap(2.0);
     for i in 0..s.library.len() {
         list = list.child(track_row(s, p, i));

@@ -6,10 +6,11 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
-use rune::{El, col, text};
+use rune::{El, col, el, text};
 
 use crate::State;
 use crate::theme::Palette;
+use crate::views::open_folder::open_folder_button;
 use crate::views::player::player_panel;
 use crate::views::queue::queue_section;
 
@@ -30,6 +31,11 @@ pub fn sidebar(s: &State, p: &Palette, scale: f32) -> El {
                 .font(type_::TITLE)
                 .color(p.primary)
                 .padding(16.0),
+        )
+        .child(
+            el().px(16.0)
+                .py(8.0)
+                .child(open_folder_button("Open Folder", p)),
         )
         .child(queue_section(s, p))
         .child(player_panel(s, p, scale, WIDTH))
