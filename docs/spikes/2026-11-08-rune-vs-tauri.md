@@ -93,3 +93,80 @@ have releases, semver, and open contribution — all things Rune currently lacks
 3. **Watch Rune** for: a tagged/crates.io release, an open contribution model,
    and real published benchmarks. Revisit if all three land — and benchmark it
    against GPUI/Slint/Xilem at that point rather than adopting by default.
+
+---
+
+# Measured results — we built the Rune head
+
+The above was written *before* building. We then built a real Rune UI head
+(`app/rune`, on branch `spike/rune-vs-tauri`) over the shared `soul-player-host`
+`PlayerHandle`: a single-screen player mirroring the old `soul-player`
+sidebar-centric layout. Rune pinned to dev rev `07c369b`.
+
+## What got built (and it works)
+
+A complete sidebar-centric player: 288px left sidebar (nav label → Up-Next queue →
+player panel: cover art, title/artist, hand-built seek bar, 5-button transport,
+volume) + a scrollable library track list in the main area, **Day + Night themes
+switched by system appearance** using the old app's exact palettes. Verified
+end-to-end via Rune's headless `--snap` PNGs (both themes):
+
+![Rune head — dark](rune-head-dark.png)
+![Rune head — light](rune-head-light.png)
+
+## Feasibility: proven on Windows
+
+- **Compiles** (257 crates, Rust 1.99.1) and **renders** (wgpu offscreen; GPU
+  init ~1 s, first frame ~16 ms) — no hard blockers.
+- **The scariest risk — ingesting the backend's ~8 Hz `Tick`/`Queue` events from
+  another thread — was a one-liner:** `AppHandle::update(|s, tx| { s.apply(&ev); })`
+  called straight from the host's `subscribe` callback. The clean service
+  boundary made the whole head a ~1-session spike.
+- **Cover art** takes the backend's encoded bytes directly (`ImageCache::load_mime`),
+  no manual decode.
+
+## The numbers
+
+| Metric | Rune head | Tauri + Svelte head |
+|---|---|---|
+| UI source | **887 LOC** Rust (`app/rune/src`) | **1009 LOC** Svelte + TS (`app/tauri/src`, excl. tests/bindings) |
+| Binary | 42 MB debug, **self-contained** (no runtime dep) | ~10 MB exe **+ system WebView2** runtime |
+| Renderer | one GPU renderer, identical on every OS | OS webview (WebView2 / WebKitGTK — diverges per-OS) |
+
+Notably the Rune head is *less* code than the Svelte UI despite hand-building the
+sliders, theme system, and cover-art cache that the webview gets for free from
+CSS/the browser. (Release binary size not measured — the release build is heavy;
+expect it well under the debug 42 MB after strip/opt.)
+
+## The friction (the real cost of a pre-release dep)
+
+- **No stable API/docs** — every task had to read the cloned `examples/` to get
+  the real API; several naive guesses were wrong.
+- **sRGB gotcha:** `rune::Color` is *linear*; the obvious `hex/255` conversion
+  rendered visibly washed-out until routed through Rune's own `color::hex`.
+- **No `Slider` widget** — hand-built from the `examples/settings` pattern (worked
+  well, but it's real code + a fixed-width quirk to tidy).
+- **`rune-kit`'s `List` isn't a library browser** — used a plain `.scroll`ed
+  column (`.virtualize` is the path for large libraries; noted in code).
+- **MSVC `LNK1140`:** Rune's huge dep tree overflowed the debug program-database
+  limit; fixed with `[profile.dev] debug = 0`.
+- **Windows is a secondary target** — we were first to hit the PDB issue; builds
+  are heavy (multi-GB target, ~15 min first build; our dev disk filled during
+  iteration) and need a newer toolchain pin (`1.99.1`).
+- **Still unversioned, single-branch, no-PR** — the governance risk is unchanged.
+
+## What's genuinely good
+
+The view → diff → spring model is ergonomic; **headless `--snap` PNG +
+element-tree is first-class** (we verified the entire UI from snapshots, exactly
+the agent-driven loop Rune pitches); one renderer means pixel-identical output
+across OSes; the all-Rust stack fits the repo's ethos.
+
+## Updated verdict
+
+Building it **confirms "stay on Tauri for now"** — the pre-release API friction,
+no-PR governance, Windows-secondary rough edges, and heavy builds are real costs
+for a *shipping* product. **But it also de-risks Rune as a future option:** it's
+genuinely capable, the port is ~1:1 in LOC, and the headless-snapshot workflow is
+excellent. Keep `app/rune` in-tree as a reference head; the clean `soul-player-host`
+waist means we can revisit cheaply if/when Rune ships releases + open contribution.
