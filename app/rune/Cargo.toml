@@ -1,0 +1,20 @@
+[package]
+name = "soul-player-rune"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Rune (native GPU) UI head for Soul Player, over soul-player-host."
+
+[[bin]]
+name = "soul-player-rune"
+path = "src/main.rs"
+
+[workspace]
+resolver = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830" }
