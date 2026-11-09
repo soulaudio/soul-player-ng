@@ -1,5 +1,5 @@
 # Applies to both workspaces in this repo (the service crate here and the
-# isolated Tauri app under app/src-tauri) — cargo discovers config by directory
+# isolated Tauri app under app/tauri/src-tauri) — cargo discovers config by directory
 # ancestry, so this root file governs nested workspaces too.
 
 [env]

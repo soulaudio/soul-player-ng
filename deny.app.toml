@@ -1,4 +1,4 @@
-# cargo-deny policy for the TAURI APP workspace (`app/src-tauri`). Identical to
+# cargo-deny policy for the TAURI APP workspace (`app/tauri/src-tauri`). Identical to
 # the root `deny.toml` minus the "no GUI crates" ban — the app is the one place
 # Tauri/wry/tao legitimately live (see docs/ARCHITECTURE.md). Advisory (CVE)
 # scanning is owned by the `cargo audit` job; this gate enforces license

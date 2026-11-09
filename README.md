@@ -9,17 +9,17 @@ playback library.
 
 | Path | Role |
 |---|---|
-| `crates/soul-audio-service` | Headless backend service: app Command/Event DTOs + the `AudioPlayer` actor over the engine. Sink-generic, device-free. |
-| `app/` | Tauri 2 shell + Svelte 5 UI. `src-tauri` wires the cpal sink and the service; the webview renders the player. |
+| `crates/soul-player-backend` | Headless backend service: app Command/Event DTOs + the `AudioPlayer` actor over the engine. Sink-generic, device-free. |
+| `app/tauri` | Tauri 2 shell + Svelte 5 UI. `src-tauri` wires the cpal sink and the service; the webview renders the player. |
 
 The audio engine, resampler, codecs, and the cpal sink come from
 [`soul-audio-core`][core] as git dependencies; only the app-specific backend
-(`soul-audio-service`) and the UI live here.
+(`soul-player-backend`) and the UI live here.
 
 ## Develop
 
 ```sh
-cd app
+cd app/tauri
 npm install
 npm run tauri dev      # run the player
 npm run tauri build    # package an installer

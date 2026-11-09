@@ -7,7 +7,7 @@
 # lockfiles are refreshed.
 version: 2
 updates:
-  # --- Rust: root (headless `soul-audio-service`) workspace ---
+  # --- Rust: root (headless `soul-player-backend`) workspace ---
   - package-ecosystem: cargo
     directory: /
     schedule:
@@ -21,7 +21,7 @@ updates:
 
   # --- Rust: Tauri app workspace (separate Cargo.lock) ---
   - package-ecosystem: cargo
-    directory: /app/src-tauri
+    directory: /app/tauri/src-tauri
     schedule:
       interval: weekly
       day: monday
@@ -33,7 +33,7 @@ updates:
 
   # --- Frontend (Svelte / Tauri / Vite) ---
   - package-ecosystem: npm
-    directory: /app
+    directory: /app/tauri
     schedule:
       interval: weekly
       day: monday
@@ -45,7 +45,7 @@ updates:
 
   # --- e2e harness (wdio) ---
   - package-ecosystem: npm
-    directory: /app/e2e
+    directory: /app/tauri/e2e
     schedule:
       interval: weekly
       day: monday

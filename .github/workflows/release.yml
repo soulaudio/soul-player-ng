@@ -59,7 +59,7 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: app/package-lock.json
+          cache-dependency-path: app/tauri/package-lock.json
 
       # rust-toolchain.toml pins the channel; add the Apple cross targets so the
       # two macOS slices build.
@@ -69,11 +69,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          workspaces: app/src-tauri
+          workspaces: app/tauri/src-tauri
           key: ${{ matrix.target }}
 
       - name: Install frontend dependencies
-        working-directory: app
+        working-directory: app/tauri
         run: npm ci
 
       - name: Build, sign, and draft the release
@@ -85,7 +85,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          projectPath: app
+          projectPath: app/tauri
           tagName: ${{ github.ref_name }}
           releaseName: "soul-player ${{ github.ref_name }}"
           releaseDraft: true
