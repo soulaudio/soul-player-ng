@@ -26,3 +26,5 @@ debug = 0
 
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830" }
+soul-player-host = { path = "../../crates/soul-player-host" }
+anyhow = "1"

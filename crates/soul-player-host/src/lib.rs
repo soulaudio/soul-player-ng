@@ -26,6 +26,7 @@ struct Inner {
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
 /// on first playback), the current library, and an event fan-out.
+#[derive(Clone)]
 pub struct PlayerHandle {
     inner: Arc<Inner>,
 }
