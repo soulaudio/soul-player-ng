@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use rune::tok::{motion, type_};
-use rune::{Align, El, Image, ImageCache, SurfaceFit, Waker, col, el, row, text};
+use rune::{Align, Cx, El, Image, ImageCache, SurfaceFit, Waker, col, el, row, text};
 use soul_player_host::{Command, PlayerHandle, RepeatMode, TrackView};
 
 use crate::State;
@@ -18,13 +18,12 @@ use crate::views::slider::slider;
 
 /// Cover art side, in points (the brief's "~64-96px" range).
 const COVER_SIZE: f32 = 72.0;
-/// The panel's own padding on every side (`player_panel`'s `.padding(..)`),
-/// subtracted from the caller's `width` to get the content width the
-/// seek/volume rows must fit into.
+/// The panel's own padding on every side (`player_panel`'s `.padding(..)`).
 const PANEL_PADDING: f32 = 20.0;
 /// Fixed label widths flanking the seek bar (current/duration, e.g.
-/// `"12:34"`) and the volume bar (`"Vol"` / `"100%"`); the sliders get
-/// whatever's left of the content width after these and the row gaps.
+/// `"12:34"`) and the volume bar (`"Vol"` / `"100%"`); the sliders
+/// (`.grow(1.0)`, see `views::slider`) take whatever's left of the row
+/// after these and the row gaps.
 const TIME_LABEL_W: f32 = 36.0;
 const VOL_LABEL_W: f32 = 24.0;
 const VOL_PCT_W: f32 = 38.0;
@@ -32,10 +31,6 @@ const VOL_PCT_W: f32 = 38.0;
 /// transport row's buttons — tightened from Task 5-6's full-width numbers
 /// so shuffle/prev/play/next/repeat fit the sidebar's ~248pt content width.
 const ROW_GAP: f32 = 8.0;
-/// Floor under a computed slider width so a pathologically narrow `width`
-/// (smaller than this panel's own labels) still renders a draggable slider
-/// instead of a negative or zero-width one.
-const MIN_SLIDER_W: f32 = 40.0;
 
 /// Cover-art decode cache (cheat-sheet §6a). Rune's pre-release has no
 /// "load this track's art" helper, so this wraps `rune::ImageCache` +
@@ -88,20 +83,32 @@ fn fmt_dur(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-fn cover_el(s: &State, id: Option<u32>, p: &Palette, scale: f32) -> El {
-    let placeholder = el()
-        .key("cover")
+/// The muted cover box with a centered music-note glyph, for no now-playing
+/// track, a track with no embedded art, or art that is still decoding or
+/// failed to — a placeholder that reads as "no art" rather than a blank box.
+fn cover_placeholder(p: &Palette) -> El {
+    el().key("cover")
         .size(COVER_SIZE, COVER_SIZE)
         .radius(10.0)
-        .fill(p.muted);
-    let Some(id) = id else { return placeholder };
+        .fill(p.muted)
+        .center()
+        .child(text("♪").font(type_::TITLE).color(p.text_secondary))
+}
+
+fn cover_el(s: &State, id: Option<u32>, p: &Palette, scale: f32) -> El {
+    let Some(id) = id else {
+        return cover_placeholder(p);
+    };
     match s.art.image_for(id, &s.host, scale) {
         // Ready and error-free: show it. Pending or failed covers keep the
         // placeholder rather than a blank or broken texture.
-        Some(image) if image.is_ready() && image.error().is_none() => {
-            placeholder.pixels_fit(image.pixels(), SurfaceFit::Fit)
-        }
-        _ => placeholder,
+        Some(image) if image.is_ready() && image.error().is_none() => el()
+            .key("cover")
+            .size(COVER_SIZE, COVER_SIZE)
+            .radius(10.0)
+            .fill(p.muted)
+            .pixels_fit(image.pixels(), SurfaceFit::Fit),
+        _ => cover_placeholder(p),
     }
 }
 
@@ -131,19 +138,20 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         )
 }
 
-/// `content_w` is the panel's content-box width (`width - 2*PANEL_PADDING`,
-/// see `player_panel`); the seek slider fills whatever's left after the two
-/// fixed time labels and their gaps.
-fn seek_row(s: &State, p: &Palette, content_w: f32) -> El {
+/// The seek slider now fills whatever's left of the row after the two fixed
+/// time labels (`.grow(1.0)`, see `views::slider`), rather than a width this
+/// row computes by hand — the row's own key is `"seek-row"`, distinct from
+/// the slider's `"seek"` key, so `Cx::layout_size("seek")` inside `slider`
+/// unambiguously reads the slider's own laid-out width, not this row's.
+fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let duration = s.duration_secs;
     let value01 = if duration > 0.0 {
         (s.position_secs / duration).clamp(0.0, 1.0) as f32
     } else {
         0.0
     };
-    let seek_w = (content_w - 2.0 * TIME_LABEL_W - 2.0 * ROW_GAP).max(MIN_SLIDER_W);
     row()
-        .key("seek")
+        .key("seek-row")
         .gap(ROW_GAP)
         .center_y()
         .child(
@@ -155,7 +163,7 @@ fn seek_row(s: &State, p: &Palette, content_w: f32) -> El {
         .child(slider(
             "seek",
             value01,
-            seek_w,
+            cx,
             false,
             p,
             move |st: &mut State, v: f32| {
@@ -295,11 +303,12 @@ fn transport_row(s: &State, p: &Palette) -> El {
         .child(repeat_button(s, p))
 }
 
-/// `content_w` is the panel's content-box width; see `seek_row`.
-fn volume_row(s: &State, p: &Palette, content_w: f32) -> El {
-    let volume_w = (content_w - VOL_LABEL_W - VOL_PCT_W - 2.0 * ROW_GAP).max(MIN_SLIDER_W);
+/// The volume slider likewise fills whatever's left of the row; see
+/// `seek_row`'s doc comment for why the row's own key (`"volume-row"`)
+/// stays distinct from the slider's (`"volume"`).
+fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     row()
-        .key("volume")
+        .key("volume-row")
         .gap(ROW_GAP)
         .center_y()
         .child(
@@ -311,7 +320,7 @@ fn volume_row(s: &State, p: &Palette, content_w: f32) -> El {
         .child(slider(
             "volume",
             s.volume,
-            volume_w,
+            cx,
             true,
             p,
             |st: &mut State, v: f32| st.host.send(Command::SetVolume(v)),
@@ -329,12 +338,11 @@ fn volume_row(s: &State, p: &Palette, content_w: f32) -> El {
 /// current/duration times, a transport row (shuffle, prev, play/pause,
 /// next, repeat), and the volume bar. `scale` is the window's device-pixel
 /// scale (`Cx::env().scale`), threaded down to `ImageCache::load_mime`.
-/// `width` is the panel's outer width (the sidebar's fixed 288pt,
-/// `views::sidebar::WIDTH`) that the seek/volume sliders and transport row
-/// are sized to fit, per `PANEL_PADDING`/`ROW_GAP` above.
-pub fn player_panel(s: &State, p: &Palette, scale: f32, width: f32) -> El {
+/// `cx` is threaded down to the seek/volume sliders (`views::slider`) so
+/// they can read their own real laid-out width back (`Cx::layout_size`)
+/// instead of this panel computing it by hand from a fixed outer width.
+pub fn player_panel(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let now = s.now_playing_id.and_then(|id| s.track(id));
-    let content_w = (width - 2.0 * PANEL_PADDING).max(0.0);
     col()
         .key("player")
         .w_full()
@@ -342,9 +350,9 @@ pub fn player_panel(s: &State, p: &Palette, scale: f32, width: f32) -> El {
         .padding(PANEL_PADDING)
         .gap(14.0)
         .child(now_playing_row(s, now, p, scale))
-        .child(seek_row(s, p, content_w))
+        .child(seek_row(s, p, cx))
         .child(transport_row(s, p))
-        .child(volume_row(s, p, content_w))
+        .child(volume_row(s, p, cx))
 }
 
 #[cfg(test)]

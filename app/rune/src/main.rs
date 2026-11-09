@@ -92,7 +92,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .w_full()
         .h_full()
         .fill(p.bg)
-        .child(views::sidebar::sidebar(s, &p, scale))
+        .child(views::sidebar::sidebar(s, &p, cx, scale))
         .child(
             col()
                 .grow(1.0)

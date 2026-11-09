@@ -24,9 +24,16 @@ fn track_row(s: &State, p: &Palette, index: usize) -> El {
         .gap(12.0)
         .padding(8.0)
         .child(
-            text(format!("{}", index + 1))
-                .color(p.text_secondary)
-                .w(28.0),
+            if playing {
+                // ▶/⏸ are already proven-good glyphs in this font (the
+                // transport's play/pause button uses the same pair), so the
+                // now-playing row swaps its index for one of them instead of
+                // introducing an unverified glyph.
+                text(if s.playing { "▶" } else { "⏸" }).color(p.accent)
+            } else {
+                text(format!("{}", index + 1)).color(p.text_secondary)
+            }
+            .w(28.0),
         )
         .child(
             text(t.title.clone().unwrap_or_else(|| "Unknown".into()))

@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
-use rune::{El, col, el, text};
+use rune::{Cx, El, col, el, text};
 
 use crate::State;
 use crate::theme::Palette;
@@ -14,12 +14,10 @@ use crate::views::open_folder::open_folder_button;
 use crate::views::player::player_panel;
 use crate::views::queue::queue_section;
 
-/// Fixed sidebar width, the old app's default. Threaded into `player_panel`
-/// so its seek/volume sliders and transport row size to fit exactly this
-/// width instead of a number hand-copied to a second place.
+/// Fixed sidebar width, the old app's default.
 pub const WIDTH: f32 = 288.0;
 
-pub fn sidebar(s: &State, p: &Palette, scale: f32) -> El {
+pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     col()
         .key("sidebar")
         .w(WIDTH)
@@ -38,5 +36,5 @@ pub fn sidebar(s: &State, p: &Palette, scale: f32) -> El {
                 .child(open_folder_button("Open Folder", p)),
         )
         .child(queue_section(s, p))
-        .child(player_panel(s, p, scale, WIDTH))
+        .child(player_panel(s, p, cx, scale))
 }
