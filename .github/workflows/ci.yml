@@ -96,15 +96,56 @@ jobs:
       - name: Production build (vite)
         run: npm run build
 
+  rune:
+    name: rune head (fmt · clippy · test)
+    # Runs on Windows: the Rune head is developed/proven there (the MSVC
+    # LNK1140 program-database limit is handled by `[profile.dev] debug = 0`),
+    # and this avoids the Linux winit/wayland/x11/dbus/alsa build-dep matrix the
+    # wgpu+winit stack would otherwise need. The headless `Runtime` smoke test
+    # draws nothing (fixed virtual clock, no GPU window), so no display is needed.
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: app/rune
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Authenticate the private soul-audio-core git dependency
+        if: ${{ env.CORE_REPO_TOKEN != '' }}
+        run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      # app/rune/rust-toolchain.toml pins 1.99.1 (newer than the root's 1.93.1).
+      # `rustup show` from this dir resolves + installs it with its components.
+      - name: Set up Rust (app/rune pinned toolchain)
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: app/rune
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test (headless Runtime smoke)
+        run: cargo test
+
   ci-success:
     name: CI success
     runs-on: ubuntu-latest
-    needs: [rust, frontend]
+    needs: [rust, frontend, rune]
     if: always()
     steps:
       - name: Require all checks to pass
         run: |
-          if [ "${{ needs.rust.result }}" != "success" ] || [ "${{ needs.frontend.result }}" != "success" ]; then
+          if [ "${{ needs.rust.result }}" != "success" ] || [ "${{ needs.frontend.result }}" != "success" ] || [ "${{ needs.rune.result }}" != "success" ]; then
             echo "::error::a required CI job failed"
             exit 1
           fi
