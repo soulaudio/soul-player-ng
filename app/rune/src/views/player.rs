@@ -1,6 +1,8 @@
 //! Now-playing panel: cover art, title/artist, transport controls, and the
-//! hand-built seek + volume sliders (`views::slider`). Rendered under the
-//! track list for this milestone; the sidebar assembly is a later task.
+//! hand-built seek + volume sliders (`views::slider`). Pinned at the bottom
+//! of the fixed-width `views::sidebar`, so every row below is sized to fit
+//! that width exactly rather than the full-window numbers Tasks 5-6 built
+//! it at.
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
@@ -16,12 +18,24 @@ use crate::views::slider::slider;
 
 /// Cover art side, in points (the brief's "~64-96px" range).
 const COVER_SIZE: f32 = 72.0;
-/// Seek/volume slider widths. The panel isn't resizable in this milestone's
-/// fixed-size window, so these are plain constants rather than a layout
-/// query (`Cx::layout_size`, cheat-sheet §7, is the path once the sidebar is
-/// laid out and can report its own width back into the next frame).
-const SEEK_WIDTH: f32 = 560.0;
-const VOLUME_WIDTH: f32 = 140.0;
+/// The panel's own padding on every side (`player_panel`'s `.padding(..)`),
+/// subtracted from the caller's `width` to get the content width the
+/// seek/volume rows must fit into.
+const PANEL_PADDING: f32 = 20.0;
+/// Fixed label widths flanking the seek bar (current/duration, e.g.
+/// `"12:34"`) and the volume bar (`"Vol"` / `"100%"`); the sliders get
+/// whatever's left of the content width after these and the row gaps.
+const TIME_LABEL_W: f32 = 36.0;
+const VOL_LABEL_W: f32 = 24.0;
+const VOL_PCT_W: f32 = 38.0;
+/// Gap between a row's fixed labels and its slider, and between the
+/// transport row's buttons — tightened from Task 5-6's full-width numbers
+/// so shuffle/prev/play/next/repeat fit the sidebar's ~248pt content width.
+const ROW_GAP: f32 = 8.0;
+/// Floor under a computed slider width so a pathologically narrow `width`
+/// (smaller than this panel's own labels) still renders a draggable slider
+/// instead of a negative or zero-width one.
+const MIN_SLIDER_W: f32 = 40.0;
 
 /// Cover-art decode cache (cheat-sheet §6a). Rune's pre-release has no
 /// "load this track's art" helper, so this wraps `rune::ImageCache` +
@@ -105,32 +119,43 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
                 .key("now-playing-text")
                 .gap(4.0)
                 .center_y()
-                .child(text(title).font(type_::TITLE).color(p.fg))
-                .child(text(artist).font(type_::BODY).color(p.text_secondary)),
+                .grow(1.0)
+                .min_w(0.0)
+                .child(text(title).font(type_::TITLE).color(p.fg).truncate())
+                .child(
+                    text(artist)
+                        .font(type_::BODY)
+                        .color(p.text_secondary)
+                        .truncate(),
+                ),
         )
 }
 
-fn seek_row(s: &State, p: &Palette) -> El {
+/// `content_w` is the panel's content-box width (`width - 2*PANEL_PADDING`,
+/// see `player_panel`); the seek slider fills whatever's left after the two
+/// fixed time labels and their gaps.
+fn seek_row(s: &State, p: &Palette, content_w: f32) -> El {
     let duration = s.duration_secs;
     let value01 = if duration > 0.0 {
         (s.position_secs / duration).clamp(0.0, 1.0) as f32
     } else {
         0.0
     };
+    let seek_w = (content_w - 2.0 * TIME_LABEL_W - 2.0 * ROW_GAP).max(MIN_SLIDER_W);
     row()
         .key("seek")
-        .gap(10.0)
+        .gap(ROW_GAP)
         .center_y()
         .child(
             text(fmt_dur(s.position_secs))
                 .font(type_::MONO_CAPTION.mono())
                 .color(p.text_secondary)
-                .w(42.0),
+                .w(TIME_LABEL_W),
         )
         .child(slider(
             "seek",
             value01,
-            SEEK_WIDTH,
+            seek_w,
             false,
             p,
             move |st: &mut State, v: f32| {
@@ -143,7 +168,7 @@ fn seek_row(s: &State, p: &Palette) -> El {
             text(fmt_dur(s.duration_secs))
                 .font(type_::MONO_CAPTION.mono())
                 .color(p.text_secondary)
-                .w(42.0)
+                .w(TIME_LABEL_W)
                 .align(Align::End),
         )
 }
@@ -191,6 +216,11 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
         .child(text(glyph).font(type_::TITLE).color(p.bg))
 }
 
+/// Compact icon button (32x32, matching `transport_button`'s size): the old
+/// app's shuffle/repeat used text labels ("Shuffle", "Repeat: All") that fit
+/// a full-width player but overflow the sidebar's ~248pt content width
+/// across five transport buttons, so these render a glyph instead. The
+/// descriptive `label`/`role` stay for accessibility regardless.
 fn shuffle_button(s: &State, p: &Palette) -> El {
     el()
         .key("shuffle")
@@ -198,31 +228,31 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
         .label("Shuffle")
         .checked(s.shuffle)
         .focusable(true)
-        .size(64.0, 32.0)
+        .size(32.0, 32.0)
         .center()
         .radius(16.0)
         .hover(p.muted)
         .press(p.border)
         .on_press(|st: &mut State| st.host.send(Command::SetShuffle(!st.shuffle)))
         .child(
-            text("Shuffle")
-                .font(type_::LABEL)
+            text("⤭")
+                .font(type_::TITLE)
                 .color(if s.shuffle { p.accent } else { p.text_secondary }),
         )
 }
 
 fn repeat_button(s: &State, p: &Palette) -> El {
-    let (label, on) = match s.repeat {
-        RepeatMode::Off => ("Repeat", false),
-        RepeatMode::All => ("Repeat: All", true),
-        RepeatMode::One => ("Repeat: One", true),
+    let (glyph, label, on) = match s.repeat {
+        RepeatMode::Off => ("⟳", "Repeat", false),
+        RepeatMode::All => ("⟳", "Repeat: All", true),
+        RepeatMode::One => ("⟳¹", "Repeat: One", true),
     };
     el()
         .key("repeat")
         .role("button")
-        .label("Repeat")
+        .label(label)
         .focusable(true)
-        .size(88.0, 32.0)
+        .size(32.0, 32.0)
         .center()
         .radius(16.0)
         .hover(p.muted)
@@ -236,16 +266,19 @@ fn repeat_button(s: &State, p: &Palette) -> El {
             st.host.send(Command::SetRepeat(next));
         })
         .child(
-            text(label)
-                .font(type_::LABEL)
+            text(glyph)
+                .font(type_::TITLE)
                 .color(if on { p.accent } else { p.text_secondary }),
         )
 }
 
+/// Shuffle/prev/play/next/repeat in one row. At 32+32+48+32+32 = 176pt of
+/// buttons plus 4 gaps, this must stay under the sidebar's ~248pt content
+/// width (`ROW_GAP` keeps the 4 gaps to 32pt, for 208pt total).
 fn transport_row(s: &State, p: &Palette) -> El {
     row()
         .key("transport")
-        .gap(18.0)
+        .gap(ROW_GAP)
         .center()
         .child(shuffle_button(s, p))
         .child(transport_button("prev", "Previous", "◀◀", p, |st: &mut State| {
@@ -258,16 +291,23 @@ fn transport_row(s: &State, p: &Palette) -> El {
         .child(repeat_button(s, p))
 }
 
-fn volume_row(s: &State, p: &Palette) -> El {
+/// `content_w` is the panel's content-box width; see `seek_row`.
+fn volume_row(s: &State, p: &Palette, content_w: f32) -> El {
+    let volume_w = (content_w - VOL_LABEL_W - VOL_PCT_W - 2.0 * ROW_GAP).max(MIN_SLIDER_W);
     row()
         .key("volume")
-        .gap(10.0)
+        .gap(ROW_GAP)
         .center_y()
-        .child(text("Vol").font(type_::LABEL).color(p.text_secondary).w(28.0))
+        .child(
+            text("Vol")
+                .font(type_::LABEL)
+                .color(p.text_secondary)
+                .w(VOL_LABEL_W),
+        )
         .child(slider(
             "volume",
             s.volume,
-            VOLUME_WIDTH,
+            volume_w,
             true,
             p,
             |st: &mut State, v: f32| st.host.send(Command::SetVolume(v)),
@@ -276,7 +316,7 @@ fn volume_row(s: &State, p: &Palette) -> El {
             text(format!("{:.0}%", s.volume * 100.0))
                 .font(type_::MONO_CAPTION.mono())
                 .color(p.text_secondary)
-                .w(40.0)
+                .w(VOL_PCT_W)
                 .align(Align::End),
         )
 }
@@ -285,20 +325,22 @@ fn volume_row(s: &State, p: &Palette) -> El {
 /// current/duration times, a transport row (shuffle, prev, play/pause,
 /// next, repeat), and the volume bar. `scale` is the window's device-pixel
 /// scale (`Cx::env().scale`), threaded down to `ImageCache::load_mime`.
-pub fn player_panel(s: &State, p: &Palette, scale: f32) -> El {
-    let now = s
-        .now_playing_id
-        .and_then(|id| s.library.iter().find(|t| t.id == id));
+/// `width` is the panel's outer width (the sidebar's fixed 288pt,
+/// `views::sidebar::WIDTH`) that the seek/volume sliders and transport row
+/// are sized to fit, per `PANEL_PADDING`/`ROW_GAP` above.
+pub fn player_panel(s: &State, p: &Palette, scale: f32, width: f32) -> El {
+    let now = s.now_playing_id.and_then(|id| s.track(id));
+    let content_w = (width - 2.0 * PANEL_PADDING).max(0.0);
     col()
         .key("player")
         .w_full()
         .fill(p.card)
-        .padding(20.0)
+        .padding(PANEL_PADDING)
         .gap(14.0)
         .child(now_playing_row(s, now, p, scale))
-        .child(seek_row(s, p))
+        .child(seek_row(s, p, content_w))
         .child(transport_row(s, p))
-        .child(volume_row(s, p))
+        .child(volume_row(s, p, content_w))
 }
 
 #[cfg(test)]

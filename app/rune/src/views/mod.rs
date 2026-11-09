@@ -3,4 +3,6 @@
 
 pub mod library;
 pub mod player;
+pub mod queue;
+pub mod sidebar;
 pub mod slider;

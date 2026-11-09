@@ -2,12 +2,12 @@
 //! into a Rune `App`: builds the host, autoloads a library from
 //! `SOUL_PLAYER_FOLDER`, and folds backend `Tick`/`Queue` events into `State`
 //! via `AppHandle::update` (see docs/superpowers/plans/2026-11-09-rune-head.md).
-//! The view renders the Day/Night-themed track list (`theme`, `views::library`)
-//! and the now-playing panel (`views::player`) stacked under it for this
-//! milestone; the sidebar assembly is a later task.
+//! The view is the old app's two-region shell: a fixed-width `views::sidebar`
+//! (nav label, `views::queue`, `views::player` panel) on the left, and the
+//! Day/Night-themed track list (`views::library`) filling the rest.
 #![forbid(unsafe_code)]
 
-use rune::{App, AppSpec, Cx, El, Tx, Waker, col};
+use rune::{App, AppSpec, Cx, El, Tx, Waker, col, row};
 use soul_player_host::{Event, PlayState, PlayerHandle, RepeatMode, TrackView};
 
 mod theme;
@@ -54,6 +54,13 @@ impl State {
         }
     }
 
+    /// Resolve a library track by id. Shared by the now-playing panel
+    /// (`now_playing_id`) and the sidebar queue (`up_next`) so both compose
+    /// the same lookup rather than each re-scanning `library` inline.
+    fn track(&self, id: u32) -> Option<&TrackView> {
+        self.library.iter().find(|t| t.id == id)
+    }
+
     /// Fold one backend event into the UI state. Mirrors the Svelte store's
     /// `bindPlayerEvents` (app/tauri/src/lib/store.svelte.ts).
     fn apply(&mut self, ev: &Event) {
@@ -79,14 +86,19 @@ impl State {
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let p = theme::palette(cx.system_dark());
     let scale = cx.env().scale;
-    // Temporary milestone layout (Task 5/6): the player panel previews at
-    // the bottom under the list. The sidebar assembly is the next task.
-    col()
+    // The old app's shell: a fixed-width left sidebar (nav label, queue,
+    // player panel) plus the main area's track list filling the rest.
+    row()
         .w_full()
         .h_full()
         .fill(p.bg)
-        .child(views::library::track_list(s, &p))
-        .child(views::player::player_panel(s, &p, scale))
+        .child(views::sidebar::sidebar(s, &p, scale))
+        .child(
+            col()
+                .grow(1.0)
+                .min_h(0.0)
+                .child(views::library::track_list(s, &p).grow(1.0)),
+        )
 }
 
 /// `AppSpec::setup`: wires the app's `Waker` into the cover-art cache
