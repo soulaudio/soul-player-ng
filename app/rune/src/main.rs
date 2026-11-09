@@ -2,16 +2,18 @@
 //! into a Rune `App`: builds the host, autoloads a library from
 //! `SOUL_PLAYER_FOLDER`, and folds backend `Tick`/`Queue` events into `State`
 //! via `AppHandle::update` (see docs/superpowers/plans/2026-11-09-rune-head.md).
-//! The view here is a placeholder proving the wiring; the real UI comes later.
+//! The view renders the Day/Night-themed track list (`theme`, `views::library`);
+//! the now-playing panel and transport controls come later.
 #![forbid(unsafe_code)]
 
-use rune::{App, AppSpec, Cx, El, Tx, col, text, tok};
+use rune::{App, AppSpec, Cx, El, Tx, col};
 use soul_player_host::{Event, PlayState, PlayerHandle, RepeatMode, TrackView};
 
+mod theme;
+mod views;
+
 struct State {
-    /// Read by the view's command handlers (click-to-play, transport); those
-    /// land in a later task, so it's briefly write-only here.
-    #[allow(dead_code)]
+    /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
     library: Vec<TrackView>,
     now_playing_id: Option<u32>,
@@ -65,28 +67,15 @@ impl State {
             }
         }
     }
-
-    fn track(&self, id: u32) -> Option<&TrackView> {
-        self.library.iter().find(|t| t.id == id)
-    }
 }
 
-fn view(s: &State, _cx: &mut Cx<State>) -> El {
-    let theme = tok::theme(true);
-    let now = s
-        .now_playing_id
-        .and_then(|id| s.track(id))
-        .and_then(|track| track.title.clone())
-        .unwrap_or_else(|| "—".to_string());
+fn view(s: &State, cx: &mut Cx<State>) -> El {
+    let p = theme::palette(cx.system_dark());
     col()
         .w_full()
         .h_full()
-        .padding(24.0)
-        .gap(8.0)
-        .fill(theme.bg)
-        .child(text(format!("{} tracks", s.library.len())).color(theme.text))
-        .child(text(format!("now playing: {now}")).color(theme.text))
-        .child(text(if s.playing { "▶ playing" } else { "⏸ paused" }).color(theme.text))
+        .fill(p.bg)
+        .child(views::library::track_list(s, &p))
 }
 
 fn main() -> anyhow::Result<()> {
