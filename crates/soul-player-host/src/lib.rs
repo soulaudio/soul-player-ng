@@ -207,4 +207,36 @@ mod tests {
         assert_eq!(views.len(), 2, "both wavs scanned");
         assert_eq!(h.views().len(), 2, "views() reflects the opened library");
     }
+
+    #[test]
+    fn subscribe_receives_now_playing_tick() {
+        use soul_player_backend::PlayState;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.wav"), wav(48_000, 96_000)).unwrap();
+        std::fs::write(dir.path().join("b.wav"), wav(48_000, 96_000)).unwrap();
+
+        let h = PlayerHandle::offline();
+        let (tx, rx) = mpsc::channel::<Event>();
+        h.subscribe(move |ev| {
+            let _ = tx.send(ev);
+        });
+        h.open_folder(dir.path()).expect("open_folder");
+
+        // Wait (bounded) for a Tick showing track 0 playing.
+        let deadline = Duration::from_secs(5);
+        let mut saw_playing = false;
+        while let Ok(ev) = rx.recv_timeout(deadline) {
+            if let Event::Tick(t) = ev
+                && t.now_playing_id == Some(0)
+                && t.state == PlayState::Playing
+            {
+                saw_playing = true;
+                break;
+            }
+        }
+        assert!(saw_playing, "never observed track 0 playing via subscribe");
+    }
 }
