@@ -13,16 +13,10 @@ use rune::Color;
 pub struct Palette {
     pub bg: Color,
     pub fg: Color,
-    /// Read by the player-panel/sidebar views (later tasks); the track list
-    /// doesn't draw cards, so these are briefly write-only here.
-    #[allow(dead_code)]
     pub card: Color,
-    #[allow(dead_code)]
     pub primary: Color,
     pub accent: Color,
-    #[allow(dead_code)]
     pub muted: Color,
-    #[allow(dead_code)]
     pub border: Color,
     pub text_secondary: Color,
 }

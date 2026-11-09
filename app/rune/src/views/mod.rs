@@ -2,3 +2,5 @@
 #![forbid(unsafe_code)]
 
 pub mod library;
+pub mod player;
+pub mod slider;
