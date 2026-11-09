@@ -7,8 +7,8 @@
 //! Day/Night-themed track list (`views::library`) filling the rest.
 #![forbid(unsafe_code)]
 
-use rune::{App, AppSpec, Cx, El, Tx, Waker, col, row};
-use soul_player_host::{Event, PlayState, PlayerHandle, RepeatMode, TrackView};
+use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
+use soul_player_host::{Command, Event, PlayState, PlayerHandle, RepeatMode, TrackView};
 
 mod theme;
 mod views;
@@ -108,6 +108,43 @@ fn setup_art(s: &mut State, waker: Waker) {
     s.art.wire(waker);
 }
 
+/// `AppSpec::on_key`: transport and volume shortcuts, so the head is
+/// drivable from the keyboard alone (Space, arrows, `s`/`r`). Only
+/// key-*down* events ever reach `on_key` in the first place — Rune's
+/// `Runtime::key`/physical-input dispatch never forwards a release as a
+/// logical `KeyEvent` (`crates/rune/src/runtime/input/keys.rs`'s
+/// `queue_key`/`physical_then`: a release with no text/IME fallback is
+/// handled as a `PhysicalInput` observation, not queued as a `KeyEvent`) —
+/// and `Tx::key_repeat()` flags the OS's auto-repeat of a held key, so a
+/// held arrow doesn't re-fire every frame. Letters with no modifier arrive
+/// as `Key::Text` (`Key::Command(c)` is reserved for Cmd/Ctrl chords), so
+/// `s`/`r` are matched there.
+fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    if tx.key_repeat() {
+        return false;
+    }
+    match &ev.key {
+        Key::Text(t) if t == " " => s.host.send(Command::TogglePlay),
+        Key::Right => s.host.send(Command::Next),
+        Key::Left => s.host.send(Command::Prev),
+        Key::Up => s.host.send(Command::SetVolume((s.volume + 0.05).min(1.0))),
+        Key::Down => s.host.send(Command::SetVolume((s.volume - 0.05).max(0.0))),
+        Key::Text(t) if t.eq_ignore_ascii_case("s") => {
+            s.host.send(Command::SetShuffle(!s.shuffle));
+        }
+        Key::Text(t) if t.eq_ignore_ascii_case("r") => {
+            let next = match s.repeat {
+                RepeatMode::Off => RepeatMode::All,
+                RepeatMode::All => RepeatMode::One,
+                RepeatMode::One => RepeatMode::Off,
+            };
+            s.host.send(Command::SetRepeat(next));
+        }
+        _ => return false,
+    }
+    true
+}
+
 fn main() -> anyhow::Result<()> {
     let host = PlayerHandle::new();
     host.autoload_from_env()?; // SOUL_PLAYER_FOLDER=<dir> to load a library
@@ -115,6 +152,7 @@ fn main() -> anyhow::Result<()> {
     let init_host = host.clone();
     let spec = AppSpec::<State> {
         setup: Some(setup_art),
+        on_key: Some(handle_key),
         ..AppSpec::new(
             "Soul Player (Rune)",
             (1100.0, 720.0),
@@ -132,4 +170,95 @@ fn main() -> anyhow::Result<()> {
     });
     app.run();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    use rune::{Env, Mods, Runtime};
+
+    use super::*;
+
+    fn testdata_dir() -> PathBuf {
+        // app/rune -> repo-root/testdata
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata")
+    }
+
+    /// Cold launch, no library: the empty-state's Open Folder button
+    /// (`views::library::track_list`) is the only entry point, so it must be
+    /// findable headlessly — `Runtime::new` + `rt.frame` + `rt.find`, the
+    /// Rust-level harness `examples/hello`'s own test module uses
+    /// (cheat-sheet §8). This is the `app/rune` head's whole
+    /// headless-testable claim, proven with no window and no device.
+    #[test]
+    fn empty_library_shows_the_open_folder_button() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(
+            State::new(PlayerHandle::offline()),
+            view,
+            (1100.0, 720.0),
+            env,
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("open-folder").is_some(),
+            "an empty library should offer an Open Folder button"
+        );
+    }
+
+    /// End to end: `AppSpec::on_key`'s Space shortcut (set on the `Runtime`
+    /// directly here — `crates/rune/src/tooling.rs` copies
+    /// `AppSpec::on_key` into exactly this field) reaches the real backend
+    /// via `Command::TogglePlay`, and the resulting `Tick` flips
+    /// `State::playing` — not merely that `handle_key` returns `true`.
+    /// Since the actor's events arrive off a real pump thread
+    /// (`soul_player_host::PlayerHandle::subscribe`), this uses the same
+    /// bounded `subscribe` + `recv_timeout` pattern as that crate's own
+    /// `subscribe_receives_now_playing_tick` test.
+    #[test]
+    fn space_key_toggles_playback_through_the_real_backend() {
+        let host = PlayerHandle::offline();
+        let (tx, rx) = mpsc::channel::<Event>();
+        host.subscribe(move |ev| {
+            let _ = tx.send(ev);
+        });
+        host.open_folder(&testdata_dir()).expect("scan testdata/");
+
+        let mut state = State::new(host);
+        let deadline = Duration::from_secs(5);
+        while let Ok(ev) = rx.recv_timeout(deadline) {
+            state.apply(&ev);
+            if state.playing {
+                break;
+            }
+        }
+        assert!(state.playing, "open_folder should autoplay track 0");
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(state, view, (1100.0, 720.0), env);
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Text(" ".into()),
+            mods: Mods::default(),
+        });
+        rt.frame(1.0 / 60.0);
+
+        while let Ok(ev) = rx.recv_timeout(deadline) {
+            rt.state.apply(&ev);
+            if !rt.state.playing {
+                break;
+            }
+        }
+        assert!(!rt.state.playing, "Space should have paused playback");
+    }
 }
