@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
 pub use sink::SinkMode;
-pub use soul_player_backend::{Command, Cover, Event, QueueState, RepeatMode, Tick, TrackView};
+pub use soul_player_backend::{
+    Command, Cover, Event, PlayState, QueueState, RepeatMode, Tick, TrackView,
+};
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
 
@@ -145,8 +147,13 @@ impl PlayerHandle {
         if guard.is_some() {
             return;
         }
-        let inner = Arc::clone(&self.inner);
+        // Weak, not Arc: the pump thread owns this closure, and Inner owns the
+        // AudioPlayer whose cmd_tx drop is the only shutdown signal. A strong ref
+        // here would be a cycle that pins the actor alive forever after the last
+        // PlayerHandle drops. Upgrade per-event; skip if the handle is gone.
+        let weak = Arc::downgrade(&self.inner);
         let forward = move |ev: Event| {
+            let Some(inner) = weak.upgrade() else { return };
             for sub in inner.subscribers.lock().expect("subscribers mutex").iter() {
                 sub(ev.clone());
             }
