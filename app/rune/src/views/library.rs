@@ -2,12 +2,11 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
-use rune::{El, ScrollSpec, col, row, text};
+use rune::{El, ScrollSpec, col, el, row, text};
 use soul_player_host::Command;
 
 use crate::State;
 use crate::theme::Palette;
-use crate::views::open_folder::open_folder_button;
 
 fn fmt_dur(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -83,8 +82,16 @@ pub fn track_list(s: &State, p: &Palette) -> El {
             .center()
             .gap(12.0)
             .child(text("No music loaded").font(type_::TITLE).color(p.fg))
-            .child(text("Open a folder to start playing").color(p.text_secondary))
-            .child(open_folder_button("Open Folder", p));
+            .child(text("Add a source to start playing").color(p.text_secondary))
+            .child(
+                el().key("go-to-sources")
+                    .padding(12.0)
+                    .radius(8.0)
+                    .fill(p.primary)
+                    .center()
+                    .child(text("Add a source").color(p.bg))
+                    .on_press(|s: &mut State| s.route = crate::Route::Settings),
+            );
     }
     let mut list = col().key("tracks").gap(2.0);
     for i in 0..s.library.len() {

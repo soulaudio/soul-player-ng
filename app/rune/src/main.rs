@@ -1,10 +1,10 @@
-//! Rune UI head for Soul Player (spike). Wires `soul_player_host::PlayerHandle`
-//! into a Rune `App`: builds the host, autoloads a library from
-//! `SOUL_PLAYER_FOLDER`, and folds backend `Tick`/`Queue` events into `State`
-//! via `AppHandle::update` (see docs/superpowers/plans/2026-11-09-rune-head.md).
-//! The view is the old app's two-region shell: a fixed-width `views::sidebar`
-//! (nav label, `views::queue`, `views::player` panel) on the left, and the
-//! Day/Night-themed track list (`views::library`) filling the rest.
+//! Rune UI head for Soul Player — the one desktop UI. Wires
+//! `soul_player_host::PlayerHandle` into a Rune `App`: builds the host, autoloads
+//! a library from `SOUL_PLAYER_FOLDER`, and folds backend `Tick`/`Queue` events
+//! into `State` via `AppHandle::update`. The view is a two-region shell: a
+//! fixed-width `views::sidebar` (Library/Settings nav, `views::queue`,
+//! `views::player` panel) on the left, and the routed main area — the
+//! `views::library` track list or `views::settings` — filling the rest.
 #![forbid(unsafe_code)]
 
 use std::path::PathBuf;
@@ -82,8 +82,7 @@ impl State {
         self.library.iter().find(|t| t.id == id)
     }
 
-    /// Fold one backend event into the UI state. Mirrors the Svelte store's
-    /// `bindPlayerEvents` (app/tauri/src/lib/store.svelte.ts).
+    /// Fold one backend event into the UI state (the UI's event sink).
     fn apply(&mut self, ev: &Event) {
         match ev {
             Event::Tick(t) => {
@@ -222,7 +221,7 @@ mod tests {
     /// (cheat-sheet §8). This is the `app/rune` head's whole
     /// headless-testable claim, proven with no window and no device.
     #[test]
-    fn empty_library_shows_the_open_folder_button() {
+    fn empty_library_points_to_sources() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -235,8 +234,12 @@ mod tests {
         );
         rt.frame(0.0);
         assert!(
-            rt.find("open-folder").is_some(),
-            "an empty library should offer an Open Folder button"
+            rt.find("go-to-sources").is_some(),
+            "an empty library routes the user to Sources"
+        );
+        assert!(
+            rt.find("open-folder").is_none(),
+            "the single-folder Open Folder button is gone"
         );
     }
 
