@@ -85,6 +85,14 @@ struct State {
     /// check (`update::available`); `Some` makes Settings surface "Install &
     /// Restart". `None` = up to date (or the check hasn't run / failed).
     update_available: Option<String>,
+    /// Library filter query (case-insensitive substring over title/artist/album);
+    /// empty = no filter. Rune has no text widget yet, so it's typed into via the
+    /// key handler (`/` to start), not a focused input field.
+    search: String,
+    /// Whether typed characters currently build `search` (vs. driving the
+    /// transport shortcuts). `/` or clicking the search bar turns it on; Esc/Enter
+    /// turn it off.
+    searching: bool,
 }
 
 impl State {
@@ -121,6 +129,8 @@ impl State {
             unavailable,
             art: ArtCache::new(),
             update_available: None,
+            search: String::new(),
+            searching: false,
         }
     }
 
@@ -230,7 +240,26 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if tx.key_repeat() {
         return false;
     }
+    // Search-input mode: typed characters build the library filter instead of
+    // driving the transport. `/` enters it; Esc clears + exits, Enter just exits
+    // (keeping the filter), Backspace edits.
+    if s.searching {
+        match &ev.key {
+            Key::Escape => {
+                s.search.clear();
+                s.searching = false;
+            }
+            Key::Enter => s.searching = false,
+            Key::Backspace => {
+                s.search.pop();
+            }
+            Key::Text(t) => s.search.push_str(t),
+            _ => return false,
+        }
+        return true;
+    }
     match &ev.key {
+        Key::Text(t) if t == "/" && matches!(s.route, Route::Library) => s.searching = true,
         Key::Text(t) if t == " " => s.host.send(Command::TogglePlay),
         Key::Right => s.host.send(Command::Next),
         Key::Left => s.host.send(Command::Prev),
@@ -551,6 +580,95 @@ mod tests {
         for key in ["sort-artist", "sort-album", "sort-title", "sort-folder"] {
             assert!(rt.find(key).is_some(), "sort option {key} present");
         }
+    }
+
+    /// A populated library shows the search bar, and a matching query keeps the
+    /// matching track visible.
+    #[test]
+    fn search_keeps_matching_tracks_and_shows_the_bar() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        assert!(!s.library.is_empty());
+        let first = s.library[0].clone();
+        let needle = first
+            .title
+            .clone()
+            .or_else(|| first.artist.clone())
+            .expect("first track has a title or artist to search for");
+        s.search = needle;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("search-bar").is_some(), "the search bar renders");
+        assert!(
+            rt.find(&format!("track-{}", first.id)).is_some(),
+            "the matching track stays visible"
+        );
+    }
+
+    /// A query matching nothing filters every row out and shows the empty hint.
+    #[test]
+    fn search_with_no_matches_hides_rows() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        let first_id = s.library[0].id;
+        s.search = "zzz-no-such-track-zzz".to_string();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("no-matches").is_some(),
+            "a non-matching query shows the empty message"
+        );
+        assert!(
+            rt.find(&format!("track-{first_id}")).is_none(),
+            "non-matching rows are filtered out"
+        );
+    }
+
+    /// `/` on the Library route enters search mode; typing builds the query,
+    /// Backspace edits it, Esc clears + exits.
+    #[test]
+    fn slash_enters_search_and_typing_builds_the_query() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(
+            State::new(PlayerHandle::offline()),
+            view,
+            (1100.0, 720.0),
+            env,
+        );
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        let press = |rt: &mut Runtime<State>, key: Key| {
+            rt.key(KeyEvent {
+                key,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0); // keys dispatch on the next frame (Rune's own on_key tests)
+        };
+        press(&mut rt, Key::Text("/".into()));
+        assert!(rt.state.searching, "/ enters search mode");
+        press(&mut rt, Key::Text("a".into()));
+        press(&mut rt, Key::Text("b".into()));
+        assert_eq!(rt.state.search, "ab", "typed characters build the query");
+        press(&mut rt, Key::Backspace);
+        assert_eq!(rt.state.search, "a", "Backspace edits the query");
+        press(&mut rt, Key::Escape);
+        assert!(
+            !rt.state.searching && rt.state.search.is_empty(),
+            "Esc clears the query and exits search mode"
+        );
     }
 
     /// End to end: `AppSpec::on_key`'s Space shortcut (set on the `Runtime`
