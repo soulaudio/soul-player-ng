@@ -15,6 +15,7 @@
 - GitHub Actions is disabled for quota — **verify locally**, push `--no-verify` when already verified, merge via `gh pr merge --admin`.
 - Disk is tight (~12 GB free). The Rune/wgpu first build is heavy; if a build fails on `no space on device`, `rm -rf` spare `target/` dirs (core/backend/host) before retrying — a full disk also masquerades as a headless-test timeout.
 - Rune is pre-release (pinned `dev` rev, not on crates.io, no upstream PRs, IME not production-ready). The Sources UI must use the **native folder dialog** (`tx.open_folder`), never a text field.
+- **Toolchain (found in Task 1):** `app/rune` requires **`nightly-2026-11-10`** (rustc `ac8310ba6`, which stabilized `if let` guards). Its `rust-toolchain.toml` pins it. **Gotcha:** rustup resolves `rust-toolchain.toml` from the **CWD**, NOT `--manifest-path` — so running `cargo --manifest-path app/rune/… ` from the repo root uses the ROOT's stable toolchain and fails on `rune`'s nightly features. Always build `app/rune` either with an explicit `cargo +nightly-2026-11-10 … --manifest-path app/rune/Cargo.toml`, or from within `app/rune` (CI: `working-directory: app/rune`, let the toml auto-install the nightly). Also: `PlayerHandle` now `#[derive(Clone)]` (host) — the head holds several Arc-handle clones.
 - Do NOT plan Phase 3 (signed shipping) here — it is deferred per the spec.
 
 ## File Structure

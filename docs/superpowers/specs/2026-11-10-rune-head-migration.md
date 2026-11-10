@@ -115,6 +115,7 @@ The decided plan, implemented once signing accounts exist. Until then, `cargo-pa
 
 **Risks**
 - **Rune is pre-release:** pinned `dev` rev, no releases/crates.io, no upstream PRs, incomplete IME/a11y. Mitigation: the clean `PlayerHandle` boundary makes the UI low-regret — a renderer swap (GPUI/Slint/Xilem) wouldn't touch core/host. Revisit if Rune stalls.
+- **Nightly toolchain required (found by the Task-1 de-risk):** the pinned `rune` rev uses unstable compiler features (`if let` guards, `atomic_try_update`) that are NOT in stable 1.99.1, so `app/rune` must build on a **dated nightly** (currently `nightly-2026-11-10` / rustc 1.102). The spike's committed `rust-toolchain.toml = 1.99.1` was a wrong guess; it's now repinned. This is **isolated to `app/rune`** (core/host/backend stay on stable) but it's a real, periodic maintenance cost (nightly can regress; bump deliberately) and CI must install the dated nightly. It also compounds the pre-release bet — we now depend on both an unversioned `rune` rev *and* a moving nightly. (A one-line `#[derive(Clone)]` was also added to `PlayerHandle` — the head holds several Arc-handle clones — a correct, minor host change.)
 - **GPU floor:** Rune needs working DX12/Vulkan (vs Tauri's WebView2). Fine for desktop; note it for support.
 - **Single maintainer dependency risk** (Rune *and* cargo-packager are each effectively one-org projects) — both MIT/forkable; GitHub Releases backend avoids lock-in to any hosted service.
 

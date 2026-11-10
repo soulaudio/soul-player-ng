@@ -14,5 +14,8 @@
 # own target/, not the root /target above.
 /crates/soul-player-host/target/
 
+# app/rune is its own nested cargo workspace (Rune/wgpu), target/ stays out.
+/app/rune/target/
+
 # Tauri updater signing keys — private key must never be committed
 /.tauri/
