@@ -1,6 +1,6 @@
-# Git hooks for the Soul Audio desktop player (Tauri 2 + Svelte over
-# soul-player-backend). Requires the lefthook binary; enable per clone with
-# `lefthook install`.
+# Git hooks for the Soul Audio desktop player (native Rune UI over
+# soul-player-backend / soul-player-host). Requires the lefthook binary; enable
+# per clone with `lefthook install`.
 
 # Commit-message policy: Conventional Commits + a clean history (no AI /
 # attribution trailers). `{1}` is the commit-message file git passes in.
@@ -9,31 +9,23 @@ commit-msg:
     policy:
       run: sh scripts/commit-msg.sh {1}
 
-# Fast pre-commit. Format-check the Rust in BOTH workspaces (the service crate
-# in this repo's root workspace and the isolated Tauri app under app/tauri/src-tauri)
-# and clippy the service crate. The app crate's clippy compiles the whole audio
-# stack (the private git dependency), so it's deferred to pre-push / CI.
+# Fast pre-commit: format-check + clippy the root service workspace. The Rune
+# head (app/rune) is its own nested workspace on a nightly toolchain and
+# compiles the whole GPU stack, so its fmt/clippy/tests run in CI, not here.
 pre-commit:
   parallel: true
   commands:
     fmt-service:
       glob: "*.{rs,toml}"
       run: cargo fmt --all -- --check
-    fmt-app:
-      glob: "*.{rs,toml}"
-      run: cargo fmt --manifest-path app/tauri/src-tauri/Cargo.toml --all -- --check
     clippy-service:
       glob: "*.{rs,toml}"
       run: cargo clippy --all-targets -- -D warnings
 
-# Thorough gate before pushing: service tests + the Svelte type-check. The
-# browser unit tests (vitest), the full app/Tauri build, and e2e run in CI —
-# they need a headed webview / Playwright browser and the private core crate, so
-# they don't belong in a fast, browserless local push gate.
+# Thorough gate before pushing: service tests. The Rune head build + headless
+# tests run in CI (they need the nightly toolchain + a GPU / software Vulkan).
 pre-push:
   parallel: true
   commands:
     test-service:
       run: cargo test
-    svelte-check:
-      run: npm --prefix app/tauri run check

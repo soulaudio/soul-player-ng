@@ -33,7 +33,7 @@ jobs:
       - name: Scan both lockfiles
         run: |
           cargo audit --file Cargo.lock
-          cargo audit --file app/tauri/src-tauri/Cargo.lock
+          cargo audit --file app/rune/Cargo.lock
 
   deny:
     name: cargo-deny (licenses, bans, sources)
@@ -54,32 +54,13 @@ jobs:
           # (`check --config …`) matches what CI installs.
           tool: cargo-deny@0.19.0
       # The root (headless `soul-player-backend`) workspace bans GUI/platform
-      # crates via deny.toml; the Tauri app workspace legitimately uses them, so
-      # it gets its own deny.app.toml (no such ban). See docs/ARCHITECTURE.md.
-      - name: Check root workspace (headless — no Tauri)
+      # crates via deny.toml; the Rune UI head legitimately uses them (wgpu/winit)
+      # and consumes `rune` as a git dep, so it gets its own deny.app.toml (no GUI
+      # ban + the rune git source allowed). See docs/ARCHITECTURE.md.
+      - name: Check root workspace (headless — no GUI)
         run: cargo deny --manifest-path Cargo.toml check bans licenses sources
-      - name: Check app workspace
-        run: cargo deny --manifest-path app/tauri/src-tauri/Cargo.toml check --config deny.app.toml bans licenses sources
-
-  npm-audit:
-    name: npm audit (frontend, shipped deps)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: app/tauri
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: app/tauri/package-lock.json
-      - run: npm ci
-      # Only the runtime (shipped) dependency tree is a release concern. Dev-only
-      # build/test tooling (vite, vitest, playwright, …) is covered by Dependabot
-      # bumps, not a release-blocking gate.
-      - name: Audit shipped deps (high and critical)
-        run: npm audit --omit=dev --audit-level=high
+      - name: Check Rune app workspace
+        run: cargo deny --manifest-path app/rune/Cargo.toml check --config deny.app.toml bans licenses sources
 
   secrets:
     name: gitleaks (secret scan)
@@ -100,12 +81,12 @@ jobs:
   osv-scanner:
     name: OSV-Scanner (informational)
     runs-on: ubuntu-latest
-    # A Tauri app drags in a large transitive GTK/WebKit tree whose unmaintained
-    # / unsoundness notices can't be fixed here; OSV surfaces the broader OSV.dev
-    # DB (incl. those + dev-only npm advisories) into the run summary without
-    # failing CI. The blocking Rust gate is `cargo audit` above. (Lesson from the
-    # soul-player monorepo: don't hard-fail scheduled scans on un-actionable
-    # transitive noise — report it.)
+    # The Rune head drags in a large transitive wgpu/winit/GPU tree whose
+    # unmaintained / unsoundness notices can't be fixed here; OSV surfaces the
+    # broader OSV.dev DB into the run summary without failing CI. The blocking
+    # Rust gate is `cargo audit` above. (Lesson from the soul-player monorepo:
+    # don't hard-fail scheduled scans on un-actionable transitive noise — report
+    # it.)
     continue-on-error: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -119,9 +100,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           osv-scanner scan source \
             -L Cargo.lock \
-            -L app/tauri/src-tauri/Cargo.lock \
-            -L app/tauri/package-lock.json \
-            -L app/tauri/e2e/package-lock.json 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+            -L app/rune/Cargo.lock 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   sbom:

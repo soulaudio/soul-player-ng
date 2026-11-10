@@ -53,8 +53,8 @@ fn headless_service_has_no_gui_dependencies() {
     assert!(
         offenders.is_empty(),
         "ARCHITECTURE VIOLATION: the headless `soul-player-backend` workspace pulled in \
-         GUI/windowing crate(s) {offenders:?}. Tauri is just visualization — all logic \
-         must stay outside it (in this service or soul-audio-core). Move the offending \
-         code into the Tauri app (`app/tauri/src-tauri`) instead. See docs/ARCHITECTURE.md."
+         GUI/windowing crate(s) {offenders:?}. The UI head is just visualization — all \
+         logic must stay outside it (in this service or soul-audio-core). Move the \
+         offending code into the Rune app (`app/rune`) instead. See docs/ARCHITECTURE.md."
     );
 }

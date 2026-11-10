@@ -1,0 +1,8 @@
+# Rune (the pinned `rune` dep rev) uses compiler features not yet in stable
+# (`if let` guards, `atomic_try_update`), so the Rune head requires NIGHTLY —
+# a dated pin for reproducibility. This is isolated to app/rune; core/host/
+# backend stay on stable. Bump deliberately (nightly can break); see the
+# migration spec's Rune-maturity note.
+[toolchain]
+channel = "nightly-2026-11-10"
+components = ["clippy", "rustfmt"]
