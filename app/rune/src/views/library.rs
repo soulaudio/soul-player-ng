@@ -29,6 +29,7 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
     let playing = s.now_playing_id == Some(t.id);
     let ids = ids.to_vec();
     let start = index as u32;
+    let enqueue_id = t.id; // Copy out of the borrow so the button closure can own it.
     row()
         .key(format!("track-{}", t.id))
         .gap(12.0)
@@ -64,6 +65,18 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
             text(fmt_dur(t.duration_secs))
                 .color(p.text_secondary)
                 .w(56.0),
+        )
+        // Add-to-queue (`+`): appends the track to the override queue, which
+        // shows up in the "Up Next" sidebar. Nested in the clickable row, but
+        // Rune hit-tests to the innermost target, so pressing it enqueues
+        // without also starting playback.
+        .child(
+            el().key(format!("enqueue-{}", t.id))
+                .padding(6.0)
+                .radius(6.0)
+                .fill(p.muted)
+                .child(text("+").color(p.text_secondary))
+                .on_press(move |st: &mut State| st.host.send(Command::Enqueue(enqueue_id))),
         )
         .on_press(move |st: &mut State| {
             st.host.send(Command::PlayContext {
