@@ -634,6 +634,25 @@ mod tests {
         );
     }
 
+    /// Each track row offers an add-to-queue button (`Command::Enqueue`).
+    #[test]
+    fn track_rows_offer_add_to_queue() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let s = State::new(host);
+        let first_id = s.library[0].id;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find(&format!("enqueue-{first_id}")).is_some(),
+            "a track row offers an add-to-queue button"
+        );
+    }
+
     /// `/` on the Library route enters search mode; typing builds the query,
     /// Backspace edits it, Esc clears + exits.
     #[test]
