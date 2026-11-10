@@ -32,16 +32,20 @@ allow = [
 private = { ignore = true }
 
 [bans]
-# Duplicate versions are informational (Tauri's tree pulls a few), not fatal.
+# Duplicate versions are informational (the UI's tree pulls a few), not fatal.
 multiple-versions = "warn"
 wildcards = "allow"
 # The headless service must never pull in a GUI/windowing stack — that belongs
-# only in the `app/tauri/src-tauri` shell. This is the machine-enforced half of the
-# "Tauri is just visualization; all logic lives outside it" rule.
+# only in the Rune UI head (app/rune). This is the machine-enforced half of the
+# "the UI is just visualization; all logic lives outside it" rule. Mirrors the
+# FORBIDDEN list in crates/soul-player-backend/tests/architecture.rs.
 deny = [
   { name = "tauri" },
   { name = "wry" },
   { name = "tao" },
+  { name = "rune" },
+  { name = "wgpu" },
+  { name = "winit" },
 ]
 
 [sources]

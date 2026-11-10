@@ -1,0 +1,20 @@
+- generic [active] [ref=f32e1]:
+  - main [ref=f32e2]:
+    - generic [ref=f32e3]:
+      - heading "wiki.hydrogenaudio.org" [level=1] [ref=f32e5]
+      - heading "Performing security verification" [level=2] [ref=f32e6]
+      - paragraph [ref=f32e7]: This website uses a security service to protect against malicious bots. This page is displayed while the website verifies you are not a bot.
+  - contentinfo [ref=f32e14]:
+    - generic [ref=f32e16]:
+      - generic [ref=f32e18]:
+        - text: "Ray ID:"
+        - code [ref=f32e19]: a57a3ee37fa58eb1
+      - generic [ref=f32e20]:
+        - generic [ref=f32e21]:
+          - text: Performance and Security by
+          - link "Cloudflare, opens in a new tab" [ref=f32e22] [cursor=pointer]:
+            - /url: https://www.cloudflare.com?utm_source=challenge&utm_campaign=m
+            - text: Cloudflare
+        - link "Privacy, opens in a new tab" [ref=f32e24] [cursor=pointer]:
+          - /url: https://www.cloudflare.com/privacypolicy/
+          - text: Privacy

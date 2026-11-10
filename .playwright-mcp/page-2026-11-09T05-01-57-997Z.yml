@@ -1,0 +1,285 @@
+- generic [active] [ref=f6e1]:
+  - iframe [ref=f6e2]:
+    - generic [ref=f7e1]:
+      - paragraph [ref=f7e2]: MediaMonkey 3 Help
+      - paragraph [ref=f7e3]:
+        - text: Contents |
+        - link "Search" [ref=f7e4] [cursor=pointer]:
+          - /url: mediamonkey_ftsearch.html
+      - separator [ref=f7e5]
+      - generic [ref=f7e6]:
+        - table [ref=f7e7]:
+          - rowgroup [ref=f7e8]:
+            - row [ref=f7e9]:
+              - cell [ref=f7e10]:
+                - link [ref=f7e12] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div1')
+              - cell [ref=f7e13]:
+                - link "Introduction" [ref=f7e14] [cursor=pointer]:
+                  - /url: introduction.htm
+        - table [ref=f7e15]:
+          - rowgroup [ref=f7e16]:
+            - row [ref=f7e17]:
+              - cell [ref=f7e18]:
+                - link [ref=f7e20] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div2')
+              - cell [ref=f7e21]:
+                - link "Navigating your Collection" [ref=f7e22] [cursor=pointer]:
+                  - /url: exploringtracks.htm
+        - generic [ref=f7e23]:
+          - table [ref=f7e24]:
+            - rowgroup [ref=f7e25]:
+              - row [ref=f7e26]:
+                - cell [ref=f7e27]
+                - cell [ref=f7e29]:
+                  - link "Searching for Tracks" [ref=f7e30] [cursor=pointer]:
+                    - /url: search.htm
+          - table [ref=f7e31]:
+            - rowgroup [ref=f7e32]:
+              - row [ref=f7e33]:
+                - cell [ref=f7e34]
+                - cell [ref=f7e36]:
+                  - link "Now Playing" [ref=f7e37] [cursor=pointer]:
+                    - /url: nowplaying.htm
+          - table [ref=f7e38]:
+            - rowgroup [ref=f7e39]:
+              - row [ref=f7e40]:
+                - cell [ref=f7e41]
+                - cell [ref=f7e43]:
+                  - link "Library" [ref=f7e44] [cursor=pointer]:
+                    - /url: library.htm
+          - table [ref=f7e45]:
+            - rowgroup [ref=f7e46]:
+              - row [ref=f7e47]:
+                - cell [ref=f7e48]
+                - cell [ref=f7e50]:
+                  - link "Playlists" [ref=f7e51] [cursor=pointer]:
+                    - /url: playlists.htm
+          - table [ref=f7e52]:
+            - rowgroup [ref=f7e53]:
+              - row [ref=f7e54]:
+                - cell [ref=f7e55]
+                - cell [ref=f7e57]:
+                  - link "My Computer" [ref=f7e58] [cursor=pointer]:
+                    - /url: mycomputer.htm
+        - table [ref=f7e59]:
+          - rowgroup [ref=f7e60]:
+            - row [ref=f7e61]:
+              - cell [ref=f7e62]:
+                - link [ref=f7e64] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div3')
+              - cell [ref=f7e65]:
+                - link "Playing Audio Tracks" [ref=f7e66] [cursor=pointer]:
+                  - /url: playingaudiotracks.htm
+        - table [ref=f7e67]:
+          - rowgroup [ref=f7e68]:
+            - row [ref=f7e69]:
+              - cell [ref=f7e70]:
+                - link [ref=f7e72] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div4')
+              - cell [ref=f7e73]:
+                - link "Web-based Audio" [ref=f7e74] [cursor=pointer]:
+                  - /url: web_basedaudio.htm
+        - table [ref=f7e75]:
+          - rowgroup [ref=f7e76]:
+            - row [ref=f7e77]:
+              - cell [ref=f7e78]:
+                - link [ref=f7e80] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div5')
+              - cell [ref=f7e81]:
+                - link "Adding Audio Tracks and CDs" [ref=f7e82] [cursor=pointer]:
+                  - /url: addingaudiotracks.htm
+        - table [ref=f7e83]:
+          - rowgroup [ref=f7e84]:
+            - row [ref=f7e85]:
+              - cell [ref=f7e86]:
+                - link [ref=f7e88] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div6')
+              - cell [ref=f7e89]:
+                - link "Editing Tracks" [ref=f7e90] [cursor=pointer]:
+                  - /url: editingtracks.htm
+        - table [ref=f7e91]:
+          - rowgroup [ref=f7e92]:
+            - row [ref=f7e93]:
+              - cell [ref=f7e94]:
+                - link [ref=f7e96] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div7')
+              - cell [ref=f7e97]:
+                - link "Syncing, Burning, Exporting, and Reporting" [ref=f7e98] [cursor=pointer]:
+                  - /url: javascript:void(0)
+        - table [ref=f7e99]:
+          - rowgroup [ref=f7e100]:
+            - row [ref=f7e101]:
+              - cell [ref=f7e102]:
+                - link [ref=f7e104] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div8')
+              - cell [ref=f7e105]:
+                - link "Customization" [ref=f7e106] [cursor=pointer]:
+                  - /url: customizingmediamonkey.htm
+        - table [ref=f7e107]:
+          - rowgroup [ref=f7e108]:
+            - row [ref=f7e109]:
+              - cell [ref=f7e110]:
+                - link [ref=f7e112] [cursor=pointer]:
+                  - /url: javascript:parent.toggle('div9')
+              - cell [ref=f7e113]:
+                - link "Reference Information" [ref=f7e114] [cursor=pointer]:
+                  - /url: javascript:void(0)
+      - separator [ref=f7e115]
+      - paragraph [ref=f7e116]:
+        - link "MediaMonkey 5 Help" [ref=f7e117] [cursor=pointer]:
+          - /url: https://www.mediamonkey.com/wiki/WebHelp:Content/5.0
+        - text: "|"
+        - link "MediaMonkey 4 Help" [ref=f7e118] [cursor=pointer]:
+          - /url: https://www.mediamonkey.com/wiki/WebHelp:Content/4.0
+      - paragraph [ref=f7e119]: © 2010 Ventis Media, Inc.
+  - iframe [ref=f6e3]:
+    - generic [ref=f8e1]:
+      - table [ref=f8e4]:
+        - rowgroup [ref=f8e5]:
+          - row [ref=f8e6]:
+            - cell [ref=f8e7]:
+              - paragraph [ref=f8e8]:
+                - text: "Navigation:"
+                - link "Navigating your Collection" [ref=f8e9] [cursor=pointer]:
+                  - /url: exploringtracks.htm
+                - text: ">"
+              - paragraph [ref=f8e10]: Library
+            - cell [ref=f8e11]:
+              - link [ref=f8e12] [cursor=pointer]:
+                - /url: nowplaying.htm
+                - img "Previous page" [ref=f8e13]
+              - link [ref=f8e14] [cursor=pointer]:
+                - /url: exploringtracks.htm
+                - img "Return to chapter overview" [ref=f8e15]
+              - link [ref=f8e16] [cursor=pointer]:
+                - /url: playlists.htm
+                - img "Next page" [ref=f8e17]
+          - row [ref=f8e18]:
+            - cell [ref=f8e19]
+      - generic [ref=f8e21]:
+        - paragraph [ref=f8e22]:
+          - text: The Library node contains all
+          - generic [ref=f8e23]:
+            - text: of the tracks in your collection, organized using various subnodes. The nodes are useful for browsing your collection based on attributes such as Location, Title, Artist, Album, Genre, etc, or for
+            - link "making changes to a Track's properties" [ref=f8e24] [cursor=pointer]:
+              - /url: editingtrackproperties.htm
+            - text: by dragging and dropping it between nodes.
+        - paragraph [ref=f8e25]:
+          - generic [ref=f8e26]:
+            - text: The library can also be filtered to display subsets of your entire collection, each having a customized view. For example you may have one filter & view for Classical music and another for Children's music. See
+            - link "Filters and Views" [ref=f8e27] [cursor=pointer]:
+              - /url: customizingmediamonkey.htm
+            - text: .
+        - paragraph [ref=f8e28]: Location
+        - paragraph [ref=f8e29]: "This displays Tracks in the Library based on their physical location--any folder or physical media containing a song will show up here. In addition, each subnode contains an All node that displays all Tracks that are present in all of the subfolders of the selected directory. These Nodes are particularly useful if you're trying to find out where all of your Tracks are located, or if you wish to edit tracks in a particular Folder such as /New Downloads. The subnodes are:"
+        - paragraph [ref=f8e30]: Hard Disk
+        - paragraph [ref=f8e31]: Displays any folders on the hard disk containing Tracks that are in the library. This is useful if you want to move/consolidate Tracks within a folder to a different location
+        - paragraph [ref=f8e32]: CD
+        - paragraph [ref=f8e33]:
+          - text: Displays any physical CDs which you have added to the library (note that this is different from the Album
+          - generic [ref=f8e34]:
+            - text: node, which shows Tracks grouped by the Album that they appear on--regardless of whether the physical CD has been added to the Library). If you select a CD, but the CD is not inserted, then the Tracks are greyed out, unless they've been saved to the Virtual CD. See
+            - link "Adding CDs to the Library" [ref=f8e35] [cursor=pointer]:
+              - /url: addingcdstothelibrary.htm
+            - text: .
+        - paragraph [ref=f8e36]: Network
+        - paragraph [ref=f8e37]: Functions similarly to the Hard Disk view -- it displays any folders on the network containing Tracks that are in the library.
+        - paragraph [ref=f8e38]: Title
+        - paragraph [ref=f8e39]: Displays Tracks sorted by Title. Subnodes allow you to view Tracks grouped by title letter.
+        - paragraph [ref=f8e40]: Artist & Album Artist
+        - paragraph [ref=f8e41]:
+          - generic [ref=f8e42]:
+            - text: Displays Tracks sorted by Artist, while each <Artist> subnode allow you to view Tracks by said Artist, or albums by said Album Artist. For users who prefer to have separate Artist and Album Artist nodes, this is also possible by
+            - link "customizing the default view" [ref=f8e43] [cursor=pointer]:
+              - /url: customizingmediamonkey.htm
+            - text: .
+        - paragraph [ref=f8e44]: "Note: Artist and Album Artist support multiple values, which means that any given track can appear in multiple Artist or Album Artist subnodes."
+        - paragraph [ref=f8e45]: Composer
+        - paragraph [ref=f8e46]: Displays Tracks sorted by Composer.
+        - paragraph [ref=f8e47]: "Note: Composer (and Conductor) supports multiple values, which means that any given track can appear in multiple Composer subnodes."
+        - paragraph [ref=f8e48]: Album
+        - paragraph [ref=f8e49]: Displays all Tracks sorted by Album. Each subnode consists of an Album (and associated Album Artist in parentheses) whose Tracks are displayed in the order in which they appear on the album. This is in contrast to the CDs that appear in the Locations node, which represent physical CDs.
+        - paragraph [ref=f8e50]:
+          - generic [ref=f8e51]:
+            - text: "Note: Incorrectly tagged compilation albums can appear as several individual albums all having the same name. See"
+            - link "Editing Album Artists" [ref=f8e52] [cursor=pointer]:
+              - /url: editingalbumproperties.htm
+            - text: .
+        - paragraph [ref=f8e53]: Genre
+        - paragraph [ref=f8e54]: Displays all Tracks sorted by Genre.
+        - paragraph [ref=f8e55]: "Note: Genre support multiple values, which means that any given track can appear in multiple Genre subnodes."
+        - paragraph [ref=f8e56]: Year
+        - paragraph [ref=f8e57]: Displays all Tracks sorted by Year. Subnodes consist of Decades and Years. This is often useful for selecting a mix of Tracks from a certain era.
+        - paragraph [ref=f8e58]: Rating
+        - paragraph [ref=f8e59]: Displays all Tracks sorted by Rating. This is useful for selecting and rerating all Tracks.
+        - paragraph [ref=f8e60]: Classification
+        - paragraph [ref=f8e61]: "Displays Tracks grouped by various subjective criteria: Tempo, Mood, Occasion, Quality. These are useful for reclassifying Tracks via drag and drop."
+        - paragraph [ref=f8e62]: Files to Edit
+        - paragraph [ref=f8e63]: This contains various nodes that help you locate Tracks that have problems, inconsistencies that need to be corrected, or missing information. It is particularly useful when you are correcting the properties of your various Tracks.
+        - paragraph [ref=f8e64]: Unknown Title, Artist, Album, Genre, Year, Rating
+        - paragraph [ref=f8e65]: Displays Tracks that have no value defined.
+        - paragraph [ref=f8e66]: Unclassified Tracks
+        - paragraph [ref=f8e67]: Displays all Tracks that don't have classifications such as Tempo, Mood, or occasion defined.
+        - paragraph [ref=f8e68]: Unknown Album Art
+        - paragraph [ref=f8e69]: Displays all Tracks for which Album Art is not defined.
+        - paragraph [ref=f8e70]: Multiple Artist Albums
+        - paragraph [ref=f8e71]:
+          - generic [ref=f8e72]:
+            - text: Displays all Albums and associated Tracks that have a common Album name, but no common Album Artist. This usually occurs when some sort of typo has occurred, or if an Album is a compilation by multiple artists, but tracks haven't been given a common Album Artist such as 'Various'. See
+            - link "Editing Album Artists" [ref=f8e73] [cursor=pointer]:
+              - /url: editingalbumproperties.htm
+            - text: .
+        - paragraph [ref=f8e74]: Dead Links
+        - paragraph [ref=f8e75]:
+          - generic [ref=f8e76]:
+            - text: "This displays libary Tracks that cannot be found because they've been deleted or moved from their physical location on the hard drive. If the file was intentionally deleted, you can delete the Track from the library. If the file wasn't intentionally deleted, you should try to retrieve the file via. See:"
+            - link "Updating the Library" [ref=f8e77] [cursor=pointer]:
+              - /url: addingexistingfilestothelibrary.htm
+            - text: .
+        - paragraph [ref=f8e78]: Unleveled Tracks
+        - paragraph [ref=f8e79]: This displays tracks that haven't been analyzed for volume leveling.
+        - paragraph [ref=f8e80]: Unorganized Tracks
+        - paragraph [ref=f8e81]: This displays tracks that have paths/filenames that don't match the desired path/filename format (Gold only).
+        - paragraph [ref=f8e82]: Unsynchronized Tags
+        - paragraph [ref=f8e83]:
+          - generic [ref=f8e84]:
+            - text: This displays all Tracks for which Tags do not match the Track Information contained within the Library. This may occur if you've enabled inference of Track Properties when adding files to the library, if v1 and v2 tags do not match, or if tags for a specific Track haven't be updated properly due to improperly formed or non-standard tag formats. See
+            - link "Synchronizing Your Tags" [ref=f8e85] [cursor=pointer]:
+              - /url: synchronizingyourtags.htm
+            - text: .
+        - paragraph [ref=f8e86]: Duplicate Titles
+        - paragraph [ref=f8e87]:
+          - generic [ref=f8e88]:
+            - text: This displays all Tracks that have duplicate titles. This is useful when you're removing duplicates from your collection. See
+            - link "Deleting Duplicates" [ref=f8e89] [cursor=pointer]:
+              - /url: deletingduplicates.htm
+            - text: .
+        - paragraph [ref=f8e90]: Duplicate Content
+        - paragraph [ref=f8e91]:
+          - generic [ref=f8e92]:
+            - text: This displays all Tracks that are identical to one another in terms of the audio content (tags and other metadata are ignored). See
+            - link "Deleting Duplicates" [ref=f8e93] [cursor=pointer]:
+              - /url: deletingduplicates.htm
+            - text: .
+        - paragraph [ref=f8e94]: Virtual CD
+        - paragraph [ref=f8e95]: The Virtual CD node displays all Tracks that have been saved to the Virtual CD. The Virtual CD can be thought of as a cache for physical CDs that tracks what CDs you own and stores a subset of tracks from the to your hard drive. Instead of tracking your physical CDs and tracks separately, the virtual CD function gives you an integrated view. The Virtual CD node is used mainly when you are ripping CD Tracks to your hard drive.
+        - paragraph [ref=f8e96]: "For example: If a CD by The Tragically Hip has been added to the library and the user saves 3 tracks to the Virtual CD, then those tracks will appear in the Virtual CD node. More importantly, the disc will appear in the /Locations node, with all tracks visible in the tracklist, however, all but 3 of the tracks that have been saved to the virtual CD will be greyed out (because the CD isn't inserted and they're thus unavailable). Without the Virtual CD functionality, it wouldn't be possible to easily ascertain the relationship between physical CDs in a collection, and the subset of tracks from those CDs that have been ripped."
+        - paragraph [ref=f8e97]:
+          - generic [ref=f8e98]:
+            - text: "See:"
+            - link "Ripping Tracks and Cataloguing CDs" [ref=f8e99] [cursor=pointer]:
+              - /url: rippingtracksandcataloguingcds.htm
+        - paragraph [ref=f8e100]: Previews
+        - paragraph [ref=f8e101]:
+          - generic [ref=f8e102]:
+            - text: The Previews node displays all Previews--short samples of your audio Tracks--that have been created. These are useful if you want to quickly listen to a large number of songs in a short period of time. See
+            - link "Creating Previews" [ref=f8e103] [cursor=pointer]:
+              - /url: creatingpreviews.htm
+            - text: .
+        - paragraph [ref=f8e104]
+        - separator [ref=f8e105]
+        - paragraph [ref=f8e106]:
+          - text: "Page url:"
+          - link "http://www.mediamonkey.com/sw/webhelp/frame/index.html?library.htm" [ref=f8e107] [cursor=pointer]:
+            - /url: http://www.mediamonkey.com/sw/webhelp/frame/index.html?library.htm

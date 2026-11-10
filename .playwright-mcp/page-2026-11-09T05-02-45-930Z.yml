@@ -1,0 +1,901 @@
+- generic [active] [ref=f10e1]:
+  - navigation "Fandom top navigation" [ref=f10e2]:
+    - link "Fandom homepage" [ref=f10e3] [cursor=pointer]:
+      - /url: https://www.fandom.com/
+    - textbox "Search" [ref=f10e8]
+    - generic [ref=f10e11]:
+      - link "Sign In" [ref=f10e13] [cursor=pointer]:
+        - /url: https://auth.fandom.com/signin?source=mw&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee&metadata=header-signin-button
+      - link "Create a Free Account" [ref=f10e15] [cursor=pointer]:
+        - /url: https://auth.fandom.com/register?source=mw&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee&metadata=header-registration-button
+  - generic "Community navigation" [ref=f10e16]:
+    - link "Fandom homepage" [ref=f10e18] [cursor=pointer]:
+      - /url: https://www.fandom.com/
+    - link "MusicBee Wiki" [ref=f10e21] [cursor=pointer]:
+      - /url: https://musicbee.fandom.com/wiki/MusicBee_Wiki
+    - navigation [ref=f10e22]:
+      - list [ref=f10e23]:
+        - listitem [ref=f10e24]:
+          - generic [ref=f10e25]:
+            - generic [ref=f10e26] [cursor=pointer]: Explore
+            - img "Expand" [ref=f10e30]
+        - listitem [ref=f10e32]:
+          - generic [ref=f10e33]:
+            - generic [ref=f10e34] [cursor=pointer]: Essentials
+            - img "Expand" [ref=f10e36]
+        - listitem [ref=f10e38]:
+          - generic [ref=f10e39]:
+            - generic [ref=f10e40] [cursor=pointer]: Customization
+            - img "Expand" [ref=f10e42]
+        - listitem [ref=f10e44]:
+          - generic [ref=f10e45]:
+            - generic [ref=f10e46] [cursor=pointer]: More Help
+            - img "Expand" [ref=f10e48]
+    - textbox "Search" [ref=f10e52]
+    - link "Switch to Dark Theme" [ref=f10e56] [cursor=pointer]:
+      - /url: "#"
+    - link "Sign In" [ref=f10e59] [cursor=pointer]:
+      - /url: https://auth.fandom.com/signin?source=mw&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee&metadata=header-signin-button
+    - link "Create a Free Account" [ref=f10e62] [cursor=pointer]:
+      - /url: https://auth.fandom.com/register?source=mw&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee&metadata=community-header-registration-button
+  - generic [ref=f10e63]:
+    - navigation "Fandom navigation" [ref=f10e65]:
+      - generic [ref=f10e66]:
+        - link "Home" [ref=f10e69] [cursor=pointer]:
+          - /url: https://www.fandom.com/
+        - button "Explore" [ref=f10e76] [cursor=pointer]
+        - link "Saved" [ref=f10e85] [cursor=pointer]:
+          - /url: https://www.fandom.com/saved
+        - link "Progress" [ref=f10e93] [cursor=pointer]:
+          - /url: https://www.fandom.com/progress
+        - button "History" [ref=f10e100] [cursor=pointer]
+        - link "Utilities" [ref=f10e108] [cursor=pointer]:
+          - /url: https://www.fandom.com/utilities
+      - link "Fandom Four" [ref=f10e117] [cursor=pointer]:
+        - /url: http://utilities.fandom.com/wiki/Special:GameUtility/FandomConnect
+    - navigation "Fandom navigation" [ref=f10e124]:
+      - button "Settings" [ref=f10e126] [cursor=pointer]
+      - button "More" [ref=f10e133] [cursor=pointer]
+  - generic [ref=f10e139]:
+    - generic [ref=f10e140]: Advertisement
+    - generic [ref=f10e145]:
+      - link "Skip to content" [ref=f10e146] [cursor=pointer]:
+        - /url: "#page-header"
+      - banner [ref=f10e148]:
+        - link [ref=f10e149] [cursor=pointer]:
+          - /url: https://musicbee.fandom.com/wiki/MusicBee_Wiki
+          - img "MusicBee Wiki" [ref=f10e150]
+        - generic [ref=f10e151]:
+          - link "MusicBee Wiki" [ref=f10e153] [cursor=pointer]:
+            - /url: https://musicbee.fandom.com/wiki/MusicBee_Wiki
+          - link "165 pages" [ref=f10e155] [cursor=pointer]:
+            - /url: https://musicbee.fandom.com/wiki/Special:AllPages
+            - generic [ref=f10e156]: "165"
+            - generic [ref=f10e157]: pages
+          - link "Switch to Dark Theme" [ref=f10e159] [cursor=pointer]:
+            - /url: "#"
+        - navigation [ref=f10e160]:
+          - list [ref=f10e161]:
+            - listitem [ref=f10e162]:
+              - generic [ref=f10e163]:
+                - generic [ref=f10e164] [cursor=pointer]: Explore
+                - img "Expand" [ref=f10e168]
+            - listitem [ref=f10e170]:
+              - generic [ref=f10e171]:
+                - generic [ref=f10e172] [cursor=pointer]: Essentials
+                - img "Expand" [ref=f10e174]
+            - listitem [ref=f10e176]:
+              - generic [ref=f10e177]:
+                - generic [ref=f10e178] [cursor=pointer]: Customization
+                - img "Expand" [ref=f10e180]
+            - listitem [ref=f10e182]:
+              - generic [ref=f10e183]:
+                - generic [ref=f10e184] [cursor=pointer]: More Help
+                - img "Expand" [ref=f10e186]
+      - generic [ref=f10e188]:
+        - main [ref=f10e189]:
+          - generic [ref=f10e191]:
+            - button "Expand" [ref=f10e192] [cursor=pointer]
+            - generic "Contents" [ref=f10e195]:
+              - button "Contents" [ref=f10e196] [cursor=pointer]
+              - text: . . . . . . . . . . . . . . . . .
+            - link "Edit" [ref=f10e199] [cursor=pointer]:
+              - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit&uselang=en&metadata=article-registration-edit-article
+            - link "Sign In to Save" [ref=f10e202] [cursor=pointer]:
+              - /url: https://auth.fandom.com/register?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fcollections%3Dsave&uselang=en&metadata=collections-save-button
+          - generic [ref=f10e205]:
+            - generic [ref=f10e208]:
+              - text: "in:"
+              - link "Layout" [ref=f10e209] [cursor=pointer]:
+                - /url: /wiki/Category:Layout
+              - text: ","
+              - link "Out-of-Date" [ref=f10e210] [cursor=pointer]:
+                - /url: /wiki/Category:Out-of-Date
+              - text: ","
+              - link "Customization" [ref=f10e211] [cursor=pointer]:
+                - /url: /wiki/Category:Customization
+            - generic [ref=f10e212]:
+              - heading "The Anatomy of MusicBee" [level=1] [ref=f10e214]
+              - generic [ref=f10e215]:
+                - link "Comments" [ref=f10e216] [cursor=pointer]:
+                  - /url: "#articleComments"
+                - link "Sign In to Save" [ref=f10e218] [cursor=pointer]:
+                  - /url: https://auth.fandom.com/register?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fcollections%3Dsave&uselang=en&metadata=collections-save-button
+                - link "Edit" [ref=f10e220] [cursor=pointer]:
+                  - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit&uselang=en&metadata=article-registration-edit-article
+                - button "Page Tools" [ref=f10e222]
+          - generic [ref=f10e225]:
+            - paragraph [ref=f10e226]:
+              - generic [ref=f10e227]:
+                - text: Up-to-date with version
+                - link "3.3.7367" [ref=f10e228] [cursor=pointer]:
+                  - /url: /wiki/Latest_Update
+            - paragraph [ref=f10e229]: This page describes the main panels which go to make up MusicBee's interface (UI) and lists the different components which may be placed within these panels. The links lead to detailed information about each component. In addition there is a high level description of how to customise the layout through the Panels Configuration feature.
+            - heading [level=2] [ref=f10e230]:
+              - text: User Interface and Customization
+              - link "Sign in to edit" [ref=f10e232] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D1&uselang=en&metadata=article-registration-edit-article-section
+            - paragraph [ref=f10e235]: MusicBee is very usable out of the box, but its layout is also highly customisable and offers many ways to tweak it to your liking.
+            - paragraph [ref=f10e236]: The basic concept is that there are a number of different panels in the UI and as a user you can choose which panels to display and which features those panels contain.
+            - figure [ref=f10e237]:
+              - link [ref=f10e238] [cursor=pointer]:
+                - /url: https://static.wikia.nocookie.net/musicbee/images/a/a3/Default_Layout.png/revision/latest?cb=20200530205300
+                - img "Default Layout" [ref=f10e239]
+                - generic "view image" [ref=f10e242]
+              - paragraph [ref=f10e246]: Default Layout
+            - paragraph [ref=f10e247]: Initially MusicBee will have the layout shown in the image on the right.
+            - paragraph [ref=f10e248]: "The default panels and components are as follows:"
+            - heading [level=4] [ref=f10e249]:
+              - text: Header bar
+              - link "Sign in to edit" [ref=f10e251] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D2&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e254]:
+              - listitem [ref=f10e255]:
+                - text: The
+                - link "Main Menu" [ref=f10e256] [cursor=pointer]:
+                  - /url: /wiki/Main_Menu
+                - text: shown as a button
+              - listitem [ref=f10e257]:
+                - text: The
+                - link "Tabs Bar" [ref=f10e258] [cursor=pointer]:
+                  - /url: /wiki/Tabs_Bar
+                - text: shown below the Caption Bar, containing
+                - list [ref=f10e259]:
+                  - listitem [ref=f10e260]:
+                    - text: Your
+                    - link "Music" [ref=f10e261] [cursor=pointer]:
+                      - /url: /wiki/Music_Library
+                    - text: (
+                    - link "Tracks View" [ref=f10e262] [cursor=pointer]:
+                      - /url: /wiki/Tracks_View
+                    - text: ) with the
+                    - link "Thumbnail Browser" [ref=f10e263] [cursor=pointer]:
+                      - /url: /wiki/Thumbnail_Browser
+                    - text: in the
+                    - link "Left Main Panel" [ref=f10e264] [cursor=pointer]:
+                      - /url: "#Left_Main_Panel"
+                    - text: .
+                  - listitem [ref=f10e265]:
+                    - text: The
+                    - link "Now Playing Node" [ref=f10e266] [cursor=pointer]:
+                      - /url: /wiki/Now_Playing_Node
+                    - text: .
+                  - listitem [ref=f10e267]:
+                    - text: The
+                    - link "Playlists Manager" [ref=f10e268] [cursor=pointer]:
+                      - /url: /wiki/Navigator
+                    - text: .
+                  - listitem [ref=f10e269]:
+                    - text: The
+                    - link "Music Explorer" [ref=f10e270] [cursor=pointer]:
+                      - /url: /wiki/Music_Explorer
+                    - text: Node.
+                  - listitem [ref=f10e271]:
+                    - text: The
+                    - link "Podcasts" [ref=f10e272] [cursor=pointer]:
+                      - /url: /wiki/Podcasts
+                    - text: Node.
+              - listitem [ref=f10e273]: Command buttons
+            - heading [level=4] [ref=f10e274]:
+              - text: Left sidebar
+              - link "Sign in to edit" [ref=f10e276] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D3&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e279]:
+              - listitem [ref=f10e280]:
+                - text: The
+                - link "Navigator" [ref=f10e281] [cursor=pointer]:
+                  - /url: /wiki/Navigator
+                - text: panel in the
+                - link "Left Sidebar" [ref=f10e282] [cursor=pointer]:
+                  - /url: "#Left_Sidebar"
+                - text: in
+                - link "auto-open" [ref=f10e283] [cursor=pointer]:
+                  - /url: /wiki/Auto-open
+                - text: mode.
+            - heading [level=4] [ref=f10e284]:
+              - text: Left main panel
+              - link "Sign in to edit" [ref=f10e286] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D4&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e289]:
+              - listitem [ref=f10e290]: Thumbnail browser
+            - heading [level=4] [ref=f10e291]:
+              - text: Main panel
+              - link "Sign in to edit" [ref=f10e293] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D5&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e296]:
+              - listitem [ref=f10e297]: A-Z jumpbar
+              - listitem [ref=f10e298]: Files
+            - heading [level=4] [ref=f10e300]:
+              - text: Right sidebar
+              - link "Sign in to edit" [ref=f10e302] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D6&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e305]:
+              - listitem [ref=f10e306]:
+                - text: The
+                - link "Playing Tracks" [ref=f10e307] [cursor=pointer]:
+                  - /url: /wiki/Playing_Tracks
+                - text: list in the
+                - link "Right Sidebar" [ref=f10e308] [cursor=pointer]:
+                  - /url: "#Right_Sidebar"
+                - text: .
+              - listitem [ref=f10e309]:
+                - link "Track Information" [ref=f10e310] [cursor=pointer]:
+                  - /url: /wiki/Track_Information
+                - text: and
+                - link "Lyrics" [ref=f10e311] [cursor=pointer]:
+                  - /url: /wiki/Lyrics
+                - text: stacked in the right sidebar.
+            - heading [level=4] [ref=f10e312]:
+              - text: Bottom panel
+              - link "Sign in to edit" [ref=f10e314] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D7&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e317]:
+              - listitem [ref=f10e318]:
+                - text: The
+                - link "Status Bar" [ref=f10e319] [cursor=pointer]:
+                  - /url: /wiki/Status_Bar
+                - text: in the
+                - link "Bottom Panel" [ref=f10e320] [cursor=pointer]:
+                  - /url: "#Bottom_Panel"
+                - text: .
+              - listitem [ref=f10e321]:
+                - text: The
+                - link "Player Controls" [ref=f10e322] [cursor=pointer]:
+                  - /url: /wiki/Player_Controls
+                - text: in the Bottom Panel.
+            - navigation [ref=f10e324]:
+              - button "show" [ref=f10e325]
+              - generic [ref=f10e326]:
+                - heading "Contents" [level=2] [ref=f10e327]
+                - generic [ref=f10e330]:
+                  - text: "["
+                  - generic "show" [ref=f10e331] [cursor=pointer]: hide
+                  - text: "]"
+              - list [ref=f10e332]:
+                - listitem [ref=f10e333]:
+                  - link "1. User Interface and Customization" [ref=f10e334] [cursor=pointer]:
+                    - /url: "#User_Interface_and_Customization"
+                    - generic [ref=f10e335]: "1."
+                    - generic [ref=f10e336]: User Interface and Customization
+                  - list [ref=f10e337]:
+                    - listitem [ref=f10e338]:
+                      - link "1.1. Header bar" [ref=f10e339] [cursor=pointer]:
+                        - /url: "#Header_bar"
+                        - generic [ref=f10e340]: 1.1.
+                        - generic [ref=f10e341]: Header bar
+                    - listitem [ref=f10e342]:
+                      - link "1.2. Left sidebar" [ref=f10e343] [cursor=pointer]:
+                        - /url: "#Left_sidebar"
+                        - generic [ref=f10e344]: 1.2.
+                        - generic [ref=f10e345]: Left sidebar
+                    - listitem [ref=f10e346]:
+                      - link "1.3. Left main panel" [ref=f10e347] [cursor=pointer]:
+                        - /url: "#Left_main_panel"
+                        - generic [ref=f10e348]: 1.3.
+                        - generic [ref=f10e349]: Left main panel
+                    - listitem [ref=f10e350]:
+                      - link "1.4. Main panel" [ref=f10e351] [cursor=pointer]:
+                        - /url: "#Main_panel"
+                        - generic [ref=f10e352]: 1.4.
+                        - generic [ref=f10e353]: Main panel
+                    - listitem [ref=f10e354]:
+                      - link "1.5. Right sidebar" [ref=f10e355] [cursor=pointer]:
+                        - /url: "#Right_sidebar"
+                        - generic [ref=f10e356]: 1.5.
+                        - generic [ref=f10e357]: Right sidebar
+                    - listitem [ref=f10e358]:
+                      - link "1.6. Bottom panel" [ref=f10e359] [cursor=pointer]:
+                        - /url: "#Bottom_panel"
+                        - generic [ref=f10e360]: 1.6.
+                        - generic [ref=f10e361]: Bottom panel
+                - listitem [ref=f10e362]:
+                  - link "2. Panels Configuration" [ref=f10e363] [cursor=pointer]:
+                    - /url: "#Panels_Configuration"
+                    - generic [ref=f10e364]: "2."
+                    - generic [ref=f10e365]: Panels Configuration
+                  - list [ref=f10e366]:
+                    - listitem [ref=f10e367]:
+                      - link "2.1. Header Bar" [ref=f10e368] [cursor=pointer]:
+                        - /url: "#Header_Bar_2"
+                        - generic [ref=f10e369]: 2.1.
+                        - generic [ref=f10e370]: Header Bar
+                    - listitem [ref=f10e371]:
+                      - link "2.2. Top Panel" [ref=f10e372] [cursor=pointer]:
+                        - /url: "#Top_Panel"
+                        - generic [ref=f10e373]: 2.2.
+                        - generic [ref=f10e374]: Top Panel
+                    - listitem [ref=f10e375]:
+                      - link "2.3. Left Sidebar" [ref=f10e376] [cursor=pointer]:
+                        - /url: "#Left_Sidebar_2"
+                        - generic [ref=f10e377]: 2.3.
+                        - generic [ref=f10e378]: Left Sidebar
+                    - listitem [ref=f10e379]:
+                      - link "2.4. Left Main Panel" [ref=f10e380] [cursor=pointer]:
+                        - /url: "#Left_Main_Panel_2"
+                        - generic [ref=f10e381]: 2.4.
+                        - generic [ref=f10e382]: Left Main Panel
+                    - listitem [ref=f10e383]:
+                      - link "2.5. Main Panel" [ref=f10e384] [cursor=pointer]:
+                        - /url: "#Main_Panel_2"
+                        - generic [ref=f10e385]: 2.5.
+                        - generic [ref=f10e386]: Main Panel
+                    - listitem [ref=f10e387]:
+                      - link "2.6. Right Main Panel" [ref=f10e388] [cursor=pointer]:
+                        - /url: "#Right_Main_Panel"
+                        - generic [ref=f10e389]: 2.6.
+                        - generic [ref=f10e390]: Right Main Panel
+                    - listitem [ref=f10e391]:
+                      - link "2.7. Right Sidebar" [ref=f10e392] [cursor=pointer]:
+                        - /url: "#Right_Sidebar_2"
+                        - generic [ref=f10e393]: 2.7.
+                        - generic [ref=f10e394]: Right Sidebar
+                    - listitem [ref=f10e395]:
+                      - link "2.8. Bottom Panel" [ref=f10e396] [cursor=pointer]:
+                        - /url: "#Bottom_Panel_2"
+                        - generic [ref=f10e397]: 2.8.
+                        - generic [ref=f10e398]: Bottom Panel
+                    - listitem [ref=f10e399]:
+                      - link "2.9. Floating Window" [ref=f10e400] [cursor=pointer]:
+                        - /url: "#Floating_Window"
+                        - generic [ref=f10e401]: 2.9.
+                        - generic [ref=f10e402]: Floating Window
+            - heading [level=2] [ref=f10e403]:
+              - text: Panels Configuration
+              - link "Sign in to edit" [ref=f10e405] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D8&uselang=en&metadata=article-registration-edit-article-section
+            - figure [ref=f10e408]:
+              - link [ref=f10e409] [cursor=pointer]:
+                - /url: https://static.wikia.nocookie.net/musicbee/images/3/3f/Configure_Layout_Button.png/revision/latest?cb=20160511140745
+                - img "Configure Layout Button" [ref=f10e410]
+              - paragraph [ref=f10e412]: Configure Layout Button
+            - paragraph [ref=f10e413]:
+              - text: The Panels Configuration window is opened with the Configure Layout button, to the left of the
+              - link "Search" [ref=f10e414] [cursor=pointer]:
+                - /url: /wiki/Search
+              - text: box in the
+              - link "Tabs Bar" [ref=f10e415] [cursor=pointer]:
+                - /url: /wiki/Tabs_Bar
+              - text: . It can also be accessed from
+              - link "Layout (1)" [ref=f10e416] [cursor=pointer]:
+                - /url: /wiki/Layout_(1)
+              - text: preferences, with the "Arrange Panels" button.
+            - figure [ref=f10e417]:
+              - link [ref=f10e418] [cursor=pointer]:
+                - /url: https://static.wikia.nocookie.net/musicbee/images/1/1c/Panels_Configuration.png/revision/latest?cb=20160511140703
+                - img "Panels Configuration" [ref=f10e419]
+                - generic "view image" [ref=f10e422]
+              - paragraph [ref=f10e426]: Panels Configuration
+            - paragraph [ref=f10e427]: There are 21 elements that can be configured, with 9 possible locations and further configuration options available for most elements. Not every element can be in every location, but many elements can be reordered to your liking, too. That's a LOT of options! Throw in the specific settings for each element and you're unlikely to find two layouts that are exactly the same.
+            - paragraph [ref=f10e428]: Let's break it down by location, since that's what you'll see in the Panels Configuration window. The default options are marked. Most elements have further settings that can be configured by using a Panels Settings [...] button.
+            - paragraph [ref=f10e429]: Elements with a checkbox to the right may be stacked together (occupying the same layout space) by ticking the box. Any unstacked elements in between ticked elements will cause a new stack to start, or you can use the Panel Splitter element to divide two stacks. Stackable elements are marked here with a +.
+            - term [ref=f10e431]:
+              - generic [ref=f10e432]: stack
+            - figure [ref=f10e433]:
+              - link [ref=f10e434] [cursor=pointer]:
+                - /url: https://static.wikia.nocookie.net/musicbee/images/2/2c/Tabbed_elements.png/revision/latest?cb=20160511024531
+                - img "Stacked Elements with tabs" [ref=f10e435]
+              - paragraph [ref=f10e437]: Stacked Elements with tabs
+            - list [ref=f10e438]:
+              - listitem [ref=f10e439]: "ticked elements are displayed as tabs: example at right"
+              - listitem [ref=f10e440]:
+                - text: "ticked elements are stacked on top of each other and viewable by clicking a selector button: ("
+                - generic [ref=f10e441]: Default
+                - text: ) click the top left menu to see a list of elements in the stack, or click in the header bar of the stack to cycle through elements
+            - heading [level=4] [ref=f10e443]:
+              - text: Header Bar
+              - link "Sign in to edit" [ref=f10e445] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D9&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e448]:
+              - listitem [ref=f10e449]:
+                - link "Main Menu" [ref=f10e450] [cursor=pointer]:
+                  - /url: /wiki/Main_Menu
+                - text: (
+                - generic [ref=f10e451]: "Default: permanent"
+                - text: )
+              - listitem [ref=f10e452]:
+                - link "Tabs Bar" [ref=f10e453] [cursor=pointer]:
+                  - /url: /wiki/Tabs_Bar
+                - text: (
+                - generic [ref=f10e454]: "Default: permanent"
+                - text: )
+              - listitem [ref=f10e455]:
+                - link "Command Buttons" [ref=f10e456] [cursor=pointer]:
+                  - /url: /wiki/Command_Buttons
+                - text: (
+                - generic [ref=f10e457]: Default
+                - text: ) [must be configured in order to appear]
+            - heading [level=4] [ref=f10e458]:
+              - text: Top Panel
+              - link "Sign in to edit" [ref=f10e460] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D10&uselang=en&metadata=article-registration-edit-article-section
+            - paragraph [ref=f10e463]:
+              - text: Alternate location for the
+              - link "Player Controls" [ref=f10e464] [cursor=pointer]:
+                - /url: /wiki/Player_Controls
+              - text: only.
+            - heading [level=4] [ref=f10e465]:
+              - text: Left Sidebar
+              - link "Sign in to edit" [ref=f10e467] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D11&uselang=en&metadata=article-registration-edit-article-section
+            - paragraph [ref=f10e470]:
+              - text: The Left Sidebar may be hidden for the current tab by using the
+              - link "Tab Overrides" [ref=f10e471] [cursor=pointer]:
+                - /url: /wiki/Tab_Overrides
+              - text: settings, either completely or with auto-open enabled (it will pop up when your mouse is at the left edge of the window). See
+              - link "Status Bar" [ref=f10e472] [cursor=pointer]:
+                - /url: /wiki/Status_Bar
+              - text: for more options to show and hide the Left Sidebar.
+            - list [ref=f10e473]:
+              - listitem [ref=f10e474]:
+                - link "Navigator" [ref=f10e475] [cursor=pointer]:
+                  - /url: /wiki/Navigator
+                - text: + (
+                - generic [ref=f10e476]: "Default: permanent"
+                - text: )
+              - listitem [ref=f10e477]:
+                - link "Album Cover" [ref=f10e478] [cursor=pointer]:
+                  - /url: /wiki/Album_Cover
+                - text: +
+              - listitem [ref=f10e479]:
+                - link "Artist Biography" [ref=f10e480] [cursor=pointer]:
+                  - /url: /wiki/Artist_Biography
+                - text: +
+              - listitem [ref=f10e481]:
+                - link "Artist Picture" [ref=f10e482] [cursor=pointer]:
+                  - /url: /wiki/Artist_Picture
+                - text: +
+              - listitem [ref=f10e483]:
+                - link "Library Explorer" [ref=f10e484] [cursor=pointer]:
+                  - /url: /wiki/Library_Explorer
+                - text: +
+              - listitem [ref=f10e485]:
+                - link "Lyrics" [ref=f10e486] [cursor=pointer]:
+                  - /url: /wiki/Lyrics
+                - text: +
+              - listitem [ref=f10e487]:
+                - link "Playing Tracks" [ref=f10e488] [cursor=pointer]:
+                  - /url: /wiki/Playing_Tracks
+                - text: +
+              - listitem [ref=f10e489]:
+                - link "Sidebar Player" [ref=f10e490] [cursor=pointer]:
+                  - /url: /wiki/Sidebar_Player
+              - listitem [ref=f10e491]:
+                - link "Spectrum Visualizer" [ref=f10e492] [cursor=pointer]:
+                  - /url: /wiki/Spectrum_Visualizer
+              - listitem [ref=f10e493]:
+                - link "Thumbnail Browser" [ref=f10e494] [cursor=pointer]:
+                  - /url: /wiki/Thumbnail_Browser
+                - text: +
+              - listitem [ref=f10e495]:
+                - link "Track Information" [ref=f10e496] [cursor=pointer]:
+                  - /url: /wiki/Track_Information
+                - text: +
+              - listitem [ref=f10e497]:
+                - link "Wavebar" [ref=f10e498] [cursor=pointer]:
+                  - /url: /wiki/Wavebar
+            - heading [level=4] [ref=f10e499]:
+              - text: Left Main Panel
+              - link "Sign in to edit" [ref=f10e501] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D12&uselang=en&metadata=article-registration-edit-article-section
+            - paragraph [ref=f10e504]:
+              - text: The Left Main Panel may be hidden for the current tab by using the
+              - link "Tab Overrides" [ref=f10e505] [cursor=pointer]:
+                - /url: /wiki/Tab_Overrides
+              - text: settings.
+            - list [ref=f10e506]:
+              - listitem [ref=f10e507]:
+                - link "Thumbnail Browser" [ref=f10e508] [cursor=pointer]:
+                  - /url: /wiki/Thumbnail_Browser
+                - text: + (
+                - generic [ref=f10e509]: Default
+                - text: )
+              - listitem [ref=f10e510]:
+                - link "Album Cover" [ref=f10e511] [cursor=pointer]:
+                  - /url: /wiki/Album_Cover
+                - text: +
+              - listitem [ref=f10e512]:
+                - link "Artist Biography" [ref=f10e513] [cursor=pointer]:
+                  - /url: /wiki/Artist_Biography
+                - text: +
+              - listitem [ref=f10e514]:
+                - link "Artist Picture" [ref=f10e515] [cursor=pointer]:
+                  - /url: /wiki/Artist_Picture
+                - text: +
+              - listitem [ref=f10e516]:
+                - link "Library Explorer" [ref=f10e517] [cursor=pointer]:
+                  - /url: /wiki/Library_Explorer
+                - text: +
+              - listitem [ref=f10e518]:
+                - link "Lyrics" [ref=f10e519] [cursor=pointer]:
+                  - /url: /wiki/Lyrics
+                - text: +
+              - listitem [ref=f10e520]:
+                - link "Playing Tracks" [ref=f10e521] [cursor=pointer]:
+                  - /url: /wiki/Playing_Tracks
+                - text: +
+              - listitem [ref=f10e522]:
+                - link "Sidebar Player" [ref=f10e523] [cursor=pointer]:
+                  - /url: /wiki/Sidebar_Player
+              - listitem [ref=f10e524]:
+                - link "Spectrum Visualizer" [ref=f10e525] [cursor=pointer]:
+                  - /url: /wiki/Spectrum_Visualizer
+              - listitem [ref=f10e526]:
+                - link "Track Information" [ref=f10e527] [cursor=pointer]:
+                  - /url: /wiki/Track_Information
+                - text: +
+              - listitem [ref=f10e528]:
+                - link "Wavebar" [ref=f10e529] [cursor=pointer]:
+                  - /url: /wiki/Wavebar
+            - heading [level=4] [ref=f10e530]:
+              - text: Main Panel
+              - link "Sign in to edit" [ref=f10e532] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D13&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e535]:
+              - listitem [ref=f10e536]:
+                - link "Files" [ref=f10e537] [cursor=pointer]:
+                  - /url: /wiki/Main_Panel_Views
+                - text: (
+                - generic [ref=f10e538]: "Default: permanent"
+                - text: )
+              - listitem [ref=f10e539]:
+                - link "AZ Jumpbar" [ref=f10e540] [cursor=pointer]:
+                  - /url: /wiki/AZ_Jumpbar
+              - listitem [ref=f10e541]:
+                - link "Column Browser" [ref=f10e542] [cursor=pointer]:
+                  - /url: /wiki/Column_Browser
+              - listitem [ref=f10e543]:
+                - link "Now Playing Bar" [ref=f10e544] [cursor=pointer]:
+                  - /url: /wiki/Now_Playing_Bar
+              - listitem [ref=f10e545]:
+                - link "Playing Tracks" [ref=f10e546] [cursor=pointer]:
+                  - /url: /wiki/Playing_Tracks
+              - listitem [ref=f10e547]:
+                - link "Spectrum Visualizer" [ref=f10e548] [cursor=pointer]:
+                  - /url: /wiki/Spectrum_Visualizer
+              - listitem [ref=f10e549]:
+                - link "Thumbnail Browser" [ref=f10e550] [cursor=pointer]:
+                  - /url: /wiki/Thumbnail_Browser
+              - listitem [ref=f10e551]:
+                - link "Wavebar" [ref=f10e552] [cursor=pointer]:
+                  - /url: /wiki/Wavebar
+            - heading [level=4] [ref=f10e554]:
+              - text: Right Main Panel
+              - link "Sign in to edit" [ref=f10e556] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D14&uselang=en&metadata=article-registration-edit-article-section
+            - paragraph [ref=f10e559]:
+              - text: The Right Main Panel may be hidden for the current tab by using the
+              - link "Tab Overrides" [ref=f10e560] [cursor=pointer]:
+                - /url: /wiki/Tab_Overrides
+              - text: settings.
+            - list [ref=f10e561]:
+              - listitem [ref=f10e562]:
+                - link "Album Cover" [ref=f10e563] [cursor=pointer]:
+                  - /url: /wiki/Album_Cover
+                - text: +
+              - listitem [ref=f10e564]:
+                - link "Artist Biography" [ref=f10e565] [cursor=pointer]:
+                  - /url: /wiki/Artist_Biography
+                - text: +
+              - listitem [ref=f10e566]:
+                - link "Artist Picture" [ref=f10e567] [cursor=pointer]:
+                  - /url: /wiki/Artist_Picture
+                - text: +
+              - listitem [ref=f10e568]:
+                - link "Lyrics" [ref=f10e569] [cursor=pointer]:
+                  - /url: /wiki/Lyrics
+                - text: +
+              - listitem [ref=f10e570]:
+                - link "Playing Tracks" [ref=f10e571] [cursor=pointer]:
+                  - /url: /wiki/Playing_Tracks
+                - text: +
+              - listitem [ref=f10e572]:
+                - link "Sidebar Player" [ref=f10e573] [cursor=pointer]:
+                  - /url: /wiki/Sidebar_Player
+              - listitem [ref=f10e574]:
+                - link "Spectrum Visualizer" [ref=f10e575] [cursor=pointer]:
+                  - /url: /wiki/Spectrum_Visualizer
+              - listitem [ref=f10e576]:
+                - link "Track Information" [ref=f10e577] [cursor=pointer]:
+                  - /url: /wiki/Track_Information
+                - text: +
+              - listitem [ref=f10e578]:
+                - link "Wavebar" [ref=f10e579] [cursor=pointer]:
+                  - /url: /wiki/Wavebar
+            - heading [level=4] [ref=f10e580]:
+              - text: Right Sidebar
+              - link "Sign in to edit" [ref=f10e582] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D15&uselang=en&metadata=article-registration-edit-article-section
+            - paragraph [ref=f10e585]:
+              - text: The Right Sidebar may be hidden for the current tab by using the
+              - link "Tab Overrides" [ref=f10e586] [cursor=pointer]:
+                - /url: /wiki/Tab_Overrides
+              - text: settings, either completely or with auto-open enabled (it will pop up when your mouse is at the right edge of the window). See
+              - link "Status Bar" [ref=f10e587] [cursor=pointer]:
+                - /url: /wiki/Status_Bar
+              - text: for more options to show and hide the Right Sidebar.
+            - list [ref=f10e588]:
+              - listitem [ref=f10e589]:
+                - link "Playing Tracks" [ref=f10e590] [cursor=pointer]:
+                  - /url: /wiki/Playing_Tracks
+                - text: + (
+                - generic [ref=f10e591]: Default
+                - text: )
+              - listitem [ref=f10e592]:
+                - link "Track Information" [ref=f10e593] [cursor=pointer]:
+                  - /url: /wiki/Track_Information
+                - text: + (
+                - generic [ref=f10e594]: Default
+                - text: )
+              - listitem [ref=f10e595]:
+                - link "Lyrics" [ref=f10e596] [cursor=pointer]:
+                  - /url: /wiki/Lyrics
+                - text: + (
+                - generic [ref=f10e597]: Default
+                - text: )
+              - listitem [ref=f10e598]:
+                - link "Album Cover" [ref=f10e599] [cursor=pointer]:
+                  - /url: /wiki/Album_Cover
+                - text: +
+              - listitem [ref=f10e600]:
+                - link "Artist Biography" [ref=f10e601] [cursor=pointer]:
+                  - /url: /wiki/Artist_Biography
+                - text: +
+              - listitem [ref=f10e602]:
+                - link "Artist Picture" [ref=f10e603] [cursor=pointer]:
+                  - /url: /wiki/Artist_Picture
+                - text: +
+              - listitem [ref=f10e604]:
+                - link "Sidebar Player" [ref=f10e605] [cursor=pointer]:
+                  - /url: /wiki/Sidebar_Player
+              - listitem [ref=f10e606]:
+                - link "Spectrum Visualizer" [ref=f10e607] [cursor=pointer]:
+                  - /url: /wiki/Spectrum_Visualizer
+              - listitem [ref=f10e608]:
+                - link "Wavebar" [ref=f10e609] [cursor=pointer]:
+                  - /url: /wiki/Wavebar
+            - heading [level=4] [ref=f10e610]:
+              - text: Bottom Panel
+              - link "Sign in to edit" [ref=f10e612] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D16&uselang=en&metadata=article-registration-edit-article-section
+            - list [ref=f10e615]:
+              - listitem [ref=f10e616]:
+                - link "Status Bar" [ref=f10e617] [cursor=pointer]:
+                  - /url: /wiki/Status_Bar
+                - text: (
+                - generic [ref=f10e618]: Default
+                - text: )
+              - listitem [ref=f10e619]:
+                - link "Player Controls" [ref=f10e620] [cursor=pointer]:
+                  - /url: /wiki/Player_Controls
+                - text: (
+                - generic [ref=f10e621]: Default
+                - text: )
+            - heading [level=4] [ref=f10e622]:
+              - text: Floating Window
+              - link "Sign in to edit" [ref=f10e624] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fveaction%3Dedit%26section%3D17&uselang=en&metadata=article-registration-edit-article-section
+            - paragraph [ref=f10e627]: The Floating Window will appear once elements are added and the configuration is saved or applied. It can be minimised, but can only be closed by removing the elements again via the Panels Configuration window.
+            - list [ref=f10e628]:
+              - listitem [ref=f10e629]:
+                - link "Artist Biography" [ref=f10e630] [cursor=pointer]:
+                  - /url: /wiki/Artist_Biography
+                - text: +
+              - listitem [ref=f10e631]:
+                - link "Lyrics" [ref=f10e632] [cursor=pointer]:
+                  - /url: /wiki/Lyrics
+                - text: +
+              - listitem [ref=f10e633]:
+                - link "Playing Tracks" [ref=f10e634] [cursor=pointer]:
+                  - /url: /wiki/Playing_Tracks
+                - text: +
+              - listitem [ref=f10e635]:
+                - link "Sidebar Player" [ref=f10e636] [cursor=pointer]:
+                  - /url: /wiki/Sidebar_Player
+              - listitem [ref=f10e637]:
+                - link "Spectrum Visualizer" [ref=f10e638] [cursor=pointer]:
+                  - /url: /wiki/Spectrum_Visualizer
+              - listitem [ref=f10e639]:
+                - link "Track Information" [ref=f10e640] [cursor=pointer]:
+                  - /url: /wiki/Track_Information
+                - text: +
+              - listitem [ref=f10e641]:
+                - link "Wavebar" [ref=f10e642] [cursor=pointer]:
+                  - /url: /wiki/Wavebar
+          - generic [ref=f10e643]:
+            - button "Toggle Categories" [ref=f10e645] [cursor=pointer]: Categories
+            - generic [ref=f10e648]:
+              - text: Community content is available under
+              - link "CC-BY-SA" [ref=f10e649] [cursor=pointer]:
+                - /url: https://www.fandom.com/licensing
+              - text: unless otherwise noted.
+        - complementary [ref=f10e650]:
+          - generic [ref=f10e664]:
+            - generic [ref=f10e665]:
+              - heading "New to Fandom? Let's make it official." [level=2] [ref=f10e666]
+              - paragraph [ref=f10e667]: Create your free account and dive into the worlds you love with fans who love them too.
+            - generic [ref=f10e668]:
+              - link "Continue with Email" [ref=f10e669] [cursor=pointer]:
+                - /url: https://auth.fandom.com/register?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee&uselang=en&metadata=right-rail-registration-button
+              - generic:
+                - iframe
+    - contentinfo [ref=f10e677]:
+      - generic [ref=f10e678]:
+        - generic [ref=f10e679]:
+          - heading [level=2] [ref=f10e680]:
+            - link "Fandom homepage" [ref=f10e681] [cursor=pointer]:
+              - /url: https://www.fandom.com/
+              - img "Fandom logo" [ref=f10e682]
+          - generic [ref=f10e683]:
+            - heading "Explore properties" [level=3] [ref=f10e684]
+            - list [ref=f10e685]:
+              - listitem [ref=f10e686]:
+                - link "Fandom" [ref=f10e687] [cursor=pointer]:
+                  - /url: https://www.fandom.com/
+              - listitem [ref=f10e688]:
+                - link "Fanatical" [ref=f10e689] [cursor=pointer]:
+                  - /url: https://www.fanatical.com/
+              - listitem [ref=f10e690]:
+                - link "GameSpot" [ref=f10e691] [cursor=pointer]:
+                  - /url: https://www.gamespot.com/
+              - listitem [ref=f10e692]:
+                - link "Metacritic" [ref=f10e693] [cursor=pointer]:
+                  - /url: https://www.metacritic.com/
+              - listitem [ref=f10e694]:
+                - link "TV Guide" [ref=f10e695] [cursor=pointer]:
+                  - /url: https://www.tvguide.com/
+              - listitem [ref=f10e696]:
+                - link "Honest Entertainment" [ref=f10e697] [cursor=pointer]:
+                  - /url: https://www.youtube.com/user/screenjunkies
+          - generic [ref=f10e698]:
+            - heading "Follow Us" [level=3] [ref=f10e699]
+            - list [ref=f10e700]:
+              - listitem [ref=f10e701]:
+                - link "Follow Fandom on Facebook" [ref=f10e702] [cursor=pointer]:
+                  - /url: https://www.facebook.com/getfandom
+              - listitem [ref=f10e705]:
+                - link "Follow Fandom on Twitter" [ref=f10e706] [cursor=pointer]:
+                  - /url: https://twitter.com/getfandom
+              - listitem [ref=f10e709]:
+                - link "Follow Fandom on Youtube" [ref=f10e710] [cursor=pointer]:
+                  - /url: https://www.youtube.com/fandomentertainment
+              - listitem [ref=f10e713]:
+                - link "Follow Fandom on Instagram" [ref=f10e714] [cursor=pointer]:
+                  - /url: https://www.instagram.com/getfandom/
+              - listitem [ref=f10e717]:
+                - link "Follow Fandom on LinkedIn" [ref=f10e718] [cursor=pointer]:
+                  - /url: https://www.linkedin.com/company/157252
+        - generic [ref=f10e722]:
+          - heading "Overview" [level=3] [ref=f10e723]
+          - list [ref=f10e724]:
+            - listitem [ref=f10e725]:
+              - link "What is Fandom?" [ref=f10e726] [cursor=pointer]:
+                - /url: https://www.fandom.com/what-is-fandom
+            - listitem [ref=f10e727]:
+              - link "Essentials" [ref=f10e728] [cursor=pointer]:
+                - /url: https://www.fandom.com/essentials
+            - listitem [ref=f10e729]:
+              - link "About" [ref=f10e730] [cursor=pointer]:
+                - /url: https://www.fandom.com/about
+            - listitem [ref=f10e731]:
+              - link "Careers" [ref=f10e732] [cursor=pointer]:
+                - /url: https://www.fandom.com/careers
+            - listitem [ref=f10e733]:
+              - link "Press" [ref=f10e734] [cursor=pointer]:
+                - /url: https://www.fandom.com/press
+            - listitem [ref=f10e735]:
+              - link "Contact" [ref=f10e736] [cursor=pointer]:
+                - /url: https://www.fandom.com/about#contact
+            - listitem [ref=f10e737]:
+              - link "Terms of Use" [ref=f10e738] [cursor=pointer]:
+                - /url: https://www.fandom.com/terms-of-use
+            - listitem [ref=f10e739]:
+              - link "Privacy Policy" [ref=f10e740] [cursor=pointer]:
+                - /url: https://www.fandom.com/privacy-policy
+            - listitem [ref=f10e741]:
+              - link "Digital Services Act" [ref=f10e742] [cursor=pointer]:
+                - /url: https://www.fandom.com/digital-services-act
+            - listitem [ref=f10e743]:
+              - link "Global Sitemap" [ref=f10e744] [cursor=pointer]:
+                - /url: //community.fandom.com/Sitemap
+            - listitem [ref=f10e745]:
+              - link "Local Sitemap" [ref=f10e746] [cursor=pointer]:
+                - /url: /wiki/Local_Sitemap
+            - listitem [ref=f10e747]:
+              - button "Manage Preferences" [ref=f10e748]
+        - generic [ref=f10e749]:
+          - generic [ref=f10e750]:
+            - heading "Community" [level=3] [ref=f10e751]
+            - list [ref=f10e752]:
+              - listitem [ref=f10e753]:
+                - link "Community Central" [ref=f10e754] [cursor=pointer]:
+                  - /url: //community.fandom.com/wiki/Community_Central
+              - listitem [ref=f10e755]:
+                - link "Support" [ref=f10e756] [cursor=pointer]:
+                  - /url: https://fandom.zendesk.com/
+              - listitem [ref=f10e757]:
+                - link "Help" [ref=f10e758] [cursor=pointer]:
+                  - /url: //community.fandom.com/wiki/Help:Contents
+              - listitem [ref=f10e759]:
+                - link "Accessibility Statement" [ref=f10e760] [cursor=pointer]:
+                  - /url: https://community.fandom.com/wiki/Fandom_accessibility_statement
+          - generic [ref=f10e761]:
+            - heading "Advertise" [level=3] [ref=f10e762]
+            - list [ref=f10e763]:
+              - listitem [ref=f10e764]:
+                - link "Media Kit" [ref=f10e765] [cursor=pointer]:
+                  - /url: https://about.fandom.com/mediakit
+              - listitem [ref=f10e766]:
+                - link "Contact" [ref=f10e767] [cursor=pointer]:
+                  - /url: https://about.fandom.com/mediakit#contact
+        - generic [ref=f10e768]:
+          - generic [ref=f10e769]:
+            - heading "Fandom Apps" [level=3] [ref=f10e770]
+            - text: Take your favorite fandoms with you and never miss a beat.
+          - generic [ref=f10e771]:
+            - img "Fandom App logo" [ref=f10e772]
+            - list [ref=f10e773]:
+              - listitem [ref=f10e774]:
+                - link "Fandom's Apple Store" [ref=f10e775] [cursor=pointer]:
+                  - /url: https://apps.apple.com/us/app/fandom-videos-news-reviews/id1230063803/?pt=368308&ct=wiki_gaming&mt=8
+                  - img "Store icon" [ref=f10e776]
+              - listitem [ref=f10e777]:
+                - link "Fandom's Google Play" [ref=f10e778] [cursor=pointer]:
+                  - /url: https://play.google.com/store/apps/details?id=com.fandom.app&referrer=utm_source%3Dwikia%26utm_medium%3Dglobalfooter%26utm_campaign%3Dwiki_gaming
+                  - img "Store icon" [ref=f10e779]
+      - generic [ref=f10e780]:
+        - generic [ref=f10e781]: MusicBee Wiki is a Fandom Music Community.
+        - button "View Mobile Site" [ref=f10e783]
+  - generic [ref=f10e786]:
+    - link "Search this wiki" [ref=f10e788] [cursor=pointer]:
+      - /url: https://musicbee.fandom.com/wiki/Special:Search?scope=internal&query=&h=1&isFromHighlightActions=on
+    - link "Search all wikis" [ref=f10e793] [cursor=pointer]:
+      - /url: https://musicbee.fandom.com/wiki/Special:Search?scope=cross-wiki&query=&h=1&isFromHighlightActions=on
+    - generic [ref=f10e795]:
+      - link [ref=f10e797] [cursor=pointer]:
+        - /url: https://reddit.com/submit?url=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fsh%3Dnull__8275%26m%3D3%26utm_source%3Dreddit%26utm_campaign%3Dh2s&title=
+      - link [ref=f10e801] [cursor=pointer]:
+        - /url: https://www.facebook.com/dialog/share?app_id=112328095453510&href=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fsh%3Dnull__8275%26m%3D2%26utm_source%3Dfacebook%26utm_campaign%3Dh2s&redirect_uri=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee&quote=&display=page
+      - link [ref=f10e805] [cursor=pointer]:
+        - /url: https://twitter.com/intent/tweet?text=&url=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FThe_Anatomy_of_MusicBee%3Fsh%3Dnull__8275%26m%3D1%26utm_source%3Dtwitter%26utm_campaign%3Dh2s
+    - button "More" [ref=f10e809] [cursor=pointer]
+  - generic:
+    - generic "We Care About Your Privacy" [ref=f10e813]:
+      - dialog "We Care About Your Privacy" [ref=f10e814]:
+        - generic [ref=f10e816]:
+          - generic [ref=f10e818]:
+            - heading "We Care About Your Privacy" [level=2] [ref=f10e819]
+            - paragraph [ref=f10e820]:
+              - text: We and our 754 partner(s) store and access personal data, like browsing data or unique identifiers, on your device. Selecting I Accept enables tracking technologies to support the purposes shown under we and our partners process data to provide. If trackers are disabled, some content and ads you see may not be as relevant to you. You can resurface this menu to change your choices or withdraw consent at any time by clicking the Manage Preferences link on the bottom of the webpage [or the floating icon on the bottom-left of the webpage, if applicable]. Your choices will have effect within our Website. For more details, refer to our Privacy Policy.
+              - link "More information about your privacy, opens in a new tab" [ref=f10e821] [cursor=pointer]:
+                - /url: https://www.fandom.com/privacy-policy
+                - text: Privacy Policy
+            - generic [ref=f10e822]:
+              - heading "We and our partners process data to provide:" [level=3] [ref=f10e823]
+              - paragraph [ref=f10e825]:
+                - text: Use precise geolocation data. Identify devices based on information actively requested. Store and/or access information on a device. Personalised advertising and content, advertising and content measurement, audience research and services development.
+                - link "List of Partners (vendors)" [ref=f10e826] [cursor=pointer]:
+                  - /url: "#"
+          - generic [ref=f10e828]:
+            - button "I Accept" [ref=f10e829] [cursor=pointer]
+            - button "Show Purposes, Opens the preference center dialog" [ref=f10e830] [cursor=pointer]: Show Purposes
+    - text: Manage Preferences

@@ -1,0 +1,166 @@
+- generic [active] [ref=f13e1]:
+  - main [ref=f13e4]:
+    - heading "Tree & View Settings" [level=1] [ref=f13e5]
+    - generic [ref=f13e6]:
+      - link "Jump to navigation" [ref=f13e7] [cursor=pointer]:
+        - /url: "#mw-head"
+      - link "Jump to search" [ref=f13e8] [cursor=pointer]:
+        - /url: "#searchInput"
+      - generic [ref=f13e10]:
+        - paragraph [ref=f13e11]: Tools > Options > Tree & View Settings
+        - paragraph [ref=f13e12]: This is where you customize the program's look and organizational behavior. You can set the “look” of the content pane, determine some aspects of tree behavior, change the size of cover art and image thumbnails, set the font, and customize the toolbar.
+        - table [ref=f13e13]:
+          - rowgroup [ref=f13e14]:
+            - row [ref=f13e15]:
+              - cell "List" [ref=f13e16]
+              - cell [ref=f13e17]:
+                - list [ref=f13e18]:
+                  - listitem [ref=f13e19]: Auto size columns. This will automatically re-size the columns in the content pane to fit the longest item in each column.
+                  - listitem [ref=f13e20]: Show grid lines. Check this option to display grid lines in the content pane.
+                  - listitem [ref=f13e21]: Show track info tool tips. Check this option to display all database information for a track when hovering the cursor over the track in the content pane.
+            - row [ref=f13e22]:
+              - cell "Tree" [ref=f13e23]
+              - cell [ref=f13e24]:
+                - list [ref=f13e25]:
+                  - listitem [ref=f13e26]: Auto collapse. Enabled by default. Clicking on any item in the tree will automatically collapse it. (You do not have to click on the “-“ button).
+                  - listitem [ref=f13e27]: Auto expand. Enabled by default. Clicking on any item in the tree will automatically expand it. (You do not have to click on the “+” button).
+                  - listitem [ref=f13e28]: Auto size width. Enable this to have the tree width automatically resized to fit all of its content.
+                  - listitem [ref=f13e29]: Show tooltips. Check this option to display yellow help boxes when you place your cursor over items in the tree.
+            - row [ref=f13e30]:
+              - cell "Sorting" [ref=f13e31]
+              - cell [ref=f13e32]:
+                - list [ref=f13e33]:
+                  - listitem [ref=f13e34]: Ignore articles. When enabled, all files that begin with “a”, “an” and “the” will be sorted by the next word in their name. For example, “The Spirit Moves” will be displayed in the same way, but will be sorted as beginning with an “S” instead of a “T”.
+                  - listitem [ref=f13e35]: Save changes on list header clicks. You can sort your lists by clicking on the list headers. But the sort order is not saved unless this option is enabled. When enabled, Media Center will remember the sort orders you have chosen for each list in which you have sorted in this way.
+                  - listitem [ref=f13e36]: "Sort by track # for single albums. Albums will be sorted by track # automatically, even if you have sorted differently."
+                  - listitem [ref=f13e37]: Sort empty strings last. When fields are empty, they will display last in the list, rather than first.
+            - row [ref=f13e38]:
+              - cell "Thumbnails" [ref=f13e39]
+              - cell [ref=f13e40]:
+                - list [ref=f13e41]:
+                  - listitem [ref=f13e42]: Build Missing Thumbnails. If you are encountering performance issues, you may want to enable this option. This builds the thumbnails in one operation, rather than doing it on demand.
+                  - listitem [ref=f13e43]: Erase all thumbnails. This option is for troubleshooting problems with mismatched or empty thumbnails. If you are having problems, enable this option, then restart Media Center to re-create all thumbnails.
+                  - listitem [ref=f13e44]: "Thumbnail exit behavior: Leave, Erase Orphans, or Erase All. When you exit Media Center, you can have it remove all thumbnails, remove only those are no longer linked to files, or to leave all thumbnails. Exception: Thumbnails of files that are not imported automatically are removed."
+            - row [ref=f13e45]:
+              - cell "Advanced" [ref=f13e46]
+              - cell [ref=f13e47]:
+                - list [ref=f13e48]:
+                  - listitem [ref=f13e49]: Allow auto-size to cut off long values. This works in conjunction with List and/or Tree auto-size functions. It allows Media Center to cut off very long values, even when auto-size width is on.
+                  - listitem [ref=f13e50]: Display missing file image in lists (slow on network drives)
+                  - listitem [ref=f13e51]: "Right-click recent command count: When you right-click in the content pane, your last selection is remembered and listed at the top of the menu. You can customize how many of your recent selections are remembered. The default is 1. You can select up to 9."
+            - row [ref=f13e52]:
+              - cell "Customize Toolbar" [ref=f13e53]
+              - cell [ref=f13e54]:
+                - text: Remove items menus from the Menu bar, or add/remove icons from the toolbar. Remember to first select the toolbar you want to modify (there is a toolbar next to the File Menu, and another at the bottom left, under the Action Window).
+                - paragraph [ref=f13e55]: You can also choose to have selective text displayed with some of the icons.
+                - paragraph [ref=f13e56]: To change the order of icons or menu items, use the “Move Up” and “Move Down” buttons.
+                - paragraph [ref=f13e57]: Selecting "Reset" will revert to the default setting. You can also access "customize toolbar" by right clicking anywhere in the toolbar.
+            - row [ref=f13e58]:
+              - cell "Select Font" [ref=f13e59]
+              - cell "Change the font used throughout the program." [ref=f13e60]
+      - generic [ref=f13e62]:
+        - link "Category" [ref=f13e63] [cursor=pointer]:
+          - /url: /index.php/Special:Categories
+        - text: ":"
+        - list [ref=f13e64]:
+          - listitem [ref=f13e65]:
+            - link "Frequently Asked Questions" [ref=f13e66] [cursor=pointer]:
+              - /url: /index.php/Category:Frequently_Asked_Questions
+  - generic:
+    - heading "Navigation menu" [level=2] [ref=f13e67]
+    - generic [ref=f13e68]:
+      - navigation "Personal tools" [ref=f13e69]:
+        - list [ref=f13e71]:
+          - listitem [ref=f13e72]:
+            - link "Log in" [ref=f13e73] [cursor=pointer]:
+              - /url: /index.php?title=Special:UserLogin&returnto=Tree+%26+View+Settings
+      - navigation "Namespaces" [ref=f13e75]:
+        - list [ref=f13e76]:
+          - listitem [ref=f13e77]:
+            - link "Page" [ref=f13e78] [cursor=pointer]:
+              - /url: /index.php/Tree_%26_View_Settings
+          - listitem [ref=f13e79]:
+            - link "Discussion" [ref=f13e80] [cursor=pointer]:
+              - /url: /index.php?title=Talk:Tree_%26_View_Settings&action=edit&redlink=1
+      - generic [ref=f13e81]:
+        - navigation "Views" [ref=f13e82]:
+          - list [ref=f13e83]:
+            - listitem [ref=f13e84]:
+              - link "Read" [ref=f13e85] [cursor=pointer]:
+                - /url: /index.php/Tree_%26_View_Settings
+            - listitem [ref=f13e86]:
+              - link "View source" [ref=f13e87] [cursor=pointer]:
+                - /url: /index.php?title=Tree_%26_View_Settings&action=edit
+            - listitem [ref=f13e88]:
+              - link "View history" [ref=f13e89] [cursor=pointer]:
+                - /url: /index.php?title=Tree_%26_View_Settings&action=history
+        - search [ref=f13e90]:
+          - generic [ref=f13e91]:
+            - heading "Search" [level=3] [ref=f13e92]
+            - generic [ref=f13e94]:
+              - searchbox "Search wiki.jriver.com" [ref=f13e95]
+              - button "Search" [ref=f13e96] [cursor=pointer]
+              - button "Go" [ref=f13e97] [cursor=pointer]
+    - generic [ref=f13e98]:
+      - banner [ref=f13e99]:
+        - link "Visit the main page" [ref=f13e100] [cursor=pointer]:
+          - /url: /index.php/Main_Page
+      - navigation "Navigation" [ref=f13e101]:
+        - list [ref=f13e103]:
+          - listitem [ref=f13e104]:
+            - link "Interact Forum" [ref=f13e105] [cursor=pointer]:
+              - /url: http://yabb.jriver.com/interact/index.php
+          - listitem [ref=f13e106]:
+            - link "Main Page" [ref=f13e107] [cursor=pointer]:
+              - /url: /index.php/Main_Page
+          - listitem [ref=f13e108]:
+            - link "User Manual" [ref=f13e109] [cursor=pointer]:
+              - /url: /index.php/Media_Center
+          - listitem [ref=f13e110]:
+            - link "Community portal" [ref=f13e111] [cursor=pointer]:
+              - /url: /index.php/Wiki.jriver.com:Community_portal
+          - listitem [ref=f13e112]:
+            - link "Recent changes" [ref=f13e113] [cursor=pointer]:
+              - /url: /index.php/Special:RecentChanges
+      - navigation [ref=f13e114]:
+        - heading "Tools" [level=3] [ref=f13e115]
+        - list [ref=f13e117]:
+          - listitem [ref=f13e118]:
+            - link "What links here" [ref=f13e119] [cursor=pointer]:
+              - /url: /index.php/Special:WhatLinksHere/Tree_%26_View_Settings
+          - listitem [ref=f13e120]:
+            - link "Related changes" [ref=f13e121] [cursor=pointer]:
+              - /url: /index.php/Special:RecentChangesLinked/Tree_%26_View_Settings
+          - listitem [ref=f13e122]:
+            - link "Special pages" [ref=f13e123] [cursor=pointer]:
+              - /url: /index.php/Special:SpecialPages
+          - listitem [ref=f13e124]:
+            - link "Printable version" [ref=f13e125] [cursor=pointer]:
+              - /url: javascript:print();
+          - listitem [ref=f13e126]:
+            - link "Permanent link" [ref=f13e127] [cursor=pointer]:
+              - /url: /index.php?title=Tree_%26_View_Settings&oldid=15834
+          - listitem [ref=f13e128]:
+            - link "Page information" [ref=f13e129] [cursor=pointer]:
+              - /url: /index.php?title=Tree_%26_View_Settings&action=info
+  - contentinfo [ref=f13e130]:
+    - list [ref=f13e131]:
+      - listitem [ref=f13e132]: This page was last edited on 17 June 2019, at 16:00.
+    - list:
+      - listitem [ref=f13e133]:
+        - link "Privacy policy" [ref=f13e134] [cursor=pointer]:
+          - /url: /index.php/Wiki.jriver.com:Privacy_policy
+      - listitem [ref=f13e135]:
+        - link "About wiki.jriver.com" [ref=f13e136] [cursor=pointer]:
+          - /url: /index.php/Wiki.jriver.com:About
+      - listitem [ref=f13e137]:
+        - link "Disclaimers" [ref=f13e138] [cursor=pointer]:
+          - /url: /index.php/Wiki.jriver.com:General_disclaimer
+    - list [ref=f13e139]:
+      - listitem [ref=f13e140]:
+        - link [ref=f13e141] [cursor=pointer]:
+          - /url: https://www.mediawiki.org/
+          - img "Powered by MediaWiki" [ref=f13e142]
+        - link [ref=f13e143] [cursor=pointer]:
+          - /url: https://www.debian.org/
+          - img "Powered by Debian" [ref=f13e144]

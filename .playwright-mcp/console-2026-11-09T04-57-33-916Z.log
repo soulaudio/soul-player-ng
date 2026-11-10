@@ -1,0 +1,6 @@
+[    1240ms] ReferenceError: wgNamespaceNumber is not defined
+    at <anonymous>:2:2
+    at domEval (https://wiki.jriver.com/load.php?lang=en&modules=startup&only=scripts&raw=1&skin=vector:10:491)
+    at runScript (https://wiki.jriver.com/load.php?lang=en&modules=startup&only=scripts&raw=1&skin=vector:12:173)
+    at execute (https://wiki.jriver.com/load.php?lang=en&modules=startup&only=scripts&raw=1&skin=vector:13:201)
+    at doPropagation (https://wiki.jriver.com/load.php?lang=en&modules=startup&only=scripts&raw=1&skin=vector:6:341)
