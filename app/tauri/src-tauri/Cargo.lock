@@ -844,12 +844,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
+name = "embedded-io"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
+
+[[package]]
 name = "embedded-io-adapters"
 version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "90ccf22c3feffc79593914c0b4be9a2ed6b11e44cf1f84fd6b77d2ee92de0077"
 dependencies = [
- "embedded-io",
+ "embedded-io 0.6.1",
+]
+
+[[package]]
+name = "embedded-io-adapters"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c900a1c087f1f7d17cdc84a1290df91521cd90933efa76d68e568385d889f2f4"
+dependencies = [
+ "embedded-io 0.7.1",
 ]
 
 [[package]]
@@ -3480,7 +3495,7 @@ name = "soul-audio-artbake"
 version = "0.1.0"
 source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#d9c03bc7d6119ee7855b54f1fd3e17a4c03b0f20"
 dependencies = [
- "embedded-io",
+ "embedded-io 0.6.1",
  "image",
  "soul-audio-catalog",
  "soul-audio-core",
@@ -3491,7 +3506,7 @@ name = "soul-audio-catalog"
 version = "0.1.0"
 source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#d9c03bc7d6119ee7855b54f1fd3e17a4c03b0f20"
 dependencies = [
- "embedded-io",
+ "embedded-io 0.6.1",
  "soul-audio-core",
 ]
 
@@ -3510,7 +3525,7 @@ name = "soul-audio-core"
 version = "0.1.0"
 source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#d9c03bc7d6119ee7855b54f1fd3e17a4c03b0f20"
 dependencies = [
- "embedded-io",
+ "embedded-io 0.6.1",
 ]
 
 [[package]]
@@ -3520,8 +3535,8 @@ source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#d9c03bc7d
 dependencies = [
  "anyhow",
  "cpal",
- "embedded-io",
- "embedded-io-adapters",
+ "embedded-io 0.6.1",
+ "embedded-io-adapters 0.6.2",
  "ringbuf",
  "soul-audio-core",
 ]
@@ -3539,7 +3554,7 @@ name = "soul-audio-import"
 version = "0.1.0"
 source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#d9c03bc7d6119ee7855b54f1fd3e17a4c03b0f20"
 dependencies = [
- "embedded-io-adapters",
+ "embedded-io-adapters 0.6.2",
  "soul-audio-catalog",
  "soul-audio-core",
  "soul-audio-index",
@@ -3551,7 +3566,7 @@ name = "soul-audio-index"
 version = "0.1.0"
 source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#d9c03bc7d6119ee7855b54f1fd3e17a4c03b0f20"
 dependencies = [
- "embedded-io",
+ "embedded-io 0.6.1",
  "soul-audio-artbake",
  "soul-audio-catalog",
  "soul-audio-core",
@@ -3580,7 +3595,7 @@ name = "soul-audio-tags"
 version = "0.1.0"
 source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#d9c03bc7d6119ee7855b54f1fd3e17a4c03b0f20"
 dependencies = [
- "embedded-io",
+ "embedded-io 0.6.1",
  "soul-audio-core",
 ]
 
@@ -3610,7 +3625,7 @@ name = "soul-player-backend"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "embedded-io-adapters",
+ "embedded-io-adapters 0.7.0",
  "serde",
  "soul-audio-catalog",
  "soul-audio-control",
@@ -4256,7 +4271,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

@@ -12,7 +12,7 @@ license = "MIT OR Apache-2.0"
 # passes `embedded-io` source types across the boundary). A coordinated 0.6 -> 0.7
 # bump across core + this app is a separate follow-up.
 embedded-io = "0.6"
-embedded-io-adapters = "0.6"
+embedded-io-adapters = "0.7"
 
 [workspace.lints.rust]
 # The headless service carries all the logic — keep it provably memory-safe so
