@@ -23,3 +23,7 @@
 /.claude/
 /.playwright-mcp/
 
+# Python bytecode from the release scripts (.github/scripts/*.py).
+__pycache__/
+*.pyc
+
