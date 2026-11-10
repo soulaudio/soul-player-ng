@@ -1,5 +1,5 @@
-# GitHub auto-generated release-notes grouping (read when a release is created
-# with generate_release_notes / tauri-action). Categorises merged PRs by label.
+# GitHub auto-generated release-notes grouping, used by the Release workflow's
+# `generate_release_notes: true`. Categorises merged PRs by label.
 changelog:
   exclude:
     labels: [dependencies, chore, internal, skip-changelog]
