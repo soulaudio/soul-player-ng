@@ -105,21 +105,17 @@ jobs:
         working-directory: app/rune
         run: cargo packager --release -f ${{ matrix.format }}
 
-      - name: Write updater sidecar
-        shell: bash # the default is PowerShell on Windows; this uses \ + mkdir -p
+      # Stages the signed artifact into dist/ under a GitHub-safe name (so the
+      # manifest URL matches the uploaded asset) and writes its meta sidecar.
+      - name: Stage artifact + write updater sidecar
+        shell: bash # Windows defaults to PowerShell; this uses \ continuations
         run: |
-          mkdir -p dist
           python .github/scripts/write-meta.py \
             --out-dir app/rune/target/release \
             --target-key ${{ matrix.target_key }} \
             --format ${{ matrix.format }} \
+            --stage-dir dist \
             --meta-out dist/${{ matrix.target_key }}.meta.json
-
-      - name: Stage the signed artifact
-        shell: bash
-        run: |
-          sig=$(ls app/rune/target/release/*.sig)
-          cp "${sig%.sig}" dist/
 
       - uses: actions/upload-artifact@v4
         with:
