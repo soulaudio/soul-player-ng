@@ -11,7 +11,7 @@ use std::path::PathBuf;
 
 use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
 use soul_player_host::{
-    Command, Event, PlayState, PlayerHandle, RepeatMode, TrackView, WatchUpdate,
+    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, TrackView, WatchUpdate,
 };
 
 mod config;
@@ -71,6 +71,8 @@ struct State {
     route: Route,
     /// Light/dark preference (persisted); `System` follows the OS.
     theme_pref: ThemePref,
+    /// Which baked axis the library list is ordered by.
+    sort_axis: BrowseAxis,
     /// The watched-folder set (from the host), rendered by Settings → Sources;
     /// `unavailable` are configured roots currently unreachable (shown "offline").
     watched_folders: Vec<PathBuf>,
@@ -109,6 +111,7 @@ impl State {
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
+            sort_axis: BrowseAxis::ArtistAlbumTrack,
             watched_folders,
             unavailable,
             art: ArtCache::new(),
@@ -173,6 +176,14 @@ pub(crate) fn is_dark(pref: ThemePref, system_dark: bool) -> bool {
 pub(crate) fn set_theme_pref(s: &mut State, pref: ThemePref) {
     s.theme_pref = pref;
     config::save_theme_pref(pref.as_config());
+}
+
+/// Switch the library's sort order — re-fetches the current library's views in
+/// the chosen baked axis. Track ids are stable across axes (only the display +
+/// play-context order changes), so playback is undisturbed.
+pub(crate) fn set_sort(s: &mut State, axis: BrowseAxis) {
+    s.sort_axis = axis;
+    s.library = s.host.views_by(axis);
 }
 
 fn view(s: &State, cx: &mut Cx<State>) -> El {
@@ -468,6 +479,25 @@ mod tests {
         assert!(rt.find("theme-system").is_some());
         assert!(rt.find("theme-light").is_some());
         assert!(rt.find("theme-dark").is_some());
+    }
+
+    #[test]
+    fn library_shows_the_sort_bar_when_populated() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(State::new(host), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("sort-bar").is_some(),
+            "populated library shows a sort bar"
+        );
+        for key in ["sort-artist", "sort-album", "sort-title", "sort-folder"] {
+            assert!(rt.find(key).is_some(), "sort option {key} present");
+        }
     }
 
     /// End to end: `AppSpec::on_key`'s Space shortcut (set on the `Runtime`

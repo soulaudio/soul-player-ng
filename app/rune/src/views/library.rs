@@ -3,7 +3,7 @@
 
 use rune::tok::type_;
 use rune::{El, ScrollSpec, col, el, row, text};
-use soul_player_host::Command;
+use soul_player_host::{BrowseAxis, Command};
 
 use crate::State;
 use crate::theme::Palette;
@@ -62,6 +62,54 @@ fn track_row(s: &State, p: &Palette, index: usize) -> El {
         })
 }
 
+/// One sort-order choice; the active axis is filled with the primary color.
+fn sort_button(label: &str, key: &str, axis: BrowseAxis, active: bool, p: &Palette) -> El {
+    el().key(key.to_string())
+        .padding(6.0)
+        .radius(6.0)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| crate::set_sort(s, axis))
+}
+
+/// The sort bar above the track list: switch which baked axis orders the library.
+fn sort_bar(s: &State, p: &Palette) -> El {
+    let a = s.sort_axis;
+    row()
+        .key("sort-bar")
+        .gap(8.0)
+        .padding(8.0)
+        .child(text("Sort").color(p.text_secondary))
+        .child(sort_button(
+            "Artist",
+            "sort-artist",
+            BrowseAxis::ArtistAlbumTrack,
+            a == BrowseAxis::ArtistAlbumTrack,
+            p,
+        ))
+        .child(sort_button(
+            "Album",
+            "sort-album",
+            BrowseAxis::Album,
+            a == BrowseAxis::Album,
+            p,
+        ))
+        .child(sort_button(
+            "Title",
+            "sort-title",
+            BrowseAxis::Title,
+            a == BrowseAxis::Title,
+            p,
+        ))
+        .child(sort_button(
+            "Folder",
+            "sort-folder",
+            BrowseAxis::Folder,
+            a == BrowseAxis::Folder,
+            p,
+        ))
+}
+
 /// The library's ~38-track testdata set fits comfortably in a plain scrolled
 /// column (`.scroll`); `El::virtualize`/`virtual_rows` (see
 /// `rune::el::virtual_rows`) is the path to reach for once a real-world
@@ -97,9 +145,11 @@ pub fn track_list(s: &State, p: &Palette) -> El {
     for i in 0..s.library.len() {
         list = list.child(track_row(s, p, i));
     }
-    list.scroll(ScrollSpec {
-        stick_bottom: false,
-    })
-    .grow(1.0)
-    .min_h(0.0)
+    col().grow(1.0).min_h(0.0).child(sort_bar(s, p)).child(
+        list.scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .grow(1.0)
+        .min_h(0.0),
+    )
 }
