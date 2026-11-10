@@ -99,6 +99,12 @@ mod tests {
 
     use super::*;
 
+    // A tiny stand-in "installer" and its real minisign signature (made with the
+    // updater key, committed). The .sig verifies against PUBKEY, so download()
+    // exercises the true crypto path without a real 8 MB bundle.
+    const FIXTURE: &[u8] = include_bytes!("../tests/fixtures/update-fixture.bin");
+    const FIXTURE_SIG: &str = include_str!("../tests/fixtures/update-fixture.bin.sig");
+
     /// A throwaway HTTP server that answers every request with `body`, for
     /// pointing the updater at a manifest we control. Returns its URL; the
     /// listener thread is detached and dies with the test process.
@@ -154,5 +160,76 @@ mod tests {
         // Port 1 is effectively never listening: the fetch fails and the check
         // degrades to `None` rather than erroring out.
         assert!(available_at("http://127.0.0.1:1/latest.json").is_none());
+    }
+
+    /// Two-route server for the full download path: `/latest.json` returns a
+    /// manifest whose every platform points `/artifact` at `artifact` (served
+    /// verbatim) with `sig`. Returns the manifest URL.
+    fn serve_update(artifact: Vec<u8>, sig: &str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().unwrap();
+        let manifest = format!(
+            r#"{{"version":"99.0.0","pub_date":"2026-01-01T00:00:00Z","notes":"e2e","platforms":{{"windows-x86_64":{{"url":"http://{addr}/artifact","signature":"{sig}","format":"nsis"}},"macos-aarch64":{{"url":"http://{addr}/artifact","signature":"{sig}","format":"app"}},"linux-x86_64":{{"url":"http://{addr}/artifact","signature":"{sig}","format":"appimage"}}}}}}"#
+        );
+        std::thread::spawn(move || {
+            for conn in listener.incoming() {
+                let Ok(mut stream) = conn else { continue };
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let path = req
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let (ctype, body) = if path.starts_with("/artifact") {
+                    ("application/octet-stream", artifact.clone())
+                } else {
+                    ("application/json", manifest.clone().into_bytes())
+                };
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body);
+            }
+        });
+        format!("http://{addr}/latest.json")
+    }
+
+    /// End to end: check → download → **verify the real signature** against the
+    /// embedded `PUBKEY`. Proves the generated key ↔ embedded pubkey loop works
+    /// (short of the process-replacing install). Stops at `download()`, which
+    /// does the verification; `install()` is the only untested step.
+    #[test]
+    fn download_verifies_the_real_signature_end_to_end() {
+        let endpoint = serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim());
+        let current = env!("CARGO_PKG_VERSION").parse().unwrap();
+        let update = check_update(current, config(&endpoint).unwrap())
+            .unwrap()
+            .expect("99.0.0 is newer than the test binary");
+        let bytes = update
+            .download()
+            .expect("the real .sig verifies against the embedded PUBKEY");
+        assert_eq!(
+            bytes, FIXTURE,
+            "download returns the verified artifact bytes"
+        );
+    }
+
+    #[test]
+    fn download_rejects_a_tampered_artifact() {
+        let mut tampered = FIXTURE.to_vec();
+        tampered[0] ^= 0xFF; // flip a byte → the signature no longer matches
+        let endpoint = serve_update(tampered, FIXTURE_SIG.trim());
+        let current = env!("CARGO_PKG_VERSION").parse().unwrap();
+        let update = check_update(current, config(&endpoint).unwrap())
+            .unwrap()
+            .expect("99.0.0 is newer than the test binary");
+        assert!(
+            update.download().is_err(),
+            "a tampered artifact must fail signature verification"
+        );
     }
 }
