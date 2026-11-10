@@ -1,0 +1,5 @@
+soul-player auto-update e2e fixture — stand-in bytes for a signed installer.
+The companion .sig is a real minisign signature of this file made with the
+updater key in .signing/; it verifies against PUBKEY in src/update.rs. This lets
+the download()+verify path be tested end to end without shipping a real 8 MB
+installer or installing anything.
