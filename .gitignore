@@ -9,9 +9,13 @@
 # app/rune is its own nested cargo workspace (Rune/wgpu), target/ stays out.
 /app/rune/target/
 
-# Signing keys (updater private keys) must NEVER be committed — kept out even
-# though the Tauri updater is retired; the Phase-3 cargo-packager signer reuses
-# this convention.
-/.tauri/
+# Updater private signing key — must NEVER be committed. cargo-packager-updater's
+# keypair is generated locally; the private key is held as a CI secret, the public
+# key is embedded in the app. Keep every private key out of git.
 /.signing/
+*.key
+
+# Agent / tooling scratch (Claude worktrees, Playwright MCP) — never commit.
+/.claude/
+/.playwright-mcp/
 

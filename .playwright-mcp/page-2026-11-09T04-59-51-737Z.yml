@@ -1,0 +1,220 @@
+- generic [active] [ref=f47e1]:
+  - link "Jump to content" [ref=f47e2] [cursor=pointer]:
+    - /url: "#bodyContent"
+  - banner [ref=f47e4]:
+    - generic [ref=f47e5]:
+      - navigation "Site" [ref=f47e6]:
+        - generic "Main menu" [ref=f47e7]:
+          - button "Main menu" [ref=f47e8] [cursor=pointer]
+          - generic [ref=f47e11]: Main menu
+      - link [ref=f47e12] [cursor=pointer]:
+        - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Main_Page
+        - strong [ref=f47e15]: Hydrogenaudio Knowledgebase
+    - generic [ref=f47e16]:
+      - search [ref=f47e17]:
+        - generic [ref=f47e20]:
+          - searchbox "Search Hydrogenaudio Knowledgebase" [ref=f47e23]
+          - button "Search" [ref=f47e25]
+      - navigation "Personal tools" [ref=f47e26]:
+        - list [ref=f47e30]:
+          - listitem [ref=f47e31]:
+            - link "Log in" [ref=f47e32] [cursor=pointer]:
+              - /url: /index.php?title=Special:UserLogin&returnto=Special%3ASearch&returntoquery=search%3DAlbum%2BList%2Bdefault%2Bview%26go%3DGo
+  - generic [ref=f47e34]:
+    - main [ref=f47e38]:
+      - generic [ref=f47e39]:
+        - heading "Search results" [level=1] [ref=f47e40]
+        - link "Help" [ref=f47e43] [cursor=pointer]:
+          - /url: https://www.mediawiki.org/wiki/Special:MyLanguage/Help:Searching
+      - generic [ref=f47e46]:
+        - generic [ref=f47e47]:
+          - navigation "Namespaces"
+        - generic [ref=f47e48]:
+          - navigation "Views"
+          - navigation "Page tools" [ref=f47e49]:
+            - generic [ref=f47e50]:
+              - button "Tools" [ref=f47e51] [cursor=pointer]
+              - generic [ref=f47e53] [cursor=pointer]: Tools
+      - navigation "Appearance" [ref=f47e56]:
+        - generic [ref=f47e59]:
+          - generic [ref=f47e60]: Appearance
+          - button "hide" [ref=f47e61] [cursor=pointer]
+      - generic "Search results" [ref=f47e62]:
+        - generic [ref=f47e63]:
+          - generic [ref=f47e65]:
+            - generic:
+              - generic [ref=f47e68]:
+                - searchbox [ref=f47e71]: Album List default view
+                - button "Search" [ref=f47e74] [cursor=pointer]
+              - generic [ref=f47e75]:
+                - text: Results
+                - strong [ref=f47e76]: 1 – 21
+                - text: of
+                - strong [ref=f47e77]: "26"
+            - generic [ref=f47e79]:
+              - list:
+                - listitem [ref=f47e80]:
+                  - link "Content pages" [ref=f47e81]:
+                    - /url: /index.php?title=Special:Search&profile=default&search=Album+List+default+view&fulltext=1
+                - listitem [ref=f47e82]:
+                  - link "Multimedia" [ref=f47e83] [cursor=pointer]:
+                    - /url: /index.php?title=Special:Search&profile=images&search=Album+List+default+view&fulltext=1
+                - listitem [ref=f47e84]:
+                  - link "Everything" [ref=f47e85] [cursor=pointer]:
+                    - /url: /index.php?title=Special:Search&profile=all&search=Album+List+default+view&fulltext=1
+                - listitem [ref=f47e86]:
+                  - link "Advanced" [ref=f47e87] [cursor=pointer]:
+                    - /url: /index.php?title=Special:Search&profile=advanced&search=Album+List+default+view&fulltext=1
+          - generic [ref=f47e88]:
+            - generic [ref=f47e89]:
+              - paragraph
+            - generic [ref=f47e91]:
+              - text: View (previous 20 |
+              - link "next 20" [ref=f47e92] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=20&offset=20&profile=default&search=Album+List+default+view
+              - text: ) (20 |
+              - link "50" [ref=f47e93] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=50&offset=0&profile=default&search=Album+List+default+view
+              - text: "|"
+              - link "100" [ref=f47e94] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=100&offset=0&profile=default&search=Album+List+default+view
+              - text: "|"
+              - link "250" [ref=f47e95] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=250&offset=0&profile=default&search=Album+List+default+view
+              - text: "|"
+              - link "500" [ref=f47e96] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=500&offset=0&profile=default&search=Album+List+default+view
+              - text: )
+            - list [ref=f47e98]:
+              - listitem [ref=f47e99]:
+                - link "Foobar2000:Preferences:Album List" [ref=f47e101] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Preferences:Album_List
+                - generic [ref=f47e102]: "{{fb2k prefs|Foobar2000-Preferences-albumlist.png|Album List}} ...Media Library]] viewer that presents Media Library contents in a tree-like view. ..."
+                - generic [ref=f47e103]: 1 KB (207 words) - 13:50, 12 December 2014
+              - listitem [ref=f47e104]:
+                - link "Foobar2000:Album list" [ref=f47e106] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Album_list
+                - generic [ref=f47e107]: 0 bytes (0 words) - 20:46, 29 May 2005
+              - listitem [ref=f47e108]:
+                - link "Foobar2000:Components/Album List Panel (foo uie albumlist)" [ref=f47e110] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Components/Album_List_Panel_(foo_uie_albumlist)
+                - generic [ref=f47e111]: "[[Category:Foobar2000 3rd-Party Components|Album List Panel (foo uie albumlist)]] | name = Album List Panel ..."
+                - generic [ref=f47e112]: 6 KB (930 words) - 13:43, 12 August 2026
+              - listitem [ref=f47e113]:
+                - link "Foobar2000:Default User Interface:List of UI Elements" [ref=f47e115] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Default_User_Interface:List_of_UI_Elements
+                - generic [ref=f47e116]: ...2000's [[Foobar2000:Components_0.9/Default_user_interface_%28foo_ui_std%29|Default User Interface]]. ...regardless of the active tab (playlist). Commonly used to host a "Playlist view" element. ...
+                - generic [ref=f47e117]: 4 KB (583 words) - 14:58, 1 February 2024
+              - listitem [ref=f47e118]:
+                - link "Foobar2000:Mac:Layout" [ref=f47e120] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Mac:Layout
+                - generic [ref=f47e121]: ...argument "mode" set to "lite", which produces slim version of the console view, without utility buttons. Use system default monospace font. Can be used instead of font-name. No arguments. ...
+                - generic [ref=f47e122]: 7 KB (889 words) - 12:58, 27 December 2025
+              - listitem [ref=f47e123]:
+                - link "Foobar2000:Components/Album Art Panel (foo uie albumart)" [ref=f47e125] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Components/Album_Art_Panel_(foo_uie_albumart)
+                - generic [ref=f47e126]: "[[Category:Foobar2000 3rd-Party Components|Album Art Panel (foo uie albumart)]] [[Image:Albumartpanel.PNG|thumb|Album Art Panel Preferences 0.2.4.1]] ..."
+                - generic [ref=f47e127]: 11 KB (1,737 words) - 13:18, 21 September 2022
+              - listitem [ref=f47e128]:
+                - link "Foobar2000:Components/SimPlaylist (foo simplaylist)" [ref=f47e130] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Components/SimPlaylist_(foo_simplaylist)
+                - generic [ref=f47e131]: "[[Category:Foobar2000 Legacy Default UI components|Legacy Default UI components]] | foobar2000_ui_module = Default UI ..."
+                - generic [ref=f47e132]: 8 KB (1,184 words) - 13:52, 23 September 2022
+              - listitem [ref=f47e133]:
+                - link "Tag (tagging software)" [ref=f47e135] [cursor=pointer]:
+                  - /url: /index.php?title=Tag_(tagging_software)
+                - generic [ref=f47e136]: ...pting to guess the filename format from one of fifty presets. You can also view tags for files, and create playlists. * View tags ...
+                - generic [ref=f47e137]: 7 KB (978 words) - 20:50, 31 May 2025
+              - listitem [ref=f47e138]:
+                - link "Foobar2000:Layout Editing Mode" [ref=f47e140] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Layout_Editing_Mode
+                - generic [ref=f47e141]: ...ng Mode of [[Foobar2000:Components_0.9/Default_user_interface_(foo_ui_std)|Default User Interface]] enables users to easily change the overall window layout, ...diting Mode can be activated either by choosing its option in "Main Menu > View > Layout", or by clicking the appropriate button on toolbar (if enabled). ...
+                - generic [ref=f47e142]: 4 KB (728 words) - 00:12, 24 March 2020
+              - listitem [ref=f47e143]:
+                - link "Foobar2000:Version 2.0 Release Notes" [ref=f47e145] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Version_2.0_Release_Notes
+                - generic [ref=f47e146]: "* Added album art in Default User Interface playlist view. Some of Default User Interface elements are now available in Columns UI: ..."
+                - generic [ref=f47e147]: 2 KB (351 words) - 03:16, 9 May 2023
+              - listitem [ref=f47e148]:
+                - link "Foobar2000:Components/TagBox (foo tagbox)" [ref=f47e150] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Components/TagBox_(foo_tagbox)
+                - generic [ref=f47e151]: "| foobar2000_ui_module = Default UI ...lets you quickly modify the meta data of music files (title, artist name, album name, etc.) through a UI element which you can place anywhere in your fooba ..."
+                - generic [ref=f47e152]: 4 KB (496 words) - 15:07, 14 January 2026
+              - listitem [ref=f47e153]:
+                - link "NeroAAC" [ref=f47e155] [cursor=pointer]:
+                  - /url: /index.php?title=NeroAAC
+                - generic [ref=f47e156]: 22 bytes (3 words) - 04:38, 23 July 2014
+              - listitem [ref=f47e157]:
+                - link "Foobar2000:Components/Facets (foo facets)" [ref=f47e159] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Components/Facets_(foo_facets)
+                - generic [ref=f47e160]: "[[Category:Foobar2000 Legacy Default UI components|Legacy Default UI components]] | foobar2000_ui_module = Default UI ..."
+                - generic [ref=f47e161]: 15 KB (2,325 words) - 13:48, 23 September 2022
+              - listitem [ref=f47e162]:
+                - link "AlbumArtDownloader XUI" [ref=f47e164] [cursor=pointer]:
+                  - /url: /index.php?title=AlbumArtDownloader_XUI
+                - generic [ref=f47e165]: "| name = Album Art Downloader XUI | website = [https://sourceforge.net/projects/album-art/ sourceforge.net] ..."
+                - generic [ref=f47e166]: 24 KB (3,627 words) - 19:05, 9 November 2019
+              - listitem [ref=f47e167]:
+                - link "Nero AAC" [ref=f47e169] [cursor=pointer]:
+                  - /url: /index.php?title=Nero_AAC
+                - generic [ref=f47e170]: ": Specify zero to use least restrictive value possible (default). ...It is currently at version 1.5.1.0 and was last updated Dec 17th, 2009. By default is writes iTunes-compatible tags. ..."
+                - generic [ref=f47e171]: 16 KB (2,315 words) - 00:48, 31 May 2023
+              - listitem [ref=f47e172]:
+                - link "Foobar2000:Version 2.0 Beta Change Log" [ref=f47e174] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Version_2.0_Beta_Change_Log
+                - generic [ref=f47e175]: "* Added ReFacets to library viewers list. * Fixed missing double click to fullscreen in Default UI visualisations. ..."
+                - generic [ref=f47e176]: 15 KB (2,183 words) - 13:03, 26 April 2023
+              - listitem [ref=f47e177]:
+                - link "Foobar2000:Version 2.1 Preview Change Log" [ref=f47e179] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Version_2.1_Preview_Change_Log
+                - generic [ref=f47e180]: "* Fixed playlist layout infinite update loop with column auto sizing and album art. * ReFacets sorting changed to match playlist & album list sorting. ..."
+                - generic [ref=f47e181]: 12 KB (1,692 words) - 10:57, 18 December 2023
+              - listitem [ref=f47e182]:
+                - link "Foobar2000:Mac Version 2.5 Beta Change Log" [ref=f47e184] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Mac_Version_2.5_Beta_Change_Log
+                - generic [ref=f47e185]: "* Enabled search indexing of file paths by default. * Fixed archive content being invisible in Album List's folders view. ..."
+                - generic [ref=f47e186]: 7 KB (941 words) - 13:04, 26 April 2023
+              - listitem [ref=f47e187]:
+                - link "Foobar2000:Components 0.9/ELplaylist panel (foo uie elplaylist)" [ref=f47e189] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Components_0.9/ELplaylist_panel_(foo_uie_elplaylist)
+                - generic [ref=f47e190]: ...ely. ELPlaylist also allows grouping items together (e.g. the tracks of an album) and nesting groups (e.g. for multi-disc albums). ...I Preference section (Artwork) or directly at the display preference page (Album Art). ...
+                - generic [ref=f47e191]: 40 KB (6,167 words) - 15:08, 10 October 2023
+              - listitem [ref=f47e192]:
+                - link "Foobar2000:Mobile Version 1.4 Preview Change Log" [ref=f47e194] [cursor=pointer]:
+                  - /url: /index.php?title=Foobar2000:Mobile_Version_1.4_Preview_Change_Log
+                - generic [ref=f47e195]: "* Android: Added non-skinned playback controls view (actually restored from ancient pre-skin code), use advanced settings optio ...put (or lack of) to default to non-skinned playback controls where skinned view is unusable. ..."
+                - generic [ref=f47e196]: 7 KB (1,038 words) - 13:38, 15 December 2023
+            - generic [ref=f47e198]:
+              - text: View (previous 20 |
+              - link "next 20" [ref=f47e199] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=20&offset=20&profile=default&search=Album+List+default+view
+              - text: ) (20 |
+              - link "50" [ref=f47e200] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=50&offset=0&profile=default&search=Album+List+default+view
+              - text: "|"
+              - link "100" [ref=f47e201] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=100&offset=0&profile=default&search=Album+List+default+view
+              - text: "|"
+              - link "250" [ref=f47e202] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=250&offset=0&profile=default&search=Album+List+default+view
+              - text: "|"
+              - link "500" [ref=f47e203] [cursor=pointer]:
+                - /url: /index.php?title=Special:Search&limit=500&offset=0&profile=default&search=Album+List+default+view
+              - text: )
+    - contentinfo [ref=f47e205]:
+      - list
+      - list:
+        - listitem [ref=f47e206]:
+          - link "Privacy policy" [ref=f47e207] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Privacy_policy
+        - listitem [ref=f47e208]:
+          - link "About Hydrogenaudio Knowledgebase" [ref=f47e209] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:About
+        - listitem [ref=f47e210]:
+          - link "Disclaimers" [ref=f47e211] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:General_disclaimer
+      - list [ref=f47e212]:
+        - listitem [ref=f47e213]:
+          - link [ref=f47e214] [cursor=pointer]:
+            - /url: https://www.mediawiki.org/
+            - img "Powered by MediaWiki" [ref=f47e216]

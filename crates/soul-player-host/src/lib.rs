@@ -1,6 +1,6 @@
 //! Desktop assembly over `soul-player-backend`: picks the audio sink, owns the
 //! live `Library`, fans backend events out to subscribers, and exposes the one
-//! `PlayerHandle` every UI head (Tauri, Rune) binds to.
+//! `PlayerHandle` the Rune UI head binds to.
 #![forbid(unsafe_code)]
 
 mod sink;

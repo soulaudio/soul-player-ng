@@ -1,0 +1,840 @@
+- generic [active] [ref=f3e1]:
+  - link "Jump to content" [ref=f3e2] [cursor=pointer]:
+    - /url: "#bodyContent"
+  - banner [ref=f3e4]:
+    - generic [ref=f3e5]:
+      - navigation "Site" [ref=f3e6]:
+        - generic "Main menu" [ref=f3e7]:
+          - button "Main menu" [ref=f3e8] [cursor=pointer]
+          - generic [ref=f3e11]: Main menu
+      - link [ref=f3e12] [cursor=pointer]:
+        - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Main_Page
+        - strong [ref=f3e15]: Hydrogenaudio Knowledgebase
+    - generic [ref=f3e16]:
+      - search [ref=f3e17]:
+        - generic [ref=f3e20]:
+          - searchbox "Search Hydrogenaudio Knowledgebase" [ref=f3e23]
+          - button "Search" [ref=f3e25]
+      - navigation "Personal tools" [ref=f3e26]:
+        - list [ref=f3e30]:
+          - listitem [ref=f3e31]:
+            - link "Log in" [ref=f3e32] [cursor=pointer]:
+              - /url: /index.php?title=Special:UserLogin&returnto=Foobar2000%3ATitle+Formatting+Reference
+  - generic [ref=f3e34]:
+    - navigation "Contents" [ref=f3e38]:
+      - generic [ref=f3e40]:
+        - generic [ref=f3e41]:
+          - heading "Contents" [level=2] [ref=f3e42]
+          - button "hide" [ref=f3e43] [cursor=pointer]
+        - list [ref=f3e44]:
+          - listitem [ref=f3e45]:
+            - link "Beginning" [ref=f3e46] [cursor=pointer]:
+              - /url: "#"
+          - listitem [ref=f3e48]:
+            - link "Syntax" [ref=f3e49] [cursor=pointer]:
+              - /url: "#Syntax"
+            - list
+          - listitem [ref=f3e51]:
+            - link "Arithmetic functions" [ref=f3e52] [cursor=pointer]:
+              - /url: "#Arithmetic_functions"
+            - button "Toggle Arithmetic functions subsection" [ref=f3e54]
+            - list
+          - listitem [ref=f3e57]:
+            - link "Boolean functions" [ref=f3e58] [cursor=pointer]:
+              - /url: "#Boolean_functions"
+            - button "Toggle Boolean functions subsection" [ref=f3e60]
+            - list
+          - listitem [ref=f3e63]:
+            - link "Control flow functions" [ref=f3e64] [cursor=pointer]:
+              - /url: "#Control_flow_functions"
+            - button "Toggle Control flow functions subsection" [ref=f3e66]
+            - list
+          - listitem [ref=f3e69]:
+            - link "String functions" [ref=f3e70] [cursor=pointer]:
+              - /url: "#String_functions"
+            - button "Toggle String functions subsection" [ref=f3e72]
+            - list
+          - listitem [ref=f3e75]:
+            - link "Track info fields and functions" [ref=f3e76] [cursor=pointer]:
+              - /url: "#Track_info_fields_and_functions"
+            - button "Toggle Track info fields and functions subsection" [ref=f3e78]
+            - list
+          - listitem [ref=f3e81]:
+            - link "Time and date functions" [ref=f3e82] [cursor=pointer]:
+              - /url: "#Time_and_date_functions"
+            - button "Toggle Time and date functions subsection" [ref=f3e84]
+            - list
+          - listitem [ref=f3e87]:
+            - link "Variable operations" [ref=f3e88] [cursor=pointer]:
+              - /url: "#Variable_operations"
+            - button "Toggle Variable operations subsection" [ref=f3e90]
+            - list
+          - listitem [ref=f3e93]:
+            - link "Component-specific fields and functions" [ref=f3e94] [cursor=pointer]:
+              - /url: "#Component-specific_fields_and_functions"
+            - button "Toggle Component-specific fields and functions subsection" [ref=f3e96]
+            - list
+          - listitem [ref=f3e99]:
+            - link "Additional Reading" [ref=f3e100] [cursor=pointer]:
+              - /url: "#Additional_Reading"
+            - list
+    - main [ref=f3e103]:
+      - heading "Foobar2000:Title Formatting Reference" [level=1] [ref=f3e105]
+      - generic [ref=f3e107]:
+        - navigation "Namespaces" [ref=f3e109]:
+          - generic [ref=f3e110]:
+            - generic:
+              - list:
+                - listitem [ref=f3e111]:
+                  - link "Foobar2000" [ref=f3e112] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000:Title_Formatting_Reference
+                - listitem [ref=f3e114]:
+                  - link "Discussion" [ref=f3e115] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000_Talk:Title_Formatting_Reference
+        - generic [ref=f3e117]:
+          - navigation "Views" [ref=f3e118]:
+            - generic [ref=f3e119]:
+              - generic:
+                - list:
+                  - listitem [ref=f3e120]:
+                    - link "Read" [ref=f3e121] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Title_Formatting_Reference
+                  - listitem [ref=f3e123]:
+                    - link "View source" [ref=f3e124] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Title_Formatting_Reference&action=edit
+                  - listitem [ref=f3e126]:
+                    - link "View history" [ref=f3e127] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Title_Formatting_Reference&action=history
+          - navigation "Page tools" [ref=f3e129]:
+            - generic [ref=f3e130]:
+              - button "Tools" [ref=f3e131] [cursor=pointer]
+              - generic [ref=f3e133] [cursor=pointer]: Tools
+      - navigation "Appearance" [ref=f3e136]:
+        - generic [ref=f3e138]:
+          - generic [ref=f3e139]:
+            - generic [ref=f3e140]: Appearance
+            - button "hide" [ref=f3e141] [cursor=pointer]
+          - generic [ref=f3e142]:
+            - generic [ref=f3e143]: Text
+            - list [ref=f3e145]:
+              - listitem [ref=f3e146]:
+                - generic [ref=f3e147]:
+                  - generic [ref=f3e148]:
+                    - generic [ref=f3e149]:
+                      - radio "Small" [disabled] [ref=f3e150]
+                      - generic [ref=f3e152]: Small
+                    - generic [ref=f3e154]:
+                      - radio "Standard" [disabled] [ref=f3e155]
+                      - generic [ref=f3e157]: Standard
+                    - generic [ref=f3e159]:
+                      - radio "Large" [disabled] [ref=f3e160]
+                      - generic [ref=f3e162]: Large
+                  - paragraph [ref=f3e164]: This page always uses small font size
+          - generic [ref=f3e165]:
+            - generic [ref=f3e166]: Width
+            - list [ref=f3e168]:
+              - listitem [ref=f3e169]:
+                - generic [ref=f3e171]:
+                  - generic [ref=f3e172]:
+                    - radio "Standard" [checked] [ref=f3e173]
+                    - generic [ref=f3e175]: Standard
+                  - generic [ref=f3e177]:
+                    - radio "Wide" [ref=f3e178]
+                    - generic [ref=f3e180]: Wide
+      - generic "Foobar2000:Title Formatting Reference" [ref=f3e182]:
+        - generic [ref=f3e185]:
+          - table [ref=f3e186]:
+            - caption [ref=f3e187]: foobar2000 Title Formatting
+            - rowgroup [ref=f3e188]:
+              - row [ref=f3e189]:
+                - cell [ref=f3e190]:
+                  - list [ref=f3e191]:
+                    - listitem [ref=f3e192]:
+                      - link "Introduction" [ref=f3e193] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Title_Formatting_Introduction
+                    - listitem [ref=f3e194]: Reference
+                    - listitem [ref=f3e195]:
+                      - link "Examples" [ref=f3e196] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Titleformat_Examples
+          - paragraph [ref=f3e197]: This article contains information about built-in title formatting functions and field references, plus additional documentation about fields and functions which can only be used in specific components or which are provided by specific components.
+          - paragraph [ref=f3e198]:
+            - text: Please see
+            - link "Title Formatting Introduction" [ref=f3e199] [cursor=pointer]:
+              - /url: /index.php?title=Foobar2000:Title_Formatting_Introduction
+            - text: for a general overview of title format syntax and its basic rules. The article
+            - link "Titleformat Examples" [ref=f3e200] [cursor=pointer]:
+              - /url: /index.php?title=Foobar2000:Titleformat_Examples
+            - text: offers user-submitted examples of code for specific purposes; feel free to add your own if you think it can be of use to others.
+          - paragraph [ref=f3e201]:
+            - text: For details of the query syntax, which uses some of these fields to find files for playlists, etc., see the
+            - link "Query Syntax" [ref=f3e202] [cursor=pointer]:
+              - /url: /index.php?title=Foobar2000:Query_syntax
+            - text: article.
+          - heading "Syntax" [level=2] [ref=f3e204]
+          - paragraph [ref=f3e205]: A title formatting script consists of any combination of literal text, field references, function calls, comments, and line break characters. The script always outputs a text string (which can be empty).
+          - paragraph [ref=f3e206]:
+            - text: A comment is a line starting with two slashes, e.g.
+            - code [ref=f3e207]: // this is a comment
+            - text: .
+          - paragraph [ref=f3e208]:
+            - text: A field reference is a field name enclosed in percent signs, for example
+            - code [ref=f3e209]: "%artist%"
+            - text: .
+          - paragraph [ref=f3e210]:
+            - text: A function call starts with a dollar sign, followed by the function name and the parameter list. A parameter list can either be empty – denoted as
+            - code [ref=f3e211]: ()
+            - text: – or contain one or more parameters separated by commas, for example
+            - code [ref=f3e212]: $abbr(%artist%)
+            - text: . A parameter can be literal text, a field reference, or another function call. Note that there must be no whitespace between the dollar sign and the function name, or the function name and the opening parenthesis of the parameter list.
+          - paragraph [ref=f3e213]:
+            - text: Any other text is literal text. In literal text, the character
+            - code [ref=f3e214]: "%"
+            - text: ","
+            - code [ref=f3e215]: $
+            - text: ","
+            - code [ref=f3e216]: "["
+            - text: ","
+            - code [ref=f3e217]: "]"
+            - text: ", or"
+            - code [ref=f3e218]: "'"
+            - text: (apostrophe/single quote) must be escaped by enclosing it in
+            - code [ref=f3e219]: "'"
+            - text: (apostrophe/single quote) characters. For example,
+            - code [ref=f3e220]: "'['"
+            - text: (a left bracket in single quotes) results in a literal
+            - code [ref=f3e221]: "["
+            - text: (left bracket). As a special case,
+            - code [ref=f3e222]: "''"
+            - text: (two single quotes in a row) results in one single quote. In the playlist,
+            - code [ref=f3e223]: <
+            - text: and
+            - code [ref=f3e224]: ">"
+            - text: are also special; see
+            - link "Dimmed and highlighted text" [ref=f3e225] [cursor=pointer]:
+              - /url: "#Dimmed_and_highlighted_text"
+            - text: .
+          - paragraph [ref=f3e226]:
+            - text: When the script is evaluated, the output string is assembled by evaluating the function parameters, function calls, and field references. Comments and line break characters (CR and LF/newline) are ignored; to output a line break, use
+            - code [ref=f3e227]: $crlf()
+            - text: . Each field reference becomes the field's value, as a string. Each function becomes a string or number, and/or a truth value (not output) which can be used by another function.
+          - paragraph [ref=f3e228]: "Note: The interface for entering custom columns and grouping schemes for the Default UI playlist does not support line breaks; scripts must be written all on one line, without comments."
+          - heading "Arithmetic functions" [level=2] [ref=f3e230]
+          - paragraph [ref=f3e231]: "The functions in this section can be used to perform arithmetic on integer numbers. A string will be automatically converted to a number and vice versa. The conversion to a number uses the longest prefix of the string that can be interpreted as number. Leading whitespace is ignored. Decimal points are not supported. Examples:"
+          - list [ref=f3e232]:
+            - listitem [ref=f3e233]: c3po → 0
+            - listitem [ref=f3e234]: 4.8 → 4
+            - listitem [ref=f3e235]: "-12 → -12"
+            - listitem [ref=f3e236]: "- 12 → 0"
+          - heading "$add(a,b, ...)" [level=3] [ref=f3e238]
+          - paragraph [ref=f3e239]: Adds a and b.
+          - paragraph [ref=f3e240]: Can be used with an arbitrary number of arguments. $add(a,b,...) is the same as $add($add(a,b),...).
+          - heading "$div(a,b)" [level=3] [ref=f3e242]
+          - paragraph [ref=f3e243]: Divides a by b and rounds down to an integer. If b evaluates to zero, it returns a.
+          - paragraph [ref=f3e244]: Can be used with an arbitrary number of arguments. $div(a,b,...) is the same as $div($div(a,b),...).
+          - heading "$greater(a,b)" [level=3] [ref=f3e246]
+          - paragraph [ref=f3e247]: Returns true, if a is greater than b, otherwise false.
+          - heading "$max(a,b)" [level=3] [ref=f3e249]
+          - paragraph [ref=f3e250]: Returns the maximum of a and b.
+          - paragraph [ref=f3e251]: Can be used with an arbitrary number of arguments. $max(a,b,...) is the same as $max($max(a,b),...).
+          - heading "$min(a,b)" [level=3] [ref=f3e253]
+          - paragraph [ref=f3e254]: Returns the minimum of a and b.
+          - paragraph [ref=f3e255]: Can be used with an arbitrary number of arguments. $min(a,b,...) is the same as $min($min(a,b),...).
+          - heading "$mod(a,b)" [level=3] [ref=f3e257]
+          - paragraph [ref=f3e258]: Computes the remainder of dividing a through b. The result has the same sign as a. If b evaluates to zero, the result is a.
+          - paragraph [ref=f3e259]: Can be used with an arbitrary number of arguments. $mod(a,b,...) is the same as $mod($mod(a,b),...).
+          - heading "$mul(a,b)" [level=3] [ref=f3e261]
+          - paragraph [ref=f3e262]: Multiplies a and b.
+          - paragraph [ref=f3e263]: Can be used with an arbitrary number of arguments. $mul(a,b,...) is the same as $mul($mul(a,b),...).
+          - heading "$muldiv(a,b,c)" [level=3] [ref=f3e265]
+          - paragraph [ref=f3e266]: Multiplies a and b, then divides by c. The result is rounded to the nearest integer.
+          - heading "$rand()" [level=3] [ref=f3e268]
+          - paragraph [ref=f3e269]:
+            - text: Generates a random number in the range from 0 to 2
+            - superscript [ref=f3e270]: "32"
+            - text: "-1. Available only in sort-related contexts, such as the Edit → Sort → Sort by ... menu command."
+          - heading "$sub(a,b)" [level=3] [ref=f3e272]
+          - paragraph [ref=f3e273]: Subtracts b from a.
+          - paragraph [ref=f3e274]: Can be used with an arbitrary number of arguments. $sub(a,b,...) is the same as $sub($sub(a,b),...).
+          - heading "Boolean functions" [level=2] [ref=f3e276]
+          - paragraph [ref=f3e277]: The functions in this section can be used to work with truth values (true and false), which have no explicit representation in titleformat scripts. They do not return a string or number value. You can use them for more complex conditions with $if and related functions.
+          - paragraph [ref=f3e278]: Foobar does not have a concept of TRUE and FALSE in a programming language sense where 0 or empty string are considered FALSE and other values TRUE. Therefore there is no difference between numeric 0 and string representation '0' which both are considered as values, and being attached a boolean value FALSE. Apostrophes are only required to escape certain syntax characters. Values are treated as numbers during arithmetic operations like $add().
+          - heading "$and(expr, ...)" [level=3] [ref=f3e280]
+          - paragraph [ref=f3e281]: Logical And of an arbitrary number of arguments. Returns true, if and only if all expr arguments evaluate to true.
+          - heading "$or(expr, ...)" [level=3] [ref=f3e283]
+          - paragraph [ref=f3e284]: Logical Or of an arbitrary number of arguments. Returns true, if at least one expression evaluates to true.
+          - heading "$not(expr)" [level=3] [ref=f3e286]
+          - paragraph [ref=f3e287]: "Logical Not. Returns the logical opposite of EXPR: false, if expr is true and true if expr is false."
+          - heading "$xor(expr,...)" [level=3] [ref=f3e289]
+          - paragraph [ref=f3e290]: Logical Exclusive-or of an arbitrary number of arguments. Returns true, if an odd number of arguments evaluate to true.
+          - paragraph [ref=f3e291]: "Special case: $xor(expr1,expr2) returns true, if EXPR1 or EXPR2 is true. If both expressions are true, returns false."
+          - heading "Control flow functions" [level=2] [ref=f3e293]
+          - paragraph [ref=f3e294]: The functions in this section can be used to conditionally execute statements.
+          - heading "[...] (conditional section)" [level=3] [ref=f3e296]
+          - paragraph [ref=f3e297]: Evaluates the expression between [ and ]. If it has the truth value true, its string value and the truth value true are returned. Otherwise an empty string and false are returned.
+          - paragraph [ref=f3e298]: "Example: [%artist%] returns the value of the artist tag, if it exists. Otherwise it returns nothing, when artist would return \"?\"."
+          - heading "$if(cond,then)" [level=3] [ref=f3e300]
+          - paragraph [ref=f3e301]: If cond evaluates to true, the then part is evaluated and its value returned. Otherwise, false is returned.
+          - paragraph [ref=f3e302]:
+            - text: "Plain strings are FALSE. Field lookups and functions can introduce a boolean value of TRUE. Examples: 1"
+            - code [ref=f3e303]
+          - code [ref=f3e304]:
+            - generic [ref=f3e305]: "#False: $if(0,True,False) # False: $if('0',True,False) # True or False: [$add(%rating%,1)]"
+          - code [ref=f3e306]
+          - paragraph [ref=f3e307]:
+            - code [ref=f3e308]
+            - text: The last one would display the value of %rating% plus one, if and only if %rating% is set for the track.
+          - paragraph [ref=f3e309]:
+            - text: 2 Ignore inserting the %album artist%, if it contains the word "various".
+            - code [ref=f3e310]
+          - code [ref=f3e311]:
+            - generic [ref=f3e312]: "# Wrong: $if([%album artist%=Various],,%artist%-) # Good approach: $if($stricmp(%album artist%,Various),,%artist%-)"
+          - code [ref=f3e313]
+          - paragraph [ref=f3e314]:
+            - code [ref=f3e315]
+          - heading "$if(cond,then,else)" [level=3] [ref=f3e317]
+          - paragraph [ref=f3e318]: If cond evaluates to true, the then part is evaluated and its value returned. Otherwise, the else part is evaluated and its value returned.
+          - heading "$if2(expr,else)" [level=3] [ref=f3e320]
+          - paragraph [ref=f3e321]: Like $if(expr,expr,else) except that expr is only evaluated once. In other words, if expression expr is true, expr is returned, otherwise the else part is evaluated and expr is returned as true.
+          - heading "$if3(a1,a2,...,aN,else)" [level=3] [ref=f3e323]
+          - paragraph [ref=f3e324]: Evaluates arguments a1 ... aN, until one is found that evaluates to true. If that happens, its value is returned. Otherwise the else part is evaluated and its value returned.
+          - heading "$ifequal(int1,int2,then,else)" [level=3] [ref=f3e326]
+          - paragraph [ref=f3e327]: Compares the integer numbers int1 and int2, if int1 is equal to int2, the then part is evaluated and its value returned. Otherwise the else part is evaluated and its value returned.
+          - heading "$ifgreater(int1,int2,then,else)" [level=3] [ref=f3e329]
+          - paragraph [ref=f3e330]: Compares the integer numbers int1 and int2, if int1 is greater than int2, the then part is evaluated and its value returned. Otherwise the else part is evaluated and its value returned.
+          - heading "$iflonger(str,n,then,else)" [level=3] [ref=f3e332]
+          - paragraph [ref=f3e333]: Compares the length of the string str to the number n, if str is longer than n characters, the then part is evaluated and its value returned. Otherwise the else part is evaluated and its value returned.
+          - heading "$select(n,a1,...,aN)" [level=3] [ref=f3e335]
+          - paragraph [ref=f3e336]: If the value of n is between 1 and N, an is evaluated and its value returned. Otherwise false is returned.
+          - heading "String functions" [level=2] [ref=f3e338]
+          - paragraph [ref=f3e339]: The functions in this section can be used to manipulate character strings.
+          - heading "$abbr(str)" [level=3] [ref=f3e341]
+          - paragraph [ref=f3e342]: "Returns abbreviation of string str. Words which begin with an alphanumeric character are shortened to the first character. Spaces and parentheses are stripped. Example:"
+          - list [ref=f3e343]:
+            - listitem [ref=f3e344]: $abbr('This is a Long Title (12-inch version) [needs tags]') → TiaLT1v[needst
+          - heading "$abbr(str,len)" [level=3] [ref=f3e346]
+          - paragraph [ref=f3e347]: Returns abbreviation of str, if str is longer than len characters, otherwise returns str.
+          - heading "$ansi(str)" [level=3] [ref=f3e349]
+          - paragraph [ref=f3e350]: Converts string str to system codepage and back. Any characters that are not present in the system codepage will be removed / replaced. Useful for mass-renaming files to ensure compatibility with non-unicode-capable software.
+          - heading "$ascii(str)" [level=3] [ref=f3e352]
+          - paragraph [ref=f3e353]: Converts string str to ASCII. Any characters that are not present in ASCII will be removed / replaced.
+          - heading "$caps(str)" [level=3] [ref=f3e355]
+          - paragraph [ref=f3e356]: Converts first letter in every word of string str to uppercase, and all other letters to lowercase.
+          - heading "$caps2(str)" [level=3] [ref=f3e358]
+          - paragraph [ref=f3e359]: Converts first letter in every word of string str to uppercase, and leaves all other letters as they are.
+          - heading "$char(nbr)" [level=3] [ref=f3e361]
+          - paragraph [ref=f3e362]:
+            - text: Returns Unicode character of nbr. You can search for characters and find the matching decimal number on this
+            - link "site" [ref=f3e363] [cursor=pointer]:
+              - /url: http://www.fileformat.info/info/unicode/char/search.htm
+            - text: .
+          - heading "$crc32(str)" [level=3] [ref=f3e365]
+          - paragraph [ref=f3e366]: Computes the CRC32 of the string str as a number. Intended for use in coloring scripts.
+          - paragraph [ref=f3e367]: "Example: $rgb($mod($crc32(%album%),256),128,128)"
+          - heading "$crlf()" [level=3] [ref=f3e369]
+          - paragraph [ref=f3e370]: Inserts end-of-line marker (carriage return, line feed). Can be used to generate multiple lines in the output, for example for the tooltip of the system notification area ("systray") icon.
+          - heading "$cut(str,len)" [level=3] [ref=f3e372]
+          - paragraph [ref=f3e373]: "Returns first len characters from the left of the string str. This function is the same as $left(a,len). Negative numbers produce the entire string. Examples:"
+          - list [ref=f3e374]:
+            - listitem [ref=f3e375]: $cut('abc123',3) → abc
+            - listitem [ref=f3e376]: $cut('abc123',0) → (nothing)
+            - listitem [ref=f3e377]: $cut('abc123',-1) → abc123
+          - heading "$directory(path)" [level=3] [ref=f3e379]
+          - paragraph [ref=f3e380]: Extracts only the directory name (not full path, ie given path as 'D:\music\jazz\filename.mp3', this will output 'jazz') from the file path.
+          - heading "$directory(path,n)" [level=3] [ref=f3e382]
+          - paragraph [ref=f3e383]: Extracts directory name from the file path; goes up by n levels.
+          - heading "$directory_path(path)" [level=3] [ref=f3e385]
+          - paragraph [ref=f3e386]: Extracts directory path from the file path. ie. given path as 'D:\music\jazz\filename.mp3', this will output 'D:\music\jazz'
+          - heading "$ext(path)" [level=3] [ref=f3e388]
+          - paragraph [ref=f3e389]: Extracts file extension from string path; a file name or full path.
+          - heading "$filename(path)" [level=3] [ref=f3e391]
+          - paragraph [ref=f3e392]: Extracts file name from full path.
+          - heading "$fix_eol(str)" [level=3] [ref=f3e394]
+          - paragraph [ref=f3e395]: If str contains an end-of-line marker (CR-LF), the end-of-line marker and all text to the right of it is replaced by " (...)". Otherwise str is returned unaltered.
+          - heading "$fix_eol(str,indicator)" [level=3] [ref=f3e397]
+          - paragraph [ref=f3e398]: If str contains an end-of-line marker (CR-LF), the end-of-line marker and all text to the right of it is replaced by indicator. Otherwise str is returned unaltered.
+          - heading "$hex(int,len)" [level=3] [ref=f3e400]
+          - paragraph [ref=f3e401]: Formats the integer number int in hexadecimal notation with len digits. Pads with zeros from the left if necessary.
+          - heading "$insert(str,insert,n)" [level=3] [ref=f3e403]
+          - paragraph [ref=f3e404]: Inserts insert into str after n characters.
+          - heading "$left(str,len)" [level=3] [ref=f3e406]
+          - paragraph [ref=f3e407]: "Returns first len characters from the left of the string str. This function is the same as $cut(str,len). Negative numbers produce the entire string. Examples:"
+          - list [ref=f3e408]:
+            - listitem [ref=f3e409]: $left('abc123',3) → abc
+            - listitem [ref=f3e410]: $left('abc123',0) → (nothing)
+            - listitem [ref=f3e411]: $left('abc123',-1) → abc123
+          - heading "$len(str)" [level=3] [ref=f3e413]
+          - paragraph [ref=f3e414]: Returns length of string str in characters.
+          - heading "$len2(str)" [level=3] [ref=f3e416]
+          - paragraph [ref=f3e417]: Returns length of string str in characters, respecting double-width character rules (double-width characters will be counted as two).
+          - heading "$longer(str1,str2)" [level=3] [ref=f3e419]
+          - paragraph [ref=f3e420]: Returns true, if string str1 is longer than string str2, false otherwise.
+          - heading "$lower(str)" [level=3] [ref=f3e422]
+          - paragraph [ref=f3e423]: Converts string str to lowercase.
+          - heading "$longest(arg,...)" [level=3] [ref=f3e425]
+          - paragraph [ref=f3e426]: Returns the longest of its arguments. Can be used with an arbitrary number of strings.
+          - heading "$num(nbr,len)" [level=3] [ref=f3e428]
+          - paragraph [ref=f3e429]: "Formats the integer number nbr in decimal notation with len characters. Pads with zeros from the left if necessary. len includes the dash when the number is negative. If nbr is not numeric, it is treated as zero. Examples:"
+          - list [ref=f3e430]:
+            - listitem [ref=f3e431]: $num(123,5) → 00123
+            - listitem [ref=f3e432]: $num(-123,5) → -0123
+            - listitem [ref=f3e433]: $num(4.8,5) → 00004
+            - listitem [ref=f3e434]: $num(A1,5) → 00000
+          - heading "$pad(str,len)" [level=3] [ref=f3e436]
+          - paragraph [ref=f3e437]: Creates a left-aligned version of the string str. If str is shorter than len characters, the function adds spaces to the right of str to make the result len characters long. Otherwise the function returns str unchanged.
+          - heading "$pad_right(str,len)" [level=3] [ref=f3e439]
+          - paragraph [ref=f3e440]: Creates a right-aligned version of the string str. If str is shorter than len characters, the function adds spaces to the left of str to make the result len characters long. Otherwise the function returns str unchanged.
+          - heading "$pad(str,len,char)" [level=3] [ref=f3e442]
+          - paragraph [ref=f3e443]: Creates a left-aligned version of the string str. If str is shorter than len characters, the function adds char to the right of str to make the result len characters long. Otherwise the function returns str unchanged.
+          - heading "$pad_right(str,len,char)" [level=3] [ref=f3e445]
+          - paragraph [ref=f3e446]: Creates a right-aligned version of the string str. If str is shorter than len characters, the function adds char to the left of str to make the result len characters long. Otherwise the function returns str unchanged.
+          - heading "$padcut(str,len)" [level=3] [ref=f3e448]
+          - paragraph [ref=f3e449]: Returns first len characters from the left of str, if str is longer than len characters. Otherwise adds spaces to the right of str to make the result len characters long.
+          - heading "$padcut(str,len,char)" [level=3] [ref=f3e451]
+          - paragraph [ref=f3e452]: Returns first len characters from the left of str, if str is longer than len characters. Otherwise adds char to the right of str to make the result len characters long.
+          - heading "$padcut_right(str,len)" [level=3] [ref=f3e454]
+          - paragraph [ref=f3e455]: Returns first len characters from the left of str, if str is longer than len characters. Otherwise adds spaces to the left of str to make the result len characters long.
+          - heading "$padcut_right(str,len,char)" [level=3] [ref=f3e457]
+          - paragraph [ref=f3e458]: Returns first len characters from the left of str, if str is longer than len characters. Otherwise adds char to the left of str to make the result len characters long.
+          - heading "$progress(pos,range,len,char1,char2)" [level=3] [ref=f3e460]
+          - paragraph [ref=f3e461]: "Creates a progress bar: pos contains position, range contains range, len progress bar length in characters, char1 and char2 are characters to build progress bar with."
+          - paragraph [ref=f3e462]: "Example:$progress(%_time_elapsed_seconds%, %_time_total_seconds%, 20,'#','=') produces \"====#===============\", the # character is moving with playback position."
+          - heading "$progress2(pos,range,len,char1,char2)" [level=3] [ref=f3e464]
+          - paragraph [ref=f3e465]: "Creates a progress bar: pos contains position, range contains range, len progress bar length in characters, char1 and char2 are characters to build progress bar with. Produces different appearance than $progress."
+          - heading "$repeat(expr,count)" [level=3] [ref=f3e467]
+          - paragraph [ref=f3e468]: Returns count copies of expr. Note that expr is evaluated once before its value is used, so $repeat cannot be used for loops.
+          - heading "$replace(str,search,replace)" [level=3] [ref=f3e470]
+          - paragraph [ref=f3e471]: Replaces all occurrences of string search in string str with string replace.
+          - paragraph [ref=f3e472]: Can also be used with an arbitrary number of arguments. Note that $replace(str,search1,replace1,search2,replace2) is generally not the same as $replace($replace(str,search1,replace1),search2,replace2).
+          - paragraph [ref=f3e473]: "Example: $replace(ab,a,b,b,c) → \"bc\", $replace($replace(ab,a,b),b,c) → \"cc\""
+          - heading "$right(str,len)" [level=3] [ref=f3e475]
+          - paragraph [ref=f3e476]: Returns the first len characters from the right of string str.
+          - heading "$roman(int)" [level=3] [ref=f3e478]
+          - paragraph [ref=f3e479]: Formats the integer number int in roman notation.
+          - heading "$rot13(str)" [level=3] [ref=f3e481]
+          - paragraph [ref=f3e482]:
+            - text: Performs
+            - link "ROT13" [ref=f3e483] [cursor=pointer]:
+              - /url: https://en.wikipedia.org/wiki/ROT13
+            - text: transformation to given string.
+          - paragraph [ref=f3e484]: "Example: $rot13('foobar2000') → \"sbbone2000\"."
+          - heading "$shortest(str,...strN)" [level=3] [ref=f3e486]
+          - paragraph [ref=f3e487]: Returns the first shortest element of its arguments. Can be used with an arbitrary number of strings.
+          - heading "$strchr(str,char)" [level=3] [ref=f3e489]
+          - paragraph [ref=f3e490]: Returns position of first occurrence of character char in string str.
+          - paragraph [ref=f3e491]: "Example: $strchr(abca,a) → 1"
+          - heading "$strrchr(str,char)" [level=3] [ref=f3e493]
+          - paragraph [ref=f3e494]: Returns positions of last occurrence of character char in string str.
+          - paragraph [ref=f3e495]: "Example: $strrchr(abca,a) → 4"
+          - heading "$strstr(str1,str2)" [level=3] [ref=f3e497]
+          - paragraph [ref=f3e498]: Returns position of first occurrence of string str2 in string str1. Function is case-sensitive.
+          - heading "$strcmp(str1,str2)" [level=3] [ref=f3e500]
+          - paragraph [ref=f3e501]: Performs a case-sensitive comparison of the strings str1 and str2.
+          - heading "$stricmp(str1,str2)" [level=3] [ref=f3e503]
+          - paragraph [ref=f3e504]: Performs a case-insensitive comparison of the strings str1 and str2.
+          - heading "$stripprefix(str)" [level=3] [ref=f3e506]
+          - paragraph [ref=f3e507]: Removes A and The prefixes from string str.
+          - heading "$stripprefix(str,prefix1,prefix2,...)" [level=3] [ref=f3e509]
+          - paragraph [ref=f3e510]: Removes the specified prefixes from string str.
+          - heading "$substr(str,from,to)" [level=3] [ref=f3e512]
+          - paragraph [ref=f3e513]: Returns substring of string str, starting from FROM-th character and ending at TO-th character.
+          - heading "$swapprefix(str)" [level=3] [ref=f3e515]
+          - paragraph [ref=f3e516]: Moves A and The prefixes to the end of string str.
+          - heading "$swapprefix(str,prefix1,prefix2,...)" [level=3] [ref=f3e518]
+          - paragraph [ref=f3e519]: Moves the specified prefixes to the end of string str.
+          - heading "$trim(str)" [level=3] [ref=f3e521]
+          - paragraph [ref=f3e522]: Removes leading and trailing spaces from string str.
+          - heading "$tab()" [level=3] [ref=f3e524]
+          - paragraph [ref=f3e525]: Inserts one tabulator character.
+          - heading "$tab(count)" [level=3] [ref=f3e527]
+          - paragraph [ref=f3e528]: Inserts count tabulator characters.
+          - heading "$upper(str)" [level=3] [ref=f3e530]
+          - paragraph [ref=f3e531]: Converts string str to uppercase.
+          - heading "Track info fields and functions" [level=2] [ref=f3e533]
+          - paragraph [ref=f3e534]: The functions and fields in this section can be used to access information about tracks.
+          - heading "Metadata fields and functions" [level=3] [ref=f3e536]
+          - paragraph [ref=f3e537]: Generally, metadata from the files (whether in tags or a cue sheet) is mapped directly to a field which can be referenced case-insensitively. For example, the first tag named URL can be referenced as %url%, and the first standard comment tag can be referenced as %comment%.
+          - paragraph [ref=f3e538]: "The following functions are also available for accessing metadata:"
+          - heading "$meta(name)" [level=4] [ref=f3e540]
+          - paragraph [ref=f3e541]: Returns value of tag called name. If multiple values of that tag exist, they are concatenated with ", " as separator.
+          - paragraph [ref=f3e542]: "Example: $meta(artist) → \"He, She, They\""
+          - heading "$meta(name,n)" [level=4] [ref=f3e544]
+          - paragraph [ref=f3e545]: Returns value of n-th (0,1,2 and so on) tag called name.
+          - paragraph [ref=f3e546]: "Example: $meta(artist,1) → \"She\""
+          - heading "$meta_sep(name,sep)" [level=4] [ref=f3e548]
+          - paragraph [ref=f3e549]: Returns value of tag called name. If multiple values of that tag exist, they are concatenated with sep as separator.
+          - paragraph [ref=f3e550]: "Example: $meta_sep(artist,' + ') → \"He + She + They\""
+          - heading "$meta_sep(name,sep,lastsep)" [level=4] [ref=f3e552]
+          - paragraph [ref=f3e553]: Returns value of tag called name. If multiple values of that tag exist, they are concatenated with sep as separator between all but the last two values which are concatenated with lastsep.
+          - paragraph [ref=f3e554]: "Example: $meta_sep(artist,', ',', and ') → \"He, She, and They\""
+          - heading "$meta_test(...)" [level=4] [ref=f3e556]
+          - paragraph [ref=f3e557]: Returns 1, if all given tags exist, undefined otherwise.
+          - paragraph [ref=f3e558]: "Example: $meta_test(artist,title) → true"
+          - heading "$meta_num(name)" [level=4] [ref=f3e560]
+          - paragraph [ref=f3e561]: Returns the number of values for the tag called name.
+          - paragraph [ref=f3e562]: "Example: $meta_num(artist) → 3"
+          - heading "Remapped metadata fields" [level=3] [ref=f3e564]
+          - paragraph [ref=f3e565]: "The following fields have special remapped values to make writing title format scripts more convenient:"
+          - heading "%album artist%" [level=4] [ref=f3e567]
+          - paragraph [ref=f3e568]: "Name of the artist of the album specified track belongs to. Checks following metadata fields, in this order: \"album artist\", \"artist\", \"composer\", \"performer\". The difference between this and %artist% is that %album artist% is intended for use where consistent value across entire album is needed even when per-track artists values vary."
+          - heading "%album%" [level=4] [ref=f3e570]
+          - paragraph [ref=f3e571]: "Name of the album specified track belongs to. Checks following metadata fields, in this order: \"album\", \"venue\"."
+          - heading "%artist%" [level=4] [ref=f3e573]
+          - paragraph [ref=f3e574]: "Name of the artist of the track. Checks following metadata fields, in this order: \"artist\", \"album artist\", \"composer\", \"performer\". For a SHOUTcast stream which contains metadata, it is the StreamTitle up to the first \"-\" character."
+          - heading "%discnumber%" [level=4] [ref=f3e576]
+          - paragraph [ref=f3e577]: Index of disc specified track belongs to, within the album. Available only when "discnumber"/"disc" field is present in track’s metadata.
+          - heading "%totaldiscs%" [level=4] [ref=f3e579]
+          - paragraph [ref=f3e580]: Index of total discs specified tracks belong to, within the album. Available only when "discnumber"/"disc" field is present in track’s metadata.
+          - heading "%track artist%" [level=4] [ref=f3e582]
+          - paragraph [ref=f3e583]: Name of the artist of the track; present only if %album artist% is different than %artist% for specific track. Intended for use together with %album artist%, to indicate track-specific artist info, e.g. "%album artist% - %title%[ '//' %track artist%]". In this case, the last part will be displayed only when track-specific artist info is present.
+          - heading "%title%" [level=4] [ref=f3e585]
+          - paragraph [ref=f3e586]: Title of the track. If "title" metadata field is missing, file name is used instead. For a SHOUTcast stream which contains metadata, it is the StreamTitle after the first "-" character.
+          - heading "%tracknumber%" [level=4] [ref=f3e588]
+          - paragraph [ref=f3e589]: "Two-digit index of specified track within the album. Available only when \"tracknumber\" field is present in track’s metadata. An extra '0' is placed in front of single digit track numbers (5 becomes 05) – otherwise the tracknumber field is returned unchanged (e.g. the following values remain as they are: 006, 05, 104, A3, two, -1, -)."
+          - heading "%track number%" [level=4] [ref=f3e591]
+          - paragraph [ref=f3e592]: Similar to %tracknumber%, however single digit track numbers are not reformatted to have an extra 0.
+          - heading "%totaltracks%" [level=4] [ref=f3e594]
+          - paragraph [ref=f3e595]: Index of total tracks specified tracks belong to, within the album. Available only when "totaltracks" field is present in track’s metadata.
+          - heading "Technical information fields" [level=3] [ref=f3e597]
+          - heading "%bitrate%" [level=4] [ref=f3e599]
+          - paragraph [ref=f3e600]: Bitrate of the track in kilobits per second. VBR files will show a dynamic display for currently played track (outside of the playlist).
+          - heading "%channels%" [level=4] [ref=f3e602]
+          - paragraph [ref=f3e603]: Number of channels in the track, as text; either "mono", "stereo" for 1 or 2 channels, respectively, otherwise a number followed by "ch", e.g. "6ch".
+          - heading "%channel_mask%" [level=4] [ref=f3e605]
+          - paragraph [ref=f3e606]: Description of the used audio channels in the track, e.g. "FL FR FC LFE SL SR". Introduced in foobar2000 preview 2024-06-30.
+          - heading "%codec%" [level=4] [ref=f3e608]
+          - paragraph [ref=f3e609]: Name of codec used to encode the track, e.g. "PCM", "FLAC", "MP3", or "AAC". If exact codec name is not available, file extension is used.
+          - heading "%codec_profile%" [level=4] [ref=f3e611]
+          - paragraph [ref=f3e612]: Additional information about encoding settings used, e.g. "CBR". Not always available.
+          - heading "%codec_long%" [level=4] [ref=f3e614]
+          - paragraph [ref=f3e615]: Long name of the codec, including profile, e.g. "HE-AACv2". Some codecs, such as HE-AAC, supply this. If long name isn't supplied by the codec, %codec_long% falls back to %codec% / %codec_profile%. The Default UI's standard Codec column displays the same info.
+          - heading "%filesize%" [level=4] [ref=f3e617]
+          - paragraph [ref=f3e618]:
+            - text: "The exact file size in bytes. Old version:"
+            - code [ref=f3e619]: "%_filesize%"
+          - heading "%filesize_natural%" [level=4] [ref=f3e621]
+          - paragraph [ref=f3e622]: The approximate file size, automatically formatted in appropriate units such as megabytes or kilobytes, e.g. "8.49 MB"
+          - heading "%length%" [level=4] [ref=f3e624]
+          - paragraph [ref=f3e625]:
+            - text: "The length of the track formatted as hours, minutes, and seconds, rounded to the nearest second. Old version:"
+            - code [ref=f3e626]: "%_time_total%"
+          - heading "%length_ex%" [level=4] [ref=f3e628]
+          - paragraph [ref=f3e629]: The length of the track formatted as hours, minutes, seconds, and milliseconds, rounded to the nearest millisecond.
+          - heading "%length_seconds%" [level=4] [ref=f3e631]
+          - paragraph [ref=f3e632]:
+            - text: "The length of the track in seconds, rounded to the nearest second. Old version:"
+            - code [ref=f3e633]: "%_time_total_seconds%"
+          - heading "%length_seconds_fp%" [level=4] [ref=f3e635]
+          - paragraph [ref=f3e636]: The length of the track in seconds as a floating point number.
+          - heading "%length_samples%" [level=4] [ref=f3e638]
+          - paragraph [ref=f3e639]: The length of the track in samples.
+          - heading "%samplerate%" [level=4] [ref=f3e641]
+          - paragraph [ref=f3e642]: Sample rate of the track, in Hz.
+          - heading "Technical information functions" [level=3] [ref=f3e644]
+          - heading "$info(name)" [level=4] [ref=f3e646]
+          - paragraph [ref=f3e647]: Returns value of technical information field called name.
+          - paragraph [ref=f3e648]: For convenience, the %__name% alias is also available.
+          - paragraph [ref=f3e649]: "Example: $info(channels) → 2"
+          - paragraph [ref=f3e650]: Here is an informative list of recognized fields. Some of these depend on the media file type being queried.
+          - table [ref=f3e651]:
+            - rowgroup [ref=f3e652]:
+              - row [ref=f3e653]:
+                - columnheader "field name" [ref=f3e654]
+                - columnheader "Description" [ref=f3e655]
+              - row [ref=f3e656]:
+                - cell "General" [ref=f3e657]
+              - row [ref=f3e658]:
+                - cell "codec" [ref=f3e659]
+                - cell "Codec (e.g. MP3)" [ref=f3e660]
+              - row [ref=f3e661]:
+                - cell "codec_profile" [ref=f3e662]
+                - cell "Codec Profile (e.g. CBR)" [ref=f3e663]
+              - row [ref=f3e664]:
+                - cell "samplerate" [ref=f3e665]
+                - cell "Sample Rate, in hertz (e.g. 44100)" [ref=f3e666]
+              - row [ref=f3e667]:
+                - cell "bitrate" [ref=f3e668]
+                - cell "Bitrate, in kilobits per second (e.g. 320)" [ref=f3e669]
+              - row [ref=f3e670]:
+                - cell "tool" [ref=f3e671]
+                - cell "Tool used to produce the file, possibly guessed (e.g. LAME3.97)" [ref=f3e672]
+              - row [ref=f3e673]:
+                - cell "encoding" [ref=f3e674]
+                - cell "Encoding lossiness (e.g. lossy)" [ref=f3e675]
+              - row [ref=f3e676]:
+                - cell "channels" [ref=f3e677]
+                - cell "Channels count (e.g. 2 [for stereo])" [ref=f3e678]
+              - row [ref=f3e679]:
+                - cell "bitspersample" [ref=f3e680]
+                - cell "Bits Per Sample (e.g. 16)" [ref=f3e681]
+              - row [ref=f3e682]:
+                - cell "decoded_bitspersample" [ref=f3e683]
+                - cell "Bits Per Sample after decoding (e.g. 24)" [ref=f3e684]
+              - row [ref=f3e685]:
+                - cell "bitspersample_extra" [ref=f3e686]
+                - cell "Format of 32-bit audio data (floating-point or fixed-point)" [ref=f3e687]
+              - row [ref=f3e688]:
+                - cell "tagtype" [ref=f3e689]
+                - cell "Tag Type, comma-separated list of tag formats (e.g. id3v2|apev2)" [ref=f3e690]
+              - row [ref=f3e691]:
+                - cell "cue_embedded" [ref=f3e692]
+                - cell "Embedded Cuesheet presence (e.g. no [may be empty!])" [ref=f3e693]
+              - row [ref=f3e694]:
+                - cell "md5" [ref=f3e695]
+                - cell "Audio MD5 hash, if container defines it (e.g. 1E24A910D91EF09A8CF403C9B6963961)" [ref=f3e696]
+              - row [ref=f3e697]:
+                - cell "WAVEFORMATEXTENSIBLE_CHANNEL_MASK" [ref=f3e698]
+                - cell "Channel mask, channel layout of the track coded as hex (e.g. 0x0003 for regular stereo)" [ref=f3e699]
+              - row [ref=f3e700]:
+                - cell "Other" [ref=f3e701]
+              - row [ref=f3e702]:
+                - cell "ENC_DELAY" [ref=f3e703]
+                - cell "LAME proprietary MP3 enc_delay value for gapless playback (e.g. 576)" [ref=f3e704]
+              - row [ref=f3e705]:
+                - cell "ENC_PADDING" [ref=f3e706]
+                - cell "LAME proprietary MP3 enc_padding value for gapless playback (e.g. 1536)" [ref=f3e707]
+              - row [ref=f3e708]:
+                - cell "MP3_ACCURATE_LENGTH" [ref=f3e709]
+                - cell "MP3 duration (%length% etc.) takes into account LAME or iTunes gapless playback info (e.g. yes)*" [ref=f3e710]
+              - row [ref=f3e711]:
+                - cell "MP3_STEREO_MODE" [ref=f3e712]
+                - cell "Stereo mode used in MP3 file (e.g. mono, stereo, joint stereo, etc.)" [ref=f3e713]
+              - row [ref=f3e714]:
+                - cell "VERSION" [ref=f3e715]
+                - cell "Version of tool (e.g. 3.99)" [ref=f3e716]
+              - row [ref=f3e717]:
+                - cell "FLAGS" [ref=f3e718]
+                - cell "Flags of tool (e.g. 22)" [ref=f3e719]
+              - row [ref=f3e720]:
+                - cell "channel_mode" [ref=f3e721]
+                - 'cell "Channel Mode, description of channels (note: this field was only used by obsolete foo_ac3. e.g. 3 front, 2 rear surround channels + LFE)" [ref=f3e722]'
+          - paragraph [ref=f3e723]
+          - generic [ref=f3e724]: "* MP3_ACCURATE_LENGTH won't exist if gapless playback info isn't present or the file is not an MP3. The info can be in a LAME tag in the VBR header, or in an iTunSMPB ID3v2 comment tag. Gapless playback info is taken into account in .m4a files, but there's no special field to say so."
+          - heading "$channels()" [level=4] [ref=f3e726]
+          - paragraph [ref=f3e727]: The number of channels in text format.
+          - paragraph [ref=f3e728]: "Example: $channels() → \"stereo\""
+          - heading "%replaygain_album_gain%" [level=4] [ref=f3e730]
+          - paragraph [ref=f3e731]: The ReplayGain album gain value.
+          - heading "%replaygain_album_peak%" [level=4] [ref=f3e733]
+          - paragraph [ref=f3e734]: The ReplayGain album peak value.
+          - heading "%replaygain_album_peak_db%" [level=4] [ref=f3e736]
+          - paragraph [ref=f3e737]: The ReplayGain album peak value in decibels.
+          - heading "%replaygain_track_gain%" [level=4] [ref=f3e739]
+          - paragraph [ref=f3e740]: The ReplayGain track gain value.
+          - heading "%replaygain_track_peak%" [level=4] [ref=f3e742]
+          - paragraph [ref=f3e743]: The ReplayGain track peak value.
+          - heading "%replaygain_track_peak_db%" [level=4] [ref=f3e745]
+          - paragraph [ref=f3e746]: The ReplayGain track peak value in decibels.
+          - heading "Special fields" [level=3] [ref=f3e748]
+          - heading "%filename%" [level=4] [ref=f3e750]
+          - paragraph [ref=f3e751]: The filename without directory and extension.
+          - heading "%filename_ext%" [level=4] [ref=f3e753]
+          - paragraph [ref=f3e754]: The filename with extension, but without the directory.
+          - heading "%directoryname%" [level=4] [ref=f3e756]
+          - paragraph [ref=f3e757]: The name of the parent directory only, not the complete path.
+          - heading "%last_modified%" [level=4] [ref=f3e759]
+          - paragraph [ref=f3e760]: "The date and time the file was last modified. Eg: 2005-12-22 00:04:10"
+          - heading "%path%" [level=4] [ref=f3e762]
+          - paragraph [ref=f3e763]: The complete path, including the filename and extension.
+          - heading "%_path_raw%" [level=4] [ref=f3e765]
+          - paragraph [ref=f3e766]: The path as URL including the protocol scheme.
+          - heading "%subsong%" [level=4] [ref=f3e768]
+          - paragraph [ref=f3e769]: The subsong index. The subsong index is used to distuingish multiple tracks in a single file, for example for cue sheets, tracker modules and various container formats.
+          - heading "%_foobar2000_version%" [level=4] [ref=f3e771]
+          - paragraph [ref=f3e772]: A string representing the version of foobar2000.
+          - heading "Time and date functions" [level=2] [ref=f3e774]
+          - paragraph [ref=f3e775]:
+            - text: These functions are used to manipulate time/date strings, notably (but not limited to),
+            - link "those gathered" [ref=f3e776] [cursor=pointer]:
+              - /url: /index.php?title=Foobar2000:Titleformat_Playback_Statistics
+            - text: by the
+            - link "Playback Statistics component" [ref=f3e777] [cursor=pointer]:
+              - /url: /index.php?title=Foobar2000:Components/Playback_Statistics_v3.x_(foo_playcount)
+            - text: .
+          - heading "$year(time)" [level=3] [ref=f3e779]
+          - paragraph [ref=f3e780]: Retrieves the year part (formatted as four digits) from a time/date string.
+          - heading "$month(time)" [level=3] [ref=f3e782]
+          - paragraph [ref=f3e783]: Retrieves the month part (formatted as two digits) from a time/date string.
+          - heading "$day_of_month(time)" [level=3] [ref=f3e785]
+          - paragraph [ref=f3e786]: Retrieves the day of month part (formatted as two digits) from a time/date string.
+          - heading "$date(time)" [level=3] [ref=f3e788]
+          - paragraph [ref=f3e789]: Retrieves the date part (formatted as YYYY-MM-DD) from a time/date string.
+          - heading "$time(time)" [level=3] [ref=f3e791]
+          - paragraph [ref=f3e792]: Retrieves the time part (formatted as HH:MM:SS or HH:MM) from a date/time string.
+          - heading "Variable operations" [level=2] [ref=f3e794]
+          - paragraph [ref=f3e795]: Variables can be used to store strings and numbers. They cannot store truth values. They are best used to store intermediate results that you need multiple times. Variable names are not case-sensitive.
+          - paragraph [ref=f3e796]: "For example:"
+          - table [ref=f3e797]:
+            - rowgroup [ref=f3e798]:
+              - row [ref=f3e799]:
+                - columnheader "code" [ref=f3e800]
+                - columnheader "output" [ref=f3e801]
+              - row [ref=f3e802]:
+                - cell "$put(foo,bar)$char(10) $get(foo)$char(10) $get(Foo)$char(10) $puts(foo,2000)$char(10) $get(foo)$char(10)" [ref=f3e803]
+                - cell "bar bar bar 2000" [ref=f3e805]
+          - heading "$get(name)" [level=3] [ref=f3e808]
+          - paragraph [ref=f3e809]: Returns the value that was last stored in the variable name, if the variable was not defined (yet), it returns nothing. The truth value returned by $get indicates if the variable name was defined and is a non-empty string.
+          - heading "$put(name,value)" [level=3] [ref=f3e811]
+          - paragraph [ref=f3e812]: Stores value in the variable name and returns value unaltered.
+          - heading "$puts(name,value)" [level=3] [ref=f3e814]
+          - paragraph [ref=f3e815]: Stores value in the variable name and returns nothing.
+          - heading "Component-specific fields and functions" [level=2] [ref=f3e817]
+          - paragraph [ref=f3e818]: This section lists fields and functions which are specific to certain components. Unless otherwise stated, the fields and functions are only usable in the context of those components.
+          - heading "Now playing info" [level=3] [ref=f3e820]
+          - paragraph [ref=f3e821]: The following fields related to the currently playing item are only usable in certain locations outside of the playlist, e.g. in the status bar, the main window title and the copy command script.
+          - heading "%playback_time%" [level=4] [ref=f3e823]
+          - paragraph [ref=f3e824]: The elapsed time formatted as [HH:]MM:SS.
+          - heading "%playback_time_seconds%" [level=4] [ref=f3e826]
+          - paragraph [ref=f3e827]:
+            - text: "The elapsed time in seconds. Old version:"
+            - code [ref=f3e828]: "%_time_elapsed%"
+          - heading "%playback_time_remaining%" [level=4] [ref=f3e830]
+          - paragraph [ref=f3e831]:
+            - text: "The time remaining until the track ends, formatted as [HH:]MM:SS. Old version:"
+            - code [ref=f3e832]: "%_time_remaining%"
+          - heading "%playback_time_remaining_seconds%" [level=4] [ref=f3e834]
+          - paragraph [ref=f3e835]:
+            - text: "The time remaining until the track ends, in seconds. Old version:"
+            - code [ref=f3e836]: "%_time_remaining_seconds%"
+          - heading "Playlist-only fields" [level=3] [ref=f3e838]
+          - paragraph [ref=f3e839]: The following fields are only usable in playlist display formatting (i.e., the column title formatting patterns).
+          - heading "%isplaying%" [level=4] [ref=f3e841]
+          - paragraph [ref=f3e842]: "\"1\" if file is currently playing, empty string otherwise."
+          - heading "%ispaused%" [level=4] [ref=f3e844]
+          - paragraph [ref=f3e845]: "\"1\" if playback is paused, empty string otherwise."
+          - heading "%list_index%" [level=4] [ref=f3e847]
+          - paragraph [ref=f3e848]: A zero-padded playlist index of specified item. The first item is at index 1.
+          - heading "%list_total%" [level=4] [ref=f3e850]
+          - paragraph [ref=f3e851]: The number of items in the playlist.
+          - heading "%queue_index%" [level=4] [ref=f3e853]
+          - paragraph [ref=f3e854]: Index of the specified item in the playback queue. If the item has been queued multiple times, %queue_index% evaluates to the first index.
+          - heading "%queue_indexes%" [level=4] [ref=f3e856]
+          - paragraph [ref=f3e857]: List of indexes of the specified item in the playback queue. Same as %queue_index% unless the item has been queued more than once.
+          - heading "%queue_total%" [level=4] [ref=f3e859]
+          - paragraph [ref=f3e860]: Total amount of tracks in playback queue. Available only for queued tracks, for technical reasons.
+          - heading "Playlist text color" [level=3] [ref=f3e862]
+          - heading "Dimmed and highlighted text" [level=4] [ref=f3e864]
+          - paragraph [ref=f3e865]: "In the Default UI playlist, text color can be adjusted by enclosing it in angle-brackets. The only options are to make the text dimmer (mixing the default color with the background color) or brighter (mixing the default color with the highlight color):"
+          - list [ref=f3e866]:
+            - listitem [ref=f3e867]: <text> – dim text
+            - listitem [ref=f3e868]: <<text>> – dimmer text
+            - listitem [ref=f3e869]: <<<text>>> – dimmest text
+            - listitem [ref=f3e870]: ">text< – bright text"
+            - listitem [ref=f3e871]: ">>text<< – brighter text"
+            - listitem [ref=f3e872]: ">>>text<<< – brightest text"
+          - heading "Historical and Columns UI color functions" [level=4] [ref=f3e874]
+          - paragraph [ref=f3e875]: "Prior to version 1.0, the default UI playlist supported the following color functions, which are still available in the Columns UI playlist:"
+          - heading "$blend(color1,color2,part,total)" [level=5] [ref=f3e877]
+          - paragraph [ref=f3e878]: Returns a color that is a blend between color1 and color2. If part is smaller than or equal to zero, color1 is returned. If part is greater than or equal to total, color2 is returned. Otherwise a blended color is returned that is part parts color1 and total-part parts color2. The blending is performed in the RGB color space.
+          - heading "$hsl()" [level=5] [ref=f3e880]
+          - paragraph [ref=f3e881]: Resets the text color to the default color.
+          - heading "$hsl(h,s,l)" [level=5] [ref=f3e883]
+          - paragraph [ref=f3e884]: Sets the color for text in the HSL color space. h, s and l are the hue, saturation, and lightness of the color for unselected text. The color for selected text is set to the inverse color. The ranges of h, s, and l are from 0 to 240; the function is designed to interpret those values in the same way as the standard Windows color dialog.
+          - heading "$hsl(h1,s1,l1,h2,s2,l2)" [level=5] [ref=f3e886]
+          - paragraph [ref=f3e887]: Sets the color for text in the HSL color space. h1, s1 and l1 are the hue, saturation, and lightness of the color for unselected text. h2, s2 and l2 are the hue, saturation, and lightness of the color for selected text.
+          - heading "$rgb()" [level=5] [ref=f3e889]
+          - paragraph [ref=f3e890]: Resets the text color to the default color.
+          - heading "$rgb(r,g,b)" [level=5] [ref=f3e892]
+          - paragraph [ref=f3e893]: Sets the color for text. r, g and b are the red, green and blue component of the color for unselected text. The color for selected text is set to the inverse color.
+          - heading "$rgb(r1,g1,b1,r2,g2,b2)" [level=5] [ref=f3e895]
+          - paragraph [ref=f3e896]: Sets the color for text. r1, g1 and b1 are the red, green and blue component of the color for unselected text. r2, g2 and b2 are the red, green and blue component of the color for selected text.
+          - heading "$transition(string,color1,color2)" [level=5] [ref=f3e898]
+          - paragraph [ref=f3e899]: Inserts color codes into string, so that the first character has color1, the last character has color2, and intermediate characters have blended colors. The blending is performed in the RGB color space. Note that color codes are additional characters that will also be counted by string manipulation functions. For example, if you need to truncate a string, you should do this before applying $transition.
+          - heading "Album List" [level=3] [ref=f3e901]
+          - list [ref=f3e902]:
+            - listitem [ref=f3e903]:
+              - link "Album List Title Formatting" [ref=f3e904] [cursor=pointer]:
+                - /url: /index.php?title=Foobar2000:Titleformat_Album_List
+            - listitem [ref=f3e905]:
+              - 'link "Preferences: Album List" [ref=f3e906] [cursor=pointer]':
+                - /url: /index.php?title=Foobar2000:Preferences:Album_List
+          - heading "Playback Statistics" [level=3] [ref=f3e908]
+          - paragraph [ref=f3e909]: "The foo_playcount component adds a number of fields for playback statistics and ratings. The fields can be used anywhere track info can be displayed. See the documentation for details:"
+          - list [ref=f3e910]:
+            - listitem [ref=f3e911]:
+              - link "Playback statistics homepage" [ref=f3e912] [cursor=pointer]:
+                - /url: http://www.foobar2000.org/components/view/foo_playcount
+            - listitem [ref=f3e913]:
+              - link "Playback statistics titleformat reference" [ref=f3e914] [cursor=pointer]:
+                - /url: /index.php?title=Foobar2000:Titleformat_Playback_Statistics
+          - heading "Playlist Organizer" [level=3] [ref=f3e916]
+          - paragraph [ref=f3e917]: "This component adds a number of fields to control the display of a list of playlists. See the documentation for details:"
+          - list [ref=f3e918]:
+            - listitem [ref=f3e919]:
+              - 'link "Playlist Organizer: Nodes Title Formatting" [ref=f3e920] [cursor=pointer]':
+                - /url: /index.php?title=Foobar2000:Components/Playlist_Organizer_(foo_plorg)#Nodes
+          - heading "Columns UI" [level=3] [ref=f3e922]
+          - paragraph [ref=f3e923]: "This component replaces the Default UI framework, including the playlist. See the documentation for details:"
+          - list [ref=f3e924]:
+            - listitem [ref=f3e925]:
+              - link "Columns UI homepage" [ref=f3e926] [cursor=pointer]:
+                - /url: http://yuo.be/columns.php
+            - listitem [ref=f3e927]:
+              - link "Global variables reference" [ref=f3e928] [cursor=pointer]:
+                - /url: http://yuo.be/wiki/columns_ui:config:global_variables
+            - listitem [ref=f3e929]:
+              - link "Playlist colors reference" [ref=f3e930] [cursor=pointer]:
+                - /url: http://yuo.be/wiki/columns_ui:config:colour_string
+            - listitem [ref=f3e931]:
+              - link "Playlist switcher reference" [ref=f3e932] [cursor=pointer]:
+                - /url: http://yuo.be/wiki/columns_ui:config:playlist_switcher_titleformatting
+          - heading "Additional Reading" [level=2] [ref=f3e934]
+          - list [ref=f3e935]:
+            - listitem [ref=f3e936]:
+              - link "Introduction to titleformat scripts" [ref=f3e937] [cursor=pointer]:
+                - /url: /index.php?title=Foobar2000:Title_Formatting_Introduction
+            - listitem [ref=f3e938]: The file titleformat_help.html in your Foobar2000 directory, e.g. file:///C:/Program%20Files%20(x86)/foobar2000/titleformat_help.html
+        - generic [ref=f3e940]:
+          - link "Categories" [ref=f3e941] [cursor=pointer]:
+            - /url: /index.php?title=Special:Categories
+          - text: ":"
+          - list [ref=f3e942]:
+            - listitem [ref=f3e943]:
+              - link "Foobar2000" [ref=f3e944] [cursor=pointer]:
+                - /url: /index.php?title=Category:Foobar2000
+            - listitem [ref=f3e945]:
+              - link "Foobar2000 Guides" [ref=f3e946] [cursor=pointer]:
+                - /url: /index.php?title=Category:Foobar2000_Guides
+    - contentinfo [ref=f3e948]:
+      - list [ref=f3e949]:
+        - listitem [ref=f3e950]: This page was last edited on 19 November 2024, at 08:38.
+      - list:
+        - listitem [ref=f3e951]:
+          - link "Privacy policy" [ref=f3e952] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Privacy_policy
+        - listitem [ref=f3e953]:
+          - link "About Hydrogenaudio Knowledgebase" [ref=f3e954] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:About
+        - listitem [ref=f3e955]:
+          - link "Disclaimers" [ref=f3e956] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:General_disclaimer
+      - list [ref=f3e957]:
+        - listitem [ref=f3e958]:
+          - link [ref=f3e959] [cursor=pointer]:
+            - /url: https://www.mediawiki.org/
+            - img "Powered by MediaWiki" [ref=f3e961]
+  - generic [ref=f3e963]:
+    - generic [ref=f3e964]:
+      - button [ref=f3e966]:
+        - generic [ref=f3e968]: Search
+      - generic [aria-hidden] [ref=f3e970]: Foobar2000:Title Formatting Reference
+    - generic [aria-hidden] [ref=f3e971]:
+      - generic [ref=f3e972]:
+        - link [ref=f3e973] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f3e976] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f3e979] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f3e982] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f3e985] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f3e988] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f3e991] [cursor=pointer]:
+          - /url: "#"
+      - link [ref=f3e995] [cursor=pointer]:
+        - /url: "#"
+        - generic [ref=f3e997]: Add topic
+  - generic [ref=f3e998]:
+    - list

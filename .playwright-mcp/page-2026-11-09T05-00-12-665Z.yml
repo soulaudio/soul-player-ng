@@ -1,0 +1,262 @@
+- generic [active] [ref=e1]:
+  - link "Jump to content" [ref=e2] [cursor=pointer]:
+    - /url: "#bodyContent"
+  - banner [ref=e4]:
+    - generic [ref=e5]:
+      - navigation "Site" [ref=e6]:
+        - generic "Main menu" [ref=e7]:
+          - button "Main menu" [ref=e8] [cursor=pointer]
+          - generic [ref=e11]: Main menu
+      - link [ref=e12] [cursor=pointer]:
+        - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Main_Page
+        - strong [ref=e15]: Hydrogenaudio Knowledgebase
+    - generic [ref=e16]:
+      - search [ref=e17]:
+        - generic [ref=e20]:
+          - searchbox "Search Hydrogenaudio Knowledgebase" [ref=e23]
+          - button "Search" [ref=e25]
+      - navigation "Personal tools" [ref=e26]:
+        - list [ref=e30]:
+          - listitem [ref=e31]:
+            - link "Log in" [ref=e32] [cursor=pointer]:
+              - /url: /index.php?title=Special:UserLogin&returnto=Foobar2000%3APreferences%3AAlbum+List
+  - generic [ref=e34]:
+    - navigation "Contents" [ref=e38]:
+      - generic [ref=e40]:
+        - generic [ref=e41]:
+          - heading "Contents" [level=2] [ref=e42]
+          - button "hide" [ref=e43] [cursor=pointer]
+        - list [ref=e44]:
+          - listitem [ref=e45]:
+            - link "Beginning" [ref=e46] [cursor=pointer]:
+              - /url: "#"
+          - listitem [ref=e48]:
+            - link "Views" [ref=e49] [cursor=pointer]:
+              - /url: "#Views"
+            - list
+          - listitem [ref=e51]:
+            - link "Actions" [ref=e52] [cursor=pointer]:
+              - /url: "#Actions"
+            - list
+          - listitem [ref=e54]:
+            - link "Playlist Interaction" [ref=e55] [cursor=pointer]:
+              - /url: "#Playlist_Interaction"
+            - list
+          - listitem [ref=e57]:
+            - link "See Also" [ref=e58] [cursor=pointer]:
+              - /url: "#See_Also"
+            - list
+    - main [ref=e61]:
+      - heading "Foobar2000:Preferences:Album List" [level=1] [ref=e63]
+      - generic [ref=e65]:
+        - navigation "Namespaces" [ref=e67]:
+          - generic [ref=e68]:
+            - generic:
+              - list:
+                - listitem [ref=e69]:
+                  - link "Foobar2000" [ref=e70] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000:Preferences:Album_List
+                - listitem [ref=e72]:
+                  - link "Discussion" [ref=e73] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000_Talk:Preferences:Album_List&action=edit&redlink=1
+        - generic [ref=e75]:
+          - navigation "Views" [ref=e76]:
+            - generic [ref=e77]:
+              - generic:
+                - list:
+                  - listitem [ref=e78]:
+                    - link "Read" [ref=e79] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Preferences:Album_List
+                  - listitem [ref=e81]:
+                    - link "View source" [ref=e82] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Preferences:Album_List&action=edit
+                  - listitem [ref=e84]:
+                    - link "View history" [ref=e85] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Preferences:Album_List&action=history
+          - navigation "Page tools" [ref=e87]:
+            - generic [ref=e88]:
+              - button "Tools" [ref=e89] [cursor=pointer]
+              - generic [ref=e91] [cursor=pointer]: Tools
+      - navigation "Appearance" [ref=e94]:
+        - generic [ref=e97]:
+          - generic [ref=e98]: Appearance
+          - button "hide" [ref=e99] [cursor=pointer]
+      - generic "Foobar2000:Preferences:Album List" [ref=e100]:
+        - generic [ref=e103]:
+          - table [ref=e104]:
+            - rowgroup [ref=e105]:
+              - row [ref=e106]:
+                - columnheader [ref=e107]:
+                  - link [ref=e109] [cursor=pointer]:
+                    - /url: https://wiki.hydrogenaudio.org/index.php?title=Foobar2000:Foobar2000
+                    - img "Foobar2000_Logo.png" [ref=e110]
+                - columnheader [ref=e111]:
+                  - link "foobar2000 Preferences" [ref=e112] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000:Preferences
+                    - text: foobar2000Preferences
+              - row [ref=e113]:
+                - cell [ref=e114]:
+                  - figure "Screenshot of the Album List page" [ref=e116]:
+                    - link [ref=e117] [cursor=pointer]:
+                      - /url: /index.php?title=File:Foobar2000-Preferences-albumlist.png
+                      - img "Screenshot of the Album List page" [ref=e118]
+                  - list [ref=e119]:
+                    - listitem [ref=e120]:
+                      - link "Components" [ref=e121] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:Components
+                    - listitem [ref=e122]:
+                      - link "Display" [ref=e123] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:Display
+                      - list [ref=e124]:
+                        - listitem [ref=e125]:
+                          - link "Columns UI" [ref=e126] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:Display:Columns_UI
+                          - text: "*"
+                          - list [ref=e127]:
+                            - listitem [ref=e128]:
+                              - link "Playlist switcher" [ref=e129] [cursor=pointer]:
+                                - /url: /index.php?title=Foobar2000:Preferences:Display:Columns_UI:Playlist_switcher
+                              - text: "*"
+                            - listitem [ref=e130]:
+                              - link "Playlist view" [ref=e131] [cursor=pointer]:
+                                - /url: /index.php?title=Foobar2000:Preferences:Display:Columns_UI:Playlist_view
+                              - text: "*"
+                        - listitem [ref=e132]:
+                          - link "Context Menu" [ref=e133] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:Display:Context_menu
+                        - listitem [ref=e134]:
+                          - link "Default User Interface" [ref=e135] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:Default_User_Interface
+                          - list [ref=e136]:
+                            - listitem [ref=e137]:
+                              - link "Background and Notifications" [ref=e138] [cursor=pointer]:
+                                - /url: /index.php?title=Foobar2000:Preferences:Default_User_Interface:Background_and_Notifications
+                            - listitem [ref=e139]:
+                              - link "Colors and Fonts" [ref=e140] [cursor=pointer]:
+                                - /url: /index.php?title=Foobar2000:Preferences:Default_User_Interface:Colors_and_Fonts
+                            - listitem [ref=e141]:
+                              - link "Playlist View" [ref=e142] [cursor=pointer]:
+                                - /url: /index.php?title=Foobar2000:Preferences:Default_User_Interface:Playlist_View
+                    - listitem [ref=e143]:
+                      - link "Keyboard Shortcuts" [ref=e144] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:Keyboard_Shortcuts
+                    - listitem [ref=e145]:
+                      - link "Media Library" [ref=e146] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:Media_Library
+                      - list [ref=e147]:
+                        - listitem [ref=e148]: Album List
+                    - listitem [ref=e149]:
+                      - link "Networking" [ref=e150] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:Networking
+                    - listitem [ref=e151]:
+                      - link "Playback" [ref=e152] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:Playback
+                      - list [ref=e153]:
+                        - listitem [ref=e154]:
+                          - link "Decoding" [ref=e155] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:Decoding
+                        - listitem [ref=e156]:
+                          - link "DSP Manager" [ref=e157] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:Playback:DSP_Manager
+                        - listitem [ref=e158]:
+                          - link "Output" [ref=e159] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:Output
+                    - listitem [ref=e160]:
+                      - link "Shell Integration" [ref=e161] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:Shell_Integration
+                      - list [ref=e162]:
+                        - listitem [ref=e163]:
+                          - link "File Types" [ref=e164] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:File_Types
+                          - text: (Windows XP only)
+                    - listitem [ref=e165]:
+                      - text: Tools
+                      - list [ref=e166]:
+                        - listitem [ref=e167]:
+                          - link "ReplayGain Scanner" [ref=e168] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:ReplayGain_Scanner
+                          - list [ref=e169]:
+                            - listitem [ref=e170]:
+                              - link "Alter File Content" [ref=e171] [cursor=pointer]:
+                                - /url: /index.php?title=Foobar2000:ReplayGain_Scanner:Alter_File_Content
+                              - text: (1.5.7 and lower)
+                        - listitem [ref=e172]:
+                          - text: Tagging
+                          - list [ref=e173]:
+                            - listitem [ref=e174]:
+                              - link "freedb Tagger" [ref=e175] [cursor=pointer]:
+                                - /url: /index.php?title=Foobar2000:Preferences:Tools:Tagging:freedb_Tagger
+                    - listitem [ref=e176]:
+                      - link "Advanced" [ref=e177] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:Advanced
+                  - separator [ref=e178]
+                  - paragraph [ref=e179]: Deprecated pages
+                  - list [ref=e180]:
+                    - listitem [ref=e181]:
+                      - link "General" [ref=e182] [cursor=pointer]:
+                        - /url: /index.php?title=Foobar2000:Preferences:General
+                    - listitem [ref=e183]:
+                      - text: Tools
+                      - list [ref=e184]:
+                        - listitem [ref=e185]:
+                          - link "Converter" [ref=e186] [cursor=pointer]:
+                            - /url: /index.php?title=Foobar2000:Preferences:Converter
+                  - separator [ref=e187]
+                  - paragraph [ref=e188]:
+                    - text: Pages marked * are added via
+                    - link "third-party components" [ref=e189] [cursor=pointer]:
+                      - /url: /index.php?title=Category:Foobar2000_3rd-Party_Components
+                    - text: .
+          - paragraph [ref=e190]:
+            - text: Album List is a
+            - link "Media Library" [ref=e191] [cursor=pointer]:
+              - /url: /index.php?title=Foobar2000:Preferences:Media_Library
+            - text: viewer that presents Media Library contents in a tree-like view.
+          - heading "Views" [level=2] [ref=e193]
+          - paragraph [ref=e194]:
+            - text: List of views available in your Album List window. Each view's pattern is a
+            - link "title formatting" [ref=e195] [cursor=pointer]:
+              - /url: /index.php?title=Foobar2000:Title_Formatting
+            - text: string defining how the tree structure is built, with parts generating different branch levels separated with | characters.
+          - paragraph [ref=e196]: "Some of views use the %<field>% syntax - specific to the Album List component - that allows a single item to be present in more than one branch when the referenced field has more than one value. For an example: a track with two genre values: \"rock\" and \"progressive\" will be placed in a \"rock, progressive\" branch with %genre%, but in both \"rock\" and \"progressive\" branches instead with %<genre>%."
+          - paragraph [ref=e197]:
+            - text: Album List contains some other
+            - link "specific title formatting syntax" [ref=e198] [cursor=pointer]:
+              - /url: /index.php?title=Foobar2000:Titleformat_Album_List
+            - text: ", not common to title formatting's use in other parts of foobar2000."
+          - heading "Actions" [level=2] [ref=e200]
+          - paragraph [ref=e201]: This section lets you override certain default tree view behaviors with custom ones.
+          - heading "Playlist Interaction" [level=2] [ref=e203]
+          - paragraph [ref=e204]: This section lets you customize how Album List's playlist interaction commands work.
+          - paragraph [ref=e205]: "See also: right-click menu commands on each Album List item."
+          - heading "See Also" [level=2] [ref=e207]
+          - list [ref=e208]:
+            - listitem [ref=e209]:
+              - link "Album List specific title formatting" [ref=e210] [cursor=pointer]:
+                - /url: /index.php?title=Foobar2000:Titleformat_Album_List
+        - generic [ref=e212]:
+          - link "Category" [ref=e213] [cursor=pointer]:
+            - /url: /index.php?title=Special:Categories
+          - text: ":"
+          - list [ref=e214]:
+            - listitem [ref=e215]:
+              - link "Foobar2000 Preferences" [ref=e216] [cursor=pointer]:
+                - /url: /index.php?title=Category:Foobar2000_Preferences
+    - contentinfo [ref=e218]:
+      - list [ref=e219]:
+        - listitem [ref=e220]: This page was last edited on 12 December 2014, at 13:50.
+      - list:
+        - listitem [ref=e221]:
+          - link "Privacy policy" [ref=e222] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Privacy_policy
+        - listitem [ref=e223]:
+          - link "About Hydrogenaudio Knowledgebase" [ref=e224] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:About
+        - listitem [ref=e225]:
+          - link "Disclaimers" [ref=e226] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:General_disclaimer
+      - list [ref=e227]:
+        - listitem [ref=e228]:
+          - link [ref=e229] [cursor=pointer]:
+            - /url: https://www.mediawiki.org/
+            - img "Powered by MediaWiki" [ref=e231]

@@ -1,0 +1,718 @@
+- generic [active] [ref=f15e1]:
+  - navigation "Fandom top navigation" [ref=f15e2]:
+    - link "Fandom homepage" [ref=f15e3] [cursor=pointer]:
+      - /url: https://www.fandom.com/
+    - textbox "Search" [ref=f15e8]
+    - generic [ref=f15e11]:
+      - link "Sign In" [ref=f15e13] [cursor=pointer]:
+        - /url: https://auth.fandom.com/signin?source=mw&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping&metadata=header-signin-button
+      - link "Create a Free Account" [ref=f15e15] [cursor=pointer]:
+        - /url: https://auth.fandom.com/register?source=mw&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping&metadata=header-registration-button
+  - generic "Community navigation" [ref=f15e16]:
+    - link "Fandom homepage" [ref=f15e18] [cursor=pointer]:
+      - /url: https://www.fandom.com/
+    - link "MusicBee Wiki" [ref=f15e21] [cursor=pointer]:
+      - /url: https://musicbee.fandom.com/wiki/MusicBee_Wiki
+    - navigation [ref=f15e22]:
+      - list [ref=f15e23]:
+        - listitem [ref=f15e24]:
+          - generic [ref=f15e25]:
+            - generic [ref=f15e26] [cursor=pointer]: Explore
+            - img "Expand" [ref=f15e30]
+        - listitem [ref=f15e32]:
+          - generic [ref=f15e33]:
+            - generic [ref=f15e34] [cursor=pointer]: Essentials
+            - img "Expand" [ref=f15e36]
+        - listitem [ref=f15e38]:
+          - generic [ref=f15e39]:
+            - generic [ref=f15e40] [cursor=pointer]: Customization
+            - img "Expand" [ref=f15e42]
+        - listitem [ref=f15e44]:
+          - generic [ref=f15e45]:
+            - generic [ref=f15e46] [cursor=pointer]: More Help
+            - img "Expand" [ref=f15e48]
+    - textbox "Search" [ref=f15e52]
+    - link "Switch to Dark Theme" [ref=f15e56] [cursor=pointer]:
+      - /url: "#"
+    - link "Sign In" [ref=f15e59] [cursor=pointer]:
+      - /url: https://auth.fandom.com/signin?source=mw&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping&metadata=header-signin-button
+    - link "Create a Free Account" [ref=f15e62] [cursor=pointer]:
+      - /url: https://auth.fandom.com/register?source=mw&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping&metadata=community-header-registration-button
+  - generic [ref=f15e63]:
+    - navigation "Fandom navigation" [ref=f15e65]:
+      - generic [ref=f15e66]:
+        - link "Home" [ref=f15e69] [cursor=pointer]:
+          - /url: https://www.fandom.com/
+        - generic [ref=f15e75]:
+          - button "Explore" [expanded] [ref=f15e76] [cursor=pointer]
+          - complementary [ref=f15e83]:
+            - generic [ref=f15e84]:
+              - heading "Explore" [level=2] [ref=f15e85]
+              - button "Hide" [ref=f15e87] [cursor=pointer]
+              - generic [ref=f15e92]:
+                - generic [ref=f15e94]:
+                  - link "Using Sort Order" [ref=f15e95] [cursor=pointer]:
+                    - /url: https://musicbee.fandom.com/wiki/Using_Sort_Order
+                  - generic [ref=f15e96]:
+                    - img "Using Sort Order" [ref=f15e98]
+                    - generic [ref=f15e99]:
+                      - heading "Using Sort Order" [level=3] [ref=f15e101]
+                      - generic [ref=f15e102]: MusicBee Wiki
+                - generic [ref=f15e105]:
+                  - link "Grace Ashcroft" [ref=f15e106] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Grace_Ashcroft
+                  - generic [ref=f15e107]:
+                    - img "Grace Ashcroft" [ref=f15e109]
+                    - generic [ref=f15e110]:
+                      - heading "Grace Ashcroft" [level=3] [ref=f15e112]
+                      - generic [ref=f15e113]: Resident Evil Wiki
+                - link "Fandom Four Find the hidden connections across gaming, anime, movies, TV, and more in this daily puzzle game. Try it now" [ref=f15e115] [cursor=pointer]:
+                  - /url: http://utilities.fandom.com/wiki/Special:GameUtility/FandomConnect
+                  - generic [ref=f15e117]:
+                    - strong [ref=f15e118]: Fandom Four
+                    - generic [ref=f15e119]: Find the hidden connections across gaming, anime, movies, TV, and more in this daily puzzle game.
+                    - generic [ref=f15e120]: Try it now
+                - generic [ref=f15e122]:
+                  - link "Help:Adding images" [ref=f15e123] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:Adding_images
+                  - generic [ref=f15e124]:
+                    - img "Help:Adding images" [ref=f15e126]
+                    - generic [ref=f15e127]:
+                      - heading "Help:Adding images" [level=3] [ref=f15e129]
+                      - generic [ref=f15e130]: Community Central
+                - generic [ref=f15e133]:
+                  - link "Starweird" [ref=f15e134] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Starweird
+                  - generic [ref=f15e135]:
+                    - img "Starweird" [ref=f15e137]
+                    - generic [ref=f15e138]:
+                      - heading "Starweird" [level=3] [ref=f15e140]
+                      - generic [ref=f15e141]: Wookieepedia
+                - generic [ref=f15e144]:
+                  - link "Help:Start a new community" [ref=f15e145] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:Start_a_new_community
+                  - generic [ref=f15e146]:
+                    - img "Help:Start a new community" [ref=f15e148]
+                    - generic [ref=f15e149]:
+                      - heading "Help:Start a new community" [level=3] [ref=f15e151]
+                      - generic [ref=f15e152]: Community Central
+                - generic [ref=f15e155]:
+                  - link "Help:Templates" [ref=f15e156] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:Templates
+                  - generic [ref=f15e157]:
+                    - img "Help:Templates" [ref=f15e159]
+                    - generic [ref=f15e160]:
+                      - heading "Help:Templates" [level=3] [ref=f15e162]
+                      - generic [ref=f15e163]: Community Central
+                - generic [ref=f15e166]:
+                  - link "Help:User rights" [ref=f15e167] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:User_rights
+                  - generic [ref=f15e168]:
+                    - img "Help:User rights" [ref=f15e170]
+                    - generic [ref=f15e171]:
+                      - heading "Help:User rights" [level=3] [ref=f15e173]
+                      - generic [ref=f15e174]: Community Central
+                - generic [ref=f15e177]:
+                  - link "Help:Closing an account" [ref=f15e178] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:Closing_an_account
+                  - generic [ref=f15e179]:
+                    - img "Help:Closing an account" [ref=f15e181]
+                    - generic [ref=f15e182]:
+                      - heading "Help:Closing an account" [level=3] [ref=f15e184]
+                      - generic [ref=f15e185]: Community Central
+                - generic [ref=f15e188]:
+                  - link "HUNK" [ref=f15e189] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/HUNK
+                  - generic [ref=f15e190]:
+                    - img "HUNK" [ref=f15e192]
+                    - generic [ref=f15e193]:
+                      - heading "HUNK" [level=3] [ref=f15e195]
+                      - generic [ref=f15e196]: Resident Evil Wiki
+                - generic [ref=f15e199]:
+                  - link "Anakin Skywalker" [ref=f15e200] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Anakin_Skywalker
+                  - generic [ref=f15e201]:
+                    - img "Anakin Skywalker" [ref=f15e203]
+                    - generic [ref=f15e204]:
+                      - heading "Anakin Skywalker" [level=3] [ref=f15e206]
+                      - generic [ref=f15e207]: Wookieepedia
+                - generic [ref=f15e210]:
+                  - link "Maul" [ref=f15e211] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Maul
+                  - generic [ref=f15e212]:
+                    - img "Maul" [ref=f15e214]
+                    - generic [ref=f15e215]:
+                      - heading "Maul" [level=3] [ref=f15e217]
+                      - generic [ref=f15e218]: Wookieepedia
+                - generic [ref=f15e221]:
+                  - link "Tenebrae" [ref=f15e222] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Tenebrae
+                  - generic [ref=f15e223]:
+                    - img "Tenebrae" [ref=f15e225]
+                    - generic [ref=f15e226]:
+                      - heading "Tenebrae" [level=3] [ref=f15e228]
+                      - generic [ref=f15e229]: Wookieepedia
+                - generic [ref=f15e232]:
+                  - link "Alcina Dimitrescu" [ref=f15e233] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Alcina_Dimitrescu
+                  - generic [ref=f15e234]:
+                    - img "Alcina Dimitrescu" [ref=f15e236]
+                    - generic [ref=f15e237]:
+                      - heading "Alcina Dimitrescu" [level=3] [ref=f15e239]
+                      - generic [ref=f15e240]: Resident Evil Wiki
+                - generic [ref=f15e243]:
+                  - link "Darth Plagueis" [ref=f15e244] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Darth_Plagueis
+                  - generic [ref=f15e245]:
+                    - img "Darth Plagueis" [ref=f15e247]
+                    - generic [ref=f15e248]:
+                      - heading "Darth Plagueis" [level=3] [ref=f15e250]
+                      - generic [ref=f15e251]: Wookieepedia
+                - generic [ref=f15e254]:
+                  - link "Ethan Winters" [ref=f15e255] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Ethan_Winters
+                  - generic [ref=f15e256]:
+                    - img "Ethan Winters" [ref=f15e258]
+                    - generic [ref=f15e259]:
+                      - heading "Ethan Winters" [level=3] [ref=f15e261]
+                      - generic [ref=f15e262]: Resident Evil Wiki
+                - generic [ref=f15e265]:
+                  - link "Leon Scott Kennedy" [ref=f15e266] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Leon_Scott_Kennedy
+                  - generic [ref=f15e267]:
+                    - img "Leon Scott Kennedy" [ref=f15e269]
+                    - generic [ref=f15e270]:
+                      - heading "Leon Scott Kennedy" [level=3] [ref=f15e272]
+                      - generic [ref=f15e273]: Resident Evil Wiki
+                - generic [ref=f15e276]:
+                  - link "Help:Editing" [ref=f15e277] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:Editing
+                  - generic [ref=f15e278]:
+                    - img "Help:Editing" [ref=f15e280]
+                    - generic [ref=f15e281]:
+                      - heading "Help:Editing" [level=3] [ref=f15e283]
+                      - generic [ref=f15e284]: Community Central
+                - generic [ref=f15e287]:
+                  - link "Help:Interactive Maps" [ref=f15e288] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:Interactive_Maps
+                  - generic [ref=f15e289]:
+                    - img "Help:Interactive Maps" [ref=f15e291]
+                    - generic [ref=f15e292]:
+                      - heading "Help:Interactive Maps" [level=3] [ref=f15e294]
+                      - generic [ref=f15e295]: Community Central
+                - generic [ref=f15e298]:
+                  - link "Biddy Blas" [ref=f15e299] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Biddy_Blas
+                  - generic [ref=f15e300]:
+                    - img "Biddy Blas" [ref=f15e302]
+                    - generic [ref=f15e303]:
+                      - heading "Biddy Blas" [level=3] [ref=f15e305]
+                      - generic [ref=f15e306]: Wookieepedia
+                - generic [ref=f15e309]:
+                  - link "Yuuzhan Vong" [ref=f15e310] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Yuuzhan_Vong
+                  - generic [ref=f15e311]:
+                    - img "Yuuzhan Vong" [ref=f15e313]
+                    - generic [ref=f15e314]:
+                      - heading "Yuuzhan Vong" [level=3] [ref=f15e316]
+                      - generic [ref=f15e317]: Wookieepedia
+                - generic [ref=f15e320]:
+                  - link "Ahsoka Tano" [ref=f15e321] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Ahsoka_Tano
+                  - generic [ref=f15e322]:
+                    - img "Ahsoka Tano" [ref=f15e324]
+                    - generic [ref=f15e325]:
+                      - heading "Ahsoka Tano" [level=3] [ref=f15e327]
+                      - generic [ref=f15e328]: Wookieepedia
+                - generic [ref=f15e331]:
+                  - link "Darth Sidious" [ref=f15e332] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Darth_Sidious
+                  - generic [ref=f15e333]:
+                    - img "Darth Sidious" [ref=f15e335]
+                    - generic [ref=f15e336]:
+                      - heading "Darth Sidious" [level=3] [ref=f15e338]
+                      - generic [ref=f15e339]: Wookieepedia
+                - generic [ref=f15e342]:
+                  - link "Help:Contents" [ref=f15e343] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:Contents
+                  - generic [ref=f15e344]:
+                    - img "Help:Contents" [ref=f15e346]
+                    - generic [ref=f15e347]:
+                      - heading "Help:Contents" [level=3] [ref=f15e349]
+                      - generic [ref=f15e350]: Community Central
+                - generic [ref=f15e353]:
+                  - link "Jill Valentine" [ref=f15e354] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Jill_Valentine
+                  - generic [ref=f15e355]:
+                    - img "Jill Valentine" [ref=f15e357]
+                    - generic [ref=f15e358]:
+                      - heading "Jill Valentine" [level=3] [ref=f15e360]
+                      - generic [ref=f15e361]: Resident Evil Wiki
+                - generic [ref=f15e364]:
+                  - link "Ada Wong" [ref=f15e365] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Ada_Wong
+                  - generic [ref=f15e366]:
+                    - img "Ada Wong" [ref=f15e368]
+                    - generic [ref=f15e369]:
+                      - heading "Ada Wong" [level=3] [ref=f15e371]
+                      - generic [ref=f15e372]: Resident Evil Wiki
+                - generic [ref=f15e375]:
+                  - link "Chris Redfield" [ref=f15e376] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Chris_Redfield
+                  - generic [ref=f15e377]:
+                    - img "Chris Redfield" [ref=f15e379]
+                    - generic [ref=f15e380]:
+                      - heading "Chris Redfield" [level=3] [ref=f15e382]
+                      - generic [ref=f15e383]: Resident Evil Wiki
+                - generic [ref=f15e386]:
+                  - link "Help:New page" [ref=f15e387] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:New_page
+                  - generic [ref=f15e388]:
+                    - img "Help:New page" [ref=f15e390]
+                    - generic [ref=f15e391]:
+                      - heading "Help:New page" [level=3] [ref=f15e393]
+                      - generic [ref=f15e394]: Community Central
+                - generic [ref=f15e397]:
+                  - link "Albert Wesker" [ref=f15e398] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Albert_Wesker
+                  - generic [ref=f15e399]:
+                    - img "Albert Wesker" [ref=f15e401]
+                    - generic [ref=f15e402]:
+                      - heading "Albert Wesker" [level=3] [ref=f15e404]
+                      - generic [ref=f15e405]: Resident Evil Wiki
+                - generic [ref=f15e408]:
+                  - link "Help:Infoboxes" [ref=f15e409] [cursor=pointer]:
+                    - /url: https://community.fandom.com/wiki/Help:Infoboxes
+                  - generic [ref=f15e410]:
+                    - img "Help:Infoboxes" [ref=f15e412]
+                    - generic [ref=f15e413]:
+                      - heading "Help:Infoboxes" [level=3] [ref=f15e415]
+                      - generic [ref=f15e416]: Community Central
+                - generic [ref=f15e419]:
+                  - link "Bryan Hodukavich" [ref=f15e420] [cursor=pointer]:
+                    - /url: https://residentevil.fandom.com/wiki/Bryan_Hodukavich
+                  - generic [ref=f15e421]:
+                    - img "Bryan Hodukavich" [ref=f15e423]
+                    - generic [ref=f15e424]:
+                      - heading "Bryan Hodukavich" [level=3] [ref=f15e426]
+                      - generic [ref=f15e427]: Resident Evil Wiki
+                - generic [ref=f15e430]:
+                  - link "Darth Nihilus" [ref=f15e431] [cursor=pointer]:
+                    - /url: https://starwars.fandom.com/wiki/Darth_Nihilus
+                  - generic [ref=f15e432]:
+                    - img "Darth Nihilus" [ref=f15e434]
+                    - generic [ref=f15e435]:
+                      - heading "Darth Nihilus" [level=3] [ref=f15e437]
+                      - generic [ref=f15e438]: Wookieepedia
+        - link "Saved" [ref=f15e442] [cursor=pointer]:
+          - /url: https://www.fandom.com/saved
+        - link "Progress" [ref=f15e450] [cursor=pointer]:
+          - /url: https://www.fandom.com/progress
+        - button "History" [ref=f15e457] [cursor=pointer]
+        - link "Utilities" [ref=f15e465] [cursor=pointer]:
+          - /url: https://www.fandom.com/utilities
+      - link "Fandom Four" [ref=f15e474] [cursor=pointer]:
+        - /url: http://utilities.fandom.com/wiki/Special:GameUtility/FandomConnect
+    - navigation "Fandom navigation" [ref=f15e481]:
+      - button "Settings" [ref=f15e483] [cursor=pointer]
+      - button "More" [ref=f15e490] [cursor=pointer]
+  - generic [ref=f15e496]:
+    - generic [ref=f15e497]: Advertisement
+    - generic [ref=f15e502]:
+      - link "Skip to content" [ref=f15e503] [cursor=pointer]:
+        - /url: "#page-header"
+      - banner [ref=f15e505]:
+        - link [ref=f15e506] [cursor=pointer]:
+          - /url: https://musicbee.fandom.com/wiki/MusicBee_Wiki
+          - img "MusicBee Wiki" [ref=f15e507]
+        - generic [ref=f15e508]:
+          - link "MusicBee Wiki" [ref=f15e510] [cursor=pointer]:
+            - /url: https://musicbee.fandom.com/wiki/MusicBee_Wiki
+          - link "165 pages" [ref=f15e512] [cursor=pointer]:
+            - /url: https://musicbee.fandom.com/wiki/Special:AllPages
+            - generic [ref=f15e513]: "165"
+            - generic [ref=f15e514]: pages
+          - link "Switch to Dark Theme" [ref=f15e516] [cursor=pointer]:
+            - /url: "#"
+        - navigation [ref=f15e517]:
+          - list [ref=f15e518]:
+            - listitem [ref=f15e519]:
+              - generic [ref=f15e520]:
+                - generic [ref=f15e521] [cursor=pointer]: Explore
+                - img "Expand" [ref=f15e525]
+            - listitem [ref=f15e527]:
+              - generic [ref=f15e528]:
+                - generic [ref=f15e529] [cursor=pointer]: Essentials
+                - img "Expand" [ref=f15e531]
+            - listitem [ref=f15e533]:
+              - generic [ref=f15e534]:
+                - generic [ref=f15e535] [cursor=pointer]: Customization
+                - img "Expand" [ref=f15e537]
+            - listitem [ref=f15e539]:
+              - generic [ref=f15e540]:
+                - generic [ref=f15e541] [cursor=pointer]: More Help
+                - img "Expand" [ref=f15e543]
+      - generic [ref=f15e545]:
+        - main [ref=f15e546]:
+          - generic [ref=f15e548]:
+            - button "Expand" [ref=f15e549] [cursor=pointer]
+            - link "Edit" [ref=f15e552] [cursor=pointer]:
+              - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping%3Fveaction%3Dedit&uselang=en&metadata=article-registration-edit-article
+            - link "Sign In to Save" [ref=f15e555] [cursor=pointer]:
+              - /url: https://auth.fandom.com/register?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping%3Fcollections%3Dsave&uselang=en&metadata=collections-save-button
+          - generic [ref=f15e558]:
+            - generic [ref=f15e561]:
+              - text: "in:"
+              - link "Preferences" [ref=f15e562] [cursor=pointer]:
+                - /url: /wiki/Category:Preferences
+              - text: ","
+              - link "Library Management" [ref=f15e563] [cursor=pointer]:
+                - /url: /wiki/Category:Library_Management
+            - generic [ref=f15e564]:
+              - heading "Sorting & Grouping" [level=1] [ref=f15e566]
+              - generic [ref=f15e567]:
+                - link "Comments" [ref=f15e568] [cursor=pointer]:
+                  - /url: "#articleComments"
+                  - generic [ref=f15e569]: "11"
+                - link "Sign In to Save" [ref=f15e570] [cursor=pointer]:
+                  - /url: https://auth.fandom.com/register?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping%3Fcollections%3Dsave&uselang=en&metadata=collections-save-button
+                - link "Edit" [ref=f15e572] [cursor=pointer]:
+                  - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping%3Fveaction%3Dedit&uselang=en&metadata=article-registration-edit-article
+                - button "Page Tools" [ref=f15e574]
+          - generic [ref=f15e577]:
+            - paragraph [ref=f15e578]:
+              - generic [ref=f15e579]:
+                - text: Up-to-date with version
+                - link "3.0.5976" [ref=f15e580] [cursor=pointer]:
+                  - /url: /wiki/Latest_Update
+            - heading [level=2] [ref=f15e581]:
+              - text: sorting
+              - link "Sign in to edit" [ref=f15e583] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping%3Fveaction%3Dedit%26section%3D1&uselang=en&metadata=article-registration-edit-article-section
+            - figure [ref=f15e586]:
+              - link [ref=f15e587] [cursor=pointer]:
+                - /url: https://static.wikia.nocookie.net/musicbee/images/d/d1/Preferences_Sorting-Grouping.png/revision/latest?cb=20160513025927
+                - img "Sorting/Grouping Preferences" [ref=f15e588]
+                - generic "view image" [ref=f15e591]
+              - paragraph [ref=f15e595]: Sorting/Grouping Preferences
+            - paragraph [ref=f15e596]:
+              - text: Fields in this option group allow to define custom sorting orders, used wherever 'Sort by' option is available in context menus, such as the
+              - link "Configure Columns" [ref=f15e597] [cursor=pointer]:
+                - /url: /wiki/Configure_Columns
+              - text: menu. These orders supplement built-in sorting orders that are available from 'Sort By' menu. Some common sort orders (like 'Album Artist/Album') are provided for you. To define a custom sorting order, click ellipsis (...) button to display the Sorting Set dialog.
+            - term [ref=f15e599]:
+              - generic [ref=f15e600]: ignore words
+            - paragraph [ref=f15e601]:
+              - text: (
+              - generic [ref=f15e602]: "Default: The"
+              - text: ) Any words or characters here will be ignored when sorting by title, artist, or album. All entries are separated by commas (meaning that a comma is the one character you can't tell MB to ignore) and spaces between entries are ignored.
+            - heading [level=2] [ref=f15e603]:
+              - text: grouping
+              - link "Sign in to edit" [ref=f15e605] [cursor=pointer]:
+                - /url: https://auth.fandom.com/signin?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping%3Fveaction%3Dedit%26section%3D2&uselang=en&metadata=article-registration-edit-article-section
+            - paragraph [ref=f15e608]: Fields in this option group allow to define what set of files MusicBee treats as an album. Your files may be placed in different places on your hard disk, organized or not, and be tagged in different ways, but MusicBee still needs to know in some contexts (fe. grouping by album in Album view of the main panel), what files constitute an album.
+            - paragraph [ref=f15e609]: "Grouping options allow for flexible album definition: your definition of an album can reflect a physical disk, set of disks sold as one item (multi-disc album, box set) etc."
+            - term [ref=f15e611]:
+              - generic [ref=f15e612]: files for each album are organized in their own folder
+            - paragraph [ref=f15e613]: If you select this radio button, that means that all files in a single folder on your hard disk make up a single album.
+            - term [ref=f15e615]:
+              - generic [ref=f15e616]: the following fields define an album
+            - paragraph [ref=f15e617]:
+              - text: (
+              - generic [ref=f15e618]: "Default: Album Artist & Album Name"
+              - text: ) If you select this radio button, you can define with the following drop-down fields how an album is defined. A set of files is treated as an album, if all these files have identical values for the all the parameters selected in the drop-down fields.
+            - paragraph [ref=f15e619]: In the first field you can only select Album Artist (or leave it blank); the value of the second field is fixed to Album Name. In the remaining two fields you can select parameters based on tags (also virtual and custom), file characteristics (fe. bitrate) or MusicBee database field (fe. Play Count).
+            - term [ref=f15e621]:
+              - generic [ref=f15e622]: detect iTunes compilations and treat as Album Artist
+            - paragraph [ref=f15e623]:
+              - text: (
+              - generic [ref=f15e624]: "Default: unticked, Various Artists"
+              - text: ) This field is enabled only when "the following fields define an album" is selected. If this option is selected, MusicBee checks if ITUNES COMPILATION (TCMP) non-standard tag is present in a file and has a value of 1 (you can set this manually in the Settings page of the
+              - link "Tag Editor" [ref=f15e625] [cursor=pointer]:
+                - /url: /wiki/Tag_Editor
+              - text: ). If so, and if there is no Album Artist (TPE2) tag present, MusicBee treats this value as the Album Artist for that file (it is not written into the file, only used internally by MusicBee). See also
+              - link "iTunes compilation" [ref=f15e626] [cursor=pointer]:
+                - /url: /wiki/ITunes_compilation
+              - text: .
+            - paragraph [ref=f15e627]
+            - table [ref=f15e628]:
+              - rowgroup [ref=f15e629]:
+                - row [ref=f15e630]:
+                  - cell [ref=f15e631]:
+                    - link "Preferences" [ref=f15e632] [cursor=pointer]:
+                      - /url: /wiki/Category:Preferences
+                - row [ref=f15e634]:
+                  - cell [ref=f15e635]:
+                    - paragraph [ref=f15e636]:
+                      - link "General" [ref=f15e637] [cursor=pointer]:
+                        - /url: /wiki/General_Preferences
+                      - text: ·
+                      - link "Layout" [ref=f15e638] [cursor=pointer]:
+                        - /url: /wiki/Layout_Preferences
+                      - text: ·
+                      - link "Hotkeys" [ref=f15e639] [cursor=pointer]:
+                        - /url: /wiki/Hotkeys
+                      - text: ·
+                      - link "Player" [ref=f15e640] [cursor=pointer]:
+                        - /url: /wiki/Player_Preferences
+                      - text: ·
+                      - link "Now Playing" [ref=f15e641] [cursor=pointer]:
+                        - /url: /wiki/Now_Playing_Preferences
+                      - text: ·
+                      - link "Library" [ref=f15e642] [cursor=pointer]:
+                        - /url: /wiki/Library_Preferences
+                      - text: ·
+                      - link "Tags" [ref=f15e643] [cursor=pointer]:
+                        - /url: /wiki/Tags_Preferences
+                      - text: ·
+                      - strong [ref=f15e644]: Sorting/Grouping
+                      - link "Internet" [ref=f15e645] [cursor=pointer]:
+                        - /url: /wiki/Internet
+                      - text: ·
+                      - link "CD Ripping" [ref=f15e646] [cursor=pointer]:
+                        - /url: /wiki/Ripping
+                      - text: ·
+                      - link "Tools" [ref=f15e647] [cursor=pointer]:
+                        - /url: /wiki/Tools_%26_Converters#External_Tools
+                      - text: ·
+                      - link "File Converters" [ref=f15e648] [cursor=pointer]:
+                        - /url: /wiki/Tools_%26_Converters#File_Converters
+                      - text: ·
+                      - link "Devices" [ref=f15e649] [cursor=pointer]:
+                        - /url: /wiki/Devices
+                      - text: ·
+                      - link "Plugins" [ref=f15e650] [cursor=pointer]:
+                        - /url: /wiki/Plugins
+            - table [ref=f15e651]:
+              - rowgroup [ref=f15e652]:
+                - row [ref=f15e653]:
+                  - cell [ref=f15e654]:
+                    - link "Library Management" [ref=f15e655] [cursor=pointer]:
+                      - /url: /wiki/Category:Library_Management
+                - row [ref=f15e657]:
+                  - cell [ref=f15e658]:
+                    - paragraph [ref=f15e659]:
+                      - link "Playlists" [ref=f15e660] [cursor=pointer]:
+                        - /url: /wiki/Playlists
+                      - text: ·
+                      - link "Filters" [ref=f15e661] [cursor=pointer]:
+                        - /url: /wiki/Filters
+                      - text: ·
+                      - link "Highlighting" [ref=f15e662] [cursor=pointer]:
+                        - /url: /wiki/Highlighting
+                      - text: ·
+                      - link "Searching" [ref=f15e663] [cursor=pointer]:
+                        - /url: /wiki/Searching
+                      - text: ·
+                      - link "A-Z Jump Bar" [ref=f15e664] [cursor=pointer]:
+                        - /url: /wiki/A-Z_Jump_Bar
+                      - text: ·
+                      - link "Column Browser" [ref=f15e665] [cursor=pointer]:
+                        - /url: /wiki/Column_Browser
+                      - text: ·
+                      - link "Thumbnail Browser" [ref=f15e666] [cursor=pointer]:
+                        - /url: /wiki/Thumbnail_Browser
+                      - text: ·
+                      - link "Library Explorer" [ref=f15e667] [cursor=pointer]:
+                        - /url: /wiki/Library_Explorer
+                      - text: ·
+                      - link "Hotkeys" [ref=f15e668] [cursor=pointer]:
+                        - /url: /wiki/Hotkeys
+                      - text: ·
+                      - link "Toolbar Buttons" [ref=f15e669] [cursor=pointer]:
+                        - /url: /wiki/Toolbar_Buttons
+                      - text: ·
+                      - link "Multiple Libraries" [ref=f15e670] [cursor=pointer]:
+                        - /url: /wiki/Multiple_Libraries
+          - generic [ref=f15e671]:
+            - button "Toggle Categories" [ref=f15e673] [cursor=pointer]: Categories
+            - generic [ref=f15e676]:
+              - text: Community content is available under
+              - link "CC-BY-SA" [ref=f15e677] [cursor=pointer]:
+                - /url: https://www.fandom.com/licensing
+              - text: unless otherwise noted.
+            - generic [ref=f15e680]:
+              - paragraph [ref=f15e683]: 11 Comments
+              - generic [ref=f15e684]:
+                - heading "Join the conversation" [level=3] [ref=f15e688]
+                - heading "Sign in to read what others are saying and share your thoughts." [level=4] [ref=f15e689]
+                - generic [ref=f15e690]:
+                  - link "SIGN IN" [ref=f15e691] [cursor=pointer]:
+                    - /url: /login?metadata=anonymous-article-comments-login-source&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping%3Fanon-comments-auth-source%3Dlogin%23articleComments
+                  - generic:
+                    - iframe
+                - paragraph [ref=f15e692]:
+                  - text: Don't have account?
+                  - link "Register now" [ref=f15e693] [cursor=pointer]:
+                    - /url: /register?metadata=anonymous-article-comments-register-source&redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping%3Fanon-comments-auth-source%3Dregister%23articleComments
+        - complementary [ref=f15e694]:
+          - generic [ref=f15e708]:
+            - generic [ref=f15e709]:
+              - heading "New to Fandom? Let's make it official." [level=2] [ref=f15e710]
+              - paragraph [ref=f15e711]: Create your free account and dive into the worlds you love with fans who love them too.
+            - generic [ref=f15e712]:
+              - link "Continue with Email" [ref=f15e713] [cursor=pointer]:
+                - /url: https://auth.fandom.com/register?redirect=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%2526_Grouping&uselang=en&metadata=right-rail-registration-button
+              - generic:
+                - iframe
+    - contentinfo [ref=f15e721]:
+      - generic [ref=f15e722]:
+        - generic [ref=f15e723]:
+          - heading [level=2] [ref=f15e724]:
+            - link "Fandom homepage" [ref=f15e725] [cursor=pointer]:
+              - /url: https://www.fandom.com/
+              - img "Fandom logo" [ref=f15e726]
+          - generic [ref=f15e727]:
+            - heading "Explore properties" [level=3] [ref=f15e728]
+            - list [ref=f15e729]:
+              - listitem [ref=f15e730]:
+                - link "Fandom" [ref=f15e731] [cursor=pointer]:
+                  - /url: https://www.fandom.com/
+              - listitem [ref=f15e732]:
+                - link "Fanatical" [ref=f15e733] [cursor=pointer]:
+                  - /url: https://www.fanatical.com/
+              - listitem [ref=f15e734]:
+                - link "GameSpot" [ref=f15e735] [cursor=pointer]:
+                  - /url: https://www.gamespot.com/
+              - listitem [ref=f15e736]:
+                - link "Metacritic" [ref=f15e737] [cursor=pointer]:
+                  - /url: https://www.metacritic.com/
+              - listitem [ref=f15e738]:
+                - link "TV Guide" [ref=f15e739] [cursor=pointer]:
+                  - /url: https://www.tvguide.com/
+              - listitem [ref=f15e740]:
+                - link "Honest Entertainment" [ref=f15e741] [cursor=pointer]:
+                  - /url: https://www.youtube.com/user/screenjunkies
+          - generic [ref=f15e742]:
+            - heading "Follow Us" [level=3] [ref=f15e743]
+            - list [ref=f15e744]:
+              - listitem [ref=f15e745]:
+                - link "Follow Fandom on Facebook" [ref=f15e746] [cursor=pointer]:
+                  - /url: https://www.facebook.com/getfandom
+              - listitem [ref=f15e749]:
+                - link "Follow Fandom on Twitter" [ref=f15e750] [cursor=pointer]:
+                  - /url: https://twitter.com/getfandom
+              - listitem [ref=f15e753]:
+                - link "Follow Fandom on Youtube" [ref=f15e754] [cursor=pointer]:
+                  - /url: https://www.youtube.com/fandomentertainment
+              - listitem [ref=f15e757]:
+                - link "Follow Fandom on Instagram" [ref=f15e758] [cursor=pointer]:
+                  - /url: https://www.instagram.com/getfandom/
+              - listitem [ref=f15e761]:
+                - link "Follow Fandom on LinkedIn" [ref=f15e762] [cursor=pointer]:
+                  - /url: https://www.linkedin.com/company/157252
+        - generic [ref=f15e766]:
+          - heading "Overview" [level=3] [ref=f15e767]
+          - list [ref=f15e768]:
+            - listitem [ref=f15e769]:
+              - link "What is Fandom?" [ref=f15e770] [cursor=pointer]:
+                - /url: https://www.fandom.com/what-is-fandom
+            - listitem [ref=f15e771]:
+              - link "Essentials" [ref=f15e772] [cursor=pointer]:
+                - /url: https://www.fandom.com/essentials
+            - listitem [ref=f15e773]:
+              - link "About" [ref=f15e774] [cursor=pointer]:
+                - /url: https://www.fandom.com/about
+            - listitem [ref=f15e775]:
+              - link "Careers" [ref=f15e776] [cursor=pointer]:
+                - /url: https://www.fandom.com/careers
+            - listitem [ref=f15e777]:
+              - link "Press" [ref=f15e778] [cursor=pointer]:
+                - /url: https://www.fandom.com/press
+            - listitem [ref=f15e779]:
+              - link "Contact" [ref=f15e780] [cursor=pointer]:
+                - /url: https://www.fandom.com/about#contact
+            - listitem [ref=f15e781]:
+              - link "Terms of Use" [ref=f15e782] [cursor=pointer]:
+                - /url: https://www.fandom.com/terms-of-use
+            - listitem [ref=f15e783]:
+              - link "Privacy Policy" [ref=f15e784] [cursor=pointer]:
+                - /url: https://www.fandom.com/privacy-policy
+            - listitem [ref=f15e785]:
+              - link "Digital Services Act" [ref=f15e786] [cursor=pointer]:
+                - /url: https://www.fandom.com/digital-services-act
+            - listitem [ref=f15e787]:
+              - link "Global Sitemap" [ref=f15e788] [cursor=pointer]:
+                - /url: //community.fandom.com/Sitemap
+            - listitem [ref=f15e789]:
+              - link "Local Sitemap" [ref=f15e790] [cursor=pointer]:
+                - /url: /wiki/Local_Sitemap
+            - listitem [ref=f15e791]:
+              - button "Manage Preferences" [ref=f15e792]
+        - generic [ref=f15e793]:
+          - generic [ref=f15e794]:
+            - heading "Community" [level=3] [ref=f15e795]
+            - list [ref=f15e796]:
+              - listitem [ref=f15e797]:
+                - link "Community Central" [ref=f15e798] [cursor=pointer]:
+                  - /url: //community.fandom.com/wiki/Community_Central
+              - listitem [ref=f15e799]:
+                - link "Support" [ref=f15e800] [cursor=pointer]:
+                  - /url: https://fandom.zendesk.com/
+              - listitem [ref=f15e801]:
+                - link "Help" [ref=f15e802] [cursor=pointer]:
+                  - /url: //community.fandom.com/wiki/Help:Contents
+              - listitem [ref=f15e803]:
+                - link "Accessibility Statement" [ref=f15e804] [cursor=pointer]:
+                  - /url: https://community.fandom.com/wiki/Fandom_accessibility_statement
+          - generic [ref=f15e805]:
+            - heading "Advertise" [level=3] [ref=f15e806]
+            - list [ref=f15e807]:
+              - listitem [ref=f15e808]:
+                - link "Media Kit" [ref=f15e809] [cursor=pointer]:
+                  - /url: https://about.fandom.com/mediakit
+              - listitem [ref=f15e810]:
+                - link "Contact" [ref=f15e811] [cursor=pointer]:
+                  - /url: https://about.fandom.com/mediakit#contact
+        - generic [ref=f15e812]:
+          - generic [ref=f15e813]:
+            - heading "Fandom Apps" [level=3] [ref=f15e814]
+            - text: Take your favorite fandoms with you and never miss a beat.
+          - generic [ref=f15e815]:
+            - img "Fandom App logo" [ref=f15e816]
+            - list [ref=f15e817]:
+              - listitem [ref=f15e818]:
+                - link "Fandom's Apple Store" [ref=f15e819] [cursor=pointer]:
+                  - /url: https://apps.apple.com/us/app/fandom-videos-news-reviews/id1230063803/?pt=368308&ct=wiki_gaming&mt=8
+                  - img "Store icon" [ref=f15e820]
+              - listitem [ref=f15e821]:
+                - link "Fandom's Google Play" [ref=f15e822] [cursor=pointer]:
+                  - /url: https://play.google.com/store/apps/details?id=com.fandom.app&referrer=utm_source%3Dwikia%26utm_medium%3Dglobalfooter%26utm_campaign%3Dwiki_gaming
+                  - img "Store icon" [ref=f15e823]
+      - generic [ref=f15e824]:
+        - generic [ref=f15e825]: MusicBee Wiki is a Fandom Music Community.
+        - button "View Mobile Site" [ref=f15e827]
+  - generic [ref=f15e830]:
+    - link "Search this wiki" [ref=f15e832] [cursor=pointer]:
+      - /url: https://musicbee.fandom.com/wiki/Special:Search?scope=internal&query=&h=1&isFromHighlightActions=on
+    - link "Search all wikis" [ref=f15e837] [cursor=pointer]:
+      - /url: https://musicbee.fandom.com/wiki/Special:Search?scope=cross-wiki&query=&h=1&isFromHighlightActions=on
+    - generic [ref=f15e839]:
+      - link [ref=f15e841] [cursor=pointer]:
+        - /url: https://reddit.com/submit?url=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%26_Grouping%3Fsh%3Dnull__4355%26m%3D3%26utm_source%3Dreddit%26utm_campaign%3Dh2s&title=
+      - link [ref=f15e845] [cursor=pointer]:
+        - /url: https://www.facebook.com/dialog/share?app_id=112328095453510&href=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%26_Grouping%3Fsh%3Dnull__4355%26m%3D2%26utm_source%3Dfacebook%26utm_campaign%3Dh2s&redirect_uri=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%26_Grouping&quote=&display=page
+      - link [ref=f15e849] [cursor=pointer]:
+        - /url: https://twitter.com/intent/tweet?text=&url=https%3A%2F%2Fmusicbee.fandom.com%2Fwiki%2FSorting_%26_Grouping%3Fsh%3Dnull__4355%26m%3D1%26utm_source%3Dtwitter%26utm_campaign%3Dh2s
+    - button "More" [ref=f15e853] [cursor=pointer]
+  - generic:
+    - generic "We Care About Your Privacy" [ref=f15e857]:
+      - dialog "We Care About Your Privacy" [ref=f15e858]:
+        - generic [ref=f15e860]:
+          - generic [ref=f15e862]:
+            - heading "We Care About Your Privacy" [level=2] [ref=f15e863]
+            - paragraph [ref=f15e864]:
+              - text: We and our 754 partner(s) store and access personal data, like browsing data or unique identifiers, on your device. Selecting I Accept enables tracking technologies to support the purposes shown under we and our partners process data to provide. If trackers are disabled, some content and ads you see may not be as relevant to you. You can resurface this menu to change your choices or withdraw consent at any time by clicking the Manage Preferences link on the bottom of the webpage [or the floating icon on the bottom-left of the webpage, if applicable]. Your choices will have effect within our Website. For more details, refer to our Privacy Policy.
+              - link "More information about your privacy, opens in a new tab" [ref=f15e865] [cursor=pointer]:
+                - /url: https://www.fandom.com/privacy-policy
+                - text: Privacy Policy
+            - generic [ref=f15e866]:
+              - heading "We and our partners process data to provide:" [level=3] [ref=f15e867]
+              - paragraph [ref=f15e869]:
+                - text: Use precise geolocation data. Identify devices based on information actively requested. Store and/or access information on a device. Personalised advertising and content, advertising and content measurement, audience research and services development.
+                - link "List of Partners (vendors)" [ref=f15e870] [cursor=pointer]:
+                  - /url: "#"
+          - generic [ref=f15e872]:
+            - button "I Accept" [ref=f15e873] [cursor=pointer]
+            - button "Show Purposes, Opens the preference center dialog" [ref=f15e874] [cursor=pointer]: Show Purposes
+    - text: Manage Preferences

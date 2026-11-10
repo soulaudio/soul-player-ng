@@ -1,0 +1,239 @@
+- generic [active] [ref=f4e1]:
+  - link "Jump to content" [ref=f4e2] [cursor=pointer]:
+    - /url: "#bodyContent"
+  - banner [ref=f4e4]:
+    - generic [ref=f4e5]:
+      - navigation "Site" [ref=f4e6]:
+        - generic "Main menu" [ref=f4e7]:
+          - button "Main menu" [ref=f4e8] [cursor=pointer]
+          - generic [ref=f4e11]: Main menu
+      - link [ref=f4e12] [cursor=pointer]:
+        - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Main_Page
+        - strong [ref=f4e15]: Hydrogenaudio Knowledgebase
+    - generic [ref=f4e16]:
+      - search [ref=f4e17]:
+        - generic [ref=f4e20]:
+          - searchbox "Search Hydrogenaudio Knowledgebase" [ref=f4e23]
+          - button "Search" [ref=f4e25]
+      - navigation "Personal tools" [ref=f4e26]:
+        - list [ref=f4e30]:
+          - listitem [ref=f4e31]:
+            - link "Log in" [ref=f4e32] [cursor=pointer]:
+              - /url: /index.php?title=Special:UserLogin&returnto=Foobar2000%3AVersion+2.0+Release+Notes
+  - generic [ref=f4e34]:
+    - navigation "Contents" [ref=f4e38]:
+      - generic [ref=f4e40]:
+        - generic [ref=f4e41]:
+          - heading "Contents" [level=2] [ref=f4e42]
+          - button "hide" [ref=f4e43] [cursor=pointer]
+        - list [ref=f4e44]:
+          - listitem [ref=f4e45]:
+            - link "Beginning" [ref=f4e46] [cursor=pointer]:
+              - /url: "#"
+          - listitem [ref=f4e48]:
+            - link "Version 2.0 overview" [ref=f4e49] [cursor=pointer]:
+              - /url: "#Version_2.0_overview"
+            - list
+          - listitem [ref=f4e51]:
+            - link "Requirements" [ref=f4e52] [cursor=pointer]:
+              - /url: "#Requirements"
+            - list
+          - listitem [ref=f4e54]:
+            - link "Notable new features" [ref=f4e55] [cursor=pointer]:
+              - /url: "#Notable_new_features"
+            - list
+          - listitem [ref=f4e57]:
+            - link "For Columns UI users" [ref=f4e58] [cursor=pointer]:
+              - /url: "#For_Columns_UI_users"
+            - list
+          - listitem [ref=f4e60]:
+            - link "Component features that are now available out of the box" [ref=f4e61] [cursor=pointer]:
+              - /url: "#Component_features_that_are_now_available_out_of_the_box"
+            - list
+          - listitem [ref=f4e63]:
+            - link "Compatibility with old components" [ref=f4e64] [cursor=pointer]:
+              - /url: "#Compatibility_with_old_components"
+            - list
+          - listitem [ref=f4e66]:
+            - link "Full list of changes" [ref=f4e67] [cursor=pointer]:
+              - /url: "#Full_list_of_changes"
+            - list
+          - listitem [ref=f4e69]:
+            - link "Upgrading from an older version" [ref=f4e70] [cursor=pointer]:
+              - /url: "#Upgrading_from_an_older_version"
+            - list
+          - listitem [ref=f4e72]:
+            - link "Before reporting bugs..." [ref=f4e73] [cursor=pointer]:
+              - /url: "#Before_reporting_bugs..."
+            - list
+    - main [ref=f4e76]:
+      - heading "Foobar2000:Version 2.0 Release Notes" [level=1] [ref=f4e78]
+      - generic [ref=f4e80]:
+        - navigation "Namespaces" [ref=f4e82]:
+          - generic [ref=f4e83]:
+            - generic:
+              - list:
+                - listitem [ref=f4e84]:
+                  - link "Foobar2000" [ref=f4e85] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000:Version_2.0_Release_Notes
+                - listitem [ref=f4e87]:
+                  - link "Discussion" [ref=f4e88] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000_Talk:Version_2.0_Release_Notes&action=edit&redlink=1
+        - generic [ref=f4e90]:
+          - navigation "Views" [ref=f4e91]:
+            - generic [ref=f4e92]:
+              - generic:
+                - list:
+                  - listitem [ref=f4e93]:
+                    - link "Read" [ref=f4e94] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Version_2.0_Release_Notes
+                  - listitem [ref=f4e96]:
+                    - link "View source" [ref=f4e97] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Version_2.0_Release_Notes&action=edit
+                  - listitem [ref=f4e99]:
+                    - link "View history" [ref=f4e100] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Version_2.0_Release_Notes&action=history
+          - navigation "Page tools" [ref=f4e102]:
+            - generic [ref=f4e103]:
+              - button "Tools" [ref=f4e104] [cursor=pointer]
+              - generic [ref=f4e106] [cursor=pointer]: Tools
+      - navigation "Appearance" [ref=f4e109]:
+        - generic [ref=f4e111]:
+          - generic [ref=f4e112]:
+            - generic [ref=f4e113]: Appearance
+            - button "hide" [ref=f4e114] [cursor=pointer]
+          - generic [ref=f4e115]:
+            - generic [ref=f4e116]: Text
+            - list [ref=f4e118]:
+              - listitem [ref=f4e119]:
+                - generic [ref=f4e120]:
+                  - generic [ref=f4e121]:
+                    - generic [ref=f4e122]:
+                      - radio "Small" [disabled] [ref=f4e123]
+                      - generic [ref=f4e125]: Small
+                    - generic [ref=f4e127]:
+                      - radio "Standard" [disabled] [ref=f4e128]
+                      - generic [ref=f4e130]: Standard
+                    - generic [ref=f4e132]:
+                      - radio "Large" [disabled] [ref=f4e133]
+                      - generic [ref=f4e135]: Large
+                  - paragraph [ref=f4e137]: This page always uses small font size
+          - generic [ref=f4e138]:
+            - generic [ref=f4e139]: Width
+            - list [ref=f4e141]:
+              - listitem [ref=f4e142]:
+                - generic [ref=f4e144]:
+                  - generic [ref=f4e145]:
+                    - radio "Standard" [checked] [ref=f4e146]
+                    - generic [ref=f4e148]: Standard
+                  - generic [ref=f4e150]:
+                    - radio "Wide" [ref=f4e151]
+                    - generic [ref=f4e153]: Wide
+      - generic "Foobar2000:Version 2.0 Release Notes" [ref=f4e155]:
+        - generic [ref=f4e158]:
+          - heading "Version 2.0 overview" [level=1] [ref=f4e160]
+          - paragraph [ref=f4e161]: This is a major update introducing new features and functional changes.
+          - heading "Requirements" [level=1] [ref=f4e163]
+          - list [ref=f4e164]:
+            - listitem [ref=f4e165]: Windows 7 or newer.
+            - listitem [ref=f4e166]: An x86 (Intel/AMD) processor that is less than 20 years old.
+            - listitem [ref=f4e167]:
+              - text: "ARM version: see"
+              - link "Foobar2000:Foobar2000 for ARM" [ref=f4e168] [cursor=pointer]:
+                - /url: /index.php?title=Foobar2000:Foobar2000_for_ARM
+          - heading "Notable new features" [level=1] [ref=f4e170]
+          - list [ref=f4e171]:
+            - listitem [ref=f4e172]: Now available for x86 32-bit (legacy), x86 64-bit and ARM (ARM64EC).
+            - listitem [ref=f4e173]: Dark mode support on Windows 10 (1809 or newer) and 11.
+            - listitem [ref=f4e174]: Improved performance with large libraries.
+            - listitem [ref=f4e175]: Greatly improved performance of all search operations.
+            - listitem [ref=f4e176]: Added album art in Default User Interface playlist view.
+            - listitem [ref=f4e177]: "New UI element: ReFacets, reimplementing most of Facets functionality."
+            - listitem [ref=f4e178]: New audio output device management features - unwanted devices can be disabled, bit depth and DSP can be configured per-device.
+            - listitem [ref=f4e179]: "More audio formats supported out of the box: TAK, APE, AC3, DTS."
+            - listitem [ref=f4e180]: Added crossfeed DSP from foobar2000 mobile.
+          - heading "For Columns UI users" [level=1] [ref=f4e182]
+          - paragraph [ref=f4e183]: "Some of Default User Interface elements are now available in Columns UI:"
+          - list [ref=f4e184]:
+            - listitem [ref=f4e185]: Equalizer
+            - listitem [ref=f4e186]: ReFacets
+            - listitem [ref=f4e187]: All visualisations
+          - heading "Component features that are now available out of the box" [level=1] [ref=f4e189]
+          - paragraph [ref=f4e190]: "These add-on components are now obsolete as their functionality is available out of the box:"
+          - list [ref=f4e191]:
+            - listitem [ref=f4e192]: foo_benchmark
+            - listitem [ref=f4e193]: foo_bitcompare
+            - listitem [ref=f4e194]: foo_verifier
+            - listitem [ref=f4e195]: foo_ac3
+            - listitem [ref=f4e196]: foo_sanitizer
+            - listitem [ref=f4e197]: foo_input_dts
+            - listitem [ref=f4e198]: foo_input_monkey
+          - paragraph [ref=f4e199]: "These components previously included with the installer are no longer optional (features always enabled):"
+          - list [ref=f4e200]:
+            - listitem [ref=f4e201]: foo_rgscan
+            - listitem [ref=f4e202]: foo_cdda
+            - listitem [ref=f4e203]: foo_albumlist
+          - heading "Compatibility with old components" [level=1] [ref=f4e205]
+          - list [ref=f4e206]:
+            - listitem [ref=f4e207]: "32-bit:"
+          - paragraph [ref=f4e208]: Old components mostly work. Decoders should be OK. Some user interface components may suffer from performance issues due to design changes.
+          - list [ref=f4e209]:
+            - listitem [ref=f4e210]: "64-bit:"
+          - paragraph [ref=f4e211]: New builds of components needed.
+          - list [ref=f4e212]:
+            - listitem [ref=f4e213]: "ARM:"
+          - paragraph [ref=f4e214]: Can load x86 64-bit components as well as native ARM components.
+          - heading "Full list of changes" [level=1] [ref=f4e216]
+          - paragraph [ref=f4e217]:
+            - link "Read the change log" [ref=f4e218] [cursor=pointer]:
+              - /url: https://www.foobar2000.org/changelog
+          - heading "Upgrading from an older version" [level=1] [ref=f4e220]
+          - paragraph [ref=f4e221]: Just install the new foobar2000 version without uninstalling.
+          - paragraph [ref=f4e222]: With standard installs, there's no need to backup your profile as foobar2000 v2.0 stores its profile data in a separate folder, importing old profile on first run.
+          - heading "Before reporting bugs..." [level=1] [ref=f4e224]
+          - paragraph [ref=f4e225]: Please verify that any bugs can be recreated WITHOUT ANY COMPONENTS first. ESPECIALLY without any components that have not yet been specifically updated for foobar2000 v2.0.
+          - paragraph [ref=f4e226]: Due to design changes, many components will suffer from performance issues until refactored for the new database system.
+    - contentinfo [ref=f4e228]:
+      - list [ref=f4e229]:
+        - listitem [ref=f4e230]: This page was last edited on 9 May 2023, at 03:16.
+      - list:
+        - listitem [ref=f4e231]:
+          - link "Privacy policy" [ref=f4e232] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Privacy_policy
+        - listitem [ref=f4e233]:
+          - link "About Hydrogenaudio Knowledgebase" [ref=f4e234] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:About
+        - listitem [ref=f4e235]:
+          - link "Disclaimers" [ref=f4e236] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:General_disclaimer
+      - list [ref=f4e237]:
+        - listitem [ref=f4e238]:
+          - link [ref=f4e239] [cursor=pointer]:
+            - /url: https://www.mediawiki.org/
+            - img "Powered by MediaWiki" [ref=f4e241]
+  - generic [ref=f4e243]:
+    - generic [ref=f4e244]:
+      - button [ref=f4e246]:
+        - generic [ref=f4e248]: Search
+      - generic [aria-hidden] [ref=f4e250]: Foobar2000:Version 2.0 Release Notes
+    - generic [aria-hidden] [ref=f4e251]:
+      - generic [ref=f4e252]:
+        - link [ref=f4e253] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f4e256] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f4e259] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f4e262] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f4e265] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f4e268] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f4e271] [cursor=pointer]:
+          - /url: "#"
+      - link [ref=f4e275] [cursor=pointer]:
+        - /url: "#"
+        - generic [ref=f4e277]: Add topic
+  - generic [ref=f4e278]:
+    - list

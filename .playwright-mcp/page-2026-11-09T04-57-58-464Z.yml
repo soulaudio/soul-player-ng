@@ -1,0 +1,284 @@
+- generic [active] [ref=f14e1]:
+  - generic [ref=f14e2]:
+    - link [ref=f14e4] [cursor=pointer]:
+      - /url: //www.jriver.com/index.html
+    - generic [ref=f14e6]:
+      - list:
+        - listitem:
+          - link "Home" [ref=f14e7] [cursor=pointer]:
+            - /url: //www.jriver.com/index.html
+        - listitem:
+          - link "Download" [ref=f14e8] [cursor=pointer]:
+            - /url: //www.jriver.com/download.html
+        - listitem:
+          - link "Purchase" [ref=f14e9] [cursor=pointer]:
+            - /url: //www.jriver.com/purchase.html
+        - listitem:
+          - link "Support" [ref=f14e10] [cursor=pointer]:
+            - /url: //www.jriver.com/support.html
+        - listitem:
+          - link "Company" [ref=f14e11] [cursor=pointer]:
+            - /url: //www.jriver.com/company.html
+  - generic [ref=f14e12]:
+    - generic [ref=f14e13]:
+      - generic [ref=f14e14]:
+        - img "Simple Machines Forum" [ref=f14e15]
+        - heading "INTERACT FORUM" [level=1] [ref=f14e16]
+      - list [ref=f14e17]:
+        - listitem [ref=f14e18]:
+          - text: November 08, 2026, 10:57:55 pm
+          - img "*" [ref=f14e19] [cursor=pointer]
+        - listitem [ref=f14e20]:
+          - text: Welcome,
+          - emphasis [ref=f14e21]: Guest
+      - generic [ref=f14e24]:
+        - text: Please
+        - link "login" [ref=f14e25] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?action=login
+        - text: or
+        - link "register" [ref=f14e26] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?action=register
+        - text: .
+        - textbox [ref=f14e27]
+        - textbox [ref=f14e28]
+        - combobox [ref=f14e29]:
+          - option "1 Hour"
+          - option "1 Day"
+          - option "1 Week"
+          - option "1 Month"
+          - option "Forever" [selected]
+        - button "Login" [ref=f14e30]
+        - text: Login with username, password and session length
+      - generic [ref=f14e32]:
+        - link [ref=f14e33] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?action=search;advanced
+          - img "Advanced search" [ref=f14e34]
+        - textbox [ref=f14e35]
+        - button "Search" [ref=f14e36]
+    - list [ref=f14e38]:
+      - listitem:
+        - link [ref=f14e39] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php
+          - emphasis [ref=f14e41]: Home
+      - listitem:
+        - link "Help" [ref=f14e42] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?action=help
+      - listitem:
+        - link "Login" [ref=f14e44] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?action=login
+      - listitem:
+        - link "Register" [ref=f14e46] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?action=register
+    - list [ref=f14e48]:
+      - listitem [ref=f14e49]:
+        - link "INTERACT FORUM" [ref=f14e50] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php
+        - text: ">"
+      - listitem [ref=f14e51]:
+        - link "More" [ref=f14e52] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php#c6
+        - text: ">"
+      - listitem [ref=f14e53]:
+        - link "Old Versions" [ref=f14e54] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?board=20.0
+        - text: ">"
+      - listitem [ref=f14e55]:
+        - link "JRiver Media Center 24 for Windows" [ref=f14e56] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?board=56.0
+        - text: ">"
+      - listitem [ref=f14e57]:
+        - link "Is it possible to have \"Artists\" sorted without \"The\"" [ref=f14e58] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?topic=118738.0
+    - generic [ref=f14e59]:
+      - generic [ref=f14e60]:
+        - generic [ref=f14e61]:
+          - link "« previous" [ref=f14e62] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php?topic=118738.0;prev_next=prev#new
+          - link "next »" [ref=f14e63] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php?topic=118738.0;prev_next=next#new
+        - generic [ref=f14e64]:
+          - text: "Pages: ["
+          - strong [ref=f14e65]: "1"
+          - text: "]"
+          - link [ref=f14e66] [cursor=pointer]:
+            - /url: "#lastPost"
+            - strong [ref=f14e67]: Go Down
+        - list [ref=f14e70]:
+          - listitem:
+            - link "Print" [ref=f14e71] [cursor=pointer]:
+              - /url: https://yabb.jriver.com/interact/index.php?action=printpage;topic=118738.0
+      - generic [ref=f14e73]:
+        - 'heading "Author Topic: Is it possible to have \"Artists\" sorted without \"The\" (Read 1640 times)" [level=3] [ref=f14e74]':
+          - generic [ref=f14e75]: Author
+          - generic [ref=f14e76]: "Topic: Is it possible to have \"Artists\" sorted without \"The\" (Read 1640 times)"
+        - generic [ref=f14e77]:
+          - generic [ref=f14e79]:
+            - generic [ref=f14e80]:
+              - heading [level=4] [ref=f14e81]:
+                - link "RalphBP" [ref=f14e82] [cursor=pointer]:
+                  - /url: https://yabb.jriver.com/interact/index.php?action=profile;u=321563
+              - list [ref=f14e83]:
+                - listitem [ref=f14e84]: Recent member
+                - listitem [ref=f14e85]:
+                  - img "*" [ref=f14e86]
+                - listitem [ref=f14e87]: "Posts: 6"
+            - generic [ref=f14e88]:
+              - generic [ref=f14e90]:
+                - heading [level=5] [ref=f14e92]:
+                  - link "Is it possible to have \"Artists\" sorted without \"The\"" [ref=f14e93] [cursor=pointer]:
+                    - /url: https://yabb.jriver.com/interact/index.php?topic=118738.msg821232#msg821232
+                - generic [ref=f14e94]:
+                  - text: «
+                  - strong [ref=f14e95]: "on:"
+                  - text: December 27, 2018, 12:08:22 pm »
+              - generic [ref=f14e96]:
+                - separator [ref=f14e97]
+                - generic [ref=f14e98]: HiLots of band names start with "The" e.g. "The Who". Is it possible to have JRiver ignore the "The" and just have it sort on "Who"?ThanksRalph
+            - generic: Logged
+          - generic [ref=f14e101]:
+            - generic [ref=f14e102]:
+              - heading [level=4] [ref=f14e103]:
+                - link "Awesome Donkey" [ref=f14e104] [cursor=pointer]:
+                  - /url: https://yabb.jriver.com/interact/index.php?action=profile;u=155591
+              - list [ref=f14e105]:
+                - listitem [ref=f14e106]: Administrator
+                - listitem [ref=f14e107]: Citizen of the Universe
+                - listitem [ref=f14e108]:
+                  - img "*" [ref=f14e109]
+                  - img "*" [ref=f14e110]
+                  - img "*" [ref=f14e111]
+                  - img "*" [ref=f14e112]
+                  - img "*" [ref=f14e113]
+                - listitem [ref=f14e114]: "Posts: 9570"
+                - listitem [ref=f14e115]
+                - listitem [ref=f14e116]: Autumn shade...
+            - generic [ref=f14e117]:
+              - generic [ref=f14e119]:
+                - heading [level=5] [ref=f14e121]:
+                  - 'link "Re: Is it possible to have \"Artists\" sorted without \"The\"" [ref=f14e122] [cursor=pointer]':
+                    - /url: https://yabb.jriver.com/interact/index.php?topic=118738.msg821233#msg821233
+                - generic [ref=f14e123]:
+                  - text: «
+                  - strong [ref=f14e124]: "Reply #1 on:"
+                  - text: December 27, 2018, 12:11:47 pm »
+              - generic [ref=f14e125]:
+                - separator [ref=f14e126]
+                - generic [ref=f14e127]:
+                  - text: MC Options > Tree & View > Sorting > Ignore articlesSee if that accomplishes what you want. You can also customize the articles.
+                  - img ":)" [ref=f14e128]
+            - generic [ref=f14e129]:
+              - generic [ref=f14e130]: Logged
+              - generic [ref=f14e131]:
+                - strong [ref=f14e133]: I don't work for JRiver... I help keep the forums safe from "male enhancements" and other sources of sketchy pharmaceuticals.
+                - strong [ref=f14e135]:
+                  - generic [ref=f14e136]: Windows 11 26H2 Update 64-bit + Ubuntu 26.10 Stonking Stingray 64-bit | macOS Golden Gate 27.0.1 (MacBook Air M5 15.3")JRiver Media Center 36 (Windows + Linux + Mac) | iFi ZEN DAC 3 | JBL 306P MkII Studio Monitors
+      - generic [ref=f14e137]:
+        - list [ref=f14e140]:
+          - listitem:
+            - link "Print" [ref=f14e141] [cursor=pointer]:
+              - /url: https://yabb.jriver.com/interact/index.php?action=printpage;topic=118738.0
+        - generic [ref=f14e143]:
+          - text: "Pages: ["
+          - strong [ref=f14e144]: "1"
+          - text: "]"
+          - link [ref=f14e145] [cursor=pointer]:
+            - /url: "#top"
+            - strong [ref=f14e146]: Go Up
+        - generic [ref=f14e147]:
+          - link "« previous" [ref=f14e148] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php?topic=118738.0;prev_next=prev#new
+          - link "next »" [ref=f14e149] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php?topic=118738.0;prev_next=next#new
+      - list [ref=f14e150]:
+        - listitem [ref=f14e151]:
+          - link "INTERACT FORUM" [ref=f14e152] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php
+          - text: ">"
+        - listitem [ref=f14e153]:
+          - link "More" [ref=f14e154] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php#c6
+          - text: ">"
+        - listitem [ref=f14e155]:
+          - link "Old Versions" [ref=f14e156] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php?board=20.0
+          - text: ">"
+        - listitem [ref=f14e157]:
+          - link "JRiver Media Center 24 for Windows" [ref=f14e158] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php?board=56.0
+          - text: ">"
+        - listitem [ref=f14e159]:
+          - link "Is it possible to have \"Artists\" sorted without \"The\"" [ref=f14e160] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php?topic=118738.0
+      - generic [ref=f14e162]:
+        - text: "Jump to:"
+        - combobox "Jump to:" [ref=f14e163]:
+          - option "===> JRiver Media Center 24 for Windows" [selected]
+        - button "go" [ref=f14e164]
+    - list [ref=f14e166]:
+      - listitem [ref=f14e167]:
+        - generic [ref=f14e168]:
+          - link "SMF 2.0.19" [ref=f14e169] [cursor=pointer]:
+            - /url: https://yabb.jriver.com/interact/index.php?action=credits
+          - text: "|"
+          - link "SMF © 2021" [ref=f14e170] [cursor=pointer]:
+            - /url: https://www.simplemachines.org/about/smf/license.php
+          - text: ","
+          - link "Simple Machines" [ref=f14e171] [cursor=pointer]:
+            - /url: https://www.simplemachines.org
+      - listitem [ref=f14e172]:
+        - link "XHTML" [ref=f14e173] [cursor=pointer]:
+          - /url: http://validator.w3.org/check?uri=referer
+      - listitem [ref=f14e174]:
+        - link "RSS" [ref=f14e175] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?action=.xml;type=rss
+      - listitem [ref=f14e176]:
+        - link "WAP2" [ref=f14e177] [cursor=pointer]:
+          - /url: https://yabb.jriver.com/interact/index.php?wap2
+  - generic [ref=f14e179]:
+    - paragraph [ref=f14e180]:
+      - text: "About Media Center:"
+      - link "Forum" [ref=f14e181] [cursor=pointer]:
+        - /url: //yabb.jriver.com/interact
+      - text: "|"
+      - link "Getting Started" [ref=f14e182] [cursor=pointer]:
+        - /url: //wiki.jriver.com/index.php/Getting_Started
+      - text: "|"
+      - link "Purchase" [ref=f14e183] [cursor=pointer]:
+        - /url: //www.jriver.com/purchase.html
+    - paragraph [ref=f14e184]:
+      - text: "Support:"
+      - link "Forum" [ref=f14e185] [cursor=pointer]:
+        - /url: //yabb.jriver.com/interact/index.php
+      - text: "|"
+      - link "Wiki" [ref=f14e186] [cursor=pointer]:
+        - /url: //wiki.jriver.com/index.php/Category:Frequently_Asked_Questions
+      - text: "|"
+      - link "Developer" [ref=f14e187] [cursor=pointer]:
+        - /url: //wiki.jriver.com/index.php/DevZone
+      - text: "|"
+      - link "Licensing" [ref=f14e188] [cursor=pointer]:
+        - /url: //www.jriver.com/purchase.html
+      - text: "|"
+      - link "Privacy Policy" [ref=f14e189] [cursor=pointer]:
+        - /url: //www.jriver.com/privacy.html
+      - text: "|"
+      - link "Links" [ref=f14e190] [cursor=pointer]:
+        - /url: //www.jriver.com/links.html
+    - paragraph [ref=f14e191]:
+      - text: "Corporate Solutions:"
+      - link "Overview" [ref=f14e192] [cursor=pointer]:
+        - /url: //www.jriver.com/corporate_solutions.html
+      - text: "|"
+      - link "Customers" [ref=f14e193] [cursor=pointer]:
+        - /url: //www.jriver.com/partner_players.html
+      - text: "|"
+      - link "Company" [ref=f14e194] [cursor=pointer]:
+        - /url: //www.jriver.com/company.html
+    - paragraph [ref=f14e195]:
+      - text: "Other Products:"
+      - link "ICE" [ref=f14e196] [cursor=pointer]:
+        - /url: http://www.icetcp.com/
+      - text: "|"
+      - link "Media Center Remote" [ref=f14e197] [cursor=pointer]:
+        - /url: //wiki.jriver.com/index.php/Media_Center_Remote
+    - paragraph [ref=f14e198]: Copyright © 2010-2026 JRiver, Inc. All Rights Reserved.

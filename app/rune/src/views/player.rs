@@ -372,8 +372,7 @@ mod tests {
     /// `ArtCache::image_for` resolves and decodes real cover-art bytes end to
     /// end (`PlayerHandle::art` -> `ImageCache::load_mime`), independent of
     /// whether the track is actually playing: `arted.flac`'s metadata-only
-    /// fixture (used by the Tauri head's `arted_flac_embedded_art_resolves`
-    /// test) carries embedded art that never starts a Null-sink playback
+    /// fixture carries embedded art that never starts a Null-sink playback
     /// within a short virtual-clock window, which is why the player-panel
     /// snapshots fall back to the placeholder for it — this test proves the
     /// cache itself, not the unrelated playback race.

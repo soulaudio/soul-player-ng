@@ -1,0 +1,131 @@
+- generic [active] [ref=f2e1]:
+  - link "Jump to content" [ref=f2e2] [cursor=pointer]:
+    - /url: "#bodyContent"
+  - banner [ref=f2e4]:
+    - generic [ref=f2e5]:
+      - navigation "Site" [ref=f2e6]:
+        - generic "Main menu" [ref=f2e7]:
+          - button "Main menu" [ref=f2e8] [cursor=pointer]
+          - generic [ref=f2e11]: Main menu
+      - link [ref=f2e12] [cursor=pointer]:
+        - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Main_Page
+        - strong [ref=f2e15]: Hydrogenaudio Knowledgebase
+    - generic [ref=f2e16]:
+      - search [ref=f2e17]:
+        - generic [ref=f2e20]:
+          - searchbox "Search Hydrogenaudio Knowledgebase" [ref=f2e23]
+          - button "Search" [ref=f2e25]
+      - navigation "Personal tools" [ref=f2e26]:
+        - list [ref=f2e30]:
+          - listitem [ref=f2e31]:
+            - link "Log in" [ref=f2e32] [cursor=pointer]:
+              - /url: /index.php?title=Special:UserLogin&returnto=Foobar2000%3AAlbum+list
+  - generic [ref=f2e34]:
+    - main [ref=f2e38]:
+      - heading "Foobar2000:Album list" [level=1] [ref=f2e40]
+      - generic [ref=f2e42]:
+        - navigation "Namespaces" [ref=f2e44]:
+          - generic [ref=f2e45]:
+            - generic:
+              - list:
+                - listitem [ref=f2e46]:
+                  - link "Foobar2000" [ref=f2e47] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000:Album_list
+                - listitem [ref=f2e49]:
+                  - link "Discussion" [ref=f2e50] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000_Talk:Album_list&action=edit&redlink=1
+        - generic [ref=f2e52]:
+          - navigation "Views" [ref=f2e53]:
+            - generic [ref=f2e54]:
+              - generic:
+                - list:
+                  - listitem [ref=f2e55]:
+                    - link "Read" [ref=f2e56] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Album_list
+                  - listitem [ref=f2e58]:
+                    - link "View source" [ref=f2e59] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Album_list&action=edit
+                  - listitem [ref=f2e61]:
+                    - link "View history" [ref=f2e62] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Album_list&action=history
+          - navigation "Page tools" [ref=f2e64]:
+            - generic [ref=f2e65]:
+              - button "Tools" [ref=f2e66] [cursor=pointer]
+              - generic [ref=f2e68] [cursor=pointer]: Tools
+      - navigation "Appearance" [ref=f2e71]:
+        - generic [ref=f2e73]:
+          - generic [ref=f2e74]:
+            - generic [ref=f2e75]: Appearance
+            - button "hide" [ref=f2e76] [cursor=pointer]
+          - generic [ref=f2e94]:
+            - generic [ref=f2e95]: Text
+            - list [ref=f2e97]:
+              - listitem [ref=f2e98]:
+                - generic [ref=f2e99]:
+                  - generic [ref=f2e100]:
+                    - generic [ref=f2e101]:
+                      - radio "Small" [disabled] [ref=f2e102]
+                      - generic [ref=f2e104]: Small
+                    - generic [ref=f2e106]:
+                      - radio "Standard" [disabled] [ref=f2e107]
+                      - generic [ref=f2e109]: Standard
+                    - generic [ref=f2e111]:
+                      - radio "Large" [disabled] [ref=f2e112]
+                      - generic [ref=f2e114]: Large
+                  - paragraph [ref=f2e116]: This page always uses small font size
+          - generic [ref=f2e117]:
+            - generic [ref=f2e118]: Width
+            - list [ref=f2e120]:
+              - listitem [ref=f2e121]:
+                - generic [ref=f2e123]:
+                  - generic [ref=f2e124]:
+                    - radio "Standard" [checked] [ref=f2e125]
+                    - generic [ref=f2e127]: Standard
+                  - generic [ref=f2e129]:
+                    - radio "Wide" [ref=f2e130]
+                    - generic [ref=f2e132]: Wide
+      - generic "Foobar2000:Album list" [ref=f2e77]
+    - contentinfo [ref=f2e80]:
+      - list [ref=f2e81]:
+        - listitem [ref=f2e82]: This page was last edited on 29 May 2005, at 20:46.
+      - list:
+        - listitem [ref=f2e83]:
+          - link "Privacy policy" [ref=f2e84] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Privacy_policy
+        - listitem [ref=f2e85]:
+          - link "About Hydrogenaudio Knowledgebase" [ref=f2e86] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:About
+        - listitem [ref=f2e87]:
+          - link "Disclaimers" [ref=f2e88] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:General_disclaimer
+      - list [ref=f2e89]:
+        - listitem [ref=f2e90]:
+          - link [ref=f2e91] [cursor=pointer]:
+            - /url: https://www.mediawiki.org/
+            - img "Powered by MediaWiki" [ref=f2e93]
+  - generic [ref=f2e135]:
+    - generic [ref=f2e136]:
+      - button [ref=f2e138]:
+        - generic [ref=f2e140]: Search
+      - generic [aria-hidden] [ref=f2e142]: Foobar2000:Album list
+    - generic [aria-hidden] [ref=f2e143]:
+      - generic [ref=f2e144]:
+        - link [ref=f2e145] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f2e148] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f2e151] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f2e154] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f2e157] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f2e160] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f2e163] [cursor=pointer]:
+          - /url: "#"
+      - link [ref=f2e167] [cursor=pointer]:
+        - /url: "#"
+        - generic [ref=f2e169]: Add topic
+  - generic [ref=f2e170]:
+    - list

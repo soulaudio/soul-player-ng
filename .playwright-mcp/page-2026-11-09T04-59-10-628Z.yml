@@ -1,0 +1,397 @@
+- generic [active] [ref=f44e1]:
+  - link "Jump to content" [ref=f44e2] [cursor=pointer]:
+    - /url: "#bodyContent"
+  - banner [ref=f44e4]:
+    - generic [ref=f44e5]:
+      - navigation "Site" [ref=f44e6]:
+        - generic "Main menu" [ref=f44e7]:
+          - button "Main menu" [ref=f44e8] [cursor=pointer]
+          - generic [ref=f44e11]: Main menu
+      - link [ref=f44e12] [cursor=pointer]:
+        - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Main_Page
+        - strong [ref=f44e15]: Hydrogenaudio Knowledgebase
+    - generic [ref=f44e16]:
+      - search [ref=f44e17]:
+        - generic [ref=f44e20]:
+          - searchbox "Search Hydrogenaudio Knowledgebase" [ref=f44e23]
+          - button "Search" [ref=f44e25]
+      - navigation "Personal tools" [ref=f44e26]:
+        - list [ref=f44e30]:
+          - listitem [ref=f44e31]:
+            - link "Log in" [ref=f44e32] [cursor=pointer]:
+              - /url: /index.php?title=Special:UserLogin&returnto=Foobar2000%3AComponents%2FAlbum+List+Panel+%28foo+uie+albumlist%29
+  - generic [ref=f44e34]:
+    - navigation "Contents" [ref=f44e38]:
+      - generic [ref=f44e40]:
+        - generic [ref=f44e41]:
+          - heading "Contents" [level=2] [ref=f44e42]
+          - button "hide" [ref=f44e43] [cursor=pointer]
+        - list [ref=f44e44]:
+          - listitem [ref=f44e45]:
+            - link "Beginning" [ref=f44e46] [cursor=pointer]:
+              - /url: "#"
+          - listitem [ref=f44e48]:
+            - link "Description" [ref=f44e49] [cursor=pointer]:
+              - /url: "#Description"
+            - list
+          - listitem [ref=f44e51]:
+            - link "Link" [ref=f44e52] [cursor=pointer]:
+              - /url: "#Link"
+            - list
+          - listitem [ref=f44e54]:
+            - link "Requirements" [ref=f44e55] [cursor=pointer]:
+              - /url: "#Requirements"
+            - list
+          - listitem [ref=f44e57]:
+            - link "Installation" [ref=f44e58] [cursor=pointer]:
+              - /url: "#Installation"
+            - list
+          - listitem [ref=f44e60]:
+            - link "Context Menu Options" [ref=f44e61] [cursor=pointer]:
+              - /url: "#Context_Menu_Options"
+            - button "Toggle Context Menu Options subsection" [expanded] [ref=f44e63]
+            - list [ref=f44e66]:
+              - listitem [ref=f44e67]:
+                - link "Views" [ref=f44e68] [cursor=pointer]:
+                  - /url: "#Views"
+                - list
+              - listitem [ref=f44e70]:
+                - link "Refresh Tree" [ref=f44e71] [cursor=pointer]:
+                  - /url: "#Refresh_Tree"
+                - list
+              - listitem [ref=f44e73]:
+                - link "Filter" [ref=f44e74] [cursor=pointer]:
+                  - /url: "#Filter"
+                - list
+              - listitem [ref=f44e76]:
+                - link "Settings" [ref=f44e77] [cursor=pointer]:
+                  - /url: "#Settings"
+                - list
+          - listitem [ref=f44e79]:
+            - link "Settings" [ref=f44e80] [cursor=pointer]:
+              - /url: "#Settings_2"
+            - button "Toggle Settings subsection" [expanded] [ref=f44e82]
+            - list [ref=f44e85]:
+              - listitem [ref=f44e86]:
+                - link "Display Tab" [ref=f44e87] [cursor=pointer]:
+                  - /url: "#Display_Tab"
+                - list
+              - listitem [ref=f44e89]:
+                - link "Advanced Tab" [ref=f44e90] [cursor=pointer]:
+                  - /url: "#Advanced_Tab"
+                - list [ref=f44e92]:
+                  - listitem [ref=f44e93]:
+                    - link "Appearance" [ref=f44e94] [cursor=pointer]:
+                      - /url: "#Appearance"
+                    - list
+                  - listitem [ref=f44e96]:
+                    - link "Behavior" [ref=f44e97] [cursor=pointer]:
+                      - /url: "#Behavior"
+                    - list
+          - listitem [ref=f44e99]:
+            - link "Adding Sources" [ref=f44e100] [cursor=pointer]:
+              - /url: "#Adding_Sources"
+            - list
+          - listitem [ref=f44e102]:
+            - link "External links" [ref=f44e103] [cursor=pointer]:
+              - /url: "#External_links"
+            - list
+    - main [ref=f44e106]:
+      - heading "foobar2000:Components/Album List Panel (foo_uie_albumlist)" [level=1] [ref=f44e108]
+      - generic [ref=f44e110]:
+        - navigation "Namespaces" [ref=f44e112]:
+          - generic [ref=f44e113]:
+            - generic:
+              - list:
+                - listitem [ref=f44e114]:
+                  - link "Foobar2000" [ref=f44e115] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000:Components/Album_List_Panel_(foo_uie_albumlist)
+                - listitem [ref=f44e117]:
+                  - link "Discussion" [ref=f44e118] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000_Talk:Components/Album_List_Panel_(foo_uie_albumlist)&action=edit&redlink=1
+        - generic [ref=f44e120]:
+          - navigation "Views" [ref=f44e121]:
+            - generic [ref=f44e122]:
+              - generic:
+                - list:
+                  - listitem [ref=f44e123]:
+                    - link "Read" [ref=f44e124] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Components/Album_List_Panel_(foo_uie_albumlist)
+                  - listitem [ref=f44e126]:
+                    - link "View source" [ref=f44e127] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Components/Album_List_Panel_(foo_uie_albumlist)&action=edit
+                  - listitem [ref=f44e129]:
+                    - link "View history" [ref=f44e130] [cursor=pointer]:
+                      - /url: /index.php?title=Foobar2000:Components/Album_List_Panel_(foo_uie_albumlist)&action=history
+          - navigation "Page tools" [ref=f44e132]:
+            - generic [ref=f44e133]:
+              - button "Tools" [ref=f44e134] [cursor=pointer]
+              - generic [ref=f44e136] [cursor=pointer]: Tools
+      - navigation "Appearance" [ref=f44e139]:
+        - generic [ref=f44e141]:
+          - generic [ref=f44e142]:
+            - generic [ref=f44e143]: Appearance
+            - button "hide" [ref=f44e144] [cursor=pointer]
+          - generic [ref=f44e145]:
+            - generic [ref=f44e146]: Text
+            - list [ref=f44e148]:
+              - listitem [ref=f44e149]:
+                - generic [ref=f44e150]:
+                  - generic [ref=f44e151]:
+                    - generic [ref=f44e152]:
+                      - radio "Small" [disabled] [ref=f44e153]
+                      - generic [ref=f44e155]: Small
+                    - generic [ref=f44e157]:
+                      - radio "Standard" [disabled] [ref=f44e158]
+                      - generic [ref=f44e160]: Standard
+                    - generic [ref=f44e162]:
+                      - radio "Large" [disabled] [ref=f44e163]
+                      - generic [ref=f44e165]: Large
+                  - paragraph [ref=f44e167]: This page always uses small font size
+          - generic [ref=f44e168]:
+            - generic [ref=f44e169]: Width
+            - list [ref=f44e171]:
+              - listitem [ref=f44e172]:
+                - generic [ref=f44e174]:
+                  - generic [ref=f44e175]:
+                    - radio "Standard" [checked] [ref=f44e176]
+                    - generic [ref=f44e178]: Standard
+                  - generic [ref=f44e180]:
+                    - radio "Wide" [ref=f44e181]
+                    - generic [ref=f44e183]: Wide
+      - generic "foobar2000:Components/Album List Panel (foo_uie_albumlist)" [ref=f44e185]:
+        - generic [ref=f44e189]:
+          - text: <
+          - link "Foobar2000:Components" [ref=f44e191] [cursor=pointer]:
+            - /url: /index.php?title=Foobar2000:Components
+        - generic [ref=f44e193]:
+          - table [ref=f44e194]:
+            - rowgroup [ref=f44e195]:
+              - row [ref=f44e196]:
+                - columnheader "Album List Panel" [ref=f44e197]
+              - row [ref=f44e198]:
+                - cell "foo_uie_albumlist" [ref=f44e199]
+              - row [ref=f44e202]:
+                - cell "Developer(s)" [ref=f44e203]
+                - cell [ref=f44e204]:
+                  - link "musicmusic" [ref=f44e208] [cursor=pointer]:
+                    - /url: https://hydrogenaud.io/index.php?action=profile;u=4177
+              - row [ref=f44e209]:
+                - cell "Repository" [ref=f44e210]
+                - cell [ref=f44e211]:
+                  - link "github" [ref=f44e212] [cursor=pointer]:
+                    - /url: https://github.com/reupen/album_list_panel
+              - row [ref=f44e213]:
+                - columnheader "Release information" [ref=f44e214]
+              - row [ref=f44e215]:
+                - cell "Stable release" [ref=f44e216]
+                - cell "2.2.0 (July 30, 2026)" [ref=f44e217]
+              - row [ref=f44e218]:
+                - columnheader "foobar2000 compatibility" [ref=f44e219]
+              - row [ref=f44e220]:
+                - cell "Architecture" [ref=f44e221]
+                - cell "Windows 32-bit, Windows 64-bit" [ref=f44e223]
+              - row [ref=f44e224]:
+                - cell "Minimum version" [ref=f44e225]
+                - cell "1.5" [ref=f44e226]
+              - row [ref=f44e227]:
+                - cell "UI module(s)" [ref=f44e228]
+                - cell "Columns UI" [ref=f44e229]
+              - row [ref=f44e230]:
+                - columnheader "Additional information" [ref=f44e231]
+              - row [ref=f44e232]:
+                - cell "Use" [ref=f44e233]
+                - cell [ref=f44e234]
+              - row [ref=f44e235]:
+                - cell "License" [ref=f44e236]
+                - cell [ref=f44e237]:
+                  - link "LGPL" [ref=f44e238] [cursor=pointer]:
+                    - /url: https://github.com/reupen/album_list_panel/blob/main/COPYING.LESSER
+              - row [ref=f44e239]:
+                - cell [ref=f44e240]:
+                  - link "View all components" [ref=f44e241] [cursor=pointer]:
+                    - /url: /index.php?title=Foobar2000:Components
+          - heading "Description" [level=1] [ref=f44e243]
+          - paragraph [ref=f44e244]: Displays the database in a tree view using customizable sorting methods (by genre, artist, directory, etc.). Album list panel is based on Album List 3.1.0, by Peter Pawlowski.
+          - heading "Link" [level=1] [ref=f44e246]
+          - list [ref=f44e247]:
+            - listitem [ref=f44e248]:
+              - link "Official Website" [ref=f44e249] [cursor=pointer]:
+                - /url: https://yuo.be/album-list-panel
+          - paragraph [ref=f44e250]
+          - heading "Requirements" [level=1] [ref=f44e252]
+          - list [ref=f44e253]:
+            - listitem [ref=f44e254]:
+              - link "foobar2000 1.5" [ref=f44e255] [cursor=pointer]:
+                - /url: http://www.foobar2000.org/
+            - listitem [ref=f44e256]:
+              - link "Columns UI 2.1.0" [ref=f44e257] [cursor=pointer]:
+                - /url: https://yuo.be/columns-ui
+            - listitem [ref=f44e258]: Windows 7 Service Pack 1 or later
+          - paragraph [ref=f44e259]
+          - heading "Installation" [level=1] [ref=f44e261]
+          - list [ref=f44e262]:
+            - listitem [ref=f44e263]: Extract the downloaded archive and place foo_uie_albumlist.dll in your foobar2000 "components" folder (normally located at %ProgramFiles%\foobar2000\components\), or install fb2k.component.
+            - listitem [ref=f44e264]: Start foobar2000.
+            - listitem [ref=f44e265]: Open up Preferences, navigate to Display -> Columns UI, and select the Layout tab.
+            - listitem [ref=f44e266]: Right-click on a splitter and select Insert Panel -> Panels -> Album List
+            - listitem [ref=f44e267]: Click Apply to make the panel appear.
+          - heading "Context Menu Options" [level=1] [ref=f44e269]
+          - heading "Views" [level=2] [ref=f44e271]
+          - paragraph [ref=f44e272]: "This is where you pick the different views for the panel. You can add more views (see section: adding views)"
+          - heading "Refresh Tree" [level=2] [ref=f44e274]
+          - paragraph [ref=f44e275]: "Refreshes the tree. This is useful if: You've updated the media library by moving/deleting files, by updating tags, or if you changed the code of the view you're using."
+          - heading "Filter" [level=2] [ref=f44e277]
+          - paragraph [ref=f44e278]: Enabling this option puts a small text box at the bottom of the panel which accepts queries (use the autoplaylist help for a guide).
+          - heading "Settings" [level=2] [ref=f44e280]
+          - paragraph [ref=f44e281]: Allows you to change the behavior of the panel.
+          - paragraph [ref=f44e282]
+          - heading "Settings" [level=1] [ref=f44e284]
+          - paragraph [ref=f44e285]: Album List Panel settings can be accessed either by pressing the Configure button on the Columns UI Layout tab, or by right-clicking the panel itself and selecting Settings. The available settings are split up into two tabs.
+          - paragraph [ref=f44e286]: "Note: This section relates to version 0.2.3 beta."
+          - heading "Display Tab" [level=2] [ref=f44e288]
+          - generic [ref=f44e289]:
+            - term [ref=f44e290]: Views
+            - definition [ref=f44e291]: This is the lists of "views" available. To change a view while using the panel, Right click the panel, select View -> <choose a view>. To add custom views, see the next section.
+          - generic [ref=f44e292]:
+            - term [ref=f44e293]: Up/Down buttons
+            - definition [ref=f44e294]: Use these to reorder the views list
+          - generic [ref=f44e295]:
+            - term [ref=f44e296]: Delete/New buttons
+            - definition [ref=f44e297]: Use these to remove / create new views
+          - generic [ref=f44e298]:
+            - term [ref=f44e299]: Double click / Middle Button action
+            - definition [ref=f44e300]: "Use this dropdown to configure what happens when you double click / Middle Click an entry in the panel (default: Expand/Collapse, no defaults for middle click)"
+          - generic [ref=f44e301]:
+            - term [ref=f44e302]: Autosend to playlist
+            - definition [ref=f44e303]: use this checkbox to control whether the panel should list contents of the entry when you single click it (e.g. Single clicking on "Metallica" automatically sends all files under Metallica to the playlist)
+          - generic [ref=f44e304]:
+            - term [ref=f44e305]: Text box below it
+            - definition [ref=f44e306]: Type the name of the target playlist (where the panel should display the files)
+          - heading "Advanced Tab" [level=2] [ref=f44e308]
+          - heading "Appearance" [level=3] [ref=f44e310]
+          - generic [ref=f44e311]:
+            - term [ref=f44e312]: Show sub-item count
+            - definition [ref=f44e313]: Shows the number of items under each entry
+          - generic [ref=f44e314]:
+            - term [ref=f44e315]: Show horizontal scrollbar
+            - definition [ref=f44e316]: (if the content of the entries do not fit the width of the panel)
+          - generic [ref=f44e317]:
+            - term [ref=f44e318]: Use Item Indices
+            - definition [ref=f44e319]: "Displays items in this form: 1. <entry 1> 2. <entry 2 and so on"
+          - generic [ref=f44e320]:
+            - term [ref=f44e321]: Use Custom vertical padding
+            - definition [ref=f44e322]: Change the amount of whitespace between entries
+          - generic [ref=f44e323]:
+            - term [ref=f44e324]: Use Custom indentation
+            - definition [ref=f44e325]: Change the amount of indentation (between an entry and it's parent)
+          - generic [ref=f44e326]:
+            - term [ref=f44e327]: Window Frame Style
+            - definition [ref=f44e328]: Choose between None, Sunken or Gray
+          - paragraph [ref=f44e329]
+          - heading "Behavior" [level=3] [ref=f44e331]
+          - generic [ref=f44e332]:
+            - term [ref=f44e333]: Autoplay on send to playlist
+            - definition [ref=f44e334]: Choose whether the songs play automatically when added to playlist
+          - generic [ref=f44e335]:
+            - term [ref=f44e336]: Apply core sort settings on added files
+            - definition [ref=f44e337]: If selected, the panel sorts files based on the criteria specified in Preferences-> General -> "Sort incoming files by". When unselected, uses the order as determined by the view.
+          - generic [ref=f44e338]:
+            - term [ref=f44e339]: Select Added items
+            - definition [ref=f44e340]: Choose whether the songs added to the playlist are selected automatically
+          - generic [ref=f44e341]:
+            - term [ref=f44e342]: Populate on Initialization
+            - definition [ref=f44e343]: If unselected, the panel is blank when you start foobar. You need to manually right click the panel and select refresh tree to have it list items. Unchecking this option leads to a decrease in startup time of the program (the effect is very pronounced if you have large libraries)
+          - generic [ref=f44e344]:
+            - term [ref=f44e345]: Process keyboard shortcuts
+            - definition [ref=f44e346]: Allows you to use keyboard shortcuts specified in Preferences-> General -> "Keyboard shortcuts" when the panel has the focus.
+          - generic [ref=f44e347]:
+            - term [ref=f44e348]: Auto-collapse on Item Expand
+            - definition [ref=f44e349]: Automatically closes an entry if you select another one (e.g. if "Metallica" is currently open, and you open "Megadeth", the "metallica" entry collapses)
+          - heading "Adding Sources" [level=1] [ref=f44e351]
+          - paragraph [ref=f44e352]: The panel uses the pipe key "|" to distinguish between parent and child entries. e.g. If you want to create an entry that goes as Genre -> Artist -> Album, you'd use %genre%|%artist%|%album%.
+          - paragraph [ref=f44e353]: "Since the panel supports the full gamut of titleformatting options, you can do some pretty nifty things with it. Examples:"
+          - list [ref=f44e354]:
+            - listitem [ref=f44e355]: "Decade -> Year -> Artist -> Album:"
+          - paragraph [ref=f44e356]: $right(%date%,2)s|%date%|%artist%|%album%
+          - list [ref=f44e357]:
+            - listitem [ref=f44e358]: "Separate files based on whether they have Replaygain Information:"
+          - paragraph [ref=f44e359]: $if(%__replaygain_track_gain%,RG,NO RG)|%album artist%|%album%
+          - list [ref=f44e360]:
+            - listitem [ref=f44e361]: "Separate files based on the date added to libary (This uses the %added% tag which can be added to files using foo_cwb_hooks):"
+          - paragraph [ref=f44e362]: $if(%added%,$left(%added%,4)|$substr(%added%,6,7)|$right(%added%,2)|%album artist%|%album%,No Info ':(')
+          - list [ref=f44e363]:
+            - listitem [ref=f44e364]: Sort by codec
+          - paragraph [ref=f44e365]: "%codec%|%album artist%|%album%"
+          - paragraph [ref=f44e366]: "Tip: As far as possible, avoid using code which forces the panel to display a large number of files under a single entry. This reduces memory usage and significantly shortens startup time."
+          - heading "External links" [level=1] [ref=f44e368]
+          - list [ref=f44e369]:
+            - listitem [ref=f44e370]:
+              - link "Home page" [ref=f44e371] [cursor=pointer]:
+                - /url: https://yuo.be/album-list-panel
+            - listitem [ref=f44e372]:
+              - link "Album list panel" [ref=f44e374] [cursor=pointer]:
+                - /url: https://www.foobar2000.org/components/view/foo_uie_albumlist
+              - text: on foobar2000.org
+            - listitem [ref=f44e377]:
+              - link "Discussion topic" [ref=f44e379] [cursor=pointer]:
+                - /url: https://hydrogenaudio.org/index.php/topic,28647.0.html
+              - text: on hydrogenaudio
+        - generic [ref=f44e383]:
+          - link "Categories" [ref=f44e384] [cursor=pointer]:
+            - /url: /index.php?title=Special:Categories
+          - text: ":"
+          - list [ref=f44e385]:
+            - listitem [ref=f44e386]:
+              - link "Foobar2000 3rd-Party Components" [ref=f44e387] [cursor=pointer]:
+                - /url: /index.php?title=Category:Foobar2000_3rd-Party_Components
+            - listitem [ref=f44e388]:
+              - link "Foobar2000" [ref=f44e389] [cursor=pointer]:
+                - /url: /index.php?title=Category:Foobar2000
+            - listitem [ref=f44e390]:
+              - link "Foobar2000 components" [ref=f44e391] [cursor=pointer]:
+                - /url: /index.php?title=Category:Foobar2000_components
+    - contentinfo [ref=f44e393]:
+      - list [ref=f44e394]:
+        - listitem [ref=f44e395]: This page was last edited on 12 August 2026, at 13:43.
+      - list:
+        - listitem [ref=f44e396]:
+          - link "Privacy policy" [ref=f44e397] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:Privacy_policy
+        - listitem [ref=f44e398]:
+          - link "About Hydrogenaudio Knowledgebase" [ref=f44e399] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:About
+        - listitem [ref=f44e400]:
+          - link "Disclaimers" [ref=f44e401] [cursor=pointer]:
+            - /url: /index.php?title=Hydrogenaudio_Knowledgebase:General_disclaimer
+      - list [ref=f44e402]:
+        - listitem [ref=f44e403]:
+          - link [ref=f44e404] [cursor=pointer]:
+            - /url: https://www.mediawiki.org/
+            - img "Powered by MediaWiki" [ref=f44e406]
+  - generic [ref=f44e408]:
+    - generic [ref=f44e409]:
+      - button [ref=f44e411]:
+        - generic [ref=f44e413]: Search
+      - generic [aria-hidden] [ref=f44e415]: foobar2000:Components/Album List Panel (foo_uie_albumlist)
+    - generic [aria-hidden] [ref=f44e416]:
+      - generic [ref=f44e417]:
+        - link [ref=f44e418] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f44e421] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f44e424] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f44e427] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f44e430] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f44e433] [cursor=pointer]:
+          - /url: "#"
+        - link [ref=f44e436] [cursor=pointer]:
+          - /url: "#"
+      - link [ref=f44e440] [cursor=pointer]:
+        - /url: "#"
+        - generic [ref=f44e442]: Add topic
+  - generic [ref=f44e443]:
+    - list
