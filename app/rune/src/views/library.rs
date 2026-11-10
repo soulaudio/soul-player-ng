@@ -1,9 +1,11 @@
-//! Main-area track list: one row per library track, click to play.
+//! Main-area track list: one row per library track, click to play. A search bar
+//! filters the list by title/artist/album (typed via the key handler — `/` to
+//! start — since Rune has no text widget yet).
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
 use rune::{El, ScrollSpec, col, el, row, text};
-use soul_player_host::{BrowseAxis, Command};
+use soul_player_host::{BrowseAxis, Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
@@ -13,10 +15,19 @@ fn fmt_dur(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-fn track_row(s: &State, p: &Palette, index: usize) -> El {
-    let t = &s.library[index];
+/// Case-insensitive substring match over the fields a user would search by.
+/// `q` is already lowercased by the caller.
+fn track_matches(t: &TrackView, q: &str) -> bool {
+    let hit = |o: &Option<String>| o.as_deref().is_some_and(|v| v.to_lowercase().contains(q));
+    hit(&t.title) || hit(&t.artist) || hit(&t.album)
+}
+
+/// One track row. `ids` is the id list of the *currently visible* (possibly
+/// filtered) tracks, so playing starts a context over exactly what's on screen;
+/// `index` is the row's position within it.
+fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -> El {
     let playing = s.now_playing_id == Some(t.id);
-    let ids: Vec<u32> = s.library.iter().map(|x| x.id).collect();
+    let ids = ids.to_vec();
     let start = index as u32;
     row()
         .key(format!("track-{}", t.id))
@@ -60,6 +71,111 @@ fn track_row(s: &State, p: &Palette, index: usize) -> El {
                 start,
             })
         })
+}
+
+/// The search bar: shows the current filter and, while active, a cursor. Click
+/// it (or press `/`) to start typing; the ✕ clears it. No focused text field —
+/// `main::handle_key` routes keystrokes into `State::search`.
+fn search_bar(s: &State, p: &Palette) -> El {
+    let (shown, dim) = if s.search.is_empty() && !s.searching {
+        ("Type / to search".to_string(), true)
+    } else if s.searching {
+        (format!("{}│", s.search), false)
+    } else {
+        (s.search.clone(), false)
+    };
+    let mut bar = row()
+        .key("search-bar")
+        .gap(8.0)
+        .padding(8.0)
+        .child(text("Search").color(p.text_secondary))
+        .child(
+            el().key("search-field")
+                .grow(1.0)
+                .padding(6.0)
+                .radius(6.0)
+                .fill(p.muted)
+                .child(text(shown).color(if dim { p.text_secondary } else { p.fg }))
+                .on_press(|st: &mut State| st.searching = true),
+        );
+    if !s.search.is_empty() {
+        bar = bar.child(
+            el().key("search-clear")
+                .padding(6.0)
+                .radius(6.0)
+                .fill(p.muted)
+                .child(text("✕").color(p.text_secondary))
+                .on_press(|st: &mut State| {
+                    st.search.clear();
+                    st.searching = false;
+                }),
+        );
+    }
+    bar
+}
+
+/// The library's ~38-track testdata set fits comfortably in a plain scrolled
+/// column (`.scroll`); `El::virtualize`/`virtual_rows` (see
+/// `rune::el::virtual_rows`) is the path to reach for once a real-world
+/// library runs into the hundreds or thousands of tracks, since it only lays
+/// out/shapes text for the rows in (and just around) the viewport.
+///
+/// `.grow(1.0).min_h(0.0)` make the viewport take its bounded parent's full
+/// remaining height (rather than its content's natural height) so it scrolls
+/// instead of overflowing — see `El::scroll`'s doc comment.
+pub fn track_list(s: &State, p: &Palette) -> El {
+    if s.library.is_empty() {
+        // Cold launch with no SOUL_PLAYER_FOLDER: a usable entry point rather
+        // than a blank list.
+        return col()
+            .key("empty")
+            .w_full()
+            .h_full()
+            .center()
+            .gap(12.0)
+            .child(text("No music loaded").font(type_::TITLE).color(p.fg))
+            .child(text("Add a source to start playing").color(p.text_secondary))
+            .child(
+                el().key("go-to-sources")
+                    .padding(12.0)
+                    .radius(8.0)
+                    .fill(p.primary)
+                    .center()
+                    .child(text("Add a source").color(p.bg))
+                    .on_press(|s: &mut State| s.route = crate::Route::Settings),
+            );
+    }
+    let q = s.search.to_lowercase();
+    let visible: Vec<&TrackView> = if q.is_empty() {
+        s.library.iter().collect()
+    } else {
+        s.library.iter().filter(|t| track_matches(t, &q)).collect()
+    };
+    let body = if visible.is_empty() {
+        col()
+            .key("no-matches")
+            .grow(1.0)
+            .min_h(0.0)
+            .center()
+            .child(text(format!("No tracks match \"{}\"", s.search)).color(p.text_secondary))
+    } else {
+        let ids: Vec<u32> = visible.iter().map(|t| t.id).collect();
+        let mut list = col().key("tracks").gap(2.0);
+        for (i, t) in visible.iter().enumerate() {
+            list = list.child(track_row(s, p, t, &ids, i));
+        }
+        list.scroll(ScrollSpec {
+            stick_bottom: false,
+        })
+        .grow(1.0)
+        .min_h(0.0)
+    };
+    col()
+        .grow(1.0)
+        .min_h(0.0)
+        .child(search_bar(s, p))
+        .child(sort_bar(s, p))
+        .child(body)
 }
 
 /// One sort-order choice; the active axis is filled with the primary color.
@@ -108,48 +224,4 @@ fn sort_bar(s: &State, p: &Palette) -> El {
             a == BrowseAxis::Folder,
             p,
         ))
-}
-
-/// The library's ~38-track testdata set fits comfortably in a plain scrolled
-/// column (`.scroll`); `El::virtualize`/`virtual_rows` (see
-/// `rune::el::virtual_rows`) is the path to reach for once a real-world
-/// library runs into the hundreds or thousands of tracks, since it only lays
-/// out/shapes text for the rows in (and just around) the viewport.
-///
-/// `.grow(1.0).min_h(0.0)` make the viewport take its bounded parent's full
-/// remaining height (rather than its content's natural height) so it scrolls
-/// instead of overflowing — see `El::scroll`'s doc comment.
-pub fn track_list(s: &State, p: &Palette) -> El {
-    if s.library.is_empty() {
-        // Cold launch with no SOUL_PLAYER_FOLDER: a usable entry point rather
-        // than a blank list.
-        return col()
-            .key("empty")
-            .w_full()
-            .h_full()
-            .center()
-            .gap(12.0)
-            .child(text("No music loaded").font(type_::TITLE).color(p.fg))
-            .child(text("Add a source to start playing").color(p.text_secondary))
-            .child(
-                el().key("go-to-sources")
-                    .padding(12.0)
-                    .radius(8.0)
-                    .fill(p.primary)
-                    .center()
-                    .child(text("Add a source").color(p.bg))
-                    .on_press(|s: &mut State| s.route = crate::Route::Settings),
-            );
-    }
-    let mut list = col().key("tracks").gap(2.0);
-    for i in 0..s.library.len() {
-        list = list.child(track_row(s, p, i));
-    }
-    col().grow(1.0).min_h(0.0).child(sort_bar(s, p)).child(
-        list.scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .grow(1.0)
-        .min_h(0.0),
-    )
 }
