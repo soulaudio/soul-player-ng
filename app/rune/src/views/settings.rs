@@ -9,7 +9,7 @@ use rune::tok::type_;
 use rune::{El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
 
 use crate::theme::Palette;
-use crate::{State, apply_and_save};
+use crate::{State, ThemePref, apply_and_save, set_theme_pref};
 
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
@@ -75,8 +75,8 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
     )
 }
 
-/// The Settings page: a title plus the scrollable Sources section.
-pub fn settings_page(s: &State, p: &Palette) -> El {
+/// The Sources section: + Add Source and one row per watched folder.
+fn sources_section(s: &State, p: &Palette) -> El {
     let mut sources = col().key("sources").gap(2.0).child(
         row()
             .padding(8.0)
@@ -99,6 +99,67 @@ pub fn settings_page(s: &State, p: &Palette) -> El {
             sources = sources.child(source_row(s, p, i));
         }
     }
+    sources
+}
+
+/// One theme choice; the active preference is filled with the primary color.
+fn theme_button(label: &str, key: &str, pref: ThemePref, active: bool, p: &Palette) -> El {
+    el().key(key.to_string())
+        .padding(8.0)
+        .radius(6.0)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_theme_pref(s, pref))
+}
+
+/// The Appearance section: a System / Light / Dark theme override.
+fn appearance_section(s: &State, p: &Palette) -> El {
+    col()
+        .key("appearance")
+        .gap(2.0)
+        .child(
+            row().padding(8.0).child(
+                text("Appearance")
+                    .font(type_::TITLE)
+                    .color(p.primary)
+                    .grow(1.0),
+            ),
+        )
+        .child(
+            row()
+                .gap(8.0)
+                .padding(8.0)
+                .child(theme_button(
+                    "System",
+                    "theme-system",
+                    ThemePref::System,
+                    s.theme_pref == ThemePref::System,
+                    p,
+                ))
+                .child(theme_button(
+                    "Light",
+                    "theme-light",
+                    ThemePref::Light,
+                    s.theme_pref == ThemePref::Light,
+                    p,
+                ))
+                .child(theme_button(
+                    "Dark",
+                    "theme-dark",
+                    ThemePref::Dark,
+                    s.theme_pref == ThemePref::Dark,
+                    p,
+                )),
+        )
+}
+
+/// The Settings page: a title plus scrollable sections (Sources, Appearance).
+pub fn settings_page(s: &State, p: &Palette) -> El {
+    let content = col()
+        .key("settings-content")
+        .gap(16.0)
+        .child(sources_section(s, p))
+        .child(appearance_section(s, p));
     col()
         .key("settings")
         .grow(1.0)
@@ -110,7 +171,7 @@ pub fn settings_page(s: &State, p: &Palette) -> El {
                 .padding(16.0),
         )
         .child(
-            sources
+            content
                 .scroll(ScrollSpec {
                     stick_bottom: false,
                 })

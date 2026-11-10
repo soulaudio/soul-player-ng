@@ -51,6 +51,31 @@ fn save_to(path: &Path, folders: &[PathBuf]) -> std::io::Result<()> {
     std::fs::write(path, body)
 }
 
+// --- theme preference ---
+
+/// `<config>/soul-player/theme.txt` — the persisted light/dark preference.
+fn theme_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("soul-player").join("theme.txt"))
+}
+
+/// The saved theme preference string ("system"/"light"/"dark"), or `None`.
+pub fn load_theme_pref() -> Option<String> {
+    let p = theme_path()?;
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+/// Persist the theme preference (best-effort — a failed write never breaks the UI).
+pub fn save_theme_pref(pref: &str) {
+    if let Some(p) = theme_path() {
+        if let Some(dir) = p.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(p, pref);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
