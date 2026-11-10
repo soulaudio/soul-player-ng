@@ -1,0 +1,156 @@
+name: Release
+
+# TAG-TRIGGERED ONLY. This never runs on push/PR, so it does not consume the
+# day-to-day Actions budget (the reason the CI workflows are disabled). Cut a
+# release by bumping app/rune/Cargo.toml, committing, then pushing a matching
+# `vX.Y.Z` tag — or run it manually with the tag as input.
+#
+# It builds + SIGNS the bundles for each OS with the updater private key (a repo
+# secret, independent of OS code-signing — see app/rune/src/update.rs), then
+# publishes the installers plus `latest.json` (the update manifest) to a GitHub
+# Release. The shipped app's launch-time check reads that manifest and offers an
+# in-app "Install & Restart".
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build (e.g. v0.2.0) — must match app/rune/Cargo.toml"
+        required: true
+
+permissions:
+  contents: write # create the release and upload assets
+
+env:
+  # Generate the keypair once with `cargo packager signer generate`; store the
+  # PRIVATE key as the UPDATER_PRIVATE_KEY secret and its password as
+  # UPDATER_KEY_PASSWORD. The matching PUBLIC key is embedded in
+  # app/rune/src/update.rs. Without these, packaging still succeeds but produces
+  # no `.sig`, and the publish job will fail (empty signature) — by design.
+  CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
+  CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.UPDATER_KEY_PASSWORD }}
+
+jobs:
+  # Fail fast if the tag and the manifest version disagree: the installer name
+  # and the running app's reported version both come from Cargo.toml, while the
+  # manifest version comes from the tag — a mismatch ships an update that never
+  # applies.
+  guard:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          ver="${tag#v}"
+          cargo_ver=$(grep -m1 '^version' app/rune/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "$ver" != "$cargo_ver" ]; then
+            echo "::error::tag $tag implies version $ver but app/rune/Cargo.toml is $cargo_ver — bump the manifest and retag."
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+  package:
+    needs: guard
+    strategy:
+      fail-fast: false # a failed macOS job still ships Windows + Linux
+      matrix:
+        include:
+          - os: windows-latest
+            target_key: windows-x86_64
+            format: nsis
+          - os: macos-latest # Apple Silicon runner
+            target_key: macos-aarch64
+            format: app
+          - os: ubuntu-latest
+            target_key: linux-x86_64
+            format: appimage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned toolchain
+        working-directory: app/rune # rust-toolchain.toml resolves from CWD
+        run: rustup show
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - name: Linux packaging dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libgtk-3-dev \
+            libxdo-dev \
+            librsvg2-dev \
+            libayatana-appindicator3-dev \
+            libfuse2
+
+      - name: Package + sign
+        working-directory: app/rune
+        run: cargo packager --release -f ${{ matrix.format }}
+
+      - name: Write updater sidecar
+        run: |
+          mkdir -p dist
+          python .github/scripts/write-meta.py \
+            --out-dir app/rune/target/release \
+            --target-key ${{ matrix.target_key }} \
+            --format ${{ matrix.format }} \
+            --meta-out dist/${{ matrix.target_key }}.meta.json
+
+      - name: Stage the signed artifact
+        shell: bash
+        run: |
+          sig=$(ls app/rune/target/release/*.sig)
+          cp "${sig%.sig}" dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.target_key }}
+          path: dist/*
+
+  publish:
+    needs: [guard, package]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate latest.json
+        run: |
+          python .github/scripts/gen-latest-json.py \
+            --meta-dir dist \
+            --repo ${{ github.repository }} \
+            --tag ${{ needs.guard.outputs.tag }} \
+            --version ${{ needs.guard.outputs.version }} \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --notes "Soul Player ${{ needs.guard.outputs.tag }}" \
+            --out dist/latest.json
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.guard.outputs.tag }}
+          name: Soul Player ${{ needs.guard.outputs.tag }}
+          # The installers users download, plus the manifest the in-app updater
+          # reads from `latest/download/latest.json`. The *.meta.json sidecars
+          # are deliberately not uploaded.
+          files: |
+            dist/*-setup.exe
+            dist/*.AppImage
+            dist/*.app.tar.gz
+            dist/latest.json
+          fail_on_unmatched_files: false
