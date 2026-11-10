@@ -62,6 +62,12 @@ with a new key**, so rotate only with a plan (e.g. a one-time manual download).
 The in-app updater reads `…/releases/latest/download/latest.json`; `latest/`
 always points at the newest release, so the endpoint never changes.
 
+> **The repo must be public** (or the release assets hosted somewhere public).
+> The updater downloads anonymously — a **private** repo returns `404` for
+> `releases/latest/download/…`, so updates silently never apply. Verified live:
+> `cargo test -p soul-player-rune live_release -- --ignored` fetches the real
+> release, downloads the installer, and verifies its signature end to end.
+
 ### One-time CI setup (repo secrets)
 
 | Secret | Value |

@@ -232,4 +232,27 @@ mod tests {
             "a tampered artifact must fail signature verification"
         );
     }
+
+    /// Live smoke test against the real published GitHub release: fetch the live
+    /// manifest, download the real installer, and verify its signature against
+    /// the embedded `PUBKEY`. Hits the network and pulls the full installer, so
+    /// it is `#[ignore]`d — run after publishing a release:
+    /// `cargo test -p soul-player-rune live_release -- --ignored`.
+    #[test]
+    #[ignore = "network: downloads the live GitHub release; run manually after a release"]
+    fn live_release_downloads_and_verifies() {
+        // Pretend to be an ancient build so the current release reads as newer.
+        let current = "0.0.1".parse().unwrap();
+        let update = check_update(current, config(ENDPOINT).unwrap())
+            .unwrap()
+            .expect("the live release should be newer than 0.0.1");
+        let bytes = update
+            .download()
+            .expect("the live installer must verify against the embedded PUBKEY");
+        assert!(
+            bytes.len() > 1_000_000,
+            "downloaded the real installer ({} bytes)",
+            bytes.len()
+        );
+    }
 }
