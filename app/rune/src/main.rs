@@ -27,6 +27,32 @@ pub(crate) enum Route {
     Settings,
 }
 
+/// Light/dark preference: follow the OS, or force one. Persisted; the Appearance
+/// settings section sets it.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ThemePref {
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemePref {
+    fn from_config(s: &str) -> Self {
+        match s {
+            "light" => ThemePref::Light,
+            "dark" => ThemePref::Dark,
+            _ => ThemePref::System,
+        }
+    }
+    fn as_config(self) -> &'static str {
+        match self {
+            ThemePref::System => "system",
+            ThemePref::Light => "light",
+            ThemePref::Dark => "dark",
+        }
+    }
+}
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -43,6 +69,8 @@ struct State {
     context_len: u32,
     /// Current page (Library vs Settings).
     route: Route,
+    /// Light/dark preference (persisted); `System` follows the OS.
+    theme_pref: ThemePref,
     /// The watched-folder set (from the host), rendered by Settings → Sources;
     /// `unavailable` are configured roots currently unreachable (shown "offline").
     watched_folders: Vec<PathBuf>,
@@ -78,6 +106,9 @@ impl State {
             context_pos: 0,
             context_len: 0,
             route: Route::Library,
+            theme_pref: config::load_theme_pref()
+                .map(|s| ThemePref::from_config(&s))
+                .unwrap_or(ThemePref::System),
             watched_folders,
             unavailable,
             art: ArtCache::new(),
@@ -129,8 +160,23 @@ pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
     config::save_sources(&s.watched_folders);
 }
 
+/// Resolve the effective dark/light mode from the user's preference.
+pub(crate) fn is_dark(pref: ThemePref, system_dark: bool) -> bool {
+    match pref {
+        ThemePref::System => system_dark,
+        ThemePref::Light => false,
+        ThemePref::Dark => true,
+    }
+}
+
+/// Set + persist the theme preference (used by the Appearance settings buttons).
+pub(crate) fn set_theme_pref(s: &mut State, pref: ThemePref) {
+    s.theme_pref = pref;
+    config::save_theme_pref(pref.as_config());
+}
+
 fn view(s: &State, cx: &mut Cx<State>) -> El {
-    let p = theme::palette(cx.system_dark());
+    let p = theme::palette(is_dark(s.theme_pref, cx.system_dark()));
     let scale = cx.env().scale;
     // The old app's shell: a fixed-width left sidebar (nav label, queue,
     // player panel) plus the main area's track list filling the rest.
@@ -396,6 +442,31 @@ mod tests {
         rt.frame(0.0);
         assert!(rt.find("nav-library").is_some());
         assert!(rt.find("nav-settings").is_some());
+    }
+
+    #[test]
+    fn is_dark_respects_the_theme_preference() {
+        assert!(is_dark(ThemePref::Dark, false));
+        assert!(!is_dark(ThemePref::Light, true));
+        assert!(is_dark(ThemePref::System, true));
+        assert!(!is_dark(ThemePref::System, false));
+    }
+
+    #[test]
+    fn settings_shows_appearance_theme_options() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("appearance").is_some(),
+            "Settings has an Appearance section"
+        );
+        assert!(rt.find("theme-system").is_some());
+        assert!(rt.find("theme-light").is_some());
+        assert!(rt.find("theme-dark").is_some());
     }
 
     /// End to end: `AppSpec::on_key`'s Space shortcut (set on the `Runtime`
