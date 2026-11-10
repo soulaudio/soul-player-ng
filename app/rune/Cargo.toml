@@ -30,3 +30,13 @@ soul-player-host = { path = "../../crates/soul-player-host" }
 anyhow = "1"
 # Per-user config dir, to persist the watched-folder set across launches.
 dirs = "6"
+
+# cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
+# installer today (SmartScreen nags); the signed updater + OS code-signing +
+# release CI are the deferred half of Phase 3. Build:  cargo packager --release
+# (from app/rune). name/version/description/authors come from [package] above.
+[package.metadata.packager]
+product-name = "Soul Player"
+identifier = "co.datadir.soulplayer"
+icons = ["icons/icon.ico", "icons/128x128.png"]
+formats = ["nsis"]
