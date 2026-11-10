@@ -57,26 +57,27 @@ fn config(endpoint: &str) -> Result<Config> {
     })
 }
 
-/// Blocking check: is a newer signed release available? Any failure (offline, no
-/// release yet, signature mismatch) resolves to `false` so the caller just
-/// carries on — a failed update check must never stop the player from running.
-pub fn available() -> bool {
+/// Blocking check: the version string of a newer signed release, or `None` when
+/// we're up to date or the check failed (offline / no release yet / bad
+/// manifest). Any failure resolves to `None` so the caller just carries on — a
+/// failed update check must never stop the player from running.
+pub fn available() -> Option<String> {
     available_at(&endpoint())
 }
 
-fn available_at(endpoint: &str) -> bool {
+fn available_at(endpoint: &str) -> Option<String> {
     match try_available(endpoint) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("[updater] check skipped: {e}");
-            false
+            None
         }
     }
 }
 
-fn try_available(endpoint: &str) -> Result<bool> {
+fn try_available(endpoint: &str) -> Result<Option<String>> {
     let current = env!("CARGO_PKG_VERSION").parse()?;
-    Ok(check_update(current, config(endpoint)?)?.is_some())
+    Ok(check_update(current, config(endpoint)?)?.map(|u| u.version))
 }
 
 /// Download + install the latest signed release, verify its signature against
@@ -129,28 +130,29 @@ mod tests {
     }
 
     #[test]
-    fn available_true_when_endpoint_offers_newer_version() {
+    fn available_returns_version_when_endpoint_offers_newer() {
         // Leak the manifest string to get the 'static the server needs.
         let body: &'static str = Box::leak(manifest("99.0.0").into_boxed_str());
-        assert!(
-            available_at(&serve(body)),
+        assert_eq!(
+            available_at(&serve(body)).as_deref(),
+            Some("99.0.0"),
             "99.0.0 > current version is an available update"
         );
     }
 
     #[test]
-    fn available_false_when_endpoint_version_is_older() {
+    fn available_none_when_endpoint_version_is_older() {
         let body: &'static str = Box::leak(manifest("0.0.1").into_boxed_str());
         assert!(
-            !available_at(&serve(body)),
+            available_at(&serve(body)).is_none(),
             "0.0.1 < current version is no update"
         );
     }
 
     #[test]
-    fn available_false_when_endpoint_unreachable() {
+    fn available_none_when_endpoint_unreachable() {
         // Port 1 is effectively never listening: the fetch fails and the check
-        // degrades to `false` rather than erroring out.
-        assert!(!available_at("http://127.0.0.1:1/latest.json"));
+        // degrades to `None` rather than erroring out.
+        assert!(available_at("http://127.0.0.1:1/latest.json").is_none());
     }
 }

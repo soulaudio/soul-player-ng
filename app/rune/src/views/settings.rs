@@ -141,12 +141,16 @@ fn updates_section(s: &State, p: &Palette) -> El {
                 .color(p.text_secondary)
                 .padding(8.0),
         );
-    if s.update_available {
+    if let Some(version) = &s.update_available {
         sec = sec.child(
             row()
                 .gap(12.0)
                 .padding(8.0)
-                .child(text("A new version is available.").color(p.fg).grow(1.0))
+                .child(
+                    text(format!("Version {version} is available."))
+                        .color(p.fg)
+                        .grow(1.0),
+                )
                 .child(
                     el().key("install-update")
                         .padding(12.0)

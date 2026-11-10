@@ -81,9 +81,10 @@ struct State {
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
-    /// Set by the launch-time update check (`update::available`) when a newer
-    /// signed release exists; Settings then surfaces "Install & Restart".
-    update_available: bool,
+    /// The version of a newer signed release, set by the launch-time update
+    /// check (`update::available`); `Some` makes Settings surface "Install &
+    /// Restart". `None` = up to date (or the check hasn't run / failed).
+    update_available: Option<String>,
 }
 
 impl State {
@@ -119,7 +120,7 @@ impl State {
             watched_folders,
             unavailable,
             art: ArtCache::new(),
-            update_available: false,
+            update_available: None,
         }
     }
 
@@ -283,8 +284,10 @@ fn main() -> anyhow::Result<()> {
     if update::enabled() {
         let uh = app.handle();
         std::thread::spawn(move || {
-            if update::available() {
-                uh.update(|s: &mut State, _tx: &mut Tx| s.update_available = true);
+            if let Some(version) = update::available() {
+                uh.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.update_available = Some(version);
+                });
             }
         });
     }
@@ -518,7 +521,7 @@ mod tests {
     #[test]
     fn settings_offers_install_when_update_available() {
         let mut s = settings_state(&[], &[]);
-        s.update_available = true;
+        s.update_available = Some("9.9.9".to_string());
         let env = Env {
             system_dark: true,
             scale: 2.0,
