@@ -14,6 +14,7 @@ use soul_player_host::{
     Command, Event, PlayState, PlayerHandle, RepeatMode, TrackView, WatchUpdate,
 };
 
+mod config;
 mod theme;
 mod views;
 
@@ -112,6 +113,14 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     s.unavailable = up.unavailable;
 }
 
+/// Apply a `WatchUpdate` and persist the new watched set — used by the Sources
+/// add/remove handlers. Kept separate from the pure `apply_watch` so unit tests
+/// never touch the user's config on disk.
+pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
+    apply_watch(s, up);
+    config::save_sources(&s.watched_folders);
+}
+
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let p = theme::palette(cx.system_dark());
     let scale = cx.env().scale;
@@ -174,7 +183,16 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 
 fn main() -> anyhow::Result<()> {
     let host = PlayerHandle::new();
-    host.autoload_from_env()?; // SOUL_PLAYER_FOLDER=<dir> to load a library
+    // The dev/e2e harness loads a single folder from the env; otherwise restore
+    // the persisted watched-folder set so Sources survive a restart.
+    if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
+        host.autoload_from_env()?;
+    } else {
+        let saved = config::load_sources();
+        if !saved.is_empty() {
+            let _ = host.set_folders(&saved);
+        }
+    }
 
     let init_host = host.clone();
     let spec = AppSpec::<State> {
