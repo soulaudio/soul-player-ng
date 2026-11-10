@@ -376,6 +376,7 @@ mod tests {
             "Settings shows a Sources section"
         );
         assert!(rt.find("add-source").is_some(), "Sources offers Add Source");
+        assert!(rt.find("rescan-sources").is_some(), "Sources offers Rescan");
     }
 
     #[test]

@@ -9,7 +9,7 @@ use rune::tok::type_;
 use rune::{El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
 
 use crate::theme::Palette;
-use crate::{State, ThemePref, apply_and_save, set_theme_pref};
+use crate::{State, ThemePref, apply_and_save, apply_watch, set_theme_pref};
 
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
@@ -40,6 +40,23 @@ fn add_source_button(p: &Palette) -> El {
                     }
                 },
             );
+        })
+}
+
+/// Re-aggregate the current watched set — picks up files added/removed on disk
+/// and roots that came back online. The set is unchanged, so no save (apply_watch,
+/// not apply_and_save).
+fn rescan_button(p: &Palette) -> El {
+    el().key("rescan-sources")
+        .padding(12.0)
+        .radius(8.0)
+        .fill(p.muted)
+        .center()
+        .child(text("Rescan").color(p.fg))
+        .on_press(|s: &mut State| {
+            if let Ok(up) = s.host.set_folders(&s.watched_folders) {
+                apply_watch(s, up);
+            }
         })
 }
 
@@ -86,6 +103,7 @@ fn sources_section(s: &State, p: &Palette) -> El {
                     .color(p.primary)
                     .grow(1.0),
             )
+            .child(rescan_button(p))
             .child(add_source_button(p)),
     );
     if s.watched_folders.is_empty() {
