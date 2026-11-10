@@ -14,14 +14,12 @@ concurrency:
 
 jobs:
   rust:
-    name: rust (fmt · clippy · test — service + app)
+    name: rust (fmt · clippy · test — service + host)
     runs-on: ubuntu-latest
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       # soul-audio-core is a private git dependency during the pre-public phase.
-      # Set a read-only PAT as the CORE_REPO_TOKEN repo secret; once the library
-      # repo is public this is unnecessary and the auth step auto-skips.
       CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -30,17 +28,12 @@ jobs:
         if: ${{ env.CORE_REPO_TOKEN != '' }}
         run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      # Tauri + cpal build dependencies (webview, GTK, ALSA). The app crate links
-      # these even though its tests run offline over NullSink.
-      - name: Install Tauri system dependencies
+      # soul-player-host links cpal → ALSA on Linux.
+      - name: Audio build deps (cpal/ALSA)
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev libgtk-3-dev libglib2.0-dev librsvg2-dev \
-            libayatana-appindicator3-dev libasound2-dev pkg-config patchelf
+          sudo apt-get install -y libasound2-dev pkg-config
 
-      # rust-toolchain.toml pins the channel; add the components explicitly so a
-      # missing one fails fast.
       - name: Set up Rust
         run: rustup component add rustfmt clippy
 
@@ -49,66 +42,72 @@ jobs:
           workspaces: |
             .
             crates/soul-player-host
-            app/tauri/src-tauri
 
-      # `generate_context!()` reads `frontendDist` (../dist) at COMPILE time, so a
-      # dist must exist to build/clippy/test the app crate (the real one is built
-      # by the frontend job).
-      - name: Mock frontend dist
-        run: |
-          mkdir -p app/tauri/dist
-          printf '<!doctype html><title>soul-player</title><div id="app"></div>' > app/tauri/dist/index.html
-
-      - name: Format (service + host + app)
+      - name: Format (service + host)
         run: |
           cargo fmt --all -- --check
           cargo fmt --manifest-path crates/soul-player-host/Cargo.toml --all -- --check
-          cargo fmt --manifest-path app/tauri/src-tauri/Cargo.toml --all -- --check
 
-      - name: Clippy (service + host + app)
+      - name: Clippy (service + host)
         run: |
           cargo clippy --all-targets -- -D warnings
           cargo clippy --manifest-path crates/soul-player-host/Cargo.toml --all-targets -- -D warnings
-          cargo clippy --manifest-path app/tauri/src-tauri/Cargo.toml --all-targets -- -D warnings
 
-      - name: Test (service + host + app)
+      - name: Test (service + host)
         run: |
           cargo test
           cargo test --manifest-path crates/soul-player-host/Cargo.toml
-          cargo test --manifest-path app/tauri/src-tauri/Cargo.toml
 
-  frontend:
-    name: frontend (svelte-check · vitest · build)
+  rune:
+    name: rune (fmt · clippy · test — native UI head)
     runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
     defaults:
       run:
-        working-directory: app/tauri
+        working-directory: app/rune
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: actions/setup-node@v7
+
+      - name: Authenticate the private soul-audio-core git dependency
+        if: ${{ env.CORE_REPO_TOKEN != '' }}
+        working-directory: .
+        run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      # Rune = wgpu + winit; needs GPU/windowing libs + a software Vulkan adapter
+      # (Lavapipe via mesa-vulkan-drivers) to render headlessly under Xvfb. Plus
+      # ALSA for the host's cpal.
+      - name: GPU/windowing deps + software Vulkan
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-x11-0 libxkbcommon-dev libwayland-dev \
+            mesa-vulkan-drivers vulkan-tools libasound2-dev pkg-config xvfb
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: app/tauri/package-lock.json
-      - run: npm ci
-      - name: Type-check (svelte-check)
-        run: npm run check
-      - name: Install Playwright Chromium (vitest browser mode)
-        run: npx playwright install --with-deps chromium
-      - name: Unit tests (vitest)
-        run: npm run test
-      - name: Production build (vite)
-        run: npm run build
+          workspaces: app/rune
+
+      # app/rune/rust-toolchain.toml pins the nightly (rune uses unstable compiler
+      # features); the first cargo invocation auto-installs it + clippy/rustfmt.
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Test (headless, software Vulkan under Xvfb)
+        run: xvfb-run -a cargo test
 
   ci-success:
     name: CI success
     runs-on: ubuntu-latest
-    needs: [rust, frontend]
+    needs: [rust, rune]
     if: always()
     steps:
       - name: Require all checks to pass
         run: |
-          if [ "${{ needs.rust.result }}" != "success" ] || [ "${{ needs.frontend.result }}" != "success" ]; then
+          if [ "${{ needs.rust.result }}" != "success" ] || [ "${{ needs.rune.result }}" != "success" ]; then
             echo "::error::a required CI job failed"
             exit 1
           fi
