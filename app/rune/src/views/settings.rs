@@ -120,6 +120,53 @@ fn sources_section(s: &State, p: &Palette) -> El {
     sources
 }
 
+/// The Updates section: the running version, plus — when the launch-time check
+/// (`update::available`) found a newer signed release — an "Install & Restart"
+/// button. Install runs off the UI thread because `update::install` blocks on
+/// the download and then relaunches the process.
+fn updates_section(s: &State, p: &Palette) -> El {
+    let mut sec = col()
+        .key("updates")
+        .gap(2.0)
+        .child(
+            row().padding(8.0).child(
+                text("Updates")
+                    .font(type_::TITLE)
+                    .color(p.primary)
+                    .grow(1.0),
+            ),
+        )
+        .child(
+            text(format!("Version {}", env!("CARGO_PKG_VERSION")))
+                .color(p.text_secondary)
+                .padding(8.0),
+        );
+    if s.update_available {
+        sec = sec.child(
+            row()
+                .gap(12.0)
+                .padding(8.0)
+                .child(text("A new version is available.").color(p.fg).grow(1.0))
+                .child(
+                    el().key("install-update")
+                        .padding(12.0)
+                        .radius(8.0)
+                        .fill(p.primary)
+                        .center()
+                        .child(text("Install & Restart").color(p.bg))
+                        .on_press(|_s: &mut State| {
+                            std::thread::spawn(|| {
+                                if let Err(e) = crate::update::install() {
+                                    eprintln!("[updater] install failed: {e}");
+                                }
+                            });
+                        }),
+                ),
+        );
+    }
+    sec
+}
+
 /// One theme choice; the active preference is filled with the primary color.
 fn theme_button(label: &str, key: &str, pref: ThemePref, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
@@ -177,7 +224,8 @@ pub fn settings_page(s: &State, p: &Palette) -> El {
         .key("settings-content")
         .gap(16.0)
         .child(sources_section(s, p))
-        .child(appearance_section(s, p));
+        .child(appearance_section(s, p))
+        .child(updates_section(s, p));
     col()
         .key("settings")
         .grow(1.0)
