@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
-use rune::{El, ScrollSpec, col, el, row, text};
+use rune::{El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text};
 use soul_player_host::{BrowseAxis, Command, TrackView};
 
 use crate::State;
@@ -29,7 +29,8 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
     let playing = s.now_playing_id == Some(t.id);
     let ids = ids.to_vec();
     let start = index as u32;
-    let enqueue_id = t.id; // Copy out of the borrow so the button closure can own it.
+    let tid = t.id; // Copy out of the borrow so the button/menu closures can own it.
+    let menu_ids = ids.clone(); // the context menu's "Play" needs its own copy.
     row()
         .key(format!("track-{}", t.id))
         .gap(12.0)
@@ -76,8 +77,30 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
                 .radius(6.0)
                 .fill(p.muted)
                 .child(text("+").color(p.text_secondary))
-                .on_press(move |st: &mut State| st.host.send(Command::Enqueue(enqueue_id))),
+                .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
         )
+        // Right-click: a context menu with the fuller per-track actions (Play,
+        // Play next, Add to queue). Anchored at the click point. Where popup
+        // menus aren't supported, the inline + button remains the fallback.
+        .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
+            let play_ids = menu_ids.clone();
+            tx.popup_menu(
+                PopupMenu::new()
+                    .item(PopupItem::new("play", "Play"))
+                    .item(PopupItem::new("play-next", "Play next"))
+                    .item(PopupItem::new("enqueue", "Add to queue")),
+                press,
+                move |st: &mut State, picked, _tx: &mut Tx| match picked {
+                    Some("play") => st.host.send(Command::PlayContext {
+                        ids: play_ids.clone(),
+                        start,
+                    }),
+                    Some("play-next") => st.host.send(Command::PlayNext(tid)),
+                    Some("enqueue") => st.host.send(Command::Enqueue(tid)),
+                    _ => {}
+                },
+            );
+        })
         .on_press(move |st: &mut State| {
             st.host.send(Command::PlayContext {
                 ids: ids.clone(),
