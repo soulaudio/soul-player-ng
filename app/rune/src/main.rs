@@ -56,6 +56,14 @@ impl State {
     fn new(host: PlayerHandle) -> Self {
         let library = host.views();
         let watched_folders = host.watched_folders();
+        // At startup the host has no fresh WatchUpdate, so derive the offline set
+        // directly: a restored watched root that isn't a readable directory is
+        // unavailable (and shows the badge). Live edits refresh it via apply_watch.
+        let unavailable = watched_folders
+            .iter()
+            .filter(|p| !p.is_dir())
+            .cloned()
+            .collect();
         Self {
             host,
             library,
@@ -71,7 +79,7 @@ impl State {
             context_len: 0,
             route: Route::Library,
             watched_folders,
-            unavailable: Vec::new(),
+            unavailable,
             art: ArtCache::new(),
         }
     }
@@ -267,6 +275,20 @@ mod tests {
         assert!(matches!(s.route, Route::Library));
         assert!(s.watched_folders.is_empty());
         assert!(s.unavailable.is_empty());
+    }
+
+    #[test]
+    fn new_state_derives_offline_badge_for_unavailable_watched_roots() {
+        let missing = testdata_dir().join("does-not-exist-at-launch");
+        let host = PlayerHandle::offline();
+        host.set_folders(std::slice::from_ref(&missing)).unwrap();
+        let s = State::new(host);
+        assert_eq!(s.watched_folders, vec![missing.clone()]);
+        assert_eq!(
+            s.unavailable,
+            vec![missing],
+            "a restored, currently-unavailable root is offline at launch"
+        );
     }
 
     #[test]
