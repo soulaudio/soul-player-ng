@@ -12,7 +12,7 @@ use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
 pub use sink::SinkMode;
 pub use soul_player_backend::{
-    Command, Cover, Event, PlayState, QueueState, RepeatMode, Tick, TrackView,
+    BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, Tick, TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -176,6 +176,18 @@ impl PlayerHandle {
             .expect("library mutex")
             .as_ref()
             .map(|l| l.views())
+            .unwrap_or_default()
+    }
+
+    /// Current library views in a chosen browse order (Title / ArtistAlbumTrack /
+    /// Album / Folder) — the baked axis tables, no re-sort.
+    pub fn views_by(&self, axis: BrowseAxis) -> Vec<TrackView> {
+        self.inner
+            .library
+            .lock()
+            .expect("library mutex")
+            .as_ref()
+            .map(|l| l.views_by(axis))
             .unwrap_or_default()
     }
 

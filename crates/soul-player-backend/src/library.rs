@@ -123,8 +123,15 @@ impl Library {
     /// the file-name fallback for a missing title, so `title` is present.
     #[must_use]
     pub fn views(&self) -> Vec<TrackView> {
+        self.views_by(BrowseAxis::ArtistAlbumTrack)
+    }
+
+    /// Track views in a chosen browse order — the baked axis tables
+    /// (`Title`, `ArtistAlbumTrack`, `Album`, `Folder`), computed once by the
+    /// baker so no re-sort happens here.
+    #[must_use]
+    pub fn views_by(&self, axis: BrowseAxis) -> Vec<TrackView> {
         let cat = self.cat();
-        let axis = BrowseAxis::ArtistAlbumTrack;
         (0..cat.order_len(axis))
             .filter_map(|i| {
                 let id = cat.order(axis, i).ok()?;
