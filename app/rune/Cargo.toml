@@ -1,0 +1,30 @@
+[package]
+name = "soul-player-rune"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Rune (native GPU) UI head for Soul Player, over soul-player-host."
+
+[[bin]]
+name = "soul-player-rune"
+path = "src/main.rs"
+
+[workspace]
+resolver = "3"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# Rune's dependency tree is enormous (wgpu + winit + parley + icu + resvg …);
+# with full dev debuginfo the MSVC linker overflows the program-database limit
+# (LNK1140). Drop debuginfo in dev — a GPU UI spike doesn't need line-level
+# debug symbols, and this keeps `cargo build` working on Windows/MSVC. Release
+# (for the bake-off binary-size measure) is unaffected.
+[profile.dev]
+debug = 0
+
+[dependencies]
+rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830", features = ["native-file-dialog"] }
+soul-player-host = { path = "../../crates/soul-player-host" }
+anyhow = "1"
