@@ -16,6 +16,7 @@ use soul_player_host::{
 
 mod config;
 mod theme;
+mod update;
 mod views;
 
 use views::player::ArtCache;
@@ -80,6 +81,9 @@ struct State {
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
+    /// Set by the launch-time update check (`update::available`) when a newer
+    /// signed release exists; Settings then surfaces "Install & Restart".
+    update_available: bool,
 }
 
 impl State {
@@ -115,6 +119,7 @@ impl State {
             watched_folders,
             unavailable,
             art: ArtCache::new(),
+            update_available: false,
         }
     }
 
@@ -272,6 +277,17 @@ fn main() -> anyhow::Result<()> {
     };
     let app = App::new(spec).init(move || State::new(init_host.clone()));
     let ah = app.handle();
+    // Launch-time update check (release builds only): off-thread so it never
+    // blocks startup, and it only *flags* an available update — Settings offers
+    // the actual "Install & Restart" so we never yank a playing track away.
+    if update::enabled() {
+        let uh = app.handle();
+        std::thread::spawn(move || {
+            if update::available() {
+                uh.update(|s: &mut State, _tx: &mut Tx| s.update_available = true);
+            }
+        });
+    }
     host.subscribe(move |ev: Event| {
         ah.update(move |s: &mut State, tx: &mut Tx| {
             s.apply(&ev);
@@ -479,6 +495,40 @@ mod tests {
         assert!(rt.find("theme-system").is_some());
         assert!(rt.find("theme-light").is_some());
         assert!(rt.find("theme-dark").is_some());
+    }
+
+    #[test]
+    fn settings_shows_updates_section_without_install_by_default() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("updates").is_some(),
+            "Settings has an Updates section"
+        );
+        assert!(
+            rt.find("install-update").is_none(),
+            "no install button until the launch check flags an update"
+        );
+    }
+
+    #[test]
+    fn settings_offers_install_when_update_available() {
+        let mut s = settings_state(&[], &[]);
+        s.update_available = true;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("install-update").is_some(),
+            "a flagged update offers Install & Restart"
+        );
     }
 
     #[test]

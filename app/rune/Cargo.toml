@@ -30,6 +30,10 @@ soul-player-host = { path = "../../crates/soul-player-host" }
 anyhow = "1"
 # Per-user config dir, to persist the watched-folder set across launches.
 dirs = "6"
+# Auto-update: checks GitHub Releases for a newer signed build and installs it.
+# The updater's own key (independent of OS code-signing) verifies each update.
+cargo-packager-updater = "0.2"
+semver = "1"
 
 # cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
 # installer today (SmartScreen nags); the signed updater + OS code-signing +
