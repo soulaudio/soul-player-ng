@@ -1,6 +1,6 @@
 //! Architecture boundary tests.
 //!
-//! The project rule (docs/ARCHITECTURE.md): **Tauri is just visualization; all
+//! The project rule (docs/ARCHITECTURE.md): **the UI is just visualization; all
 //! logic lives outside it.** `soul-player-backend` is the headless logic layer —
 //! it must never pull in a GUI/windowing stack, directly or transitively, so it
 //! stays reusable off the desktop (and, long-term, on firmware).
@@ -18,7 +18,17 @@ use std::process::Command;
 
 /// GUI / windowing crates that must never appear in the headless service's
 /// dependency closure. Mirrors `deny.toml`'s `[bans].deny`.
-const FORBIDDEN: &[&str] = &["tauri", "wry", "tao", "webkit2gtk", "gtk", "gtk3"];
+const FORBIDDEN: &[&str] = &[
+    "tauri",
+    "wry",
+    "tao",
+    "webkit2gtk",
+    "gtk",
+    "gtk3",
+    "rune",
+    "wgpu",
+    "winit",
+];
 
 #[test]
 fn headless_service_has_no_gui_dependencies() {

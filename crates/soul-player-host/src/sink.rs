@@ -1,6 +1,6 @@
 //! Audio sink selection for the desktop host: the real `CpalSink`, or a headless
 //! `NullSink` for device-free runs and unit tests. Mirrors the sink choice that
-//! previously lived in the Tauri crate's `actor.rs`/`offline.rs`.
+//! previously lived in the (now-removed) Tauri head's `actor.rs`/`offline.rs`.
 #![forbid(unsafe_code)]
 
 use std::sync::Arc;

@@ -11,9 +11,9 @@ description = "Headless desktop-player backend service (actor around soul-audio-
 workspace = true
 [features]
 default = []
-# Plan 4: derive `specta::Type` on the IPC DTOs for tauri-specta. Off by
-# default so the headless crate + root workspace gate stay pure (only the
-# app crate enables it).
+# Optional `specta::Type` derives on the DTOs for a binding generator. Unused
+# since the webview head was removed (the native Rune head binds the types
+# directly); kept off by default so the headless crate stays pure.
 specta = ["dep:specta"]
 
 [dependencies]

@@ -5,7 +5,7 @@
 //! pipeline**: each watched folder is scanned + baked to a `.soulidx` and read
 //! back through the no-alloc [`IndexReader`] (over an *owning* in-memory source —
 //! no leak, no on-disk cache), and the folders are aggregated into one browse by
-//! [`MultiCatalog`]. The surface the actor + Tauri commands consume
+//! [`MultiCatalog`]. The surface the actor + UI consume
 //! ([`scan`](Library::scan) / [`path_of`](Library::path_of) /
 //! [`duration_of`](Library::duration_of) / [`views`](Library::views)) is
 //! unchanged — only the backing store moved from an in-memory `CatalogInput` to
