@@ -94,11 +94,19 @@ jobs:
             libayatana-appindicator3-dev \
             libfuse2
 
+      # cargo-packager only *packages* a pre-built binary — it does not build
+      # one (its `--release` just selects the release-profile output). So build
+      # first, then package; from app/rune the pinned nightly is used.
+      - name: Build the release binary
+        working-directory: app/rune
+        run: cargo build --release
+
       - name: Package + sign
         working-directory: app/rune
         run: cargo packager --release -f ${{ matrix.format }}
 
       - name: Write updater sidecar
+        shell: bash # the default is PowerShell on Windows; this uses \ + mkdir -p
         run: |
           mkdir -p dist
           python .github/scripts/write-meta.py \
