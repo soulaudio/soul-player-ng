@@ -42,6 +42,8 @@ with a new key**, so rotate only with a plan (e.g. a one-time manual download).
 ### Disable / env
 
 - `SOUL_PLAYER_NO_UPDATE=1` turns the check off (the e2e harness sets it).
+- `SOUL_PLAYER_UPDATE_ENDPOINT=<url>` overrides the manifest URL — for a
+  self-hosted update server, and how the updater tests point at a local one.
 - Debug builds never check (no matching published release).
 
 ## Cutting a release
