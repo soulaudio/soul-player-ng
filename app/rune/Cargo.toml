@@ -28,3 +28,5 @@ debug = 0
 rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830", features = ["native-file-dialog"] }
 soul-player-host = { path = "../../crates/soul-player-host" }
 anyhow = "1"
+# Per-user config dir, to persist the watched-folder set across launches.
+dirs = "6"

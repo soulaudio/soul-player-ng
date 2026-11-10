@@ -9,7 +9,7 @@ use rune::tok::type_;
 use rune::{El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
 
 use crate::theme::Palette;
-use crate::{State, apply_watch};
+use crate::{State, apply_and_save};
 
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
@@ -36,7 +36,7 @@ fn add_source_button(p: &Palette) -> El {
                     if let Ok(Some(path)) = result
                         && let Ok(up) = s.host.add_folder(&path)
                     {
-                        apply_watch(s, up);
+                        apply_and_save(s, up);
                     }
                 },
             );
@@ -69,7 +69,7 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
             .child(text("✕").color(p.text_secondary))
             .on_press(move |st: &mut State| {
                 if let Ok(up) = st.host.remove_folder(&remove_for) {
-                    apply_watch(st, up);
+                    apply_and_save(st, up);
                 }
             }),
     )
