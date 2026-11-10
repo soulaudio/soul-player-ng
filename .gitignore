@@ -14,6 +14,10 @@
 # key is embedded in the app. Keep every private key out of git.
 /.signing/
 *.key
+*.key.pub
+
+# Obsolete Tauri-era updater keypair (Tauri was removed) — keep the whole dir out.
+/.tauri/
 
 # Agent / tooling scratch (Claude worktrees, Playwright MCP) — never commit.
 /.claude/
