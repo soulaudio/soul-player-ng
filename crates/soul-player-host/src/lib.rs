@@ -44,6 +44,11 @@ struct Inner {
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
 /// on first playback), the current library, and an event fan-out.
+///
+/// `Clone` shares the same underlying player (it's an `Arc` handle) — a UI head
+/// holds several clones (one per subscriber / init closure) that all drive one
+/// actor.
+#[derive(Clone)]
 pub struct PlayerHandle {
     inner: Arc<Inner>,
 }

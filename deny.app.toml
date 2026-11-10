@@ -1,8 +1,8 @@
-# cargo-deny policy for the TAURI APP workspace (`app/tauri/src-tauri`). Identical to
-# the root `deny.toml` minus the "no GUI crates" ban — the app is the one place
-# Tauri/wry/tao legitimately live (see docs/ARCHITECTURE.md). Advisory (CVE)
-# scanning is owned by the `cargo audit` job; this gate enforces license
-# compliance, dependency-source pinning, and ban rules across the feature graph.
+# cargo-deny policy for the Rune UI head workspace (`app/rune`). Identical to the
+# root `deny.toml` minus the "no GUI crates" ban — the UI head is the one place
+# wgpu/winit and the `rune` git dep legitimately live (see docs/ARCHITECTURE.md).
+# Advisory (CVE) scanning is owned by the `cargo audit` job; this gate enforces
+# license compliance, dependency-source pinning, and ban rules across the graph.
 
 [licenses]
 version = 2
@@ -32,4 +32,9 @@ wildcards = "allow"
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-allow-git = ["https://github.com/soulaudio/soul-audio-core"]
+allow-git = [
+  "https://github.com/soulaudio/soul-audio-core",
+  # The Rune UI framework is consumed as a pinned git rev (pre-release; not on
+  # crates.io) — see docs/superpowers/specs/2026-11-10-rune-head-migration.md.
+  "https://github.com/anomalyco/rune",
+]

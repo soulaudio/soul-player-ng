@@ -1,6 +1,6 @@
-# Applies to both workspaces in this repo (the service crate here and the
-# isolated Tauri app under app/tauri/src-tauri) — cargo discovers config by directory
-# ancestry, so this root file governs nested workspaces too.
+# Applies to the repo's workspaces (the service crate here, the host, and the
+# Rune UI head under app/rune) — cargo discovers config by directory ancestry,
+# so this root file governs nested workspaces too.
 
 [env]
 # soul-audio-core's by-value `OwnedDecoder`/`AnyDecoder` enum is large (sized by
