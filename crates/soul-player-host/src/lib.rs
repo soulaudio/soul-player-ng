@@ -5,7 +5,7 @@
 
 mod sink;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use soul_player_backend::{AudioPlayer, Library, cover_bytes};
@@ -17,11 +17,29 @@ pub use soul_player_backend::{
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
 
+/// The result of changing the watched-folder set: the aggregated track views
+/// across every *reachable* folder, plus the folders that were configured but
+/// currently **unavailable** (missing / unmounted / unreadable). Unavailable
+/// folders stay in the watched set and re-aggregate automatically once they come
+/// back — the waist never drops a folder just because it is momentarily offline
+/// (the "don't wipe the library when a drive is unplugged" rule that every mature
+/// player follows).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct WatchUpdate {
+    /// Aggregated views across the reachable folders, in the library's order.
+    pub views: Vec<TrackView>,
+    /// Configured folders that were unreachable on this scan (kept in the set).
+    pub unavailable: Vec<PathBuf>,
+}
+
 struct Inner {
     mode: SinkMode,
     player: Mutex<Option<AudioPlayer>>,
     library: Mutex<Option<Arc<Library>>>,
     subscribers: Mutex<Vec<Subscriber>>,
+    /// The configured watched folders (deduped, in order), including any that are
+    /// currently unavailable — so a folder is never lost to a transient outage.
+    folders: Mutex<Vec<PathBuf>>,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -57,6 +75,7 @@ impl PlayerHandle {
                 player: Mutex::new(None),
                 library: Mutex::new(None),
                 subscribers: Mutex::new(Vec::new()),
+                folders: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -73,6 +92,64 @@ impl PlayerHandle {
         let ids: Vec<u32> = views.iter().map(|v| v.id).collect();
         self.send(Command::PlayContext { ids, start: 0 });
         Ok(views)
+    }
+
+    /// Replace the watched-folder set: re-scan every **reachable** folder,
+    /// aggregate them into one library (compound `(source, local)` ids), and swap
+    /// it in so [`views`](Self::views) / [`art`](Self::art) reflect the union.
+    ///
+    /// Robustness follows what mature players do with an offline location
+    /// (foobar2000 "Error!", MusicBee ignore-removable, Roon "storage offline",
+    /// Navidrome keep-missing): a watched root that is not a readable directory is
+    /// **skipped** (checked at the ROOT, never by purging individual files), kept
+    /// in the set so it re-aggregates when it returns, and reported in
+    /// [`WatchUpdate::unavailable`]. An empty or all-unavailable set yields an
+    /// empty library, not an error.
+    ///
+    /// Does **not** change playback — managing what is watched is separate from
+    /// what is playing; re-scanning re-bakes, so compound ids can shift and the
+    /// caller should re-queue from the returned views if it wants.
+    pub fn set_folders(&self, roots: &[PathBuf]) -> anyhow::Result<WatchUpdate> {
+        // Dedup, preserving order.
+        let mut set: Vec<PathBuf> = Vec::with_capacity(roots.len());
+        for r in roots {
+            if !set.contains(r) {
+                set.push(r.clone());
+            }
+        }
+        // Partition on ROOT availability — a watched root that isn't a readable
+        // directory is treated as temporarily gone, not purged.
+        let (available, unavailable): (Vec<PathBuf>, Vec<PathBuf>) =
+            set.iter().cloned().partition(|r| r.is_dir());
+
+        let lib = Arc::new(Library::scan_many(&available)?);
+        let views = lib.views();
+        self.set_library(lib);
+        *self.inner.folders.lock().expect("folders mutex") = set;
+        Ok(WatchUpdate { views, unavailable })
+    }
+
+    /// Add `dir` to the watched set (no-op if already watched) and re-aggregate.
+    pub fn add_folder(&self, dir: &Path) -> anyhow::Result<WatchUpdate> {
+        let mut set = self.watched_folders();
+        let dir = dir.to_path_buf();
+        if !set.contains(&dir) {
+            set.push(dir);
+        }
+        self.set_folders(&set)
+    }
+
+    /// Remove `dir` from the watched set (no-op if not watched) and re-aggregate.
+    pub fn remove_folder(&self, dir: &Path) -> anyhow::Result<WatchUpdate> {
+        let mut set = self.watched_folders();
+        set.retain(|p| p != dir);
+        self.set_folders(&set)
+    }
+
+    /// The configured watched folders, in order, including any currently
+    /// unavailable (so a folder is never lost to a transient outage).
+    pub fn watched_folders(&self) -> Vec<PathBuf> {
+        self.inner.folders.lock().expect("folders mutex").clone()
     }
 
     /// Register an event handler. Called on every backend event (Tick ~8 Hz +
@@ -245,5 +322,139 @@ mod tests {
             }
         }
         assert!(saw_playing, "never observed track 0 playing via subscribe");
+    }
+
+    // --- multi-source watched folders ---
+
+    fn folder_with(name: &str, wavs: &[&str]) -> tempfile::TempDir {
+        let d = tempfile::Builder::new().prefix(name).tempdir().unwrap();
+        for w in wavs {
+            std::fs::write(d.path().join(w), wav(48_000, 96_000)).unwrap();
+        }
+        d
+    }
+
+    #[test]
+    fn set_folders_aggregates_multiple_sources() {
+        let a = folder_with("src_a", &["a1.wav"]);
+        let b = folder_with("src_b", &["b1.wav", "b2.wav"]);
+
+        let h = PlayerHandle::offline();
+        let up = h
+            .set_folders(&[a.path().to_path_buf(), b.path().to_path_buf()])
+            .unwrap();
+        assert_eq!(up.views.len(), 3, "1 from a + 2 from b aggregate");
+        assert!(up.unavailable.is_empty());
+        assert_eq!(
+            h.watched_folders(),
+            vec![a.path().to_path_buf(), b.path().to_path_buf()]
+        );
+        assert_eq!(h.views().len(), 3, "views() reflects the union");
+    }
+
+    #[test]
+    fn set_folders_skips_unavailable_and_keeps_them_for_self_heal() {
+        let a = folder_with("src_ok", &["a.wav"]);
+        let missing = a.path().join("does-not-exist");
+
+        let h = PlayerHandle::offline();
+        let up = h
+            .set_folders(&[a.path().to_path_buf(), missing.clone()])
+            .unwrap();
+        assert_eq!(up.views.len(), 1, "only the reachable folder scanned");
+        assert_eq!(
+            up.unavailable,
+            vec![missing.clone()],
+            "the missing root is reported"
+        );
+        // Kept in the set so it re-aggregates when it returns — never dropped.
+        assert_eq!(h.watched_folders(), vec![a.path().to_path_buf(), missing]);
+    }
+
+    #[test]
+    fn all_unavailable_yields_empty_library_not_error() {
+        let base = tempfile::tempdir().unwrap();
+        let m1 = base.path().join("gone1");
+        let m2 = base.path().join("gone2");
+        let h = PlayerHandle::offline();
+        let up = h.set_folders(&[m1.clone(), m2.clone()]).unwrap();
+        assert!(up.views.is_empty());
+        assert_eq!(up.unavailable, vec![m1.clone(), m2.clone()]);
+        assert_eq!(h.watched_folders(), vec![m1, m2]);
+    }
+
+    #[test]
+    fn add_and_remove_folder_reaggregate() {
+        let a = folder_with("add_a", &["a.wav"]);
+        let b = folder_with("add_b", &["b.wav"]);
+
+        let h = PlayerHandle::offline();
+        h.set_folders(&[a.path().to_path_buf()]).unwrap();
+        assert_eq!(h.views().len(), 1);
+
+        let up = h.add_folder(b.path()).unwrap();
+        assert_eq!(up.views.len(), 2, "b's track added");
+        assert_eq!(h.watched_folders().len(), 2);
+
+        let up = h.remove_folder(a.path()).unwrap();
+        assert_eq!(up.views.len(), 1, "only b remains");
+        assert_eq!(h.watched_folders(), vec![b.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn set_folders_dedups_repeated_roots() {
+        let a = folder_with("dedup", &["a.wav"]);
+        let h = PlayerHandle::offline();
+        let up = h
+            .set_folders(&[a.path().to_path_buf(), a.path().to_path_buf()])
+            .unwrap();
+        assert_eq!(up.views.len(), 1, "a duplicate root is not scanned twice");
+        assert_eq!(h.watched_folders(), vec![a.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn plays_a_track_located_on_a_second_source() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        // Two sources; the 2nd track in the aggregated order belongs to source b
+        // (untagged WAVs tie on sort key, so order is (source, local): a then b).
+        let a = folder_with("play_a", &["a.wav"]);
+        let b = folder_with("play_b", &["b.wav"]);
+
+        let h = PlayerHandle::offline();
+        let (tx, rx) = mpsc::channel::<Event>();
+        h.subscribe(move |ev| {
+            let _ = tx.send(ev);
+        });
+
+        let up = h
+            .set_folders(&[a.path().to_path_buf(), b.path().to_path_buf()])
+            .unwrap();
+        assert_eq!(up.views.len(), 2);
+        let ids: Vec<u32> = up.views.iter().map(|v| v.id).collect();
+        let second = ids[1];
+        // Start at index 1 → play the source-b track: the actor's loader must
+        // resolve its compound id back to source b's root and decode the file.
+        h.send(Command::PlayContext {
+            ids: ids.clone(),
+            start: 1,
+        });
+
+        let deadline = Duration::from_secs(5);
+        let mut saw = false;
+        while let Ok(ev) = rx.recv_timeout(deadline) {
+            if let Event::Tick(t) = ev
+                && t.now_playing_id == Some(second)
+                && t.state == PlayState::Playing
+            {
+                saw = true;
+                break;
+            }
+        }
+        assert!(
+            saw,
+            "never observed the second-source track play (cross-source locate+decode)"
+        );
     }
 }

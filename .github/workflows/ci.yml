@@ -48,6 +48,7 @@ jobs:
         with:
           workspaces: |
             .
+            crates/soul-player-host
             app/tauri/src-tauri
 
       # `generate_context!()` reads `frontendDist` (../dist) at COMPILE time, so a
@@ -58,19 +59,22 @@ jobs:
           mkdir -p app/tauri/dist
           printf '<!doctype html><title>soul-player</title><div id="app"></div>' > app/tauri/dist/index.html
 
-      - name: Format (service + app)
+      - name: Format (service + host + app)
         run: |
           cargo fmt --all -- --check
+          cargo fmt --manifest-path crates/soul-player-host/Cargo.toml --all -- --check
           cargo fmt --manifest-path app/tauri/src-tauri/Cargo.toml --all -- --check
 
-      - name: Clippy (service + app)
+      - name: Clippy (service + host + app)
         run: |
           cargo clippy --all-targets -- -D warnings
+          cargo clippy --manifest-path crates/soul-player-host/Cargo.toml --all-targets -- -D warnings
           cargo clippy --manifest-path app/tauri/src-tauri/Cargo.toml --all-targets -- -D warnings
 
-      - name: Test (service + app)
+      - name: Test (service + host + app)
         run: |
           cargo test
+          cargo test --manifest-path crates/soul-player-host/Cargo.toml
           cargo test --manifest-path app/tauri/src-tauri/Cargo.toml
 
   frontend:
