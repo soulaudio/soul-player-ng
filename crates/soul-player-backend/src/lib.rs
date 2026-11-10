@@ -20,4 +20,5 @@ pub use actor::AudioPlayer;
 pub use art::{Cover, cover_bytes};
 pub use driver::{ServicePlayer, apply_command, project_queue, project_tick};
 pub use library::Library;
+pub use soul_audio_catalog::BrowseAxis;
 pub use types::{Command, Event, PlayState, QueueState, RepeatMode, Tick, TrackView};
