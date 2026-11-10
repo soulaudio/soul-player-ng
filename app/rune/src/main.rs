@@ -282,6 +282,15 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Single-instance (release builds only — dev can run several for comparison):
+    // a second launch focuses the running window (and forwards its links to
+    // `on_open_url`) instead of opening a duplicate that would fight over the
+    // audio device. Returns false when another instance handled this launch →
+    // exit without opening a window. macOS/other platforms: always true.
+    if !cfg!(debug_assertions) && !rune::single_instance("co.datadir.soulplayer") {
+        return Ok(());
+    }
+
     let host = PlayerHandle::new();
     // The dev/e2e harness loads a single folder from the env; otherwise restore
     // the persisted watched-folder set so Sources survive a restart.
@@ -305,7 +314,20 @@ fn main() -> anyhow::Result<()> {
             view,
         )
     };
-    let app = App::new(spec).init(move || State::new(init_host.clone()));
+    let app = App::new(spec)
+        // System-wide transport hotkeys (fire even when the window is unfocused).
+        // Dedicated hardware media keys + OS "Now Playing" controls are a separate
+        // integration (souvlaki) — these are user-reachable chords in the meantime.
+        .global_shortcut("ctrl+alt+space", |s: &mut State, _: &mut Tx| {
+            s.host.send(Command::TogglePlay)
+        })
+        .global_shortcut("ctrl+alt+right", |s: &mut State, _: &mut Tx| {
+            s.host.send(Command::Next)
+        })
+        .global_shortcut("ctrl+alt+left", |s: &mut State, _: &mut Tx| {
+            s.host.send(Command::Prev)
+        })
+        .init(move || State::new(init_host.clone()));
     let ah = app.handle();
     // Launch-time update check (release builds only): off-thread so it never
     // blocks startup, and it only *flags* an available update — Settings offers
