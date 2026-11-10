@@ -5,5 +5,6 @@ pub mod library;
 pub mod open_folder;
 pub mod player;
 pub mod queue;
+pub mod settings;
 pub mod sidebar;
 pub mod slider;

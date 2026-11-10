@@ -7,13 +7,24 @@
 //! Day/Night-themed track list (`views::library`) filling the rest.
 #![forbid(unsafe_code)]
 
+use std::path::PathBuf;
+
 use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
-use soul_player_host::{Command, Event, PlayState, PlayerHandle, RepeatMode, TrackView};
+use soul_player_host::{
+    Command, Event, PlayState, PlayerHandle, RepeatMode, TrackView, WatchUpdate,
+};
 
 mod theme;
 mod views;
 
 use views::player::ArtCache;
+
+/// Which page the main area shows. The sidebar switches it; `view` dispatches on it.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Route {
+    Library,
+    Settings,
+}
 
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
@@ -29,6 +40,12 @@ struct State {
     up_next: Vec<u32>,
     context_pos: u32,
     context_len: u32,
+    /// Current page (Library vs Settings).
+    route: Route,
+    /// The watched-folder set (from the host), rendered by Settings → Sources;
+    /// `unavailable` are configured roots currently unreachable (shown "offline").
+    watched_folders: Vec<PathBuf>,
+    unavailable: Vec<PathBuf>,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -37,6 +54,7 @@ struct State {
 impl State {
     fn new(host: PlayerHandle) -> Self {
         let library = host.views();
+        let watched_folders = host.watched_folders();
         Self {
             host,
             library,
@@ -50,6 +68,9 @@ impl State {
             up_next: Vec::new(),
             context_pos: 0,
             context_len: 0,
+            route: Route::Library,
+            watched_folders,
+            unavailable: Vec::new(),
             art: ArtCache::new(),
         }
     }
@@ -83,6 +104,15 @@ impl State {
     }
 }
 
+/// Fold a `WatchUpdate` (from add/remove/set-folders) into UI state: refresh the
+/// library + Sources list. Playback is deliberately left untouched — managing
+/// what's watched is separate from what's playing (the host's own contract).
+pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
+    s.library = up.views;
+    s.watched_folders = s.host.watched_folders();
+    s.unavailable = up.unavailable;
+}
+
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let p = theme::palette(cx.system_dark());
     let scale = cx.env().scale;
@@ -93,12 +123,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .fill(p.bg)
         .child(views::sidebar::sidebar(s, &p, cx, scale))
-        .child(
-            col()
-                .grow(1.0)
-                .min_h(0.0)
-                .child(views::library::track_list(s, &p).grow(1.0)),
-        )
+        .child(col().grow(1.0).min_h(0.0).child(match s.route {
+            Route::Library => views::library::track_list(s, &p).grow(1.0),
+            Route::Settings => views::settings::settings_page(s, &p).grow(1.0),
+        }))
 }
 
 /// `AppSpec::setup`: wires the app's `Waker` into the cover-art cache
@@ -210,6 +238,121 @@ mod tests {
             rt.find("open-folder").is_some(),
             "an empty library should offer an Open Folder button"
         );
+    }
+
+    #[test]
+    fn new_state_starts_on_library_with_host_watched_folders() {
+        let s = State::new(PlayerHandle::offline());
+        assert!(matches!(s.route, Route::Library));
+        assert!(s.watched_folders.is_empty());
+        assert!(s.unavailable.is_empty());
+    }
+
+    #[test]
+    fn apply_watch_folds_a_watchupdate_into_state() {
+        let host = PlayerHandle::offline();
+        let mut s = State::new(host);
+        assert!(s.watched_folders.is_empty());
+        // add_folder scans the committed testdata (real audio) and returns the
+        // WatchUpdate the UI folds in.
+        let up = s.host.add_folder(&testdata_dir()).expect("add_folder");
+        apply_watch(&mut s, up);
+        assert_eq!(s.watched_folders, vec![testdata_dir()]);
+        assert!(!s.library.is_empty(), "testdata scanned into the library");
+        assert!(s.unavailable.is_empty());
+    }
+
+    /// A `State` routed to Settings with a given watched set + unavailable list.
+    fn settings_state(folders: &[PathBuf], unavailable: &[PathBuf]) -> State {
+        let host = PlayerHandle::offline();
+        if !folders.is_empty() {
+            let _ = host.set_folders(folders);
+        }
+        let mut s = State::new(host);
+        s.route = Route::Settings;
+        s.unavailable = unavailable.to_vec();
+        s
+    }
+
+    #[test]
+    fn settings_route_shows_sources_section_and_add_button() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("sources").is_some(),
+            "Settings shows a Sources section"
+        );
+        assert!(rt.find("add-source").is_some(), "Sources offers Add Source");
+    }
+
+    #[test]
+    fn sources_list_renders_a_watched_folder_with_remove() {
+        let dir = testdata_dir();
+        let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(
+            settings_state(std::slice::from_ref(&dir), &[]),
+            view,
+            (1100.0, 720.0),
+            env,
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find(&format!("source-{name}")).is_some(),
+            "the watched folder renders"
+        );
+        assert!(
+            rt.find(&format!("remove-{name}")).is_some(),
+            "with a remove control"
+        );
+    }
+
+    #[test]
+    fn unavailable_folder_shows_offline_badge() {
+        let missing = testdata_dir().join("does-not-exist");
+        let name = missing.file_name().unwrap().to_string_lossy().to_string();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(
+            settings_state(
+                std::slice::from_ref(&missing),
+                std::slice::from_ref(&missing),
+            ),
+            view,
+            (1100.0, 720.0),
+            env,
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find(&format!("offline-{name}")).is_some(),
+            "an unavailable source shows the offline badge"
+        );
+    }
+
+    #[test]
+    fn sidebar_has_library_and_settings_nav() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(
+            State::new(PlayerHandle::offline()),
+            view,
+            (1100.0, 720.0),
+            env,
+        );
+        rt.frame(0.0);
+        assert!(rt.find("nav-library").is_some());
+        assert!(rt.find("nav-settings").is_some());
     }
 
     /// End to end: `AppSpec::on_key`'s Space shortcut (set on the `Runtime`
