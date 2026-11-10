@@ -26,7 +26,14 @@ fn library_of(names: &[&str]) -> tempfile::TempDir {
     dir
 }
 
-const TIMEOUT: Duration = Duration::from_secs(8);
+/// Generous on purpose so a Tick-wait never flakes under parallel CI load. Each
+/// of these e2e tests runs its own actor + ~8 Hz event pump; running all of them
+/// (plus the other test binaries) concurrently can starve a pump thread enough to
+/// delay the awaited Tick well past a few seconds. The Tick is always emitted — we
+/// only have to wait for it — and a passing test gets there in well under a
+/// second, so this ceiling only bites a genuinely stuck run. (Previously 8 s,
+/// which intermittently failed `folder_switch_loads_the_new_library` in CI.)
+const TIMEOUT: Duration = Duration::from_secs(30);
 
 #[test]
 fn per_format_durations_are_reported() {
