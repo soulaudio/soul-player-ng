@@ -401,7 +401,10 @@ pub fn player_panel(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     col()
         .key("player")
         .w_full()
-        .fill(p.card)
+        // No own fill: the sidebar already paints `p.card` behind us. A full-width
+        // fill here would overpaint the sidebar's 1 px right border along this
+        // band, breaking the divider into "only beside some containers" — so we
+        // stay transparent and let the one continuous border show through.
         // NowPlayingPanel (old app's `p-4`): the uppercase eyebrow then the
         // cover + title/artist row, `mb-3` apart.
         .child(

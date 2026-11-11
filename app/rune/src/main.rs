@@ -788,12 +788,16 @@ mod tests {
             "the grabber is 56 px tall, got {}",
             pill[3]
         );
-        // Centred horizontally within the rail.
-        let (rail_cx, _) = rt.find("sidebar-collapsed").unwrap();
-        let (pill_cx, _) = rt.find("grabber").unwrap();
+        // Centred within the rail on BOTH axes (horizontal and vertical).
+        let (rail_cx, rail_cy) = rt.find("sidebar-collapsed").unwrap();
+        let (pill_cx, pill_cy) = rt.find("grabber").unwrap();
         assert!(
             (pill_cx - rail_cx).abs() < 0.5,
-            "the grabber is centred in the rail"
+            "the grabber is centred horizontally in the rail"
+        );
+        assert!(
+            (pill_cy - rail_cy).abs() < 1.0,
+            "the grabber is centred vertically in the rail (not pinned to the top)"
         );
         // The rail itself offers the resize cursor (old app's `cursor-ew-resize`),
         // sampled above the pill so the pointer is over bare rail.
