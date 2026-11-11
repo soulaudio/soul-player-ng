@@ -188,9 +188,17 @@ pub fn resize_handle(p: &Palette) -> El {
         })
 }
 
+/// The width the collapsed rail re-opens to when a drag on it is released: the
+/// dragged-out width if the gesture cleared the threshold, otherwise the saved
+/// width (a click, or a drag too small to count, just restores what you had).
+/// Pure, so the rail's release handler and its test share exactly one rule.
+fn reopen_width(dx: f32, saved: f32) -> f32 {
+    resize_to(STRIP_WIDTH, dx).unwrap_or(saved)
+}
+
 /// The sidebar collapsed to a thin rail with a centred grabber pill (the old
-/// app's `CollapsedSidebarStrip`). Clicking it — or dragging the adjacent
-/// [`resize_handle`] back out — re-opens the sidebar to its saved width.
+/// app's `CollapsedSidebarStrip`). Clicking *or* dragging the rail re-opens the
+/// sidebar; a drag re-opens to the dragged-out width, a click to the saved one.
 pub fn collapsed_strip(p: &Palette) -> El {
     col()
         .key("sidebar-collapsed")
@@ -198,13 +206,24 @@ pub fn collapsed_strip(p: &Palette) -> El {
         .h_full()
         .fill(p.card)
         .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
-        .align(Align::Center)
-        .center_y()
+        // `center()` centres the pill on BOTH axes; `center_y()`/`align(Center)`
+        // only touch the cross axis (horizontal here), which left the pill pinned
+        // to the top.
+        .center()
         .cursor(Cursor::ResizeColumn)
         .hover(p.fg.alpha(0.06))
-        .on_press(move |s: &mut State| {
-            s.sidebar_collapsed = false;
-            config::save_sidebar(s.sidebar_width, false);
+        // Re-open on release. A click (no travel) restores the saved width; a
+        // drag-out re-opens to where it was dragged. We decide once, on `Up`,
+        // because opening swaps this rail out for the full sidebar — which ends
+        // the drag capture, so we can't live-follow it the way the always-mounted
+        // `resize_handle` does.
+        .on_drag(move |s: &mut State, d: &mut Drag, _tx| {
+            if matches!(d.phase, Phase::Up) {
+                let w = reopen_width(d.dx, s.sidebar_width);
+                s.sidebar_width = w;
+                s.sidebar_collapsed = false;
+                config::save_sidebar(w, false);
+            }
         })
         .child(
             // The grabber pill, `foreground/15%` as the old app's
@@ -239,5 +258,15 @@ mod tests {
         // From the collapsed rail, dragging back out past the threshold re-opens.
         assert_eq!(resize_to(STRIP_WIDTH, 50.0), None); // 62 < 200, still shut
         assert_eq!(resize_to(STRIP_WIDTH, 250.0), Some(262.0)); // 262 ≥ 200, opens
+    }
+
+    #[test]
+    fn reopen_restores_saved_on_a_click_and_the_dragged_width_on_a_drag() {
+        // A click (no travel) or a too-small drag re-opens to the saved width...
+        assert_eq!(reopen_width(0.0, DEFAULT_WIDTH), DEFAULT_WIDTH);
+        assert_eq!(reopen_width(50.0, 320.0), 320.0); // 12 + 50 = 62 < 200
+        // ...a real drag-out re-opens to the dragged width, clamped to the range.
+        assert_eq!(reopen_width(250.0, DEFAULT_WIDTH), 262.0); // 12 + 250
+        assert_eq!(reopen_width(999.0, DEFAULT_WIDTH), MAX_WIDTH); // clamps
     }
 }
