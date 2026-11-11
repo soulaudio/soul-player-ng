@@ -135,15 +135,30 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, p: &Palette, scale: f32) -> 
 }
 
 fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) -> El {
-    let title = now
-        .and_then(|t| t.title.clone())
-        .unwrap_or_else(|| t!("player.nothingPlaying").to_string());
-    let artist = now.and_then(|t| t.artist.clone()).unwrap_or_default();
+    let Some(track) = now else {
+        // Empty state, as the old app's NowPlayingPanel: a larger muted cover and
+        // "nothing playing", no title/artist row and no heart.
+        return row()
+            .key("now-playing")
+            .gap(12.0)
+            .center_y()
+            .child(cover(s, None, 48.0, p, scale))
+            .child(
+                text(t!("player.nothingPlaying").to_string())
+                    .font(type_::BODY)
+                    .color(p.text_secondary),
+            );
+    };
+    let title = track
+        .title
+        .clone()
+        .unwrap_or_else(|| t!("library.unknown").to_string());
+    let artist = track.artist.clone().unwrap_or_default();
     row()
         .key("now-playing")
         .gap(10.0)
         .center_y()
-        .child(cover(s, now.map(|t| t.id), COVER_SIZE, p, scale))
+        .child(cover(s, Some(track.id), COVER_SIZE, p, scale))
         .child(
             col()
                 .key("now-playing-text")
