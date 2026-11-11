@@ -132,7 +132,7 @@ pub fn project_queue<K: Sink, D: SeekableDecoder>(player: &ServicePlayer<K, D>) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{ConstDecoder, NullSink};
+    use crate::testutil::{CapturingSink, ConstDecoder, NullSink};
     use crate::types::RepeatMode;
     use soul_audio_control::Player;
     use soul_audio_core::{Deck, Quality};
@@ -303,5 +303,198 @@ mod tests {
         apply_command(&mut p, Command::Goto(2), 0).unwrap();
         drive(&mut p, 3);
         assert_eq!(p.current(), Some(2));
+    }
+
+    // --- output-stage effects (via a CapturingSink) ------------------------
+    // The tests above assert projected STATE; these assert the actual effect a
+    // command has on the audio the deck writes — the deterministic, device-free
+    // mirror of what a listener hears (no cpal, so the architecture gate holds).
+
+    fn cap_player() -> ServicePlayer<CapturingSink, ConstDecoder> {
+        let deck = Deck::new(CapturingSink::new(RATE, 2), Quality::Hq);
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        Player::new(engine, u64::from(RATE))
+    }
+
+    /// Drive the open/pump loop `cycles` times, providing a `ConstDecoder` per
+    /// opened id via `mk` (id → `(total_frames, const_value)`). Deterministic.
+    fn drive_cap(
+        p: &mut ServicePlayer<CapturingSink, ConstDecoder>,
+        cycles: usize,
+        mk: impl Fn(u32) -> (u64, i32),
+    ) {
+        for _ in 0..cycles {
+            while let Some(id) = p.poll_open() {
+                let (total, value) = mk(id);
+                p.provide(id, ConstDecoder::new(RATE, 2, total, value))
+                    .unwrap();
+            }
+            let _ = p.pump().unwrap();
+        }
+    }
+
+    #[test]
+    fn pause_halts_sink_output() {
+        let mut p = cap_player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        drive_cap(&mut p, 5, |_| (FRAMES, 1_000_000)); // 5 blocks << 4000-frame track
+        let before = p.deck().sink().written.len();
+        assert!(before > 0, "played some audio before pausing");
+
+        apply_command(&mut p, Command::Pause, 0).unwrap();
+        drive_cap(&mut p, 20, |_| (FRAMES, 1_000_000));
+        assert_eq!(
+            p.deck().sink().written.len(),
+            before,
+            "no samples are written to the sink while paused"
+        );
+        assert_eq!(project_tick(&p, 1.0).state, PlayState::Paused);
+    }
+
+    #[test]
+    fn stop_halts_sink_output_and_reports_stopped() {
+        let mut p = cap_player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        drive_cap(&mut p, 5, |_| (FRAMES, 1_000_000));
+        let before = p.deck().sink().written.len();
+        assert!(before > 0);
+
+        apply_command(&mut p, Command::Stop, 0).unwrap();
+        drive_cap(&mut p, 20, |_| (FRAMES, 1_000_000));
+        assert_eq!(
+            p.deck().sink().written.len(),
+            before,
+            "no samples are written to the sink after stop"
+        );
+        assert_eq!(project_tick(&p, 1.0).state, PlayState::Stopped);
+    }
+
+    #[test]
+    fn set_volume_attenuates_sink_output() {
+        const V: i32 = 4_000_000; // within canonical 24-bit (±2^23 after norm)
+        let mut p = cap_player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        // Long track so it never ends; settle at the default full volume.
+        drive_cap(&mut p, 20, |_| (400_000, V));
+        let full = *p.deck().sink().written.last().unwrap();
+        assert!(full.abs() > 0, "non-silent at full volume");
+
+        // Quarter volume, then drive long enough for the per-sample gain ramp to
+        // settle (0.99^n → 0 well within 40 blocks).
+        apply_command(&mut p, Command::SetVolume(0.25), 0).unwrap();
+        drive_cap(&mut p, 40, |_| (400_000, V));
+        let quiet = *p.deck().sink().written.last().unwrap();
+
+        // The output-stage gain is the ONLY thing changed, so the ratio is the
+        // volume ratio regardless of the deck's normalization factor.
+        let ratio = f64::from(quiet) / f64::from(full);
+        assert!(
+            (ratio - 0.25).abs() < 0.03,
+            "volume 0.25 should attenuate output to ~0.25× (got {ratio:.3})"
+        );
+    }
+
+    #[test]
+    fn gapless_track_change_keeps_output_contiguous() {
+        let mut p = cap_player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0, 1],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        // Track 0 is a short 600-frame constant; it ends and must GAPLESSLY hand
+        // over to track 1 (a different constant) with no inserted silence/fade.
+        let mk = |id: u32| {
+            if id == 0 {
+                (600u64, 1_000)
+            } else {
+                (4_000u64, 2_000)
+            }
+        };
+        drive_cap(&mut p, 40, mk);
+
+        let ch0 = p.deck().sink().channel(0);
+        assert!(ch0.len() > 700, "played through track 0 into track 1");
+        // A natural (non-seek) track change never fades — only an explicit seek
+        // calls discard.
+        assert_eq!(
+            p.deck().sink().discards,
+            0,
+            "a gapless advance must not seek/fade the splice"
+        );
+
+        // Track 0 fills frames 0..600, track 1 fills 600.. — one clean transition,
+        // both sides non-silent, no gap. (Relative, so independent of the deck's
+        // normalization scale.)
+        let a = ch0[599];
+        let b = ch0[601];
+        assert!(a != 0 && b != 0, "neither side of the splice is silence");
+        assert!(
+            a != b,
+            "the track change lands exactly at track 0's 600-frame end"
+        );
+        assert!(
+            ch0[560..600].iter().all(|&s| s == a),
+            "track 0 plays steady up to its end"
+        );
+        assert!(
+            ch0[601..651].iter().all(|&s| s == b),
+            "track 1 plays steady from its start — contiguous, no gap"
+        );
+    }
+
+    #[test]
+    fn seek_clamps_at_track_bounds() {
+        let mut p = cap_player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        drive_cap(&mut p, 5, |_| (FRAMES, 1_000_000));
+
+        // A negative requested time clamps to the start.
+        apply_command(&mut p, Command::Seek { secs: -5.0 }, 0).unwrap();
+        assert_eq!(p.position_frames(), 0, "negative seek clamps to frame 0");
+
+        // A time far past the end clamps to the track's total frame count.
+        apply_command(&mut p, Command::Seek { secs: 1_000_000.0 }, 0).unwrap();
+        assert_eq!(
+            p.position_frames(),
+            FRAMES,
+            "over-seek clamps to the track end, not past it"
+        );
     }
 }
