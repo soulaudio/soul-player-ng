@@ -73,13 +73,27 @@ pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
         // Nav (old app's `p-4 pt-6`): just the page link — Settings lives in the
         // footer gear below, as the original.
-        .child(col().key("nav").px(16.0).pt(24.0).pb(16.0).child(nav_item(
-            "nav-library",
-            t!("nav.tracks").to_string(),
-            Route::Library,
-            s.route == Route::Library,
-            p,
-        )))
+        .child(
+            col()
+                .key("nav")
+                .px(16.0)
+                .pt(24.0)
+                .pb(16.0)
+                .child(nav_item(
+                    "nav-library",
+                    t!("nav.tracks").to_string(),
+                    Route::Library,
+                    s.route == Route::Library,
+                    p,
+                ))
+                .child(nav_item(
+                    "nav-albums",
+                    t!("nav.albums").to_string(),
+                    Route::Albums,
+                    s.route == Route::Albums,
+                    p,
+                )),
+        )
         .child(queue_section(s, p, scale))
         .child(player_panel(s, p, cx, scale))
         .child(settings_footer(s, p))

@@ -11,6 +11,13 @@ nav.tracks:
   zh: '曲目'
   cs: 'Skladby'
   ja: 'トラック'
+nav.albums:
+  en: 'Albums'
+  de: 'Alben'
+  es: 'Álbumes'
+  zh: '专辑'
+  cs: 'Alba'
+  ja: 'アルバム'
 
 player.nowPlaying:
   en: 'NOW PLAYING'

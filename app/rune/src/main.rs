@@ -71,6 +71,7 @@ pub(crate) fn set_locale_pref(s: &mut State, pref: &str) {
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Route {
     Library,
+    Albums,
     Settings,
 }
 
@@ -279,6 +280,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(views::sidebar::resize_handle(&p))
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
             Route::Library => views::library::track_list(s, &p).grow(1.0),
+            Route::Albums => views::albums::albums_page(s, &p, cx, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, &p).grow(1.0),
         }))
 }
@@ -352,6 +354,9 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 fn scene_settings(s: &mut State) {
     s.route = Route::Settings;
 }
+fn scene_albums(s: &mut State) {
+    s.route = Route::Albums;
+}
 fn scene_search(s: &mut State) {
     s.search = "aria".to_string();
 }
@@ -387,6 +392,7 @@ fn main() -> anyhow::Result<()> {
         on_key: Some(handle_key),
         scenes: &[
             ("settings", scene_settings),
+            ("albums", scene_albums),
             ("search", scene_search),
             ("no-match", scene_no_match),
         ],
