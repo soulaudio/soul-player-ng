@@ -6,3 +6,23 @@
 # Binary assets must not be line-ending-munged.
 *.png binary
 *.ico binary
+
+# Audio test fixtures (testdata/) are binary — never line-ending-normalized.
+*.wav binary
+*.flac binary
+*.mp3 binary
+*.mp2 binary
+*.mp1 binary
+*.aac binary
+*.m4a binary
+*.opus binary
+*.ogg binary
+*.oga binary
+*.mka binary
+*.webm binary
+*.wv binary
+*.caf binary
+*.aif binary
+*.aiff binary
+*.dsf binary
+*.dff binary
