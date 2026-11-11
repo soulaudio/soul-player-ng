@@ -11,7 +11,8 @@ use std::path::PathBuf;
 
 use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
 use soul_player_host::{
-    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, TrackView, WatchUpdate,
+    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, TrackView,
+    WatchUpdate,
 };
 
 mod config;
@@ -84,6 +85,12 @@ struct State {
     /// The output devices enumerated from the host at startup — the picker's
     /// choices. Empty on a host that exposes none (headless / no audio).
     output_devices: Vec<String>,
+    /// ReplayGain normalization mode (persisted), rendered by Settings →
+    /// ReplayGain; `Off` = no normalization.
+    replaygain_mode: ReplayGainMode,
+    /// ReplayGain preamp in dB (persisted), a constant offset on top of the mode's
+    /// gain. Rendered as a slider in Settings → ReplayGain.
+    replaygain_preamp: f32,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -116,6 +123,9 @@ impl State {
         // Enumerate the output devices once (computed before `host` is moved into
         // the struct) for the Settings → Output picker.
         let output_devices = host.output_devices();
+        // Restore the persisted ReplayGain choice (defaults: Off, 0 dB); main()
+        // has already pushed the same value to the host before the first spawn.
+        let (replaygain_mode, replaygain_preamp) = config::load_replaygain();
         Self {
             host,
             library,
@@ -140,6 +150,8 @@ impl State {
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
             output_devices,
+            replaygain_mode,
+            replaygain_preamp,
             art: ArtCache::new(),
             update_available: None,
             search: String::new(),
@@ -217,6 +229,23 @@ pub(crate) fn set_output_device(s: &mut State, name: Option<String>) {
     s.host.set_output_device(name);
 }
 
+/// Choose + persist the ReplayGain mode (used by the ReplayGain settings buttons).
+/// Updates the UI selection, writes the config, and tells the host — which applies
+/// it to the live actor immediately (and remembers it for the next session).
+pub(crate) fn set_replaygain_mode(s: &mut State, mode: ReplayGainMode) {
+    s.replaygain_mode = mode;
+    config::save_replaygain(mode, s.replaygain_preamp);
+    s.host.set_replay_gain(mode, s.replaygain_preamp);
+}
+
+/// Set + persist the ReplayGain preamp in dB (used by the preamp slider). Same
+/// store-persist-tell-host path as [`set_replaygain_mode`].
+pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
+    s.replaygain_preamp = preamp_db;
+    config::save_replaygain(s.replaygain_mode, preamp_db);
+    s.host.set_replay_gain(s.replaygain_mode, preamp_db);
+}
+
 /// Switch the library's sort order — re-fetches the current library's views in
 /// the chosen baked axis. Track ids are stable across axes (only the display +
 /// play-context order changes), so playback is undisturbed.
@@ -237,7 +266,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(views::sidebar::sidebar(s, &p, cx, scale))
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
             Route::Library => views::library::track_list(s, &p).grow(1.0),
-            Route::Settings => views::settings::settings_page(s, &p).grow(1.0),
+            Route::Settings => views::settings::settings_page(s, &p, cx).grow(1.0),
         }))
 }
 
@@ -332,6 +361,11 @@ fn main() -> anyhow::Result<()> {
     // the actor, so the first playback session already targets the chosen device
     // (empty / absent config = system default).
     host.set_output_device(config::load_output_device());
+    // Restore the persisted ReplayGain choice before any spawn, so the first
+    // playback session is already normalized (the host banks it and tells the
+    // actor on spawn).
+    let (rg_mode, rg_preamp) = config::load_replaygain();
+    host.set_replay_gain(rg_mode, rg_preamp);
     // The dev/e2e harness loads a single folder from the env; otherwise restore
     // the persisted watched-folder set so Sources survive a restart.
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
@@ -594,6 +628,23 @@ mod tests {
         assert!(rt.find("theme-system").is_some());
         assert!(rt.find("theme-light").is_some());
         assert!(rt.find("theme-dark").is_some());
+    }
+
+    #[test]
+    fn settings_shows_replaygain_section_with_modes_and_preamp() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("replaygain").is_some(),
+            "Settings has a ReplayGain section"
+        );
+        for key in ["rg-off", "rg-track", "rg-album", "rg-preamp"] {
+            assert!(rt.find(key).is_some(), "ReplayGain control {key} present");
+        }
     }
 
     #[test]

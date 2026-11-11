@@ -7,6 +7,8 @@
 
 use std::path::{Path, PathBuf};
 
+use soul_player_host::ReplayGainMode;
+
 /// `<config>/soul-player/sources.txt` — where the watched set is saved.
 pub fn sources_path() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("soul-player").join("sources.txt"))
@@ -126,6 +128,81 @@ fn save_device_to(path: &Path, name: Option<&str>) -> std::io::Result<()> {
     std::fs::write(path, body)
 }
 
+// --- ReplayGain preference ---
+
+/// `<config>/soul-player/replaygain.txt` — the persisted ReplayGain choice, two
+/// lines: the mode (`off`/`track`/`album`) then the preamp in dB (e.g.
+/// `"track\n3"`). A missing / unreadable / partial file falls back to the
+/// defaults (`Off`, `0.0`).
+pub fn replaygain_path() -> Option<PathBuf> {
+    Some(
+        dirs::config_dir()?
+            .join("soul-player")
+            .join("replaygain.txt"),
+    )
+}
+
+/// The saved `(mode, preamp_db)`, defaulting to `(Off, 0.0)`.
+pub fn load_replaygain() -> (ReplayGainMode, f32) {
+    replaygain_path()
+        .map(|p| load_rg_from(&p))
+        .unwrap_or((ReplayGainMode::Off, 0.0))
+}
+
+/// Persist the ReplayGain choice (best-effort — a failed write never breaks the UI).
+pub fn save_replaygain(mode: ReplayGainMode, preamp_db: f32) {
+    if let Some(p) = replaygain_path() {
+        let _ = save_rg_to(&p, mode, preamp_db);
+    }
+}
+
+/// Map a persisted mode string to the enum; anything unknown is `Off`.
+fn mode_from_str(s: &str) -> ReplayGainMode {
+    match s.trim() {
+        "track" => ReplayGainMode::Track,
+        "album" => ReplayGainMode::Album,
+        _ => ReplayGainMode::Off,
+    }
+}
+
+/// The on-disk token for a mode (the inverse of [`mode_from_str`]).
+fn mode_as_str(mode: ReplayGainMode) -> &'static str {
+    match mode {
+        ReplayGainMode::Off => "off",
+        ReplayGainMode::Track => "track",
+        ReplayGainMode::Album => "album",
+    }
+}
+
+/// Read `(mode, preamp)` from `path` (the testable core): line 1 = mode, line 2 =
+/// preamp dB. A missing/unparseable line falls back to that field's default.
+fn load_rg_from(path: &Path) -> (ReplayGainMode, f32) {
+    match std::fs::read_to_string(path) {
+        Ok(s) => {
+            let mut lines = s.lines();
+            let mode = lines
+                .next()
+                .map(mode_from_str)
+                .unwrap_or(ReplayGainMode::Off);
+            let preamp = lines
+                .next()
+                .and_then(|l| l.trim().parse::<f32>().ok())
+                .unwrap_or(0.0);
+            (mode, preamp)
+        }
+        Err(_) => (ReplayGainMode::Off, 0.0),
+    }
+}
+
+/// Write `(mode, preamp)` to `path`, creating the parent dir. The testable core
+/// of [`save_replaygain`].
+fn save_rg_to(path: &Path, mode: ReplayGainMode, preamp_db: f32) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, format!("{}\n{preamp_db}", mode_as_str(mode)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +253,30 @@ mod tests {
     #[test]
     fn load_missing_output_device_is_none() {
         assert!(load_device_from(Path::new("/no/such/soul-player/output_device.txt")).is_none());
+    }
+
+    #[test]
+    fn save_then_load_replaygain_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("soul_rune_rg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("replaygain.txt");
+        for (mode, preamp) in [
+            (ReplayGainMode::Off, 0.0f32),
+            (ReplayGainMode::Track, 3.0),
+            (ReplayGainMode::Album, -4.5),
+        ] {
+            save_rg_to(&path, mode, preamp).unwrap();
+            let (m, pa) = load_rg_from(&path);
+            assert_eq!(m, mode, "mode reloads verbatim");
+            assert!((pa - preamp).abs() < 1e-6, "preamp {pa} != {preamp}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_missing_replaygain_is_default() {
+        let (mode, preamp) = load_rg_from(Path::new("/no/such/soul-player/replaygain.txt"));
+        assert_eq!(mode, ReplayGainMode::Off);
+        assert_eq!(preamp, 0.0);
     }
 }
