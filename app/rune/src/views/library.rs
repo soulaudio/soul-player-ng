@@ -52,9 +52,13 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
             .w(28.0),
         )
         .child(
-            text(t.title.clone().unwrap_or_else(|| "Unknown".into()))
-                .color(if playing { p.accent } else { p.fg })
-                .grow(1.0),
+            text(
+                t.title
+                    .clone()
+                    .unwrap_or_else(|| t!("library.unknown").to_string()),
+            )
+            .color(if playing { p.accent } else { p.fg })
+            .grow(1.0),
         )
         .child(
             text(t.artist.clone().unwrap_or_default())
@@ -91,9 +95,15 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
             let play_ids = menu_ids.clone();
             tx.popup_menu(
                 PopupMenu::new()
-                    .item(PopupItem::new("play", "Play"))
-                    .item(PopupItem::new("play-next", "Play next"))
-                    .item(PopupItem::new("enqueue", "Add to queue")),
+                    .item(PopupItem::new("play", t!("player.play").to_string()))
+                    .item(PopupItem::new(
+                        "play-next",
+                        t!("library.playNext").to_string(),
+                    ))
+                    .item(PopupItem::new(
+                        "enqueue",
+                        t!("library.addToQueue").to_string(),
+                    )),
                 press,
                 move |st: &mut State, picked, _tx: &mut Tx| match picked {
                     Some("play") => st.host.send(Command::PlayContext {
