@@ -24,9 +24,10 @@ use crate::views::slider::slider;
 const COVER_SIZE: f32 = 40.0;
 /// Queue-row cover side — the old app's small `TrackItem` thumbnail.
 pub const QUEUE_COVER: f32 = 36.0;
-/// Covers decode at this size (generous for crispness at both the 40 pt
-/// now-playing and 36 pt queue sizes); the box fits the pixels to its own side.
-const DECODE_PX: f32 = 80.0;
+/// Covers decode at this size (×the device scale) — generous so the 160 pt
+/// album-grid cards stay crisp, with the 40 pt now-playing and 36 pt queue
+/// covers downscaling from the same cached decode.
+const DECODE_PX: f32 = 160.0;
 /// NowPlayingPanel padding — the old app's `p-4` (16 px).
 const NP_PAD: f32 = 16.0;
 /// The controls block below the now-playing row (old app's `px-4 pt-2 pb-4`).

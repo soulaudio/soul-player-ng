@@ -6,11 +6,12 @@
 
 use std::collections::HashMap;
 
-use rune::{Cursor, Cx, El, ScrollSpec, TextStyle, col, row, text};
+use rune::{Color, Cursor, Cx, El, ScrollSpec, TextStyle, col, el, icon, row, text};
 use soul_player_host::{Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
+use crate::views::icons;
 use crate::views::player::cover;
 
 /// Card width (and cover side — the cover is square and fills the card).
@@ -64,9 +65,43 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, scale: f32) -> El 
         .padding(6.0)
         .radius(8.0)
         .cursor(Cursor::Pointer)
+        .hover_group()
         .hover(p.fg.alpha(0.05))
         .press(p.fg.alpha(0.09))
-        .child(cover(s, Some(a.cover_id), CARD_W, p, scale))
+        .child(
+            // Cover + a play button that fades in on card hover (old app's
+            // `opacity-0 group-hover:opacity-100` MediaCard overlay). The overlay
+            // spans the whole cover and carries the play press, so a click
+            // anywhere on it plays — not only the 48 pt button.
+            el().key("cover-area")
+                .size(CARD_W, CARD_W)
+                .child(cover(s, Some(a.cover_id), CARD_W, p, scale))
+                .child(
+                    el().key("play-overlay")
+                        .size(CARD_W, CARD_W)
+                        .absolute(0.0, 0.0)
+                        .center()
+                        .group_opacity(0.0, 1.0)
+                        .cursor(Cursor::Pointer)
+                        .on_press({
+                            let ids = ids.clone();
+                            move |st: &mut State| {
+                                st.host.send(Command::PlayContext {
+                                    ids: ids.clone(),
+                                    start: 0,
+                                })
+                            }
+                        })
+                        .child(
+                            el().key("play-btn")
+                                .size(48.0, 48.0)
+                                .radius(24.0)
+                                .fill(Color::BLACK.alpha(0.55))
+                                .center()
+                                .child(icon(&icons::PLAY, 22.0).color(Color::WHITE)),
+                        ),
+                ),
+        )
         .child(
             col()
                 .key("album-text")
