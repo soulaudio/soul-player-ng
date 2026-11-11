@@ -207,11 +207,14 @@ impl PlayerHandle {
         }
     }
 
-    /// If `SOUL_PLAYER_FOLDER` is set, open it. The shared launch harness for both
-    /// heads.
+    /// If `SOUL_PLAYER_FOLDER` is set, load it as the watched source set — the
+    /// shared launch harness for both heads. Uses `set_folders`, not
+    /// `open_folder`, so the library populates WITHOUT autoplaying (an app
+    /// shouldn't start playing on its own at launch); `open_folder` keeps its
+    /// play-from-0 for callers that want it.
     pub fn autoload_from_env(&self) -> anyhow::Result<()> {
         if let Some(dir) = std::env::var_os("SOUL_PLAYER_FOLDER") {
-            self.open_folder(Path::new(&dir))?;
+            self.set_folders(&[PathBuf::from(dir)])?;
         }
         Ok(())
     }
