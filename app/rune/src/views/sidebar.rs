@@ -35,7 +35,7 @@ const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 /// A clickable nav entry that switches `State::route`. A large semibold label
 /// with a trailing status dot — filled with the primary colour when active, a
 /// faint ring otherwise — mirroring the old app's sidebar nav.
-fn nav_item(key: &str, label: &str, route: Route, active: bool, p: &Palette) -> El {
+fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -> El {
     let dot = el().key(format!("{key}-dot")).w(8.0).h(8.0).radius(4.0);
     let dot = if active {
         dot.fill(p.primary)
@@ -73,7 +73,7 @@ pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         // footer gear below, as the original.
         .child(col().key("nav").px(16.0).pt(24.0).pb(16.0).child(nav_item(
             "nav-library",
-            "Tracks",
+            t!("nav.tracks").to_string(),
             Route::Library,
             s.route == Route::Library,
             p,
@@ -98,7 +98,7 @@ fn settings_footer(s: &State, p: &Palette) -> El {
             let gear = el()
                 .key("nav-settings")
                 .role("button")
-                .label("Settings")
+                .label(t!("settings.title").to_string())
                 .focusable(true)
                 .padding(6.0)
                 .radius(8.0)

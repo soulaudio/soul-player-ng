@@ -1,0 +1,237 @@
+# Soul Player UI strings. English is the authoritative source; de/es/zh/cs are
+# initial translations and should be reviewed by native speakers. Add a locale
+# by adding its column to each key. Interpolation uses %{name} placeholders.
+# All values single-quoted so punctuation (quotes, +, /, %, CJK) stays literal.
+_version: 2
+
+nav.tracks:
+  en: 'Tracks'
+  de: 'Titel'
+  es: 'Pistas'
+  zh: '曲目'
+  cs: 'Skladby'
+
+player.nowPlaying:
+  en: 'NOW PLAYING'
+  de: 'WIRD GESPIELT'
+  es: 'REPRODUCIENDO'
+  zh: '正在播放'
+  cs: 'PŘEHRÁVÁ SE'
+player.nothingPlaying:
+  en: 'Nothing playing'
+  de: 'Nichts wird gespielt'
+  es: 'Nada en reproducción'
+  zh: '未播放'
+  cs: 'Nic se nepřehrává'
+player.play:
+  en: 'Play'
+  de: 'Wiedergabe'
+  es: 'Reproducir'
+  zh: '播放'
+  cs: 'Přehrát'
+player.pause:
+  en: 'Pause'
+  de: 'Pause'
+  es: 'Pausa'
+  zh: '暂停'
+  cs: 'Pozastavit'
+player.previous:
+  en: 'Previous'
+  de: 'Zurück'
+  es: 'Anterior'
+  zh: '上一首'
+  cs: 'Předchozí'
+player.next:
+  en: 'Next'
+  de: 'Weiter'
+  es: 'Siguiente'
+  zh: '下一首'
+  cs: 'Další'
+player.shuffle:
+  en: 'Shuffle'
+  de: 'Zufallswiedergabe'
+  es: 'Aleatorio'
+  zh: '随机播放'
+  cs: 'Náhodně'
+player.repeat:
+  en: 'Repeat'
+  de: 'Wiederholen'
+  es: 'Repetir'
+  zh: '循环'
+  cs: 'Opakovat'
+player.repeatAll:
+  en: 'Repeat: all'
+  de: 'Wiederholen: alle'
+  es: 'Repetir: todo'
+  zh: '全部循环'
+  cs: 'Opakovat: vše'
+player.repeatOne:
+  en: 'Repeat: one'
+  de: 'Wiederholen: Titel'
+  es: 'Repetir: una'
+  zh: '单曲循环'
+  cs: 'Opakovat: jednu'
+
+library.sort:
+  en: 'Sort'
+  de: 'Sortieren'
+  es: 'Ordenar'
+  zh: '排序'
+  cs: 'Řadit'
+library.sortArtist:
+  en: 'Artist'
+  de: 'Künstler'
+  es: 'Artista'
+  zh: '艺术家'
+  cs: 'Interpret'
+library.sortAlbum:
+  en: 'Album'
+  de: 'Album'
+  es: 'Álbum'
+  zh: '专辑'
+  cs: 'Album'
+library.sortTitle:
+  en: 'Title'
+  de: 'Titel'
+  es: 'Título'
+  zh: '标题'
+  cs: 'Název'
+library.sortFolder:
+  en: 'Folder'
+  de: 'Ordner'
+  es: 'Carpeta'
+  zh: '文件夹'
+  cs: 'Složka'
+library.searchPlaceholder:
+  en: 'Type / to search'
+  de: 'Zum Suchen / tippen'
+  es: 'Pulsa / para buscar'
+  zh: '输入 / 进行搜索'
+  cs: 'Hledejte stisknutím /'
+library.noMusic:
+  en: 'No music loaded'
+  de: 'Keine Musik geladen'
+  es: 'No hay música cargada'
+  zh: '未加载音乐'
+  cs: 'Žádná hudba'
+library.noMusicHint:
+  en: 'Add a source to start playing'
+  de: 'Quelle hinzufügen, um zu starten'
+  es: 'Añade una fuente para empezar'
+  zh: '添加来源以开始播放'
+  cs: 'Přidejte zdroj pro přehrávání'
+library.addSource:
+  en: 'Add a source'
+  de: 'Quelle hinzufügen'
+  es: 'Añadir fuente'
+  zh: '添加来源'
+  cs: 'Přidat zdroj'
+library.noMatch:
+  en: 'No tracks match "%{query}"'
+  de: 'Keine Titel für „%{query}"'
+  es: 'Ningún tema coincide con "%{query}"'
+  zh: '没有匹配 "%{query}" 的曲目'
+  cs: 'Žádné skladby neodpovídají „%{query}"'
+
+settings.title:
+  en: 'Settings'
+  de: 'Einstellungen'
+  es: 'Ajustes'
+  zh: '设置'
+  cs: 'Nastavení'
+settings.sources:
+  en: 'Sources'
+  de: 'Quellen'
+  es: 'Fuentes'
+  zh: '来源'
+  cs: 'Zdroje'
+settings.noSources:
+  en: 'No sources yet — add a folder to build your library.'
+  de: 'Noch keine Quellen — fügen Sie einen Ordner hinzu.'
+  es: 'Aún no hay fuentes: añade una carpeta para crear tu biblioteca.'
+  zh: '暂无来源 — 添加文件夹以建立音乐库。'
+  cs: 'Zatím žádné zdroje — přidejte složku pro vytvoření knihovny.'
+settings.rescan:
+  en: 'Rescan'
+  de: 'Neu einlesen'
+  es: 'Reescanear'
+  zh: '重新扫描'
+  cs: 'Znovu načíst'
+settings.addSource:
+  en: '+ Add Source'
+  de: '+ Quelle hinzufügen'
+  es: '+ Añadir fuente'
+  zh: '+ 添加来源'
+  cs: '+ Přidat zdroj'
+settings.addFolderDialog:
+  en: 'Add a music folder'
+  de: 'Musikordner hinzufügen'
+  es: 'Añadir carpeta de música'
+  zh: '添加音乐文件夹'
+  cs: 'Přidat složku s hudbou'
+settings.offline:
+  en: 'offline'
+  de: 'offline'
+  es: 'sin conexión'
+  zh: '离线'
+  cs: 'offline'
+settings.appearance:
+  en: 'Appearance'
+  de: 'Darstellung'
+  es: 'Apariencia'
+  zh: '外观'
+  cs: 'Vzhled'
+settings.themeSystem:
+  en: 'System'
+  de: 'System'
+  es: 'Sistema'
+  zh: '跟随系统'
+  cs: 'Systém'
+settings.themeLight:
+  en: 'Light'
+  de: 'Hell'
+  es: 'Claro'
+  zh: '浅色'
+  cs: 'Světlý'
+settings.themeDark:
+  en: 'Dark'
+  de: 'Dunkel'
+  es: 'Oscuro'
+  zh: '深色'
+  cs: 'Tmavý'
+settings.language:
+  en: 'Language'
+  de: 'Sprache'
+  es: 'Idioma'
+  zh: '语言'
+  cs: 'Jazyk'
+settings.langSystem:
+  en: 'System'
+  de: 'System'
+  es: 'Sistema'
+  zh: '跟随系统'
+  cs: 'Systém'
+settings.updates:
+  en: 'Updates'
+  de: 'Updates'
+  es: 'Actualizaciones'
+  zh: '更新'
+  cs: 'Aktualizace'
+settings.version:
+  en: 'Version %{version}'
+  de: 'Version %{version}'
+  es: 'Versión %{version}'
+  zh: '版本 %{version}'
+  cs: 'Verze %{version}'
+settings.updateAvailable:
+  en: 'Version %{version} is available.'
+  de: 'Version %{version} ist verfügbar.'
+  es: 'La versión %{version} está disponible.'
+  zh: '版本 %{version} 可用。'
+  cs: 'Je dostupná verze %{version}.'
+settings.installRestart:
+  en: 'Install & Restart'
+  de: 'Installieren & Neustarten'
+  es: 'Instalar y reiniciar'
+  zh: '安装并重启'
+  cs: 'Nainstalovat a restartovat'

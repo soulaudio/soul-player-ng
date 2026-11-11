@@ -137,7 +137,7 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, p: &Palette, scale: f32) -> 
 fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) -> El {
     let title = now
         .and_then(|t| t.title.clone())
-        .unwrap_or_else(|| "Nothing playing".to_string());
+        .unwrap_or_else(|| t!("player.nothingPlaying").to_string());
     let artist = now.and_then(|t| t.artist.clone()).unwrap_or_default();
     row()
         .key("now-playing")
@@ -209,7 +209,7 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
 
 fn transport_button(
     key: &str,
-    label: &str,
+    label: String,
     ic: &'static Icon,
     p: &Palette,
     on_press: impl Fn(&mut State) + 'static,
@@ -236,7 +236,11 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
     };
     el().key("play-pause")
         .role("button")
-        .label(if s.playing { "Pause" } else { "Play" })
+        .label(if s.playing {
+            t!("player.pause").to_string()
+        } else {
+            t!("player.play").to_string()
+        })
         .focusable(true)
         .size(40.0, 40.0)
         .center()
@@ -262,7 +266,7 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
 fn shuffle_button(s: &State, p: &Palette) -> El {
     el().key("shuffle")
         .role("switch")
-        .label("Shuffle")
+        .label(t!("player.shuffle").to_string())
         .checked(s.shuffle)
         .focusable(true)
         .size(32.0, 32.0)
@@ -280,10 +284,10 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
 }
 
 fn repeat_button(s: &State, p: &Palette) -> El {
-    let (ic, label, on): (&'static Icon, &str, bool) = match s.repeat {
-        RepeatMode::Off => (&icons::REPEAT, "Repeat", false),
-        RepeatMode::All => (&icons::REPEAT, "Repeat: All", true),
-        RepeatMode::One => (&icons::REPEAT_1, "Repeat: One", true),
+    let (ic, label, on): (&'static Icon, String, bool) = match s.repeat {
+        RepeatMode::Off => (&icons::REPEAT, t!("player.repeat").to_string(), false),
+        RepeatMode::All => (&icons::REPEAT, t!("player.repeatAll").to_string(), true),
+        RepeatMode::One => (&icons::REPEAT_1, t!("player.repeatOne").to_string(), true),
     };
     el().key("repeat")
         .role("button")
@@ -317,7 +321,7 @@ fn transport_row(s: &State, p: &Palette) -> El {
         .child(shuffle_button(s, p))
         .child(transport_button(
             "prev",
-            "Previous",
+            t!("player.previous").to_string(),
             &icons::SKIP_BACK,
             p,
             |st: &mut State| st.host.send(Command::Prev),
@@ -325,7 +329,7 @@ fn transport_row(s: &State, p: &Palette) -> El {
         .child(play_pause_button(s, p))
         .child(transport_button(
             "next",
-            "Next",
+            t!("player.next").to_string(),
             &icons::SKIP_FORWARD,
             p,
             |st: &mut State| st.host.send(Command::Next),
@@ -390,7 +394,7 @@ pub fn player_panel(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 .padding(NP_PAD)
                 .gap(CTRL_GAP)
                 .child(
-                    text("NOW PLAYING")
+                    text(t!("player.nowPlaying").to_string())
                         .font(type_::SECTION)
                         .color(p.text_secondary),
                 )

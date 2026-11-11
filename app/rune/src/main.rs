@@ -7,6 +7,14 @@
 //! `views::library` track list or `views::settings` — filling the rest.
 #![forbid(unsafe_code)]
 
+#[macro_use]
+extern crate rust_i18n;
+
+// Compile-time-embed the translations in `locales/app.yml`; the crate-wide
+// `t!("key")` macro then resolves against the current locale (set per the saved
+// pref / OS language in `apply_locale`), falling back to English.
+i18n!("locales", fallback = "en");
+
 use std::path::PathBuf;
 
 use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
@@ -20,6 +28,39 @@ mod update;
 mod views;
 
 use views::player::ArtCache;
+
+/// The UI locales shipped besides the English fallback (see `locales/app.yml`).
+pub(crate) const LOCALES: &[&str] = &["en", "de", "es", "zh", "cs"];
+
+/// Resolve a locale preference to a concrete locale code. A supported pref
+/// ("de", "zh", …) is used as-is; "system" — or anything unsupported — matches
+/// the OS language via `sys-locale`, falling back to English.
+fn resolve_locale(pref: &str) -> &'static str {
+    if let Some(&code) = LOCALES.iter().find(|&&c| c == pref) {
+        return code;
+    }
+    let sys = sys_locale::get_locale().unwrap_or_default();
+    let lang = sys.split(['-', '_']).next().unwrap_or("en").to_lowercase();
+    LOCALES
+        .iter()
+        .copied()
+        .find(|&c| c == lang.as_str())
+        .unwrap_or("en")
+}
+
+/// Point the global `rust_i18n` locale at `pref`'s resolved code, so the next
+/// render's `t!` calls translate against it.
+fn apply_locale(pref: &str) {
+    rust_i18n::set_locale(resolve_locale(pref));
+}
+
+/// Switch the UI language (Settings → Language): remember the pref, apply it, and
+/// persist. The next frame re-renders in the new locale.
+pub(crate) fn set_locale_pref(s: &mut State, pref: &str) {
+    s.locale_pref = pref.to_string();
+    apply_locale(pref);
+    config::save_locale(pref);
+}
 
 /// Which page the main area shows. The sidebar switches it; `view` dispatches on it.
 #[derive(Clone, Copy, PartialEq)]
@@ -98,6 +139,9 @@ struct State {
     /// and driven by the drag handle in `views::sidebar`.
     sidebar_width: f32,
     sidebar_collapsed: bool,
+    /// UI language preference ("system"/"en"/"de"/…); drives the global
+    /// `rust_i18n` locale via [`apply_locale`]. Changed by Settings → Language.
+    locale_pref: String,
 }
 
 impl State {
@@ -113,6 +157,8 @@ impl State {
             .cloned()
             .collect();
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
+        let locale_pref = config::load_locale();
+        apply_locale(&locale_pref);
         Self {
             host,
             library,
@@ -139,6 +185,7 @@ impl State {
             searching: false,
             sidebar_width,
             sidebar_collapsed,
+            locale_pref,
         }
     }
 
