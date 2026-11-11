@@ -18,6 +18,9 @@ i18n!("locales", fallback = "en");
 use std::path::PathBuf;
 
 use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
+// Linked only to union parley_engine's `complex-scripts` feature on (see
+// Cargo.toml) — enables CJK text segmentation. Not called directly.
+use parley_engine as _;
 use soul_player_host::{
     BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, TrackView, WatchUpdate,
 };
@@ -388,7 +391,7 @@ fn main() -> anyhow::Result<()> {
             ("no-match", scene_no_match),
         ],
         ..AppSpec::new(
-            "Soul Player (Rune)",
+            "Soul Player",
             (1100.0, 720.0),
             || unreachable!("init overridden"),
             view,
@@ -428,6 +431,11 @@ fn main() -> anyhow::Result<()> {
             tx.instant(); // don't animate fast-moving numeric fields
         });
     });
+    // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
+    // installer uses the same icons via [package.metadata.packager]).
+    if let Err(e) = rune::set_app_icon(include_bytes!("../icons/icon.png").to_vec()) {
+        eprintln!("[icon] set_app_icon failed: {e}");
+    }
     app.run();
     Ok(())
 }
