@@ -341,6 +341,73 @@ mod tests {
         assert!(saw_playing, "never observed track 0 playing via subscribe");
     }
 
+    /// Wait (bounded by WALL-CLOCK, so a continuous tick stream can't spin this
+    /// forever) for a `Tick` the predicate accepts. Returns the matching tick.
+    fn wait_for_tick(
+        rx: &std::sync::mpsc::Receiver<Event>,
+        pred: impl Fn(&Tick) -> bool,
+    ) -> Option<Tick> {
+        use std::time::{Duration, Instant};
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(5) {
+            match rx.recv_timeout(Duration::from_millis(200)) {
+                Ok(Event::Tick(t)) if pred(&t) => return Some(t),
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn open_folder_plays_reports_duration_and_forwards_seek() {
+        use soul_player_backend::PlayState;
+        use std::sync::mpsc;
+
+        // open_folder → play → seek → event, end to end through the handle. The
+        // offline (NullSink) pump is unthrottled, so exact post-seek POSITION
+        // isn't deterministically observable here (a track plays to EOF within one
+        // ~8 Hz tick, and a load transitions the deck to Playing regardless of a
+        // pre-load pause) — that precision is covered deterministically in the
+        // backend (tests/seek_audit.rs + driver's seek_clamps_at_track_bounds).
+        // What IS robustly observable, and what this asserts, is the host wiring:
+        // open_folder spawns the actor, playback starts, a Tick carries the
+        // correct DURATION (the seek-bar denominator), and a Seek sent through the
+        // handle flows handle → actor → deck without breaking the event stream.
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.wav"), wav(48_000, 48_000 * 10)).unwrap(); // 10 s
+
+        let h = PlayerHandle::offline();
+        let (tx, rx) = mpsc::channel::<Event>();
+        h.subscribe(move |ev| {
+            let _ = tx.send(ev);
+        });
+        h.open_folder(dir.path()).expect("open_folder");
+
+        // A Tick must show track 0 playing with a ~10 s duration (decoder length,
+        // or the library-tag fallback the actor applies). Duration is
+        // timing-independent, so this is deterministic despite the fast pump.
+        let playing = wait_for_tick(&rx, |t| {
+            t.now_playing_id == Some(0) && t.state == PlayState::Playing
+        });
+        let t = playing.expect("never observed track 0 playing");
+        let dur = t.duration_secs.expect("playing tick carries a duration");
+        assert!(
+            (dur - 10.0).abs() < 0.3,
+            "tick duration {dur:.3}s is not ~10 s (the seek-bar denominator)"
+        );
+
+        // Forward a Seek through the handle and confirm the actor stays live
+        // (still emitting events) — i.e. the handle → actor → apply_command(Seek)
+        // path neither panics nor deadlocks the event fan-out.
+        h.send(Command::Seek { secs: 3.0 });
+        let still_alive = wait_for_tick(&rx, |_| true);
+        assert!(
+            still_alive.is_some(),
+            "no events after Seek — the handle→actor command path stalled"
+        );
+    }
+
     // --- multi-source watched folders ---
 
     fn folder_with(name: &str, wavs: &[&str]) -> tempfile::TempDir {
