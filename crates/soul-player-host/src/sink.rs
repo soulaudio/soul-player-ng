@@ -32,14 +32,33 @@ impl SinkMode {
 
 /// Spawn the backend actor over the sink `mode` selects. The sink factory runs on
 /// the pump thread, so a `!Send` device sink is fine.
+///
+/// `output_device` names the device the `Device` arm should open (one of
+/// [`soul_audio_desktop::output_device_names`]); `None` means the system default.
+/// It is ignored by `Offline` (the `NullSink` has no device to pick).
 pub(crate) fn build_actor(
     mode: SinkMode,
+    output_device: Option<String>,
     lib: Arc<Library>,
     on_event: impl Fn(Event) + Send + 'static,
 ) -> AudioPlayer {
     match mode {
         SinkMode::Offline => AudioPlayer::spawn(|| Ok(NullSink::new(48_000, 2)), lib, on_event),
-        SinkMode::Device => AudioPlayer::spawn(CpalSink::new, lib, on_event),
+        SinkMode::Device => AudioPlayer::spawn(device_sink_factory(output_device), lib, on_event),
+    }
+}
+
+/// Build the pump-thread make-sink closure for the real device: open the named
+/// device, falling back to the system default if it is gone (unplugged since the
+/// list was enumerated, or renamed). `None` opens the default directly. Returning
+/// one closure (that matches on the `Option` internally) keeps a single concrete
+/// `FnOnce` type for `AudioPlayer::spawn`'s factory bound.
+fn device_sink_factory(
+    output_device: Option<String>,
+) -> impl FnOnce() -> anyhow::Result<CpalSink> + Send + 'static {
+    move || match output_device {
+        Some(name) => CpalSink::new_on_device(&name).or_else(|_| CpalSink::new()),
+        None => CpalSink::new(),
     }
 }
 

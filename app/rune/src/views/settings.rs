@@ -9,7 +9,7 @@ use rune::tok::type_;
 use rune::{El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
 
 use crate::theme::Palette;
-use crate::{State, ThemePref, apply_and_save, apply_watch, set_theme_pref};
+use crate::{State, ThemePref, apply_and_save, apply_watch, set_output_device, set_theme_pref};
 
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
@@ -222,13 +222,78 @@ fn appearance_section(s: &State, p: &Palette) -> El {
         )
 }
 
-/// The Settings page: a title plus scrollable sections (Sources, Appearance).
+/// One output-device choice; the active device is filled with the primary color.
+/// `choice` is the device this button selects (`None` = follow the system
+/// default). Full-width so a long device name has room (and the whole row is the
+/// hit target), mirroring `theme_button`'s selected-fill treatment.
+fn device_button(label: &str, key: &str, choice: Option<String>, active: bool, p: &Palette) -> El {
+    el().key(key.to_string())
+        .padding(8.0)
+        .radius(6.0)
+        .fill(if active { p.primary } else { p.muted })
+        .child(
+            text(label)
+                .color(if active { p.bg } else { p.fg })
+                .grow(1.0),
+        )
+        .on_press(move |s: &mut State| set_output_device(s, choice.clone()))
+}
+
+/// The Output section: a "System default" choice plus one button per enumerated
+/// output device, stacked vertically (device names can be long, and a host may
+/// expose many). The active choice (matching `State.output_device`, `None` =
+/// system default) is filled. Selecting a device applies to the NEXT playback
+/// session — the host does not respawn the live stream.
+fn output_section(s: &State, p: &Palette) -> El {
+    let mut choices = col()
+        .key("output-devices")
+        .gap(8.0)
+        .padding(8.0)
+        .child(device_button(
+            "System default",
+            "output-default",
+            None,
+            s.output_device.is_none(),
+            p,
+        ));
+    if s.output_devices.is_empty() {
+        choices = choices.child(
+            text("No output devices detected.")
+                .color(p.text_secondary)
+                .padding(8.0),
+        );
+    } else {
+        for (i, name) in s.output_devices.iter().enumerate() {
+            let active = s.output_device.as_deref() == Some(name.as_str());
+            choices = choices.child(device_button(
+                name,
+                &format!("output-{i}"),
+                Some(name.clone()),
+                active,
+                p,
+            ));
+        }
+    }
+    col()
+        .key("output")
+        .gap(2.0)
+        .child(
+            row()
+                .padding(8.0)
+                .child(text("Output").font(type_::TITLE).color(p.primary).grow(1.0)),
+        )
+        .child(choices)
+}
+
+/// The Settings page: a title plus scrollable sections (Sources, Appearance,
+/// Output, Updates).
 pub fn settings_page(s: &State, p: &Palette) -> El {
     let content = col()
         .key("settings-content")
         .gap(16.0)
         .child(sources_section(s, p))
         .child(appearance_section(s, p))
+        .child(output_section(s, p))
         .child(updates_section(s, p));
     col()
         .key("settings")

@@ -40,6 +40,11 @@ struct Inner {
     /// The configured watched folders (deduped, in order), including any that are
     /// currently unavailable — so a folder is never lost to a transient outage.
     folders: Mutex<Vec<PathBuf>>,
+    /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
+    /// or `None` for the system default. Read when the actor is (re)spawned and
+    /// passed to the sink factory; a change applies to the NEXT spawn, not the
+    /// live stream (see [`set_output_device`](PlayerHandle::set_output_device)).
+    output_device: Mutex<Option<String>>,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -81,6 +86,7 @@ impl PlayerHandle {
                 library: Mutex::new(None),
                 subscribers: Mutex::new(Vec::new()),
                 folders: Mutex::new(Vec::new()),
+                output_device: Mutex::new(None),
             }),
         }
     }
@@ -155,6 +161,35 @@ impl PlayerHandle {
     /// unavailable (so a folder is never lost to a transient outage).
     pub fn watched_folders(&self) -> Vec<PathBuf> {
         self.inner.folders.lock().expect("folders mutex").clone()
+    }
+
+    /// Choose the output device the next playback session opens, by name (one of
+    /// [`output_devices`](Self::output_devices)); `None` (or an empty string,
+    /// normalized to `None`) means the system default. If the named device is gone
+    /// when the sink is built, playback falls back to the system default.
+    ///
+    /// This applies to the **next** actor spawn — the next `open_folder` /
+    /// `set_folders`-then-play. A live device switch mid-playback (respawning the
+    /// running actor onto the new device) is a deliberate follow-up, not done here:
+    /// the current stream keeps playing on its original device until the next
+    /// session starts.
+    pub fn set_output_device(&self, name: Option<String>) {
+        let name = name.filter(|n| !n.is_empty());
+        *self.inner.output_device.lock().expect("device mutex") = name;
+    }
+
+    /// The available output device names on this host, for a device picker. Empty
+    /// if the host exposes none (e.g. a headless CI machine). Delegates to
+    /// [`soul_audio_desktop::output_device_names`].
+    pub fn output_devices(&self) -> Vec<String> {
+        soul_audio_desktop::output_device_names()
+    }
+
+    /// The current system-default output device name, if any — to label / preselect
+    /// the "system default" choice. Delegates to
+    /// [`soul_audio_desktop::default_output_device_name`].
+    pub fn default_output_device(&self) -> Option<String> {
+        soul_audio_desktop::default_output_device_name()
     }
 
     /// Register an event handler. Called on every backend event (Tick ~8 Hz +
@@ -252,7 +287,16 @@ impl PlayerHandle {
                 sub(ev.clone());
             }
         };
-        *guard = Some(sink::build_actor(self.inner.mode, lib, forward));
+        // Snapshot the chosen device for this spawn — the `Device` arm opens it (or
+        // falls back to the system default); a later `set_output_device` only takes
+        // effect on the NEXT spawn, never this live stream.
+        let device = self
+            .inner
+            .output_device
+            .lock()
+            .expect("device mutex")
+            .clone();
+        *guard = Some(sink::build_actor(self.inner.mode, device, lib, forward));
     }
 }
 
@@ -271,6 +315,20 @@ mod tests {
         let h = PlayerHandle::offline();
         h.send(Command::TogglePlay); // no library yet → no actor → no panic
         assert!(h.views().is_empty());
+    }
+
+    #[test]
+    fn output_device_selection_is_set_without_panicking() {
+        // The device picker's host surface: enumerate, read the default, and store a
+        // choice. None of these open a stream (the Offline handle never spawns a
+        // CpalSink), so this runs device-free in CI — it just asserts the plumbing
+        // doesn't panic and tolerates a host with no output devices (empty list).
+        let h = PlayerHandle::offline();
+        let _names = h.output_devices(); // may be empty on a headless runner
+        let _default = h.default_output_device();
+        h.set_output_device(Some("Some Soundcard".to_string()));
+        h.set_output_device(Some(String::new())); // empty normalizes to the default
+        h.set_output_device(None);
     }
 
     /// Minimal stereo-16-bit WAV (mirrors the backend actor tests' writer).

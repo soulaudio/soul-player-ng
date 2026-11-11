@@ -78,6 +78,12 @@ struct State {
     /// `unavailable` are configured roots currently unreachable (shown "offline").
     watched_folders: Vec<PathBuf>,
     unavailable: Vec<PathBuf>,
+    /// The chosen output device (persisted), rendered by Settings → Output;
+    /// `None` = follow the system default. Applies to the next playback session.
+    output_device: Option<String>,
+    /// The output devices enumerated from the host at startup — the picker's
+    /// choices. Empty on a host that exposes none (headless / no audio).
+    output_devices: Vec<String>,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -107,6 +113,9 @@ impl State {
             .filter(|p| !p.is_dir())
             .cloned()
             .collect();
+        // Enumerate the output devices once (computed before `host` is moved into
+        // the struct) for the Settings → Output picker.
+        let output_devices = host.output_devices();
         Self {
             host,
             library,
@@ -127,6 +136,10 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             watched_folders,
             unavailable,
+            // Restore the persisted device choice (None = system default); the
+            // enumerated list came from `host` just above.
+            output_device: config::load_output_device(),
+            output_devices,
             art: ArtCache::new(),
             update_available: None,
             search: String::new(),
@@ -192,6 +205,16 @@ pub(crate) fn is_dark(pref: ThemePref, system_dark: bool) -> bool {
 pub(crate) fn set_theme_pref(s: &mut State, pref: ThemePref) {
     s.theme_pref = pref;
     config::save_theme_pref(pref.as_config());
+}
+
+/// Choose + persist the output device (used by the Output settings buttons).
+/// `None` means the system default. Updates the UI selection, writes the config,
+/// and tells the host — which applies it to the NEXT playback session (a live
+/// device switch mid-playback is a follow-up).
+pub(crate) fn set_output_device(s: &mut State, name: Option<String>) {
+    s.output_device = name.clone();
+    config::save_output_device(s.output_device.as_deref());
+    s.host.set_output_device(name);
 }
 
 /// Switch the library's sort order — re-fetches the current library's views in
@@ -305,6 +328,10 @@ fn main() -> anyhow::Result<()> {
     }
 
     let host = PlayerHandle::new();
+    // Restore the persisted output-device choice BEFORE any autoload/open spawns
+    // the actor, so the first playback session already targets the chosen device
+    // (empty / absent config = system default).
+    host.set_output_device(config::load_output_device());
     // The dev/e2e harness loads a single folder from the env; otherwise restore
     // the persisted watched-folder set so Sources survive a restart.
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {

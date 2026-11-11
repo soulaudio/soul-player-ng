@@ -76,6 +76,56 @@ pub fn save_theme_pref(pref: &str) {
     }
 }
 
+// --- output device preference ---
+
+/// `<config>/soul-player/output_device.txt` — the persisted output-device choice.
+/// A blank / missing file means "system default".
+pub fn output_device_path() -> Option<PathBuf> {
+    Some(
+        dirs::config_dir()?
+            .join("soul-player")
+            .join("output_device.txt"),
+    )
+}
+
+/// The saved output-device name, or `None` for the system default (also `None` if
+/// the file is missing / unreadable / blank).
+pub fn load_output_device() -> Option<String> {
+    output_device_path().and_then(|p| load_device_from(&p))
+}
+
+/// Persist the chosen output device (best-effort — a failed write never breaks the
+/// UI). `None` (or a name that trims to empty) writes an empty file, meaning
+/// "system default" — the file is emptied rather than deleted so the choice stays
+/// explicit (and doesn't error when it is already absent).
+pub fn save_output_device(name: Option<&str>) {
+    if let Some(p) = output_device_path() {
+        let _ = save_device_to(&p, name);
+    }
+}
+
+/// Read a single trimmed device name from `path` (the testable core); blank or
+/// missing = `None` (the system default).
+fn load_device_from(path: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(path).ok()?;
+    let s = s.trim();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// Write `name` to `path`, creating the parent dir; `None` or a blank name writes
+/// an empty file (= system default). The testable core of `save_output_device`.
+fn save_device_to(path: &Path, name: Option<&str>) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let body = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or("");
+    std::fs::write(path, body)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +144,37 @@ mod tests {
     #[test]
     fn load_missing_file_is_empty() {
         assert!(load_from(Path::new("/no/such/soul-player/sources.txt")).is_empty());
+    }
+
+    #[test]
+    fn save_then_load_output_device_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("soul_rune_dev_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("output_device.txt");
+        save_device_to(&path, Some("Speakers (Realtek)")).unwrap();
+        assert_eq!(
+            load_device_from(&path),
+            Some("Speakers (Realtek)".to_string()),
+            "the saved device name reloads verbatim"
+        );
+        // None (and a blank name) persist as the system default — a blank file.
+        save_device_to(&path, None).unwrap();
+        assert_eq!(
+            load_device_from(&path),
+            None,
+            "None reloads as the system default"
+        );
+        save_device_to(&path, Some("   ")).unwrap();
+        assert_eq!(
+            load_device_from(&path),
+            None,
+            "a blank name is the system default, not a device"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_missing_output_device_is_none() {
+        assert!(load_device_from(Path::new("/no/such/soul-player/output_device.txt")).is_none());
     }
 }
