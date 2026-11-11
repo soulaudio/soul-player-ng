@@ -5,10 +5,10 @@
 //! there is no text entry here.
 #![forbid(unsafe_code)]
 
-use rune::tok::type_;
 use rune::{Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
 
 use crate::theme::Palette;
+use crate::ui::{radius, space, type_};
 use crate::{State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_theme_pref};
 
 fn basename(p: &std::path::Path) -> String {
@@ -21,8 +21,8 @@ fn basename(p: &std::path::Path) -> String {
 /// `apply_watch`. Mirrors `views::open_folder`'s dialog pattern.
 fn add_source_button(p: &Palette) -> El {
     el().key("add-source")
-        .padding(12.0)
-        .radius(8.0)
+        .padding(space::MD)
+        .radius(radius::MD)
         .fill(p.primary)
         .center()
         .cursor(Cursor::Pointer)
@@ -49,8 +49,8 @@ fn add_source_button(p: &Palette) -> El {
 /// not apply_and_save).
 fn rescan_button(p: &Palette) -> El {
     el().key("rescan-sources")
-        .padding(12.0)
-        .radius(8.0)
+        .padding(space::MD)
+        .radius(radius::MD)
         .fill(p.muted)
         .center()
         .cursor(Cursor::Pointer)
@@ -71,8 +71,8 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
     let remove_for = folder.clone();
     let mut r = row()
         .key(format!("source-{name}"))
-        .gap(12.0)
-        .padding(8.0)
+        .gap(space::MD)
+        .padding(space::SM)
         .child(text(name.clone()).color(p.fg).grow(1.0));
     if unavailable {
         r = r.child(
@@ -82,8 +82,8 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
     }
     r.child(
         el().key(format!("remove-{name}"))
-            .padding(6.0)
-            .radius(6.0)
+            .padding(space::SNUG)
+            .radius(radius::SM)
             .fill(p.muted)
             .cursor(Cursor::Pointer)
             .child(text("✕").color(p.text_secondary))
@@ -97,9 +97,9 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
 
 /// The Sources section: + Add Source and one row per watched folder.
 fn sources_section(s: &State, p: &Palette) -> El {
-    let mut sources = col().key("sources").gap(2.0).child(
+    let mut sources = col().key("sources").gap(space::XXS).child(
         row()
-            .padding(8.0)
+            .padding(space::SM)
             .child(
                 text(t!("settings.sources").to_string())
                     .font(type_::TITLE)
@@ -113,7 +113,7 @@ fn sources_section(s: &State, p: &Palette) -> El {
         sources = sources.child(
             text(t!("settings.noSources").to_string())
                 .color(p.text_secondary)
-                .padding(8.0),
+                .padding(space::SM),
         );
     } else {
         for i in 0..s.watched_folders.len() {
@@ -130,9 +130,9 @@ fn sources_section(s: &State, p: &Palette) -> El {
 fn updates_section(s: &State, p: &Palette) -> El {
     let mut sec = col()
         .key("updates")
-        .gap(2.0)
+        .gap(space::XXS)
         .child(
-            row().padding(8.0).child(
+            row().padding(space::SM).child(
                 text(t!("settings.updates").to_string())
                     .font(type_::TITLE)
                     .color(p.primary)
@@ -142,13 +142,13 @@ fn updates_section(s: &State, p: &Palette) -> El {
         .child(
             text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
                 .color(p.text_secondary)
-                .padding(8.0),
+                .padding(space::SM),
         );
     if let Some(version) = &s.update_available {
         sec = sec.child(
             row()
-                .gap(12.0)
-                .padding(8.0)
+                .gap(space::MD)
+                .padding(space::SM)
                 .child(
                     text(t!("settings.updateAvailable", version => version).to_string())
                         .color(p.fg)
@@ -156,8 +156,8 @@ fn updates_section(s: &State, p: &Palette) -> El {
                 )
                 .child(
                     el().key("install-update")
-                        .padding(12.0)
-                        .radius(8.0)
+                        .padding(space::MD)
+                        .radius(radius::MD)
                         .fill(p.primary)
                         .center()
                         .cursor(Cursor::Pointer)
@@ -178,8 +178,8 @@ fn updates_section(s: &State, p: &Palette) -> El {
 /// One theme choice; the active preference is filled with the primary color.
 fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
-        .padding(8.0)
-        .radius(6.0)
+        .padding(space::SM)
+        .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
@@ -190,9 +190,9 @@ fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Pal
 fn appearance_section(s: &State, p: &Palette) -> El {
     col()
         .key("appearance")
-        .gap(2.0)
+        .gap(space::XXS)
         .child(
-            row().padding(8.0).child(
+            row().padding(space::SM).child(
                 text(t!("settings.appearance").to_string())
                     .font(type_::TITLE)
                     .color(p.primary)
@@ -201,8 +201,8 @@ fn appearance_section(s: &State, p: &Palette) -> El {
         )
         .child(
             row()
-                .gap(8.0)
-                .padding(8.0)
+                .gap(space::SM)
+                .padding(space::SM)
                 .child(theme_button(
                     t!("settings.themeSystem").to_string(),
                     "theme-system",
@@ -231,8 +231,8 @@ fn appearance_section(s: &State, p: &Palette) -> El {
 /// language shows in its own native name; "System" follows the OS locale.
 fn lang_button(label: String, pref: &'static str, active: bool, p: &Palette) -> El {
     el().key(format!("lang-{pref}"))
-        .padding(8.0)
-        .radius(6.0)
+        .padding(space::SM)
+        .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
@@ -245,9 +245,9 @@ fn language_section(s: &State, p: &Palette) -> El {
     let cur = s.locale_pref.as_str();
     col()
         .key("language")
-        .gap(2.0)
+        .gap(space::XXS)
         .child(
-            row().padding(8.0).child(
+            row().padding(space::SM).child(
                 text(t!("settings.language").to_string())
                     .font(type_::TITLE)
                     .color(p.primary)
@@ -256,8 +256,8 @@ fn language_section(s: &State, p: &Palette) -> El {
         )
         .child(
             row()
-                .gap(8.0)
-                .padding(8.0)
+                .gap(space::SM)
+                .padding(space::SM)
                 .child(lang_button(
                     t!("settings.langSystem").to_string(),
                     "system",
@@ -277,7 +277,7 @@ fn language_section(s: &State, p: &Palette) -> El {
 pub fn settings_page(s: &State, p: &Palette) -> El {
     let content = col()
         .key("settings-content")
-        .gap(16.0)
+        .gap(space::LG)
         .child(sources_section(s, p))
         .child(appearance_section(s, p))
         .child(language_section(s, p))
@@ -290,7 +290,7 @@ pub fn settings_page(s: &State, p: &Palette) -> El {
             text(t!("settings.title").to_string())
                 .font(type_::TITLE)
                 .color(p.fg)
-                .padding(16.0),
+                .padding(space::LG),
         )
         .child(
             content
