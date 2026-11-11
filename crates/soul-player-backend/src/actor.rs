@@ -7,6 +7,8 @@
 //! Sink-generic via a factory run ON the pump thread, so a `!Send` device sink
 //! (`CpalSink`) works and this crate never names `cpal`.
 
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -17,9 +19,11 @@ use soul_audio_core::{Deck, Progress, Quality, Sink};
 use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_engine::{Engine, Provided};
 
-use crate::driver::{ServicePlayer, apply_command, project_queue, project_tick, queue_for};
+use crate::driver::{
+    RgInfo, ServicePlayer, apply_command, apply_replay_gain, project_queue, project_tick, queue_for,
+};
 use crate::library::Library;
-use crate::types::{Command, Event};
+use crate::types::{Command, Event, ReplayGainMode};
 
 /// Golden-ratio odd constant; advanced per shuffle to vary the permutation seed
 /// without an RNG dependency (deterministic across runs).
@@ -92,23 +96,49 @@ impl Drop for AudioPlayer {
     }
 }
 
-/// The loader thread: `id → path → OwnedDecoder`, sent back to the pump.
+/// The loader thread: `id → path → (ReplayGain tags, OwnedDecoder)`, sent back to
+/// the pump. The RG tags are read here, on the loader thread, so the pump's hot
+/// loop never touches the filesystem for them; they ride the same message as the
+/// decoder, keyed to the id, and the pump banks them for when the track becomes
+/// current (see [`pump_thread`]).
 fn loader_thread(
     req_rx: Receiver<u32>,
-    res_tx: Sender<(u32, anyhow::Result<OwnedDecoder>)>,
+    res_tx: Sender<(u32, RgInfo, anyhow::Result<OwnedDecoder>)>,
     library: Arc<Mutex<Arc<Library>>>,
 ) {
     for id in req_rx {
-        let opened = {
+        let (rg, opened) = {
             let lib = library.lock().expect("library mutex").clone();
             match lib.path_of(id) {
-                Some(path) => open_track(&path),
-                None => Err(anyhow::anyhow!("no path for track id {id}")),
+                Some(path) => (read_rg_tags(&path), open_track(&path)),
+                None => (
+                    RgInfo::default(),
+                    Err(anyhow::anyhow!("no path for track id {id}")),
+                ),
             }
         };
-        if res_tx.send((id, opened)).is_err() {
+        if res_tx.send((id, rg, opened)).is_err() {
             break; // pump gone
         }
+    }
+}
+
+/// Read a track's ReplayGain tags into an [`RgInfo`] (best-effort — an
+/// unopenable / untagged / malformed file yields the all-`None` default, which
+/// the pump treats as "no normalization data, preamp only"). Mirrors
+/// [`crate::art::cover_bytes`]'s `read_owned`-over-a-`File` path.
+fn read_rg_tags(path: &Path) -> RgInfo {
+    use soul_audio_tags::read_owned;
+    let Ok(file) = std::fs::File::open(path) else {
+        return RgInfo::default();
+    };
+    let mut src = embedded_io_adapters::std::FromStd::new(file);
+    match read_owned(&mut src) {
+        Ok((tags, _facts)) => RgInfo {
+            track_gain_db: tags.track_gain_db,
+            album_gain_db: tags.album_gain_db,
+        },
+        Err(_) => RgInfo::default(),
     }
 }
 
@@ -136,7 +166,7 @@ fn pump_thread<K, Mk, Ev>(
         Player::new(engine, u64::from(rate).saturating_mul(3)); // ~3 s prev threshold
 
     let (req_tx, req_rx) = mpsc::channel::<u32>();
-    let (res_tx, res_rx) = mpsc::channel::<(u32, anyhow::Result<OwnedDecoder>)>();
+    let (res_tx, res_rx) = mpsc::channel::<(u32, RgInfo, anyhow::Result<OwnedDecoder>)>();
     let loader = {
         let lib = Arc::clone(&library);
         // Same 64 MiB rationale as the pump: `open_track` builds an
@@ -154,6 +184,21 @@ fn pump_thread<K, Mk, Ev>(
     let tick_every = Duration::from_millis(125); // ~8 Hz
     let mut disconnected = false;
 
+    // --- ReplayGain state ---
+    // Config, updated by `Command::SetReplayGain` (the host sends the persisted
+    // choice right after spawn, so a session starts already normalized).
+    let mut rg_mode = ReplayGainMode::Off;
+    let mut rg_preamp: f32 = 0.0;
+    // Per-track RG tags the loader read, banked by id as decoders arrive so the
+    // right gain is ready when the track becomes current. Lives for the session;
+    // the id space is one library's worth of tracks, so it stays small.
+    let mut rg_tags: BTreeMap<u32, RgInfo> = BTreeMap::new();
+    // The track the deck's current gain was computed for, and a dirty flag set
+    // when the config changes — together they decide when to (re)apply the gain.
+    // `None` + dirty means "apply once up front" (sets the deck to unity).
+    let mut rg_applied_for: Option<u32> = None;
+    let mut rg_dirty = true;
+
     loop {
         // 1. Drain commands.
         let mut changed = false;
@@ -164,6 +209,14 @@ fn pump_thread<K, Mk, Ev>(
                         // Clamp at intake so projected `Tick.volume` matches what
                         // `Deck::set_volume` actually applies (0.0..=1.0).
                         volume = v.clamp(0.0, 1.0);
+                    }
+                    if let Command::SetReplayGain { mode, preamp_db } = cmd {
+                        // Track the config here (the deck call happens below, keyed
+                        // to the current track); `rg_dirty` forces a re-apply even
+                        // when the track id hasn't changed.
+                        rg_mode = mode;
+                        rg_preamp = preamp_db;
+                        rg_dirty = true;
                     }
                     seed = seed.wrapping_add(SEED_STEP);
                     if let Err(e) = apply_command(&mut player, cmd, seed) {
@@ -179,16 +232,18 @@ fn pump_thread<K, Mk, Ev>(
             }
         }
 
-        // 2. Install opened decoders; request whatever the engine now wants.
-        loop {
-            match res_rx.try_recv() {
-                Ok((id, Ok(dec))) => {
+        // 2. Install opened decoders; request whatever the engine now wants. Bank
+        //    each track's RG tags (even on a failed open — harmless; it just won't
+        //    become current) so the gain is ready the moment the track plays.
+        while let Ok((id, rg, opened)) = res_rx.try_recv() {
+            rg_tags.insert(id, rg);
+            match opened {
+                Ok(dec) => {
                     if let Ok(Provided::Loaded) = player.provide(id, dec) {
                         changed = true;
                     }
                 }
-                Ok((id, Err(e))) => eprintln!("player: open track {id} failed: {e:#}"),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                Err(e) => eprintln!("player: open track {id} failed: {e:#}"),
             }
         }
         while let Some(id) = player.poll_open() {
@@ -206,6 +261,30 @@ fn pump_thread<K, Mk, Ev>(
         };
         if matches!(progress, Progress::TrackChanged | Progress::Ended) {
             changed = true;
+        }
+
+        // 3b. Re-apply ReplayGain when the current track changes, or when the
+        //     config changed (`rg_dirty`). The deck holds one constant gain, so a
+        //     gapless advance sees the new track's gain updated ~one pump cycle
+        //     after the swap (the id change is observed here, post-`pump`) — a
+        //     known v1 limitation; exact per-decoder-slot gain across a gapless
+        //     splice is a follow-up (it would require the deck to carry a gain
+        //     per preload slot). A click isn't a concern: `set_replay_gain`
+        //     applies a single factor with no ramp.
+        //     TODO(untagged-analysis): tracks with no RG tags get only the preamp
+        //     here; computing a gain for them by background-analyzing loudness is
+        //     a deliberate follow-up — this is the hook where its result would be
+        //     folded into `rg_tags` before the gain is computed.
+        let cur = player.current();
+        if cur != rg_applied_for || rg_dirty {
+            apply_replay_gain(
+                &mut player,
+                rg_mode,
+                rg_preamp,
+                cur.and_then(|id| rg_tags.get(&id)),
+            );
+            rg_applied_for = cur;
+            rg_dirty = false;
         }
 
         // 4. Emit throttled state (immediately on change, else ~8 Hz).

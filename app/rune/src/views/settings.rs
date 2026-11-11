@@ -6,10 +6,19 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
-use rune::{El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
+use rune::{Align, Cx, El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
+use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
-use crate::{State, ThemePref, apply_and_save, apply_watch, set_output_device, set_theme_pref};
+use crate::views::slider::slider;
+use crate::{
+    State, ThemePref, apply_and_save, apply_watch, set_output_device, set_replaygain_mode,
+    set_replaygain_preamp, set_theme_pref,
+};
+
+/// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
+const RG_PREAMP_MIN: f32 = -15.0;
+const RG_PREAMP_MAX: f32 = 15.0;
 
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
@@ -285,15 +294,99 @@ fn output_section(s: &State, p: &Palette) -> El {
         .child(choices)
 }
 
+/// One ReplayGain mode choice; the active mode is filled with the primary color
+/// (mirrors `theme_button` / `device_button`).
+fn rg_mode_button(label: &str, key: &str, mode: ReplayGainMode, active: bool, p: &Palette) -> El {
+    el().key(key.to_string())
+        .padding(8.0)
+        .radius(6.0)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_replaygain_mode(s, mode))
+}
+
+/// The ReplayGain section: an Off / Track / Album mode row plus a preamp slider
+/// (−15..+15 dB). Selecting a mode or moving the preamp updates the live actor
+/// immediately and persists the choice. The slider commits on release (its value
+/// maps the 0..1 track position onto the dB range), and the current dB is shown
+/// to its right.
+fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let preamp = s.replaygain_preamp;
+    let value01 = ((preamp - RG_PREAMP_MIN) / (RG_PREAMP_MAX - RG_PREAMP_MIN)).clamp(0.0, 1.0);
+    let modes = row()
+        .gap(8.0)
+        .padding(8.0)
+        .child(rg_mode_button(
+            "Off",
+            "rg-off",
+            ReplayGainMode::Off,
+            s.replaygain_mode == ReplayGainMode::Off,
+            p,
+        ))
+        .child(rg_mode_button(
+            "Track",
+            "rg-track",
+            ReplayGainMode::Track,
+            s.replaygain_mode == ReplayGainMode::Track,
+            p,
+        ))
+        .child(rg_mode_button(
+            "Album",
+            "rg-album",
+            ReplayGainMode::Album,
+            s.replaygain_mode == ReplayGainMode::Album,
+            p,
+        ));
+    let preamp_row = row()
+        .key("rg-preamp-row")
+        .gap(12.0)
+        .padding(8.0)
+        .center_y()
+        .child(text("Preamp").color(p.text_secondary).w(56.0))
+        .child(slider(
+            "rg-preamp",
+            value01,
+            cx,
+            false,
+            p,
+            |st: &mut State, v: f32| {
+                // Map the 0..1 slider position back onto the dB range, rounded to
+                // 0.1 dB so the persisted value stays clean.
+                let db = RG_PREAMP_MIN + v * (RG_PREAMP_MAX - RG_PREAMP_MIN);
+                set_replaygain_preamp(st, (db * 10.0).round() / 10.0);
+            },
+        ))
+        .child(
+            text(format!("{preamp:+.1} dB"))
+                .color(p.text_secondary)
+                .w(64.0)
+                .align(Align::End),
+        );
+    col()
+        .key("replaygain")
+        .gap(2.0)
+        .child(
+            row().padding(8.0).child(
+                text("ReplayGain")
+                    .font(type_::TITLE)
+                    .color(p.primary)
+                    .grow(1.0),
+            ),
+        )
+        .child(modes)
+        .child(preamp_row)
+}
+
 /// The Settings page: a title plus scrollable sections (Sources, Appearance,
-/// Output, Updates).
-pub fn settings_page(s: &State, p: &Palette) -> El {
+/// Output, ReplayGain, Updates).
+pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let content = col()
         .key("settings-content")
         .gap(16.0)
         .child(sources_section(s, p))
         .child(appearance_section(s, p))
         .child(output_section(s, p))
+        .child(replaygain_section(s, p, cx))
         .child(updates_section(s, p));
     col()
         .key("settings")

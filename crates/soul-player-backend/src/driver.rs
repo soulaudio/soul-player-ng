@@ -10,7 +10,7 @@ use soul_audio_control::Player;
 use soul_audio_core::{DeckError, SeekableDecoder, Sink};
 use soul_audio_queue::{SliceContext, TwoLevelQueue};
 
-use crate::types::{Command, PlayState, QueueState, Tick};
+use crate::types::{Command, PlayState, QueueState, ReplayGainMode, Tick};
 
 /// The desktop player: unbounded (`VecDeque`) Up-Next/history, `SliceContext`
 /// over `u32` track ids, `PRELOAD = 2`. Generic over the sink `K` and decoder
@@ -90,7 +90,62 @@ pub fn apply_command<K: Sink, D: SeekableDecoder>(
             Ok(())
         }
         Command::Goto(i) => player.goto(i as usize),
+        // ReplayGain is applied by the pump directly against the deck (it needs
+        // the per-track RG tags the loader read, which `apply_command` has no
+        // access to) — there is no `Player` transport call for it, so here it is
+        // a no-op. See [`apply_replay_gain`].
+        Command::SetReplayGain { .. } => Ok(()),
     }
+}
+
+/// Per-track ReplayGain tag data, read by the loader off the pump thread and
+/// keyed to the track id so the pump can apply the matching gain when that track
+/// becomes current. Both fields are `None` for an untagged track (then only the
+/// preamp applies). Peaks are deliberately omitted: tag-based v1 gain never reads
+/// them; a peak-limited / clipping-prevention mode is a follow-up that would add
+/// them here.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RgInfo {
+    /// ReplayGain/R128 track gain, in dB (as parsed, reference level un-reconciled).
+    pub track_gain_db: Option<f32>,
+    /// ReplayGain/R128 album gain, in dB.
+    pub album_gain_db: Option<f32>,
+}
+
+/// The dB to apply for one track under `mode` + `preamp_db`, given its RG tags
+/// (`None` = untagged). Pure — the single source of truth for the normalization
+/// policy, unit-tested directly:
+/// - `Off` → `0.0` (unity; the preamp is intentionally ignored so "off" is a
+///   bit-identical passthrough).
+/// - `Track` → track gain (or `0.0` if that tag is absent) `+ preamp`.
+/// - `Album` → album gain, falling back to the track gain, (or `0.0`) `+ preamp`.
+#[must_use]
+pub fn applied_gain_db(mode: ReplayGainMode, preamp_db: f32, info: Option<&RgInfo>) -> f32 {
+    match mode {
+        ReplayGainMode::Off => 0.0,
+        ReplayGainMode::Track => info.and_then(|i| i.track_gain_db).unwrap_or(0.0) + preamp_db,
+        ReplayGainMode::Album => {
+            info.and_then(|i| i.album_gain_db.or(i.track_gain_db))
+                .unwrap_or(0.0)
+                + preamp_db
+        }
+    }
+}
+
+/// Compute (via [`applied_gain_db`]) and apply the current track's ReplayGain to
+/// the deck, returning the applied dB. The deck clamps and converts to a linear
+/// factor; `0.0` dB is an exact passthrough. The pump calls this at each track
+/// boundary and whenever the mode/preamp change; it is factored out so the
+/// normalization effect is unit-testable device-free against a `NullSink` deck.
+pub fn apply_replay_gain<K: Sink, D: SeekableDecoder>(
+    player: &mut ServicePlayer<K, D>,
+    mode: ReplayGainMode,
+    preamp_db: f32,
+    info: Option<&RgInfo>,
+) -> f32 {
+    let db = applied_gain_db(mode, preamp_db, info);
+    player.deck_mut().set_replay_gain(db);
+    db
 }
 
 fn frames_to_secs(frames: u64, rate: u32) -> f64 {
@@ -496,5 +551,74 @@ mod tests {
             FRAMES,
             "over-seek clamps to the track end, not past it"
         );
+    }
+
+    // --- ReplayGain normalization policy + application ----------------------
+
+    #[test]
+    fn applied_gain_db_follows_the_mode_policy() {
+        let tagged = RgInfo {
+            track_gain_db: Some(-6.0),
+            album_gain_db: Some(-9.0),
+        };
+        // Off ignores both the tags and the preamp (unity passthrough).
+        assert_eq!(
+            applied_gain_db(ReplayGainMode::Off, 3.0, Some(&tagged)),
+            0.0
+        );
+        // Track uses the track gain + preamp.
+        assert_eq!(
+            applied_gain_db(ReplayGainMode::Track, 3.0, Some(&tagged)),
+            -3.0
+        );
+        // Album uses the album gain + preamp.
+        assert_eq!(
+            applied_gain_db(ReplayGainMode::Album, 3.0, Some(&tagged)),
+            -6.0
+        );
+        // Album falls back to the track gain when there is no album gain.
+        let track_only = RgInfo {
+            track_gain_db: Some(-6.0),
+            album_gain_db: None,
+        };
+        assert_eq!(
+            applied_gain_db(ReplayGainMode::Album, 0.0, Some(&track_only)),
+            -6.0
+        );
+        // Untagged (None) in Track/Album → just the preamp; Off still 0.
+        assert_eq!(applied_gain_db(ReplayGainMode::Track, 4.0, None), 4.0);
+        assert_eq!(applied_gain_db(ReplayGainMode::Album, 4.0, None), 4.0);
+        assert_eq!(applied_gain_db(ReplayGainMode::Off, 4.0, None), 0.0);
+    }
+
+    #[test]
+    fn apply_replay_gain_sets_the_deck_gain_without_panicking() {
+        // Mirror the backend's pump: play a track, then apply a ReplayGain and
+        // confirm the deck actually holds the computed dB (device-free NullSink).
+        let mut p = player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        drive(&mut p, 3);
+        let info = RgInfo {
+            track_gain_db: Some(-6.0),
+            album_gain_db: Some(-9.0),
+        };
+        let db = apply_replay_gain(&mut p, ReplayGainMode::Track, 3.0, Some(&info));
+        assert!((db - (-3.0)).abs() < 1e-6, "track gain -6 + preamp 3 = -3");
+        assert!(
+            (p.deck().replay_gain_db() - (-3.0)).abs() < 1e-6,
+            "the deck holds the applied ReplayGain"
+        );
+        // Switching Off returns the deck to unity.
+        let off = apply_replay_gain(&mut p, ReplayGainMode::Off, 3.0, Some(&info));
+        assert_eq!(off, 0.0);
+        assert_eq!(p.deck().replay_gain_db(), 0.0, "Off restores unity gain");
     }
 }

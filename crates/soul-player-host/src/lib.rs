@@ -12,7 +12,8 @@ use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
 pub use sink::SinkMode;
 pub use soul_player_backend::{
-    BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, Tick, TrackView,
+    BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode, Tick,
+    TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -45,6 +46,12 @@ struct Inner {
     /// passed to the sink factory; a change applies to the NEXT spawn, not the
     /// live stream (see [`set_output_device`](PlayerHandle::set_output_device)).
     output_device: Mutex<Option<String>>,
+    /// The ReplayGain normalization choice `(mode, preamp_db)`. Remembered so a
+    /// freshly-spawned actor is told the current setting (via a `SetReplayGain`
+    /// command) the moment it starts — and, unlike the output device, a change
+    /// also applies to the LIVE actor immediately (see
+    /// [`set_replay_gain`](PlayerHandle::set_replay_gain)).
+    replay_gain: Mutex<(ReplayGainMode, f32)>,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -87,6 +94,7 @@ impl PlayerHandle {
                 subscribers: Mutex::new(Vec::new()),
                 folders: Mutex::new(Vec::new()),
                 output_device: Mutex::new(None),
+                replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
             }),
         }
     }
@@ -190,6 +198,22 @@ impl PlayerHandle {
     /// [`soul_audio_desktop::default_output_device_name`].
     pub fn default_output_device(&self) -> Option<String> {
         soul_audio_desktop::default_output_device_name()
+    }
+
+    /// Set the ReplayGain playback normalization: `mode` picks track vs album (vs
+    /// off) gain, `preamp_db` is a constant dB offset applied on top. Remembered
+    /// so the NEXT playback session starts already normalized (the stored value is
+    /// sent to the actor on spawn), AND — unlike the output device — applied to the
+    /// LIVE actor right away if one is running, so a change in Settings is heard on
+    /// the current track at its next pump cycle. Safe to call before any folder is
+    /// opened: it just records the choice (no actor is spawned just to set it).
+    pub fn set_replay_gain(&self, mode: ReplayGainMode, preamp_db: f32) {
+        *self.inner.replay_gain.lock().expect("replay_gain mutex") = (mode, preamp_db);
+        // Apply to a live actor only — never spawn one just to set the gain (that
+        // would open a device stream before the user has played anything).
+        if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
+            actor.send(Command::SetReplayGain { mode, preamp_db });
+        }
     }
 
     /// Register an event handler. Called on every backend event (Tick ~8 Hz +
@@ -296,7 +320,17 @@ impl PlayerHandle {
             .lock()
             .expect("device mutex")
             .clone();
-        *guard = Some(sink::build_actor(self.inner.mode, device, lib, forward));
+        // Snapshot the ReplayGain choice the same way, then tell the fresh actor so
+        // the session starts already normalized. Lock ordering: this holds `guard`
+        // (player) then briefly `replay_gain`; `set_replay_gain` never holds
+        // `replay_gain` while taking `player`, so the two can't deadlock.
+        let (rg_mode, rg_preamp) = *self.inner.replay_gain.lock().expect("replay_gain mutex");
+        let actor = sink::build_actor(self.inner.mode, device, lib, forward);
+        actor.send(Command::SetReplayGain {
+            mode: rg_mode,
+            preamp_db: rg_preamp,
+        });
+        *guard = Some(actor);
     }
 }
 
@@ -329,6 +363,30 @@ mod tests {
         h.set_output_device(Some("Some Soundcard".to_string()));
         h.set_output_device(Some(String::new())); // empty normalizes to the default
         h.set_output_device(None);
+    }
+
+    #[test]
+    fn set_replay_gain_before_open_is_remembered_without_spawning() {
+        // Recording the choice must not spawn an actor (no device stream before
+        // playback) and must not panic — it is just stored for the next spawn.
+        let h = PlayerHandle::offline();
+        h.set_replay_gain(ReplayGainMode::Album, -3.0);
+        assert_eq!(
+            *h.inner.replay_gain.lock().unwrap(),
+            (ReplayGainMode::Album, -3.0),
+            "the choice is remembered"
+        );
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "no actor is spawned just to set the gain"
+        );
+        // A live change on a running actor also just flows through (no panic):
+        // open a folder (spawns the actor), then set it again.
+        h.set_replay_gain(ReplayGainMode::Track, 6.0);
+        assert_eq!(
+            *h.inner.replay_gain.lock().unwrap(),
+            (ReplayGainMode::Track, 6.0)
+        );
     }
 
     /// Minimal stereo-16-bit WAV (mirrors the backend actor tests' writer).
