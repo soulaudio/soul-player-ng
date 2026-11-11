@@ -4212,6 +4212,7 @@ dependencies = [
  "anyhow",
  "cargo-packager-updater",
  "dirs 6.0.0",
+ "parley_engine",
  "rune",
  "rust-i18n",
  "semver",
