@@ -276,7 +276,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         } else {
             views::sidebar::sidebar(s, &p, cx, scale)
         })
-        .child(views::sidebar::resize_handle())
+        .child(views::sidebar::resize_handle(&p))
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
             Route::Library => views::library::track_list(s, &p).grow(1.0),
             Route::Settings => views::settings::settings_page(s, &p).grow(1.0),

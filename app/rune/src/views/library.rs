@@ -38,7 +38,9 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
         .key(format!("track-{}", t.id))
         .gap(12.0)
         .padding(8.0)
+        .radius(6.0)
         .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.06))
         .child(
             if playing {
                 // ▶/⏸ are already proven-good glyphs in this font (the

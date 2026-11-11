@@ -46,7 +46,9 @@ fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -
         .w_full()
         .px(12.0)
         .py(4.0)
+        .radius(6.0)
         .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.07))
         .child(
             row()
                 .w_full()
@@ -143,11 +145,14 @@ fn resize_to(width_at_press: f32, dx: f32) -> Option<f32> {
 /// snap closed under [`COLLAPSE_THRESHOLD`], and re-open again. `Drag::data`
 /// caches the width at press; `Drag::dx` is pointer travel since (independent of
 /// the handle moving with the sidebar), so `data + dx` is the live target width.
-pub fn resize_handle() -> El {
+pub fn resize_handle(p: &Palette) -> El {
     el().key("sidebar-resize")
         .w(HANDLE_WIDTH)
         .h_full()
         .cursor(Cursor::ResizeColumn)
+        // A primary-tinted line appears under the pointer, like the old app's
+        // `group-hover:bg-primary/30` handle.
+        .hover(p.primary.alpha(0.3))
         .on_drag(move |s: &mut State, d: &mut Drag, _tx| match d.phase {
             Phase::Down => {
                 d.data = if s.sidebar_collapsed {

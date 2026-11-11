@@ -47,7 +47,7 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
         .py(4.0)
         .radius(6.0)
         .cursor(Cursor::Pointer)
-        .hover(p.muted)
+        .hover(p.fg.alpha(0.06))
         .child(cover(s, Some(id), QUEUE_COVER, p, scale))
         .child(
             col()
