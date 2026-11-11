@@ -4070,7 +4070,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-artbake"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "embedded-io",
  "image",
@@ -4081,7 +4081,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-catalog"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "embedded-io",
  "soul-audio-core",
@@ -4090,7 +4090,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-control"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "soul-audio-core",
  "soul-audio-engine",
@@ -4100,7 +4100,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-core"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "embedded-io",
 ]
@@ -4108,7 +4108,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-desktop"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "anyhow",
  "cpal",
@@ -4121,7 +4121,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-engine"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "soul-audio-core",
 ]
@@ -4129,7 +4129,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-import"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "embedded-io-adapters",
  "soul-audio-catalog",
@@ -4141,7 +4141,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-index"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "embedded-io",
  "soul-audio-artbake",
@@ -4152,7 +4152,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-multicatalog"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "soul-audio-catalog",
  "soul-audio-index",
@@ -4161,7 +4161,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-queue"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "heapless",
  "soul-audio-engine",
@@ -4170,7 +4170,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-tags"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#b7f048950194c430da6df2446a1ba381da0338f3"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
 dependencies = [
  "embedded-io",
  "soul-audio-core",
