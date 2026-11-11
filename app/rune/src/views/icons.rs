@@ -80,6 +80,17 @@ pub static MUSIC: Icon = stroke_icon!(
 
 pub static PLUS: Icon = stroke_icon!("plus", r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#);
 
+/// lucide `grip-vertical` (six dots) — the drag affordance on a reorderable
+/// queue row. Filled circles so it reads at the 16 pt grip size.
+pub static GRIP: Icon = Icon {
+    name: "grip-vertical",
+    view: 24.0,
+    body: r#"<circle cx="9" cy="5" r="1" fill="currentColor"/><circle cx="9" cy="12" r="1" fill="currentColor"/><circle cx="9" cy="19" r="1" fill="currentColor"/><circle cx="15" cy="5" r="1" fill="currentColor"/><circle cx="15" cy="12" r="1" fill="currentColor"/><circle cx="15" cy="19" r="1" fill="currentColor"/>"#,
+};
+
+/// lucide `x` — the per-row remove-from-queue affordance.
+pub static X: Icon = stroke_icon!("x", r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#);
+
 pub static SEARCH: Icon = stroke_icon!(
     "search",
     r#"<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>"#

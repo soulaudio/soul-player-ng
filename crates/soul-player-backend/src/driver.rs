@@ -81,6 +81,18 @@ pub fn apply_command<K: Sink, D: SeekableDecoder>(
             player.clear_queue();
             Ok(())
         }
+        Command::RemoveFromQueue(i) => {
+            let _ = player.remove_from_queue(i as usize);
+            Ok(())
+        }
+        Command::MoveInQueue { from, to } => {
+            let _ = player.move_in_queue(from as usize, to as usize);
+            Ok(())
+        }
+        Command::PlayUpcoming(k) => {
+            let _ = player.play_upcoming(k as usize);
+            Ok(())
+        }
         Command::SetShuffle(on) => {
             player.set_shuffle(on, seed);
             Ok(())
@@ -119,11 +131,26 @@ pub fn project_tick<K: Sink, D: SeekableDecoder>(
     }
 }
 
-/// Project the Up-Next + context-position snapshot.
+/// How many upcoming CONTEXT tracks (the album/playlist remainder after the
+/// manual queue) to project for the "Next from" band. Bounded so a huge library —
+/// or `Repeat::All`'s infinite stream — can't grow the snapshot unboundedly; the
+/// sidebar only ever shows a scrollable handful.
+const UPCOMING_CONTEXT_CAP: usize = 64;
+
+/// Project the Up-Next snapshot: the manual queue (`up_next_ids`) and the real
+/// upcoming CONTEXT tracks (`context_ids`) the player will actually play after it,
+/// honouring shuffle — so the UI renders FROM the player instead of guessing from
+/// library order (which is wrong once shuffle is on).
 pub fn project_queue<K: Sink, D: SeekableDecoder>(player: &ServicePlayer<K, D>) -> QueueState {
     let q = player.sequencer();
+    let manual = q.upnext_len();
     QueueState {
         up_next_ids: q.upnext_iter().collect(),
+        context_ids: q
+            .upcoming_iter()
+            .skip(manual)
+            .take(UPCOMING_CONTEXT_CAP)
+            .collect(),
         context_pos: q.pos() as u32,
         context_len: q.source_len() as u32,
     }
@@ -223,6 +250,36 @@ mod tests {
         assert_eq!(project_queue(&p).up_next_ids, vec![1, 2]);
         apply_command(&mut p, Command::ClearQueue, 0).unwrap();
         assert!(project_queue(&p).up_next_ids.is_empty());
+    }
+
+    #[test]
+    fn queue_edit_commands_reorder_remove_and_jump() {
+        let mut p = player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0, 1, 2, 3],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        drive(&mut p, 3);
+        for id in [10, 11, 12] {
+            apply_command(&mut p, Command::Enqueue(id), 0).unwrap();
+        }
+        // Reorder the manual queue: move the front to index 2.
+        apply_command(&mut p, Command::MoveInQueue { from: 0, to: 2 }, 0).unwrap();
+        assert_eq!(project_queue(&p).up_next_ids, vec![11, 12, 10]);
+        // Remove the item now at index 1.
+        apply_command(&mut p, Command::RemoveFromQueue(1), 0).unwrap();
+        assert_eq!(project_queue(&p).up_next_ids, vec![11, 10]);
+        // The context band projects the REAL upcoming source remainder.
+        assert_eq!(project_queue(&p).context_ids, vec![1, 2, 3]);
+        // Click the first upcoming row (the queued 11): jump straight to it.
+        apply_command(&mut p, Command::PlayUpcoming(1), 0).unwrap();
+        drive(&mut p, 3);
+        assert_eq!(project_tick(&p, 1.0).now_playing_id, Some(11));
     }
 
     #[test]

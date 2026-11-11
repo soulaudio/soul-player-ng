@@ -1,32 +1,46 @@
-//! Sidebar queue: the tracks coming up next. Mirrors the old app's
-//! `applications/shared/src/components/sidebar/QueueSection.tsx` — a
-//! scrollable, bottom-aligned stack so the soonest-up track sits on the
-//! bottom edge, right above the player panel, rather than pinned to the top.
+//! Sidebar "Up Next" queue — the banded play queue the backend projects (not
+//! synthesized from library order). Two bands: the manual queue ("Next in
+//! queue", reorderable + removable) and the real upcoming context ("Next from
+//! <album>"). Rows are click-to-play-this-row (consuming those above), the
+//! manual band drag-reorders and hover-removes, and a Clear empties it. Mirrors
+//! the researched Spotify/Apple model; see `crates/soul-player-backend` for the
+//! projection and `soul-audio-queue::play_upcoming` for the click semantics.
 #![forbid(unsafe_code)]
 
-use rune::{Cursor, El, ScrollSpec, col, row, text};
+use rune::{
+    Cursor, Drag, El, Phase, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon,
+    row, text,
+};
 use soul_player_host::Command;
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
+use crate::views::icons;
 use crate::views::player::{QUEUE_COVER, cover};
 
-/// Width of the scroll-edge fade that eases queue rows into the nav at the top
-/// (Rune suggests 16–32 pt).
+/// Width of the scroll-edge fade that eases rows into the nav above (Rune
+/// suggests 16–32 pt).
 const FADE_H: f32 = 32.0;
+/// Nominal queue-row height (cover + vertical padding), used only to turn a
+/// drag's vertical travel into a target index. Approximate is fine — it just
+/// sets how far you drag to move one slot. `pub(crate)` so the drag e2e test can
+/// drive a gesture of a known slot count.
+pub(crate) const QUEUE_ROW_H: f32 = 44.0;
 
-/// One compact queue row: title (`p.fg`) over artist (`p.text_secondary`),
-/// both small and truncated so a long tag can't overflow the sidebar.
-/// Display-only would satisfy the brief; clicking through to
-/// `Command::Goto` is wired anyway since the natural position is cheap to
-/// derive (`context_pos + 1 + index`, matching `QueueState::up_next_ids`'s
-/// order — see `crates/soul-player-backend/src/driver.rs`). `slot` is this
-/// row's position across the whole rendered list (override queue, then
-/// context lookahead); it's only there to keep sibling `.key`s unique, since
-/// the two sections can otherwise derive the same `natural_pos` for
-/// different ids.
-fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, scale: f32) -> El {
+/// Where a dragged row lands: its own index plus one slot per `QUEUE_ROW_H` of
+/// vertical travel, clamped into the band. Pure, so the drag handler and its
+/// test share one rule.
+fn drop_index(from: usize, dy: f32, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let steps = (dy / QUEUE_ROW_H).round() as i64;
+    (from as i64 + steps).clamp(0, len as i64 - 1) as usize
+}
+
+/// Title + artist, the two-line text block shared by both bands' rows.
+fn row_text(s: &State, p: &Palette, id: u32) -> El {
     let (title, artist) = match s.track(id) {
         Some(t) => (
             t.title
@@ -36,9 +50,103 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
         ),
         None => (t!("library.unknown").to_string(), String::new()),
     };
-    row()
-        .key(format!("queue-{slot}-{id}"))
-        .gap(space::SM)
+    col()
+        .key("qrow-text")
+        .gap(space::XXS)
+        .grow(1.0)
+        .min_w(0.0)
+        .child(text(title).font(type_::ITEM).color(p.fg).truncate())
+        .child(
+            text(artist)
+                .font(type_::CAPTION)
+                .color(p.text_secondary.alpha(0.7))
+                .truncate(),
+        )
+}
+
+/// A band's eyebrow label, with an optional trailing control (the manual band
+/// carries Clear).
+fn band_header(key: &str, label: String, trailing: Option<El>, p: &Palette) -> El {
+    let mut r = row()
+        .key(key.to_string())
+        .w_full()
+        .center_y()
+        .px(space::XS)
+        .child(
+            text(label)
+                .font(type_::SECTION)
+                .color(p.text_secondary)
+                .grow(1.0),
+        );
+    if let Some(t) = trailing {
+        r = r.child(t);
+    }
+    r
+}
+
+/// The thin accent drop-indicator shown at the target slot while dragging.
+fn drop_line(p: &Palette) -> El {
+    el().key("drop-line")
+        .w_full()
+        .h(2.0)
+        .radius(radius::FULL)
+        .fill(p.accent)
+}
+
+/// One manual-queue row: grip (drag-reorder) + cover + title/artist + remove ✕.
+/// Clicking the row body plays this row now (consuming those above); right-click
+/// opens Play / Remove. `i` is the backend manual-queue index; `k` the 1-based
+/// upcoming offset for `PlayUpcoming`.
+fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dragged: bool) -> El {
+    // The drag grip: Down caches the item's current index, Move tracks the target
+    // (drives the drop line), Up commits the reorder. The backing list is unchanged
+    // until release, so `from` stays valid for the whole gesture.
+    let grip = el()
+        .key(format!("grip-{id}"))
+        .role("button")
+        .label(t!("queue.reorder").to_string())
+        .size(16.0, QUEUE_ROW_H)
+        .center()
+        .cursor(Cursor::Pointer)
+        .child(icon(&icons::GRIP, 14.0).color(p.text_secondary.alpha(0.5)))
+        .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
+            Phase::Down => {
+                let from = st.up_next.iter().position(|&x| x == id).unwrap_or(i);
+                st.queue_drag = Some((from, from));
+            }
+            Phase::Move => {
+                if let Some((from, _)) = st.queue_drag {
+                    let to = drop_index(from, d.dy, st.up_next.len());
+                    st.queue_drag = Some((from, to));
+                }
+            }
+            Phase::Up => {
+                if let Some((from, to)) = st.queue_drag.take()
+                    && from != to
+                {
+                    st.host.send(Command::MoveInQueue {
+                        from: from as u32,
+                        to: to as u32,
+                    });
+                }
+            }
+        });
+
+    let remove = el()
+        .key(format!("remove-{id}"))
+        .role("button")
+        .label(t!("queue.remove").to_string())
+        .focusable(true)
+        .padding(space::XS)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.1))
+        .child(icon(&icons::X, 14.0).color(p.text_secondary))
+        .on_press(move |st: &mut State| st.host.send(Command::RemoveFromQueue(i as u32)));
+
+    let r = row()
+        .key(format!("queue-manual-{id}"))
+        .gap(space::XS)
         .center_y()
         .px(space::XS)
         .py(space::XS)
@@ -46,76 +154,186 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.06))
         .press(p.fg.alpha(0.1))
+        .child(grip)
         .child(cover(s, Some(id), QUEUE_COVER, p, scale))
-        .child(
-            col()
-                .key("queue-text")
-                .gap(space::XXS)
-                .grow(1.0)
-                .min_w(0.0)
-                .child(text(title).font(type_::ITEM).color(p.fg).truncate())
-                // Subtitle dimmer than the title, as the old app's `TrackItem`
-                // artist line (`text-muted-foreground/70`).
-                .child(
-                    text(artist)
-                        .font(type_::CAPTION)
-                        .color(p.text_secondary.alpha(0.7))
-                        .truncate(),
-                ),
-        )
-        .on_press(move |st: &mut State| st.host.send(Command::Goto(natural_pos)))
+        .child(row_text(s, p, id))
+        .child(remove)
+        .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
+            tx.popup_menu(
+                PopupMenu::new()
+                    .item(PopupItem::new("play", t!("player.play").to_string()))
+                    .item(PopupItem::new("remove", t!("queue.remove").to_string())),
+                press,
+                move |st: &mut State, picked, _tx: &mut Tx| match picked {
+                    Some("play") => st.host.send(Command::PlayUpcoming(k)),
+                    Some("remove") => st.host.send(Command::RemoveFromQueue(i as u32)),
+                    _ => {}
+                },
+            );
+        })
+        .on_press(move |st: &mut State| st.host.send(Command::PlayUpcoming(k)));
+    // The lifted row dims while it's being dragged.
+    if dragged { r.opacity(0.4) } else { r }
 }
 
-/// Upcoming-queue list for the sidebar: the manual override queue
-/// (`State::up_next`, from `PlayNext`/`Enqueue`) first, since those play
-/// before the rest of the context resumes, followed by the upcoming
-/// CONTEXT tracks — the library entries after the current position — so
-/// the section isn't empty during ordinary playback, when `up_next` is
-/// usually empty. The context lookahead assumes context order == library
-/// order (true unless shuffled — acceptable for the spike), and is capped
-/// at 12 rows so a long library doesn't grow the sidebar's scroll content
-/// unboundedly. Under a small "Up Next" eyebrow label. The row list is
-/// `justify_end()`'d inside a scroll viewport (`.scroll` +
-/// `.grow(1.0).min_h(0.0)`, cheat-sheet §7): short queues sit flush on the
-/// bottom, longer ones scroll with the soonest-up row anchored there, the
-/// same `justify_end`-inside-`scroll` combination the engine documents for
-/// a bottom-anchored stack (`crates/rune/src/runtime/scroll/bottom.rs`).
-pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
-    let mut rows = col().key("queue-rows").gap(space::XS).justify_end();
-    let mut slot = 0usize;
-    for (i, &id) in s.up_next.iter().enumerate() {
-        let natural_pos = s.context_pos + 1 + i as u32;
-        rows = rows.child(queue_row(s, p, slot, id, natural_pos, scale));
-        slot += 1;
+/// One context ("Next from") row: cover + title/artist, click to jump there.
+/// Not reorderable/removable — it's the source remainder, not a user list.
+fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
+    row()
+        .key(format!("queue-context-{id}"))
+        .gap(space::XS)
+        .center_y()
+        .px(space::XS)
+        .py(space::XS)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.06))
+        .press(p.fg.alpha(0.1))
+        // Align with the manual rows (which lead with a 16 pt grip) so both bands'
+        // covers line up.
+        .child(el().key("ctx-indent").w(16.0))
+        .child(cover(s, Some(id), QUEUE_COVER, p, scale))
+        .child(row_text(s, p, id))
+        .on_press(move |st: &mut State| st.host.send(Command::PlayUpcoming(k)))
+}
+
+/// Clear the manual queue (sits beside the "Next in queue" eyebrow).
+fn clear_button(p: &Palette) -> El {
+    el().key("clear-queue")
+        .role("button")
+        .label(t!("queue.clear").to_string())
+        .focusable(true)
+        .px(space::SNUG)
+        .py(space::XXS)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.08))
+        .press(p.fg.alpha(0.14))
+        .child(
+            text(t!("queue.clear").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .on_press(|st: &mut State| st.host.send(Command::ClearQueue))
+}
+
+/// "Next from <album>" using the now-playing track's album; a generic "Up next"
+/// when there's no album to name.
+fn context_label(s: &State) -> String {
+    let album = s
+        .now_playing_id
+        .and_then(|id| s.track(id))
+        .and_then(|t| t.album.clone())
+        .filter(|a| !a.is_empty());
+    match album {
+        Some(a) => t!("queue.nextFrom", name => a).to_string(),
+        None => t!("queue.upNext").to_string(),
     }
-    for (i, t) in s
-        .library
-        .iter()
-        .skip(s.context_pos as usize + 1)
-        .take(12)
-        .enumerate()
-    {
-        let natural_pos = s.context_pos + 1 + i as u32;
-        rows = rows.child(queue_row(s, p, slot, t.id, natural_pos, scale));
-        slot += 1;
-    }
-    // No header (the old app's QueueSection has none): just the bottom-anchored,
-    // scrollable list (`px-4 pb-2`) filling the space between nav and player.
-    // `scroll_edge_fade` fades the top edge as rows scroll up into the nav — only
-    // while content is hidden above, and (unlike a layered overlay) it's part of
-    // the viewport, so it never eats wheel/scroll events over the fade band.
+}
+
+/// The empty state: nothing queued and nothing upcoming.
+fn empty_state(p: &Palette) -> El {
     col()
-        .key("queue")
-        .px(space::MD)
-        .pb(space::SM)
+        .key("queue-empty")
         .grow(1.0)
         .min_h(0.0)
+        .center()
+        .gap(space::XS)
+        .px(space::MD)
         .child(
-            rows.scroll(ScrollSpec {
+            text(t!("queue.empty").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .child(
+            text(t!("queue.emptyHint").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary.alpha(0.6)),
+        )
+}
+
+/// The sidebar queue: the manual "Next in queue" band over the "Next from
+/// <context>" band, both projected from the player, in a scroll viewport between
+/// the nav and the now-playing panel. Empty when nothing is queued or upcoming.
+pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
+    if s.up_next.is_empty() && s.context_ids.is_empty() {
+        return col()
+            .key("queue")
+            .grow(1.0)
+            .min_h(0.0)
+            .child(empty_state(p));
+    }
+
+    let manual_len = s.up_next.len();
+    let mut content = col()
+        .key("queue-content")
+        .gap(space::MD)
+        .px(space::MD)
+        .pt(space::SM)
+        .pb(space::SM);
+
+    // Manual band ("Next in queue") — hidden entirely when empty.
+    if !s.up_next.is_empty() {
+        let mut band = col()
+            .key("queue-manual-band")
+            .gap(space::XXS)
+            .child(band_header(
+                "queue-next-in-queue",
+                t!("queue.nextInQueue").to_string(),
+                Some(clear_button(p)),
+                p,
+            ));
+        let target = s.queue_drag.map(|(_, to)| to);
+        for (i, &id) in s.up_next.iter().enumerate() {
+            if target == Some(i) {
+                band = band.child(drop_line(p));
+            }
+            let dragged = s.queue_drag.is_some_and(|(from, _)| from == i);
+            band = band.child(manual_row(s, p, scale, i, id, (i + 1) as u32, dragged));
+        }
+        content = content.child(band);
+    }
+
+    // Context band ("Next from <album>") — the real shuffle-correct remainder.
+    if !s.context_ids.is_empty() {
+        let mut band = col()
+            .key("queue-context-band")
+            .gap(space::XXS)
+            .child(band_header("queue-next-from", context_label(s), None, p));
+        for (j, &id) in s.context_ids.iter().enumerate() {
+            let k = (manual_len + j + 1) as u32;
+            band = band.child(context_row(s, p, scale, id, k));
+        }
+        content = content.child(band);
+    }
+
+    col().key("queue").grow(1.0).min_h(0.0).child(
+        content
+            .scroll(ScrollSpec {
                 stick_bottom: false,
             })
             .scroll_edge_fade(FADE_H)
             .grow(1.0)
             .min_h(0.0),
-        )
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drop_index_moves_one_slot_per_row_height_and_clamps() {
+        // No travel: stays put.
+        assert_eq!(drop_index(2, 0.0, 5), 2);
+        // Down one+ row heights: moves down one/two, clamped to the last index.
+        assert_eq!(drop_index(0, QUEUE_ROW_H * 1.2, 5), 1);
+        assert_eq!(drop_index(1, QUEUE_ROW_H * 2.0, 5), 3);
+        assert_eq!(drop_index(3, QUEUE_ROW_H * 9.0, 5), 4); // clamps to len-1
+        // Up: negative travel moves toward the front, clamped at 0.
+        assert_eq!(drop_index(3, -QUEUE_ROW_H * 2.0, 5), 1);
+        assert_eq!(drop_index(1, -QUEUE_ROW_H * 9.0, 5), 0);
+        // Degenerate.
+        assert_eq!(drop_index(0, 100.0, 0), 0);
+    }
 }

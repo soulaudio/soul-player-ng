@@ -113,7 +113,17 @@ struct State {
     volume: f32,
     shuffle: bool,
     repeat: RepeatMode,
+    /// The manual queue ("Next in queue"): tracks the user queued via
+    /// `PlayNext`/`Enqueue`, in play order. Reorderable and removable.
     up_next: Vec<u32>,
+    /// The real upcoming CONTEXT tracks (shuffle-correct) after the manual queue,
+    /// from the backend's `QueueState` — the "Next from <context>" band. This
+    /// replaces the old synthesis from `library` order (wrong under shuffle).
+    context_ids: Vec<u32>,
+    /// Transient drag-reorder state for the Up-Next band: `Some((from, to))` while
+    /// a row is being dragged, `None` at rest. Drives the drop indicator; the
+    /// commit (`Command::MoveInQueue`) fires on release.
+    queue_drag: Option<(usize, usize)>,
     context_pos: u32,
     context_len: u32,
     /// Current page (Library vs Settings).
@@ -177,6 +187,8 @@ impl State {
             shuffle: false,
             repeat: RepeatMode::Off,
             up_next: Vec::new(),
+            context_ids: Vec::new(),
+            queue_drag: None,
             context_pos: 0,
             context_len: 0,
             route: Route::Library,
@@ -217,6 +229,7 @@ impl State {
             }
             Event::Queue(q) => {
                 self.up_next = q.up_next_ids.clone();
+                self.context_ids = q.context_ids.clone();
                 self.context_pos = q.context_pos;
                 self.context_len = q.context_len;
             }
@@ -367,6 +380,19 @@ fn scene_no_match(s: &mut State) {
 fn scene_collapsed(s: &mut State) {
     s.sidebar_collapsed = true;
 }
+/// Seed a populated banded queue from the loaded library so `--snap` can capture
+/// the "Up Next" sidebar (which is empty until playback otherwise).
+fn scene_queue(s: &mut State) {
+    let ids: Vec<u32> = s.library.iter().take(9).map(|t| t.id).collect();
+    if let Some(&first) = ids.first() {
+        s.now_playing_id = Some(first);
+        s.playing = true;
+        s.up_next = ids.iter().skip(1).take(2).copied().collect();
+        s.context_ids = ids.iter().skip(3).copied().collect();
+        s.context_pos = 0;
+        s.context_len = s.library.len() as u32;
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     // Single-instance (release builds only — dev can run several for comparison):
@@ -400,6 +426,7 @@ fn main() -> anyhow::Result<()> {
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
+            ("queue", scene_queue),
         ],
         ..AppSpec::new(
             "Soul Player",
@@ -1027,6 +1054,130 @@ mod tests {
         assert!(
             rt.find(&format!("enqueue-{first_id}")).is_some(),
             "a track row offers an add-to-queue button"
+        );
+    }
+
+    /// A populated queue renders both bands — the manual "Next in queue" (with a
+    /// drag grip, remove ✕, and Clear) and the "Next from <context>" remainder.
+    #[test]
+    fn populated_queue_renders_both_bands_with_controls() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        s.sidebar_collapsed = false; // deterministic — don't depend on persisted config
+        let ids: Vec<u32> = s.library.iter().take(5).map(|t| t.id).collect();
+        assert!(ids.len() >= 5, "testdata has enough tracks for the bands");
+        s.now_playing_id = Some(ids[0]);
+        s.up_next = ids[1..3].to_vec(); // two manual rows
+        s.context_ids = ids[3..].to_vec(); // context rows
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("queue-next-in-queue").is_some(),
+            "the manual band header renders"
+        );
+        assert!(
+            rt.find("queue-next-from").is_some(),
+            "the context band header renders"
+        );
+        assert!(rt.find("clear-queue").is_some(), "Clear is offered");
+        let m0 = ids[1];
+        assert!(
+            rt.find(&format!("queue-manual-{m0}")).is_some(),
+            "a manual queue row renders"
+        );
+        assert!(
+            rt.find(&format!("grip-{m0}")).is_some(),
+            "the manual row has a drag grip"
+        );
+        assert!(
+            rt.find(&format!("remove-{m0}")).is_some(),
+            "the manual row has a remove control"
+        );
+        let c0 = ids[3];
+        assert!(
+            rt.find(&format!("queue-context-{c0}")).is_some(),
+            "a context row renders"
+        );
+        assert!(
+            rt.find(&format!("grip-{c0}")).is_none(),
+            "context rows are not reorderable (no grip)"
+        );
+    }
+
+    /// Nothing queued and nothing upcoming shows the empty state, not stale rows.
+    #[test]
+    fn empty_queue_shows_the_empty_state() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("queue-empty").is_some(),
+            "an empty queue shows the empty state"
+        );
+    }
+
+    /// Drag-reorder, driven through the real pointer: pressing a manual row's grip
+    /// picks it up, dragging down past a row height advances the drop target and
+    /// shows the drop indicator, and releasing ends the gesture (committing the
+    /// move). The same `Runtime` + `pointer_*` harness the sidebar resize uses.
+    #[test]
+    fn dragging_a_queue_row_shows_a_drop_target_then_commits_on_release() {
+        use crate::views::queue::QUEUE_ROW_H;
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        s.sidebar_collapsed = false;
+        let ids: Vec<u32> = s.library.iter().take(6).map(|t| t.id).collect();
+        assert!(ids.len() >= 6, "testdata has enough tracks");
+        s.now_playing_id = Some(ids[0]);
+        s.up_next = ids[1..4].to_vec(); // 3 manual rows at indices 0, 1, 2
+        s.context_ids = ids[4..].to_vec();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        // Press the first manual row's grip and drag it down ~1.5 row heights.
+        let (gx, gy) = rt
+            .find(&format!("grip-{}", ids[1]))
+            .expect("the first manual row has a drag grip");
+        rt.pointer_move(gx, gy);
+        rt.pointer_down(gx, gy);
+        rt.pointer_move(gx, gy + QUEUE_ROW_H * 1.5);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.queue_drag.map(|(from, _)| from),
+            Some(0),
+            "pressing a grip picks up that row"
+        );
+        assert!(
+            rt.state.queue_drag.map(|(_, to)| to).unwrap_or(0) >= 1,
+            "dragging down advances the drop target"
+        );
+        assert!(
+            rt.find("drop-line").is_some(),
+            "a drop indicator shows while dragging"
+        );
+
+        // Release ends the gesture and clears the transient drag state.
+        rt.pointer_up(gx, gy + QUEUE_ROW_H * 1.5);
+        rt.frame(0.0);
+        assert_eq!(rt.state.queue_drag, None, "releasing ends the drag");
+        assert!(
+            rt.find("drop-line").is_none(),
+            "the drop indicator is gone once released"
         );
     }
 
