@@ -119,7 +119,7 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
 /// `main::handle_key` routes keystrokes into `State::search`.
 fn search_bar(s: &State, p: &Palette) -> El {
     let (shown, dim) = if s.search.is_empty() && !s.searching {
-        ("Type / to search".to_string(), true)
+        (t!("library.searchPlaceholder").to_string(), true)
     } else if s.searching {
         (format!("{}│", s.search), false)
     } else {
@@ -177,8 +177,12 @@ pub fn track_list(s: &State, p: &Palette) -> El {
             .h_full()
             .center()
             .gap(12.0)
-            .child(text("No music loaded").font(type_::TITLE).color(p.fg))
-            .child(text("Add a source to start playing").color(p.text_secondary))
+            .child(
+                text(t!("library.noMusic").to_string())
+                    .font(type_::TITLE)
+                    .color(p.fg),
+            )
+            .child(text(t!("library.noMusicHint").to_string()).color(p.text_secondary))
             .child(
                 el().key("go-to-sources")
                     .padding(12.0)
@@ -186,7 +190,7 @@ pub fn track_list(s: &State, p: &Palette) -> El {
                     .fill(p.primary)
                     .center()
                     .cursor(Cursor::Pointer)
-                    .child(text("Add a source").color(p.bg))
+                    .child(text(t!("library.addSource").to_string()).color(p.bg))
                     .on_press(|s: &mut State| s.route = crate::Route::Settings),
             );
     }
@@ -197,12 +201,9 @@ pub fn track_list(s: &State, p: &Palette) -> El {
         s.library.iter().filter(|t| track_matches(t, &q)).collect()
     };
     let body = if visible.is_empty() {
-        col()
-            .key("no-matches")
-            .grow(1.0)
-            .min_h(0.0)
-            .center()
-            .child(text(format!("No tracks match \"{}\"", s.search)).color(p.text_secondary))
+        col().key("no-matches").grow(1.0).min_h(0.0).center().child(
+            text(t!("library.noMatch", query => s.search).to_string()).color(p.text_secondary),
+        )
     } else {
         let ids: Vec<u32> = visible.iter().map(|t| t.id).collect();
         let mut list = col().key("tracks").gap(2.0);
@@ -224,7 +225,7 @@ pub fn track_list(s: &State, p: &Palette) -> El {
 }
 
 /// One sort-order choice; the active axis is filled with the primary color.
-fn sort_button(label: &str, key: &str, axis: BrowseAxis, active: bool, p: &Palette) -> El {
+fn sort_button(label: String, key: &str, axis: BrowseAxis, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
         .padding(6.0)
         .radius(6.0)
@@ -241,30 +242,30 @@ fn sort_bar(s: &State, p: &Palette) -> El {
         .key("sort-bar")
         .gap(8.0)
         .padding(8.0)
-        .child(text("Sort").color(p.text_secondary))
+        .child(text(t!("library.sort").to_string()).color(p.text_secondary))
         .child(sort_button(
-            "Artist",
+            t!("library.sortArtist").to_string(),
             "sort-artist",
             BrowseAxis::ArtistAlbumTrack,
             a == BrowseAxis::ArtistAlbumTrack,
             p,
         ))
         .child(sort_button(
-            "Album",
+            t!("library.sortAlbum").to_string(),
             "sort-album",
             BrowseAxis::Album,
             a == BrowseAxis::Album,
             p,
         ))
         .child(sort_button(
-            "Title",
+            t!("library.sortTitle").to_string(),
             "sort-title",
             BrowseAxis::Title,
             a == BrowseAxis::Title,
             p,
         ))
         .child(sort_button(
-            "Folder",
+            t!("library.sortFolder").to_string(),
             "sort-folder",
             BrowseAxis::Folder,
             a == BrowseAxis::Folder,
