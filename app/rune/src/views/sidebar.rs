@@ -5,9 +5,10 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
-use rune::{Align, Cursor, Cx, Drag, El, Phase, TextStyle, col, el, row, text};
+use rune::{Align, Cursor, Cx, Drag, El, Phase, TextStyle, col, el, icon, row, text};
 
 use crate::theme::Palette;
+use crate::views::icons;
 use crate::views::player::player_panel;
 use crate::views::queue::queue_section;
 use crate::{Route, State, config};
@@ -45,6 +46,7 @@ fn nav_item(key: &str, label: &str, route: Route, active: bool, p: &Palette) -> 
         .w_full()
         .px(12.0)
         .py(4.0)
+        .cursor(Cursor::Pointer)
         .child(
             row()
                 .w_full()
@@ -92,22 +94,31 @@ fn settings_footer(s: &State, p: &Palette) -> El {
         .px(12.0)
         .py(8.0)
         .center_y()
-        .child(
-            el().key("nav-settings")
+        .child({
+            let gear = el()
+                .key("nav-settings")
                 .role("button")
                 .label("Settings")
                 .focusable(true)
-                .px(6.0)
-                .py(4.0)
+                .px(8.0)
+                .py(5.0)
                 .radius(6.0)
-                .hover(p.muted)
+                .cursor(Cursor::Pointer)
                 .on_press(move |s: &mut State| s.route = Route::Settings)
-                .child(
-                    text("⚙")
-                        .font(TextStyle::new(16.0, 400.0))
-                        .color(if active { p.primary } else { p.text_secondary }),
-                ),
-        )
+                .child(icon(&icons::SETTINGS, 16.0).color(if active {
+                    p.bg
+                } else {
+                    p.text_secondary
+                }));
+            // On the Settings page the gear gets a filled primary pill so "picked"
+            // reads clearly — the same active treatment as the sort/theme buttons;
+            // otherwise it just highlights on hover.
+            if active {
+                gear.fill(p.primary)
+            } else {
+                gear.hover(p.muted)
+            }
+        })
         .child(
             text(VERSION)
                 .font(type_::MONO_CAPTION.mono())

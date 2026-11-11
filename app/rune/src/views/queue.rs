@@ -4,7 +4,7 @@
 //! bottom edge, right above the player panel, rather than pinned to the top.
 #![forbid(unsafe_code)]
 
-use rune::{El, ScrollSpec, TextStyle, col, row, text};
+use rune::{Cursor, El, ScrollSpec, TextStyle, col, row, text};
 use soul_player_host::Command;
 
 use crate::State;
@@ -42,6 +42,7 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
         .px(4.0)
         .py(4.0)
         .radius(6.0)
+        .cursor(Cursor::Pointer)
         .hover(p.muted)
         .child(cover(s, Some(id), QUEUE_COVER, p, scale))
         .child(

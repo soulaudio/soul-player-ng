@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
-use rune::{El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
+use rune::{Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
 
 use crate::theme::Palette;
 use crate::{State, ThemePref, apply_and_save, apply_watch, set_theme_pref};
@@ -25,6 +25,7 @@ fn add_source_button(p: &Palette) -> El {
         .radius(8.0)
         .fill(p.primary)
         .center()
+        .cursor(Cursor::Pointer)
         .child(text("+ Add Source").color(p.bg))
         .on_press_tx(|_s: &mut State, tx: &mut Tx| {
             tx.open_folder(
@@ -52,6 +53,7 @@ fn rescan_button(p: &Palette) -> El {
         .radius(8.0)
         .fill(p.muted)
         .center()
+        .cursor(Cursor::Pointer)
         .child(text("Rescan").color(p.fg))
         .on_press(|s: &mut State| {
             if let Ok(up) = s.host.set_folders(&s.watched_folders) {
@@ -83,6 +85,7 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
             .padding(6.0)
             .radius(6.0)
             .fill(p.muted)
+            .cursor(Cursor::Pointer)
             .child(text("✕").color(p.text_secondary))
             .on_press(move |st: &mut State| {
                 if let Ok(up) = st.host.remove_folder(&remove_for) {
@@ -157,6 +160,7 @@ fn updates_section(s: &State, p: &Palette) -> El {
                         .radius(8.0)
                         .fill(p.primary)
                         .center()
+                        .cursor(Cursor::Pointer)
                         .child(text("Install & Restart").color(p.bg))
                         .on_press(|_s: &mut State| {
                             std::thread::spawn(|| {
@@ -176,6 +180,7 @@ fn theme_button(label: &str, key: &str, pref: ThemePref, active: bool, p: &Palet
     el().key(key.to_string())
         .padding(8.0)
         .radius(6.0)
+        .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
         .on_press(move |s: &mut State| set_theme_pref(s, pref))

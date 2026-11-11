@@ -4,11 +4,14 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::type_;
-use rune::{El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text};
+use rune::{
+    Cursor, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row, text,
+};
 use soul_player_host::{BrowseAxis, Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
+use crate::views::icons;
 
 fn fmt_dur(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -35,6 +38,7 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
         .key(format!("track-{}", t.id))
         .gap(12.0)
         .padding(8.0)
+        .cursor(Cursor::Pointer)
         .child(
             if playing {
                 // ▶/⏸ are already proven-good glyphs in this font (the
@@ -76,7 +80,8 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
                 .padding(6.0)
                 .radius(6.0)
                 .fill(p.muted)
-                .child(text("+").color(p.text_secondary))
+                .cursor(Cursor::Pointer)
+                .child(icon(&icons::PLUS, 14.0).color(p.text_secondary))
                 .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
         )
         // Right-click: a context menu with the fuller per-track actions (Play,
@@ -124,13 +129,15 @@ fn search_bar(s: &State, p: &Palette) -> El {
         .key("search-bar")
         .gap(8.0)
         .padding(8.0)
-        .child(text("Search").color(p.text_secondary))
+        .center_y()
+        .child(icon(&icons::SEARCH, 16.0).color(p.text_secondary))
         .child(
             el().key("search-field")
                 .grow(1.0)
                 .padding(6.0)
                 .radius(6.0)
                 .fill(p.muted)
+                .cursor(Cursor::Pointer)
                 .child(text(shown).color(if dim { p.text_secondary } else { p.fg }))
                 .on_press(|st: &mut State| st.searching = true),
         );
@@ -140,6 +147,7 @@ fn search_bar(s: &State, p: &Palette) -> El {
                 .padding(6.0)
                 .radius(6.0)
                 .fill(p.muted)
+                .cursor(Cursor::Pointer)
                 .child(text("✕").color(p.text_secondary))
                 .on_press(|st: &mut State| {
                     st.search.clear();
@@ -177,6 +185,7 @@ pub fn track_list(s: &State, p: &Palette) -> El {
                     .radius(8.0)
                     .fill(p.primary)
                     .center()
+                    .cursor(Cursor::Pointer)
                     .child(text("Add a source").color(p.bg))
                     .on_press(|s: &mut State| s.route = crate::Route::Settings),
             );
@@ -219,6 +228,7 @@ fn sort_button(label: &str, key: &str, axis: BrowseAxis, active: bool, p: &Palet
     el().key(key.to_string())
         .padding(6.0)
         .radius(6.0)
+        .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
         .on_press(move |s: &mut State| crate::set_sort(s, axis))

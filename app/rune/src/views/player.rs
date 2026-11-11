@@ -9,11 +9,15 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use rune::tok::{motion, type_};
-use rune::{Align, Cx, El, Image, ImageCache, SurfaceFit, TextStyle, Waker, col, el, row, text};
+use rune::{
+    Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, TextStyle, Waker, col, el, icon,
+    row, text,
+};
 use soul_player_host::{Command, PlayerHandle, RepeatMode, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
+use crate::views::icons;
 use crate::views::slider::slider;
 
 /// Now-playing cover side, in points — the old app's `w-10` (40 px).
@@ -36,7 +40,6 @@ const CTRL_GAP: f32 = 12.0;
 /// (`.grow(1.0)`, see `views::slider`) take whatever's left of the row
 /// after these and the row gaps.
 const TIME_LABEL_W: f32 = 36.0;
-const VOL_LABEL_W: f32 = 24.0;
 const VOL_PCT_W: f32 = 38.0;
 /// Gap between a row's fixed labels and its slider, and between the
 /// transport row's buttons — tightened from Task 5-6's full-width numbers
@@ -108,7 +111,7 @@ fn cover_placeholder(size: f32, p: &Palette) -> El {
         .radius(6.0)
         .fill(p.muted)
         .center()
-        .child(text("♪").font(type_::LABEL).color(p.text_secondary))
+        .child(icon(&icons::MUSIC, (size * 0.5).round()).color(p.text_secondary))
 }
 
 /// A rounded cover box at `size` pt: the track's decoded art if ready, else the
@@ -158,11 +161,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         )
         // A muted heart on the right (old app's `Heart` button); decorative
         // here — favourites aren't a feature of this focused build.
-        .child(
-            text("♡")
-                .font(TextStyle::new(16.0, 400.0))
-                .color(p.text_secondary),
-        )
+        .child(icon(&icons::HEART, 16.0).color(p.text_secondary))
 }
 
 /// The seek slider now fills whatever's left of the row after the two fixed
@@ -211,7 +210,7 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
 fn transport_button(
     key: &str,
     label: &str,
-    glyph: &str,
+    ic: &'static Icon,
     p: &Palette,
     on_press: impl Fn(&mut State) + 'static,
 ) -> El {
@@ -222,14 +221,19 @@ fn transport_button(
         .size(32.0, 32.0)
         .center()
         .radius(16.0)
+        .cursor(Cursor::Pointer)
         .hover(p.muted)
         .press(p.border)
         .on_press(on_press)
-        .child(text(glyph).font(type_::TITLE).color(p.fg))
+        .child(icon(ic, 16.0).color(p.text_secondary))
 }
 
 fn play_pause_button(s: &State, p: &Palette) -> El {
-    let glyph = if s.playing { "⏸" } else { "▶" };
+    let ic: &'static Icon = if s.playing {
+        &icons::PAUSE
+    } else {
+        &icons::PLAY
+    };
     el().key("play-pause")
         .role("button")
         .label(if s.playing { "Pause" } else { "Play" })
@@ -238,6 +242,7 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
         .center()
         .radius(20.0)
         .fill(p.primary)
+        .cursor(Cursor::Pointer)
         .motion(motion::SNAPPY)
         .on_press(|st: &mut State| {
             st.host.send(if st.playing {
@@ -246,7 +251,7 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
                 Command::Play
             });
         })
-        .child(text(glyph).font(type_::TITLE).color(p.bg))
+        .child(icon(ic, 18.0).color(p.bg))
 }
 
 /// Compact icon button (32x32, matching `transport_button`'s size): the old
@@ -263,10 +268,11 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
         .size(32.0, 32.0)
         .center()
         .radius(16.0)
+        .cursor(Cursor::Pointer)
         .hover(p.muted)
         .press(p.border)
         .on_press(|st: &mut State| st.host.send(Command::SetShuffle(!st.shuffle)))
-        .child(text("⤭").font(type_::TITLE).color(if s.shuffle {
+        .child(icon(&icons::SHUFFLE, 14.0).color(if s.shuffle {
             p.accent
         } else {
             p.text_secondary
@@ -274,10 +280,10 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
 }
 
 fn repeat_button(s: &State, p: &Palette) -> El {
-    let (glyph, label, on) = match s.repeat {
-        RepeatMode::Off => ("⟳", "Repeat", false),
-        RepeatMode::All => ("⟳", "Repeat: All", true),
-        RepeatMode::One => ("⟳¹", "Repeat: One", true),
+    let (ic, label, on): (&'static Icon, &str, bool) = match s.repeat {
+        RepeatMode::Off => (&icons::REPEAT, "Repeat", false),
+        RepeatMode::All => (&icons::REPEAT, "Repeat: All", true),
+        RepeatMode::One => (&icons::REPEAT_1, "Repeat: One", true),
     };
     el().key("repeat")
         .role("button")
@@ -286,6 +292,7 @@ fn repeat_button(s: &State, p: &Palette) -> El {
         .size(32.0, 32.0)
         .center()
         .radius(16.0)
+        .cursor(Cursor::Pointer)
         .hover(p.muted)
         .press(p.border)
         .on_press(|st: &mut State| {
@@ -296,11 +303,7 @@ fn repeat_button(s: &State, p: &Palette) -> El {
             };
             st.host.send(Command::SetRepeat(next));
         })
-        .child(
-            text(glyph)
-                .font(type_::TITLE)
-                .color(if on { p.accent } else { p.text_secondary }),
-        )
+        .child(icon(ic, 14.0).color(if on { p.accent } else { p.text_secondary }))
 }
 
 /// Shuffle/prev/play/next/repeat in one row. At 32+32+48+32+32 = 176pt of
@@ -315,7 +318,7 @@ fn transport_row(s: &State, p: &Palette) -> El {
         .child(transport_button(
             "prev",
             "Previous",
-            "◀◀",
+            &icons::SKIP_BACK,
             p,
             |st: &mut State| st.host.send(Command::Prev),
         ))
@@ -323,7 +326,7 @@ fn transport_row(s: &State, p: &Palette) -> El {
         .child(transport_button(
             "next",
             "Next",
-            "▶▶",
+            &icons::SKIP_FORWARD,
             p,
             |st: &mut State| st.host.send(Command::Next),
         ))
@@ -339,10 +342,15 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .gap(ROW_GAP)
         .center_y()
         .child(
-            text("🔊")
-                .font(type_::BODY)
-                .color(p.text_secondary)
-                .w(VOL_LABEL_W),
+            icon(
+                if s.volume <= 0.0 {
+                    &icons::VOLUME_X
+                } else {
+                    &icons::VOLUME
+                },
+                16.0,
+            )
+            .color(p.text_secondary),
         )
         .child(slider(
             "volume",
