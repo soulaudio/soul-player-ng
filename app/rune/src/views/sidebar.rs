@@ -4,6 +4,7 @@
 //! `useCollapsibleSidebar` (240–480 px, default 288, snap-collapse under 200).
 #![forbid(unsafe_code)]
 
+use rune::tok::type_;
 use rune::{Align, Cursor, Cx, Drag, El, Phase, TextStyle, col, el, row, text};
 
 use crate::theme::Palette;
@@ -25,8 +26,10 @@ pub const STRIP_WIDTH: f32 = 12.0;
 /// Width of the invisible drag strip straddling the sidebar's right edge.
 const HANDLE_WIDTH: f32 = 6.0;
 
-/// Nav labels: large + semibold, as the old app's sidebar (`text-xl font-semibold`).
-const NAV_FONT: TextStyle = TextStyle::new(18.0, 600.0);
+/// Nav labels: large + semibold, as the old app's sidebar (`text-xl font-semibold`, 20 px).
+const NAV_FONT: TextStyle = TextStyle::new(20.0, 600.0);
+/// The app version, shown muted in the footer beside the Settings gear.
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// A clickable nav entry that switches `State::route`. A large semibold label
 /// with a trailing status dot — filled with the primary colour when active, a
@@ -40,8 +43,8 @@ fn nav_item(key: &str, label: &str, route: Route, active: bool, p: &Palette) -> 
     };
     el().key(key.to_string())
         .w_full()
-        .px(16.0)
-        .py(6.0)
+        .px(12.0)
+        .py(4.0)
         .child(
             row()
                 .w_full()
@@ -64,23 +67,54 @@ pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .h_full()
         .fill(p.card)
         .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
-        .pt(12.0)
-        .child(nav_item(
+        // Nav (old app's `p-4 pt-6`): just the page link — Settings lives in the
+        // footer gear below, as the original.
+        .child(col().key("nav").px(16.0).pt(24.0).pb(16.0).child(nav_item(
             "nav-library",
             "Tracks",
             Route::Library,
             s.route == Route::Library,
             p,
-        ))
-        .child(nav_item(
-            "nav-settings",
-            "Settings",
-            Route::Settings,
-            s.route == Route::Settings,
-            p,
-        ))
-        .child(queue_section(s, p))
+        )))
+        .child(queue_section(s, p, scale))
         .child(player_panel(s, p, cx, scale))
+        .child(settings_footer(s, p))
+}
+
+/// The bottom footer (old app's `SettingsFooter`): a Settings gear on the left,
+/// the muted app version on the right, under a top border.
+fn settings_footer(s: &State, p: &Palette) -> El {
+    let active = s.route == Route::Settings;
+    row()
+        .key("settings-footer")
+        .w_full()
+        .border_sides([1.0, 0.0, 0.0, 0.0], p.border)
+        .px(12.0)
+        .py(8.0)
+        .center_y()
+        .child(
+            el().key("nav-settings")
+                .role("button")
+                .label("Settings")
+                .focusable(true)
+                .px(6.0)
+                .py(4.0)
+                .radius(6.0)
+                .hover(p.muted)
+                .on_press(move |s: &mut State| s.route = Route::Settings)
+                .child(
+                    text("⚙")
+                        .font(TextStyle::new(16.0, 400.0))
+                        .color(if active { p.primary } else { p.text_secondary }),
+                ),
+        )
+        .child(
+            text(VERSION)
+                .font(type_::MONO_CAPTION.mono())
+                .color(p.text_secondary)
+                .grow(1.0)
+                .align(Align::End),
+        )
 }
 
 /// The geometry a resize drag resolves to, from the width at press and the
