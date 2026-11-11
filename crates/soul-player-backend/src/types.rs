@@ -34,6 +34,33 @@ pub enum Command {
     SetRepeat(RepeatMode),
     /// Jump to a natural position within the current context.
     Goto(u32),
+    /// Set ReplayGain loudness normalization: the `mode` picks track vs album
+    /// (vs off) gain, `preamp_db` is a constant dB offset added on top. The pump
+    /// applies the resulting gain to the deck at each track boundary (see
+    /// [`ReplayGainMode`]). `Command` is `PartialEq` but not `Eq` precisely so
+    /// this `f32` preamp can ride along.
+    SetReplayGain {
+        mode: ReplayGainMode,
+        preamp_db: f32,
+    },
+}
+
+/// How ReplayGain tags are applied during playback, chosen in Settings →
+/// ReplayGain. The per-track dB the pump sets on the deck is:
+/// - [`Off`](ReplayGainMode::Off): `0.0` (unity — RG ignored, no preamp).
+/// - [`Track`](ReplayGainMode::Track): `track_gain + preamp` (untagged → `preamp`).
+/// - [`Album`](ReplayGainMode::Album): `album_gain` (falling back to the track
+///   gain), `+ preamp` (untagged → `preamp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ReplayGainMode {
+    /// No normalization — the deck plays at unity gain.
+    #[default]
+    Off,
+    /// Normalize each track to its own ReplayGain track-gain tag.
+    Track,
+    /// Normalize to the album-gain tag (preserving inter-track dynamics), so a
+    /// whole album plays at one consistent level.
+    Album,
 }
 
 /// Repeat mode as seen by the UI (mirrors `soul_audio_queue::Repeat`, decoupled
@@ -137,6 +164,16 @@ mod tests {
         let cmd = Command::PlayContext {
             ids: vec![3, 1, 2],
             start: 1,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn set_replay_gain_command_serde_roundtrips() {
+        let cmd = Command::SetReplayGain {
+            mode: ReplayGainMode::Album,
+            preamp_db: -3.5,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
