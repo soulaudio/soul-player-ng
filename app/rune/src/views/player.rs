@@ -349,6 +349,12 @@ pub fn player_panel(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .fill(p.card)
         .padding(PANEL_PADDING)
         .gap(14.0)
+        // Uppercase eyebrow over the now-playing row, as the old app's panel.
+        .child(
+            text("NOW PLAYING")
+                .font(type_::SECTION)
+                .color(p.text_secondary),
+        )
         .child(now_playing_row(s, now, p, scale))
         .child(seek_row(s, p, cx))
         .child(transport_row(s, p))
