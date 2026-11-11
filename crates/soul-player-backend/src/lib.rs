@@ -12,6 +12,7 @@ pub mod actor;
 pub mod art;
 pub mod driver;
 pub mod library;
+pub mod loudness;
 pub mod types;
 
 #[cfg(test)]
