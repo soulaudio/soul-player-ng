@@ -281,6 +281,19 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     true
 }
 
+/// Snapshot scenes for headless e2e rendering (`--scene NAME`): each is a named
+/// tweak to the initial state so `--snap` can capture a specific view. Inert in
+/// normal use — only Rune's tooling `--scene` flag ever runs them.
+fn scene_settings(s: &mut State) {
+    s.route = Route::Settings;
+}
+fn scene_search(s: &mut State) {
+    s.search = "aria".to_string();
+}
+fn scene_no_match(s: &mut State) {
+    s.search = "zzz-no-such-track".to_string();
+}
+
 fn main() -> anyhow::Result<()> {
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
@@ -307,6 +320,11 @@ fn main() -> anyhow::Result<()> {
     let spec = AppSpec::<State> {
         setup: Some(setup_art),
         on_key: Some(handle_key),
+        scenes: &[
+            ("settings", scene_settings),
+            ("search", scene_search),
+            ("no-match", scene_no_match),
+        ],
         ..AppSpec::new(
             "Soul Player (Rune)",
             (1100.0, 720.0),
