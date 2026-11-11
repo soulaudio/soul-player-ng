@@ -452,9 +452,10 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use rune::{Env, Mods, Runtime};
+    use rune::{Cursor, Env, Mods, Runtime};
 
     use super::*;
+    use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
 
     fn testdata_dir() -> PathBuf {
         // app/rune -> repo-root/testdata
@@ -605,6 +606,203 @@ mod tests {
         assert!(
             rt.find("sidebar-resize").is_some(),
             "the handle remains, to re-open"
+        );
+    }
+
+    // ── Sidebar resize & collapsed-mode e2e, driven through the real pointer ──
+    // gestures and measured against the original soul-player's live
+    // `useCollapsibleSidebar` + `CollapsedSidebarStrip`. Parity asserted here
+    // (original → ours): width range 240–480 default 288; collapse snap < 200 px;
+    // collapsed rail 12 px (`w-3`) with a 4×56 px grabber (`w-1 h-14`), centred;
+    // `cursor-ew-resize` on both the handle and the rail; and a collapse that
+    // preserves the expanded width (the original never overwrites `sidebar-width`
+    // on snap, so re-opening restores it).
+    //
+    // Two intentional divergences, documented so a future reader doesn't "fix"
+    // them into regressions: (1) ours resizes by pointer *delta*
+    // (`width_at_press + dx`) rather than the original's absolute
+    // `width = clientX`, so grabbing the handle never jumps the edge to the
+    // cursor; (2) there is no 20 px re-open hysteresis — we re-open the instant
+    // the drag target clears 200 px where the original waits for 220 px.
+    //
+    // Every drag deliberately stops at `Phase::Move` and never calls
+    // `pointer_up`: `config::save_sidebar` only fires on release, so no test
+    // here writes the user's real `config.toml`.
+
+    /// A framed headless runtime whose sidebar starts at an explicit geometry,
+    /// overriding whatever the user's persisted `config.toml` holds so the test
+    /// is deterministic (as the other sidebar tests do). One frame is pumped so
+    /// `find`/`presented` have layout.
+    fn sidebar_rt(width: f32, collapsed: bool) -> Runtime<State> {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_width = width;
+        s.sidebar_collapsed = collapsed;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        rt
+    }
+
+    #[test]
+    fn expanded_sidebar_draws_at_its_configured_width() {
+        // The old app applies the width via an inline `style={{ width }}`; ours
+        // binds `.w(s.sidebar_width)`. Prove a non-default 360 px reaches the
+        // drawn element (not merely the state), and that the right edge offers
+        // the resize handle's `cursor-ew-resize`.
+        let mut rt = sidebar_rt(360.0, false);
+        let drawn = rt.presented("sidebar").expect("sidebar renders").0;
+        assert!(
+            (drawn[2] - 360.0).abs() < 0.5,
+            "the sidebar draws at its configured width, got {}",
+            drawn[2]
+        );
+        let (hx, hy) = rt.find("sidebar-resize").expect("handle present");
+        rt.pointer_move(hx, hy);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.cursor(),
+            Cursor::ResizeColumn,
+            "the right-edge handle shows the resize cursor"
+        );
+    }
+
+    #[test]
+    fn dragging_the_handle_resizes_within_the_min_max_range() {
+        // One captured drag with several moves — the e2e twin of the pure
+        // `resize_to` unit test. `Drag::data` caches 288 at press; each move's
+        // `dx` is travel from the press point.
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, false);
+        let (hx, hy) = rt.find("sidebar-resize").expect("handle present");
+        rt.pointer_move(hx, hy);
+        rt.pointer_down(hx, hy);
+        // Pointer events dispatch on the next `frame`, so each move is applied by
+        // the `frame` that follows it. `Drag::data` (288, cached at press) and the
+        // press origin both persist across the gesture, so every `dx` below is
+        // travel from the original press point.
+        // Out by 100 → 388, inside the range.
+        rt.pointer_move(hx + 100.0, hy);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.sidebar_width, 388.0,
+            "drag-out widens by the pointer travel"
+        );
+        // Keep pulling out hard → clamps at MAX, never wider.
+        rt.pointer_move(hx + 400.0, hy);
+        rt.frame(0.0);
+        assert_eq!(rt.state.sidebar_width, MAX_WIDTH, "clamps to the max width");
+        // Back in, but still above the collapse threshold (288 - 60 = 228) →
+        // clamps up to MIN rather than collapsing.
+        rt.pointer_move(hx - 60.0, hy);
+        rt.frame(0.0);
+        assert_eq!(rt.state.sidebar_width, MIN_WIDTH, "clamps to the min width");
+        assert!(
+            !rt.state.sidebar_collapsed,
+            "stays expanded while above the threshold"
+        );
+    }
+
+    #[test]
+    fn dragging_the_handle_below_the_threshold_collapses_to_the_rail() {
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, false);
+        let (hx, hy) = rt.find("sidebar-resize").expect("handle present");
+        rt.pointer_move(hx, hy);
+        rt.pointer_down(hx, hy);
+        // 288 - 150 = 138 < 200 → snap collapsed (applied on the next frame).
+        rt.pointer_move(hx - 150.0, hy);
+        rt.frame(0.0);
+        assert!(
+            rt.state.sidebar_collapsed,
+            "dragging below the 200 px threshold snaps collapsed"
+        );
+        assert_eq!(
+            rt.state.sidebar_width, DEFAULT_WIDTH,
+            "a collapse preserves the expanded width for re-opening"
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("sidebar-collapsed").is_some(),
+            "the thin rail replaces the full sidebar"
+        );
+        assert!(rt.find("sidebar").is_none(), "the full sidebar is gone");
+        assert!(
+            rt.find("sidebar-resize").is_some(),
+            "the handle stays, so one gesture can drag back out"
+        );
+    }
+
+    #[test]
+    fn dragging_out_from_the_collapsed_rail_reopens_the_sidebar() {
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, true);
+        let (hx, hy) = rt
+            .find("sidebar-resize")
+            .expect("handle present beside the rail");
+        rt.pointer_move(hx, hy);
+        // Phase::Down caches the rail width (STRIP_WIDTH) as the drag origin.
+        rt.pointer_down(hx, hy);
+        // 12 + 250 = 262 ≥ 200 → re-opens to the dragged width (next frame).
+        rt.pointer_move(hx + 250.0, hy);
+        rt.frame(0.0);
+        assert!(
+            !rt.state.sidebar_collapsed,
+            "dragging out past the threshold re-opens the sidebar"
+        );
+        assert_eq!(
+            rt.state.sidebar_width,
+            STRIP_WIDTH + 250.0,
+            "re-opens to the dragged width"
+        );
+        rt.frame(0.0);
+        assert!(rt.find("sidebar").is_some(), "the full sidebar is back");
+        assert!(
+            rt.find("sidebar-collapsed").is_none(),
+            "the collapsed rail is gone"
+        );
+    }
+
+    #[test]
+    fn collapsed_rail_is_a_thin_strip_with_a_centered_grabber() {
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, true);
+        // The rail is the old app's `w-3` (12 px) CollapsedSidebarStrip.
+        let rail = rt.presented("sidebar-collapsed").expect("rail renders").0;
+        assert!(
+            (rail[2] - STRIP_WIDTH).abs() < 0.5,
+            "the collapsed rail is a 12 px strip, got {}",
+            rail[2]
+        );
+        // Its grabber pill is the old app's `w-1 h-14` → 4 × 56 px.
+        let pill = rt.presented("grabber").expect("grabber renders").0;
+        assert!(
+            (pill[2] - 4.0).abs() < 0.5,
+            "the grabber is 4 px wide, got {}",
+            pill[2]
+        );
+        assert!(
+            (pill[3] - 56.0).abs() < 0.5,
+            "the grabber is 56 px tall, got {}",
+            pill[3]
+        );
+        // Centred horizontally within the rail.
+        let (rail_cx, _) = rt.find("sidebar-collapsed").unwrap();
+        let (pill_cx, _) = rt.find("grabber").unwrap();
+        assert!(
+            (pill_cx - rail_cx).abs() < 0.5,
+            "the grabber is centred in the rail"
+        );
+        // The rail itself offers the resize cursor (old app's `cursor-ew-resize`),
+        // sampled above the pill so the pointer is over bare rail.
+        rt.pointer_move(rail_cx, 120.0);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.cursor(),
+            Cursor::ResizeColumn,
+            "the collapsed rail shows the resize cursor"
         );
     }
 
