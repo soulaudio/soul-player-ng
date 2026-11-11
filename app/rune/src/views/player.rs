@@ -8,15 +8,15 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rune::tok::{motion, type_};
+use rune::tok::motion;
 use rune::{
-    Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, TextStyle, Waker, col, el, icon,
-    row, text,
+    Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, Waker, col, el, icon, row, text,
 };
 use soul_player_host::{Command, PlayerHandle, RepeatMode, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
+use crate::ui::{radius, space, type_};
 use crate::views::icons;
 use crate::views::slider::slider;
 
@@ -29,13 +29,13 @@ pub const QUEUE_COVER: f32 = 36.0;
 /// covers downscaling from the same cached decode.
 const DECODE_PX: f32 = 160.0;
 /// NowPlayingPanel padding — the old app's `p-4` (16 px).
-const NP_PAD: f32 = 16.0;
+const NP_PAD: f32 = space::LG;
 /// The controls block below the now-playing row (old app's `px-4 pt-2 pb-4`).
-const CTRL_PAD_X: f32 = 16.0;
-const CTRL_PAD_T: f32 = 8.0;
-const CTRL_PAD_B: f32 = 16.0;
+const CTRL_PAD_X: f32 = space::LG;
+const CTRL_PAD_T: f32 = space::SM;
+const CTRL_PAD_B: f32 = space::LG;
 /// Gap between the controls rows (old app's `space-y-3`) and eyebrow→row (`mb-3`).
-const CTRL_GAP: f32 = 12.0;
+const CTRL_GAP: f32 = space::MD;
 /// Fixed label widths flanking the seek bar (current/duration, e.g.
 /// `"12:34"`) and the volume bar (`"Vol"` / `"100%"`); the sliders
 /// (`.grow(1.0)`, see `views::slider`) take whatever's left of the row
@@ -45,12 +45,11 @@ const VOL_PCT_W: f32 = 38.0;
 /// Gap between a row's fixed labels and its slider, and between the
 /// transport row's buttons — tightened from Task 5-6's full-width numbers
 /// so shuffle/prev/play/next/repeat fit the sidebar's ~248pt content width.
-const ROW_GAP: f32 = 8.0;
-/// Track title in the now-playing panel and queue rows (old app's
-/// `text-sm font-semibold`).
-const TITLE_FONT: TextStyle = TextStyle::new(14.0, 600.0);
-/// Artist/subtitle under a title (old app's muted `text-xs`).
-const SUB_FONT: TextStyle = TextStyle::new(12.0, 400.0);
+const ROW_GAP: f32 = space::SM;
+/// Transport-button side (circular, so each button's radius is half this); the
+/// centre play/pause button is a touch larger.
+const BTN_SIZE: f32 = 32.0;
+const PLAY_SIZE: f32 = 40.0;
 
 /// Cover-art decode cache (cheat-sheet §6a). Rune's pre-release has no
 /// "load this track's art" helper, so this wraps `rune::ImageCache` +
@@ -109,7 +108,7 @@ fn fmt_dur(secs: f64) -> String {
 fn cover_placeholder(size: f32, p: &Palette) -> El {
     el().key("cover")
         .size(size, size)
-        .radius(6.0)
+        .radius(radius::SM)
         .fill(p.muted)
         .center()
         .child(icon(&icons::MUSIC, (size * 0.5).round()).color(p.text_secondary))
@@ -128,7 +127,7 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, p: &Palette, scale: f32) -> 
         Some(image) if image.is_ready() && image.error().is_none() => el()
             .key("cover")
             .size(size, size)
-            .radius(6.0)
+            .radius(radius::SM)
             .fill(p.muted)
             .pixels_fit(image.pixels(), SurfaceFit::Fit),
         _ => cover_placeholder(size, p),
@@ -141,7 +140,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         // "nothing playing", no title/artist row and no heart.
         return row()
             .key("now-playing")
-            .gap(12.0)
+            .gap(space::MD)
             .center_y()
             .child(cover(s, None, 48.0, p, scale))
             .child(
@@ -157,20 +156,20 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
     let artist = track.artist.clone().unwrap_or_default();
     row()
         .key("now-playing")
-        .gap(10.0)
+        .gap(space::COZY)
         .center_y()
         .child(cover(s, Some(track.id), COVER_SIZE, p, scale))
         .child(
             col()
                 .key("now-playing-text")
-                .gap(2.0)
+                .gap(space::XXS)
                 .align(Align::Start)
                 .grow(1.0)
                 .min_w(0.0)
-                .child(text(title).font(TITLE_FONT).color(p.fg).truncate())
+                .child(text(title).font(type_::TITLE).color(p.fg).truncate())
                 .child(
                     text(artist)
-                        .font(SUB_FONT)
+                        .font(type_::CAPTION)
                         .color(p.text_secondary)
                         .truncate(),
                 ),
@@ -198,7 +197,7 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .center_y()
         .child(
             text(fmt_dur(s.position_secs))
-                .font(type_::MONO_CAPTION.mono())
+                .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(TIME_LABEL_W),
         )
@@ -216,7 +215,7 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         ))
         .child(
             text(fmt_dur(s.duration_secs))
-                .font(type_::MONO_CAPTION.mono())
+                .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(TIME_LABEL_W)
                 .align(Align::End),
@@ -234,9 +233,9 @@ fn transport_button(
         .role("button")
         .label(label)
         .focusable(true)
-        .size(32.0, 32.0)
+        .size(BTN_SIZE, BTN_SIZE)
         .center()
-        .radius(16.0)
+        .radius(BTN_SIZE * 0.5)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.08))
         .press(p.fg.alpha(0.14))
@@ -258,9 +257,9 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
             t!("player.play").to_string()
         })
         .focusable(true)
-        .size(40.0, 40.0)
+        .size(PLAY_SIZE, PLAY_SIZE)
         .center()
-        .radius(20.0)
+        .radius(PLAY_SIZE * 0.5)
         .fill(p.primary)
         .cursor(Cursor::Pointer)
         .motion(motion::SNAPPY)
@@ -285,9 +284,9 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
         .label(t!("player.shuffle").to_string())
         .checked(s.shuffle)
         .focusable(true)
-        .size(32.0, 32.0)
+        .size(BTN_SIZE, BTN_SIZE)
         .center()
-        .radius(16.0)
+        .radius(BTN_SIZE * 0.5)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.08))
         .press(p.fg.alpha(0.14))
@@ -309,9 +308,9 @@ fn repeat_button(s: &State, p: &Palette) -> El {
         .role("button")
         .label(label)
         .focusable(true)
-        .size(32.0, 32.0)
+        .size(BTN_SIZE, BTN_SIZE)
         .center()
-        .radius(16.0)
+        .radius(BTN_SIZE * 0.5)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.08))
         .press(p.fg.alpha(0.14))
@@ -382,7 +381,7 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         ))
         .child(
             text(format!("{:.0}", s.volume * 100.0))
-                .font(type_::MONO_CAPTION.mono())
+                .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(VOL_PCT_W)
                 .align(Align::End),

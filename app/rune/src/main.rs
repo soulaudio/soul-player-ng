@@ -29,6 +29,7 @@ mod config;
 #[cfg(test)]
 mod i18n_tests;
 mod theme;
+mod ui;
 mod update;
 mod views;
 
@@ -363,6 +364,9 @@ fn scene_search(s: &mut State) {
 fn scene_no_match(s: &mut State) {
     s.search = "zzz-no-such-track".to_string();
 }
+fn scene_collapsed(s: &mut State) {
+    s.sidebar_collapsed = true;
+}
 
 fn main() -> anyhow::Result<()> {
     // Single-instance (release builds only — dev can run several for comparison):
@@ -395,6 +399,7 @@ fn main() -> anyhow::Result<()> {
             ("albums", scene_albums),
             ("search", scene_search),
             ("no-match", scene_no_match),
+            ("collapsed", scene_collapsed),
         ],
         ..AppSpec::new(
             "Soul Player",

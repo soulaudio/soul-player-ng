@@ -4,10 +4,10 @@
 //! `useCollapsibleSidebar` (240–480 px, default 288, snap-collapse under 200).
 #![forbid(unsafe_code)]
 
-use rune::tok::type_;
-use rune::{Align, Cursor, Cx, Drag, El, Phase, TextStyle, col, el, icon, row, text};
+use rune::{Align, Cursor, Cx, Drag, El, Phase, col, el, icon, row, text};
 
 use crate::theme::Palette;
+use crate::ui::{radius, space, type_};
 use crate::views::icons;
 use crate::views::player::player_panel;
 use crate::views::queue::queue_section;
@@ -27,8 +27,6 @@ pub const STRIP_WIDTH: f32 = 12.0;
 /// Width of the invisible drag strip straddling the sidebar's right edge.
 const HANDLE_WIDTH: f32 = 6.0;
 
-/// Nav labels: large + semibold, as the old app's sidebar (`text-xl font-semibold`, 20 px).
-const NAV_FONT: TextStyle = TextStyle::new(20.0, 600.0);
 /// The app version, shown muted in the footer beside the Settings gear.
 const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
@@ -36,7 +34,11 @@ const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 /// with a trailing status dot — filled with the primary colour when active, a
 /// faint ring otherwise — mirroring the old app's sidebar nav.
 fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -> El {
-    let dot = el().key(format!("{key}-dot")).w(8.0).h(8.0).radius(4.0);
+    let dot = el()
+        .key(format!("{key}-dot"))
+        .w(8.0)
+        .h(8.0)
+        .radius(radius::XS);
     let dot = if active {
         dot.fill(p.primary)
     } else {
@@ -44,9 +46,9 @@ fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -
     };
     el().key(key.to_string())
         .w_full()
-        .px(12.0)
-        .py(4.0)
-        .radius(6.0)
+        .px(space::MD)
+        .py(space::XS)
+        .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.07))
         .child(
@@ -55,7 +57,7 @@ fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -
                 .center_y()
                 .child(
                     text(label)
-                        .font(NAV_FONT)
+                        .font(type_::NAV)
                         .color(if active { p.primary } else { p.text_secondary })
                         .grow(1.0),
                 )
@@ -76,9 +78,9 @@ pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .child(
             col()
                 .key("nav")
-                .px(16.0)
-                .pt(24.0)
-                .pb(16.0)
+                .px(space::LG)
+                .pt(space::XL)
+                .pb(space::LG)
                 .child(nav_item(
                     "nav-library",
                     t!("nav.tracks").to_string(),
@@ -107,8 +109,8 @@ fn settings_footer(s: &State, p: &Palette) -> El {
         .key("settings-footer")
         .w_full()
         .border_sides([1.0, 0.0, 0.0, 0.0], p.border)
-        .px(12.0)
-        .py(8.0)
+        .px(space::MD)
+        .py(space::SM)
         .center_y()
         .child({
             let gear = el()
@@ -116,8 +118,8 @@ fn settings_footer(s: &State, p: &Palette) -> El {
                 .role("button")
                 .label(t!("settings.title").to_string())
                 .focusable(true)
-                .padding(6.0)
-                .radius(8.0)
+                .padding(space::SNUG)
+                .radius(radius::MD)
                 .cursor(Cursor::Pointer)
                 .on_press(move |s: &mut State| s.route = Route::Settings)
                 .child(icon(&icons::SETTINGS, 16.0).color(if active {
@@ -136,7 +138,7 @@ fn settings_footer(s: &State, p: &Palette) -> El {
         })
         .child(
             text(VERSION)
-                .font(type_::MONO_CAPTION.mono())
+                .font(type_::LABEL.mono())
                 .color(p.text_secondary.alpha(0.6))
                 .grow(1.0)
                 .align(Align::End),
@@ -231,7 +233,7 @@ pub fn collapsed_strip(p: &Palette) -> El {
             el().key("grabber")
                 .w(4.0)
                 .h(56.0)
-                .radius(2.0)
+                .radius(radius::XXS)
                 .fill(p.fg.alpha(0.15)),
         )
 }

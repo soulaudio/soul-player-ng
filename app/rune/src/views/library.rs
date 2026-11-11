@@ -3,7 +3,6 @@
 //! start — since Rune has no text widget yet).
 #![forbid(unsafe_code)]
 
-use rune::tok::type_;
 use rune::{
     Cursor, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row, text,
 };
@@ -11,6 +10,7 @@ use soul_player_host::{BrowseAxis, Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
+use crate::ui::{radius, space, type_};
 use crate::views::icons;
 
 fn fmt_dur(secs: f64) -> String {
@@ -36,9 +36,9 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
     let menu_ids = ids.clone(); // the context menu's "Play" needs its own copy.
     row()
         .key(format!("track-{}", t.id))
-        .gap(12.0)
-        .padding(8.0)
-        .radius(6.0)
+        .gap(space::MD)
+        .padding(space::SM)
+        .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.06))
         .press(p.fg.alpha(0.1))
@@ -84,8 +84,8 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
         // without also starting playback.
         .child(
             el().key(format!("enqueue-{}", t.id))
-                .padding(6.0)
-                .radius(6.0)
+                .padding(space::SNUG)
+                .radius(radius::SM)
                 .fill(p.muted)
                 .cursor(Cursor::Pointer)
                 .child(icon(&icons::PLUS, 14.0).color(p.text_secondary))
@@ -140,15 +140,15 @@ fn search_bar(s: &State, p: &Palette) -> El {
     };
     let mut bar = row()
         .key("search-bar")
-        .gap(8.0)
-        .padding(8.0)
+        .gap(space::SM)
+        .padding(space::SM)
         .center_y()
         .child(icon(&icons::SEARCH, 16.0).color(p.text_secondary))
         .child(
             el().key("search-field")
                 .grow(1.0)
-                .padding(6.0)
-                .radius(6.0)
+                .padding(space::SNUG)
+                .radius(radius::SM)
                 .fill(p.muted)
                 .cursor(Cursor::Pointer)
                 .child(text(shown).color(if dim { p.text_secondary } else { p.fg }))
@@ -157,8 +157,8 @@ fn search_bar(s: &State, p: &Palette) -> El {
     if !s.search.is_empty() {
         bar = bar.child(
             el().key("search-clear")
-                .padding(6.0)
-                .radius(6.0)
+                .padding(space::SNUG)
+                .radius(radius::SM)
                 .fill(p.muted)
                 .cursor(Cursor::Pointer)
                 .child(text("✕").color(p.text_secondary))
@@ -189,7 +189,7 @@ pub fn track_list(s: &State, p: &Palette) -> El {
             .w_full()
             .h_full()
             .center()
-            .gap(12.0)
+            .gap(space::MD)
             .child(
                 text(t!("library.noMusic").to_string())
                     .font(type_::TITLE)
@@ -198,8 +198,8 @@ pub fn track_list(s: &State, p: &Palette) -> El {
             .child(text(t!("library.noMusicHint").to_string()).color(p.text_secondary))
             .child(
                 el().key("go-to-sources")
-                    .padding(12.0)
-                    .radius(8.0)
+                    .padding(space::MD)
+                    .radius(radius::MD)
                     .fill(p.primary)
                     .center()
                     .cursor(Cursor::Pointer)
@@ -219,7 +219,7 @@ pub fn track_list(s: &State, p: &Palette) -> El {
         )
     } else {
         let ids: Vec<u32> = visible.iter().map(|t| t.id).collect();
-        let mut list = col().key("tracks").gap(2.0);
+        let mut list = col().key("tracks").gap(space::XXS);
         for (i, t) in visible.iter().enumerate() {
             list = list.child(track_row(s, p, t, &ids, i));
         }
@@ -240,8 +240,8 @@ pub fn track_list(s: &State, p: &Palette) -> El {
 /// One sort-order choice; the active axis is filled with the primary color.
 fn sort_button(label: String, key: &str, axis: BrowseAxis, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
-        .padding(6.0)
-        .radius(6.0)
+        .padding(space::SNUG)
+        .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
@@ -253,8 +253,8 @@ fn sort_bar(s: &State, p: &Palette) -> El {
     let a = s.sort_axis;
     row()
         .key("sort-bar")
-        .gap(8.0)
-        .padding(8.0)
+        .gap(space::SM)
+        .padding(space::SM)
         .child(text(t!("library.sort").to_string()).color(p.text_secondary))
         .child(sort_button(
             t!("library.sortArtist").to_string(),

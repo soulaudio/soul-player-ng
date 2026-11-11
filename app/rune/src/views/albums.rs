@@ -6,20 +6,19 @@
 
 use std::collections::HashMap;
 
-use rune::{Color, Cursor, Cx, El, ScrollSpec, TextStyle, col, el, icon, row, text};
+use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text};
 use soul_player_host::{Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
+use crate::ui::{radius, space, type_};
 use crate::views::icons;
 use crate::views::player::cover;
 
 /// Card width (and cover side — the cover is square and fills the card).
 const CARD_W: f32 = 160.0;
-/// Album title on a card (old app's `text-sm font-medium`).
-const CARD_TITLE: TextStyle = TextStyle::new(14.0, 500.0);
-/// Album artist line (muted `text-xs`).
-const CARD_SUB: TextStyle = TextStyle::new(12.0, 400.0);
+/// The hover play-overlay button — a circle, so its radius is half its size.
+const PLAY_BTN: f32 = 48.0;
 
 /// One grouped album: display name, its artist, a track id to draw the cover
 /// from, and every track id (in library order) to play on click.
@@ -61,9 +60,9 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, scale: f32) -> El 
     col()
         .key(format!("album-{slot}"))
         .w(CARD_W)
-        .gap(8.0)
-        .padding(6.0)
-        .radius(8.0)
+        .gap(space::SM)
+        .padding(space::SNUG)
+        .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .hover_group()
         .hover(p.fg.alpha(0.05))
@@ -94,8 +93,8 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, scale: f32) -> El 
                         })
                         .child(
                             el().key("play-btn")
-                                .size(48.0, 48.0)
-                                .radius(24.0)
+                                .size(PLAY_BTN, PLAY_BTN)
+                                .radius(PLAY_BTN * 0.5)
                                 .fill(Color::BLACK.alpha(0.55))
                                 .center()
                                 .child(icon(&icons::PLAY, 22.0).color(Color::WHITE)),
@@ -105,12 +104,17 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, scale: f32) -> El 
         .child(
             col()
                 .key("album-text")
-                .gap(2.0)
+                .gap(space::XXS)
                 .min_w(0.0)
-                .child(text(a.name.clone()).font(CARD_TITLE).color(p.fg).truncate())
+                .child(
+                    text(a.name.clone())
+                        .font(type_::ITEM_STRONG)
+                        .color(p.fg)
+                        .truncate(),
+                )
                 .child(
                     text(a.artist.clone())
-                        .font(CARD_SUB)
+                        .font(type_::CAPTION)
                         .color(p.text_secondary.alpha(0.7))
                         .truncate(),
                 ),
@@ -126,7 +130,11 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, scale: f32) -> El 
 /// The Albums page: a wrapping grid of album cards, scrolled vertically.
 pub fn albums_page(s: &State, p: &Palette, _cx: &Cx<State>, scale: f32) -> El {
     let albums = group_albums(&s.library);
-    let mut grid = row().key("albums-grid").flex_wrap().gap(16.0).padding(16.0);
+    let mut grid = row()
+        .key("albums-grid")
+        .flex_wrap()
+        .gap(space::GUTTER)
+        .padding(space::PANE);
     for (slot, a) in albums.iter().enumerate() {
         grid = grid.child(album_card(s, p, slot, a, scale));
     }

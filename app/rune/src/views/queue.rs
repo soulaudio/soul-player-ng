@@ -4,18 +4,14 @@
 //! bottom edge, right above the player panel, rather than pinned to the top.
 #![forbid(unsafe_code)]
 
-use rune::{Cursor, El, ScrollSpec, TextStyle, col, row, text};
+use rune::{Cursor, El, ScrollSpec, col, row, text};
 use soul_player_host::Command;
 
 use crate::State;
 use crate::theme::Palette;
+use crate::ui::{radius, space, type_};
 use crate::views::player::{QUEUE_COVER, cover};
 
-/// Queue-row title — the old app's `TrackItem` `text-sm` (14 px, regular; the
-/// now-playing title is the semibold one).
-const Q_TITLE: TextStyle = TextStyle::new(14.0, 400.0);
-/// Queue-row subtitle — muted `text-xs` (12 px).
-const Q_SUB: TextStyle = TextStyle::new(12.0, 400.0);
 /// Width of the scroll-edge fade that eases queue rows into the nav at the top
 /// (Rune suggests 16–32 pt).
 const FADE_H: f32 = 32.0;
@@ -42,11 +38,11 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
     };
     row()
         .key(format!("queue-{slot}-{id}"))
-        .gap(8.0)
+        .gap(space::SM)
         .center_y()
-        .px(4.0)
-        .py(4.0)
-        .radius(6.0)
+        .px(space::XS)
+        .py(space::XS)
+        .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.06))
         .press(p.fg.alpha(0.1))
@@ -54,15 +50,15 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
         .child(
             col()
                 .key("queue-text")
-                .gap(1.0)
+                .gap(space::XXS)
                 .grow(1.0)
                 .min_w(0.0)
-                .child(text(title).font(Q_TITLE).color(p.fg).truncate())
+                .child(text(title).font(type_::ITEM).color(p.fg).truncate())
                 // Subtitle dimmer than the title, as the old app's `TrackItem`
                 // artist line (`text-muted-foreground/70`).
                 .child(
                     text(artist)
-                        .font(Q_SUB)
+                        .font(type_::CAPTION)
                         .color(p.text_secondary.alpha(0.7))
                         .truncate(),
                 ),
@@ -85,7 +81,7 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
 /// same `justify_end`-inside-`scroll` combination the engine documents for
 /// a bottom-anchored stack (`crates/rune/src/runtime/scroll/bottom.rs`).
 pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
-    let mut rows = col().key("queue-rows").gap(4.0).justify_end();
+    let mut rows = col().key("queue-rows").gap(space::XS).justify_end();
     let mut slot = 0usize;
     for (i, &id) in s.up_next.iter().enumerate() {
         let natural_pos = s.context_pos + 1 + i as u32;
@@ -110,8 +106,8 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
     // the viewport, so it never eats wheel/scroll events over the fade band.
     col()
         .key("queue")
-        .px(12.0)
-        .pb(8.0)
+        .px(space::MD)
+        .pb(space::SM)
         .grow(1.0)
         .min_h(0.0)
         .child(
