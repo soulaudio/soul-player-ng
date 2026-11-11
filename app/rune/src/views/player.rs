@@ -222,8 +222,8 @@ fn transport_button(
         .center()
         .radius(16.0)
         .cursor(Cursor::Pointer)
-        .hover(p.muted)
-        .press(p.border)
+        .hover(p.fg.alpha(0.08))
+        .press(p.fg.alpha(0.14))
         .on_press(on_press)
         .child(icon(ic, 16.0).color(p.text_secondary))
 }
@@ -273,8 +273,8 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
         .center()
         .radius(16.0)
         .cursor(Cursor::Pointer)
-        .hover(p.muted)
-        .press(p.border)
+        .hover(p.fg.alpha(0.08))
+        .press(p.fg.alpha(0.14))
         .on_press(|st: &mut State| st.host.send(Command::SetShuffle(!st.shuffle)))
         .child(icon(&icons::SHUFFLE, 14.0).color(if s.shuffle {
             p.accent
@@ -297,8 +297,8 @@ fn repeat_button(s: &State, p: &Palette) -> El {
         .center()
         .radius(16.0)
         .cursor(Cursor::Pointer)
-        .hover(p.muted)
-        .press(p.border)
+        .hover(p.fg.alpha(0.08))
+        .press(p.fg.alpha(0.14))
         .on_press(|st: &mut State| {
             let next = match st.repeat {
                 RepeatMode::Off => RepeatMode::All,
