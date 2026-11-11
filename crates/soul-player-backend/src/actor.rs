@@ -8,7 +8,7 @@
 //! (`CpalSink`) works and this crate never names `cpal`.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -23,6 +23,7 @@ use crate::driver::{
     RgInfo, ServicePlayer, apply_command, apply_replay_gain, project_queue, project_tick, queue_for,
 };
 use crate::library::Library;
+use crate::loudness::LoudnessCache;
 use crate::types::{Command, Event, ReplayGainMode};
 
 /// Golden-ratio odd constant; advanced per shuffle to vary the permutation seed
@@ -178,6 +179,14 @@ fn pump_thread<K, Mk, Ev>(
             .expect("spawn loader thread")
     };
 
+    // --- Hybrid ReplayGain: background loudness analysis of untagged tracks. The
+    //     worker posts each completed `(path, gain)` back on `loud_res_rx` (like
+    //     the loader's decoder results) so this pump — the one event source —
+    //     emits the `TrackLoudnessAnalyzed` event. The cache is read synchronously
+    //     at the RG gate below.
+    let (loud_res_tx, loud_res_rx) = mpsc::channel::<(PathBuf, f32)>();
+    let (loudness, analyzer) = LoudnessCache::spawn(loud_res_tx);
+
     let mut volume: f32 = 1.0;
     let mut seed: u64 = SEED_STEP;
     let mut last_tick = Instant::now();
@@ -217,6 +226,12 @@ fn pump_thread<K, Mk, Ev>(
                         rg_mode = mode;
                         rg_preamp = preamp_db;
                         rg_dirty = true;
+                    }
+                    if let Command::SeedLoudness(entries) = &cmd {
+                        // Seed the in-memory loudness cache from the app's persisted
+                        // gains before any analysis runs (startup). Pump state, so
+                        // it's handled here, not in `apply_command` (a no-op there).
+                        loudness.seed(entries);
                     }
                     seed = seed.wrapping_add(SEED_STEP);
                     if let Err(e) = apply_command(&mut player, cmd, seed) {
@@ -263,7 +278,15 @@ fn pump_thread<K, Mk, Ev>(
             changed = true;
         }
 
-        // 3b. Re-apply ReplayGain when the current track changes, or when the
+        // 3b. Drain finished background analyses (the hybrid-ReplayGain worker),
+        //     emitting one event per newly-computed gain so the app can persist
+        //     it. The worker already wrote the cache, so the gain is usable below
+        //     and on the NEXT play of that track.
+        while let Ok((path, gain_db)) = loud_res_rx.try_recv() {
+            on_event(Event::TrackLoudnessAnalyzed { path, gain_db });
+        }
+
+        // 3c. Re-apply ReplayGain when the current track changes, or when the
         //     config changed (`rg_dirty`). The deck holds one constant gain, so a
         //     gapless advance sees the new track's gain updated ~one pump cycle
         //     after the swap (the id change is observed here, post-`pump`) — a
@@ -271,18 +294,18 @@ fn pump_thread<K, Mk, Ev>(
         //     splice is a follow-up (it would require the deck to carry a gain
         //     per preload slot). A click isn't a concern: `set_replay_gain`
         //     applies a single factor with no ramp.
-        //     TODO(untagged-analysis): tracks with no RG tags get only the preamp
-        //     here; computing a gain for them by background-analyzing loudness is
-        //     a deliberate follow-up — this is the hook where its result would be
-        //     folded into `rg_tags` before the gain is computed.
+        //
+        //     Hybrid (untagged) path: an untagged track under Track/Album folds in
+        //     a *computed* loudness gain when the analyzer has one cached; a miss
+        //     enqueues a single-flight analysis and plays preamp-only this time.
+        //     A completed analysis is applied on the NEXT play of that track (when
+        //     `cur` next changes to it), NOT mid-track — deliberately, to avoid an
+        //     audible level jump partway through a song. (`resolve_rg_info` carries
+        //     the full rationale.)
         let cur = player.current();
         if cur != rg_applied_for || rg_dirty {
-            apply_replay_gain(
-                &mut player,
-                rg_mode,
-                rg_preamp,
-                cur.and_then(|id| rg_tags.get(&id)),
-            );
+            let info = resolve_rg_info(cur, rg_mode, &rg_tags, &library, &loudness);
+            apply_replay_gain(&mut player, rg_mode, rg_preamp, info.as_ref());
             rg_applied_for = cur;
             rg_dirty = false;
         }
@@ -321,6 +344,55 @@ fn pump_thread<K, Mk, Ev>(
 
     drop(req_tx); // stop the loader
     let _ = loader.join();
+    // Close the job channel so the loudness worker exits, then join it. The join
+    // can wait out one in-flight track's analysis (the same bounded shutdown
+    // latency the loader has with an in-flight `open_track`); no analysis is ever
+    // in flight under RG `Off`, so the common case joins instantly.
+    drop(loudness);
+    let _ = analyzer.join();
+}
+
+/// The [`RgInfo`] to apply for the current track under the hybrid policy: its read
+/// RG tags, except that an *untagged* track (no track/album gain) under Track or
+/// Album substitutes a background-computed loudness gain when the analyzer has one
+/// cached — folded in as the **track** gain (which Album mode also falls back to,
+/// matching the "no album gain computed → use the per-track gain" untagged policy).
+/// On a cache miss it enqueues a single-flight analysis and returns the untagged
+/// tags unchanged, so this play is preamp-only and the computed gain takes effect
+/// only on the track's NEXT play. `Off` and already-tagged tracks pass straight
+/// through — never analyzed.
+fn resolve_rg_info(
+    cur: Option<u32>,
+    mode: ReplayGainMode,
+    rg_tags: &BTreeMap<u32, RgInfo>,
+    library: &Arc<Mutex<Arc<Library>>>,
+    loudness: &LoudnessCache,
+) -> Option<RgInfo> {
+    let id = cur?;
+    let tags = rg_tags.get(&id).copied();
+    // Off never analyzes (and plays at unity regardless), so short-circuit.
+    if mode == ReplayGainMode::Off {
+        return tags;
+    }
+    let tagged = tags
+        .map(|i| i.track_gain_db.is_some() || i.album_gain_db.is_some())
+        .unwrap_or(false);
+    if tagged {
+        return tags;
+    }
+    // Untagged under Track/Album: resolve the path and consult the loudness cache.
+    let path = library.lock().expect("library mutex").path_of(id)?;
+    if let Some(gain) = loudness.lookup(&path) {
+        Some(RgInfo {
+            track_gain_db: Some(gain),
+            album_gain_db: None,
+        })
+    } else {
+        // Not analyzed yet — kick off a single-flight job (no-op if already
+        // queued / analyzed) and play preamp-only this time.
+        loudness.enqueue(id, path);
+        tags
+    }
 }
 
 #[cfg(test)]
@@ -392,7 +464,7 @@ mod tests {
                         break;
                     }
                 }
-                Ok(Event::Queue(_)) => {}
+                Ok(_) => {}
                 Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
             }
         }
@@ -455,6 +527,96 @@ mod tests {
             "drop(player) blocked: pump thread did not exit while repeat playback was active"
         );
         let _ = dropper.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --- hybrid ReplayGain: untagged-track gain resolution ------------------
+
+    #[test]
+    fn resolve_rg_info_folds_a_cached_gain_for_an_untagged_track() {
+        let dir = std::env::temp_dir().join(format!("sas_rg_fold_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = fixture_library(&dir);
+        let library = Arc::new(Mutex::new(lib));
+
+        // A cache seeded (as `SeedLoudness` would) with a computed gain for the
+        // untagged WAV at id 0 — no worker interaction needed to observe the fold.
+        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, f32)>();
+        let (loudness, _worker) = LoudnessCache::spawn(res_tx);
+        let path0 = library.lock().unwrap().path_of(0).unwrap();
+        loudness.seed(&[(path0, -7.5)]);
+        let rg_tags: BTreeMap<u32, RgInfo> = BTreeMap::new(); // WAV fixtures: untagged
+
+        // Track mode: the cached gain stands in as the track gain.
+        let info = resolve_rg_info(
+            Some(0),
+            ReplayGainMode::Track,
+            &rg_tags,
+            &library,
+            &loudness,
+        );
+        assert_eq!(
+            info,
+            Some(RgInfo {
+                track_gain_db: Some(-7.5),
+                album_gain_db: None,
+            }),
+            "a cached gain folds in as the track gain"
+        );
+        assert!(
+            (crate::driver::applied_gain_db(ReplayGainMode::Track, 0.0, info.as_ref()) - (-7.5))
+                .abs()
+                < 1e-6
+        );
+        // Album mode on an untagged track falls back to the same per-track gain.
+        let album = resolve_rg_info(
+            Some(0),
+            ReplayGainMode::Album,
+            &rg_tags,
+            &library,
+            &loudness,
+        );
+        assert!(
+            (crate::driver::applied_gain_db(ReplayGainMode::Album, 0.0, album.as_ref()) - (-7.5))
+                .abs()
+                < 1e-6,
+            "Album reuses the computed per-track gain when no album gain exists"
+        );
+        // Off never folds (and never analyzes).
+        assert_eq!(
+            resolve_rg_info(Some(0), ReplayGainMode::Off, &rg_tags, &library, &loudness),
+            None,
+            "Off passes through untouched"
+        );
+
+        drop(loudness);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_rg_info_plays_preamp_only_on_a_cache_miss() {
+        let dir = std::env::temp_dir().join(format!("sas_rg_miss_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = fixture_library(&dir);
+        let library = Arc::new(Mutex::new(lib));
+
+        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, f32)>();
+        let (loudness, _worker) = LoudnessCache::spawn(res_tx);
+        let rg_tags: BTreeMap<u32, RgInfo> = BTreeMap::new();
+
+        // Nothing cached for id 0 → the untagged tags pass through (preamp-only),
+        // and a background analysis is enqueued as a side effect (single-flight,
+        // exercised directly in `loudness`'s own tests).
+        let info = resolve_rg_info(
+            Some(0),
+            ReplayGainMode::Track,
+            &rg_tags,
+            &library,
+            &loudness,
+        );
+        assert_eq!(info, None, "a miss plays preamp-only this time");
+
+        drop(loudness);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -52,6 +52,12 @@ struct Inner {
     /// also applies to the LIVE actor immediately (see
     /// [`set_replay_gain`](PlayerHandle::set_replay_gain)).
     replay_gain: Mutex<(ReplayGainMode, f32)>,
+    /// The app's persisted loudness cache (`(path, computed track_gain_db)`),
+    /// supplied once at startup by [`seed_loudness`](PlayerHandle::seed_loudness).
+    /// Banked so a lazily- (or re-) spawned actor is re-seeded on spawn — the
+    /// hybrid-ReplayGain cache for previously-untagged tracks survives the actor's
+    /// lazy start just like the ReplayGain choice does.
+    loudness_seed: Mutex<Vec<(PathBuf, f32)>>,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -95,6 +101,7 @@ impl PlayerHandle {
                 folders: Mutex::new(Vec::new()),
                 output_device: Mutex::new(None),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
+                loudness_seed: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -216,6 +223,24 @@ impl PlayerHandle {
         }
     }
 
+    /// Seed the backend's in-memory loudness cache from the app's persisted cache
+    /// — `(path, computed track_gain_db)` pairs for previously-untagged tracks the
+    /// hybrid-ReplayGain path analyzed in a past session. Call once at startup
+    /// (before the first playback). Banked so the (lazily-spawned, or later
+    /// re-spawned) actor is re-seeded on spawn, and pushed to a live actor right
+    /// away if one is already running. Like [`set_replay_gain`](Self::set_replay_gain),
+    /// it never spawns an actor just to seed.
+    pub fn seed_loudness(&self, entries: Vec<(PathBuf, f32)>) {
+        *self
+            .inner
+            .loudness_seed
+            .lock()
+            .expect("loudness seed mutex") = entries.clone();
+        if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
+            actor.send(Command::SeedLoudness(entries));
+        }
+    }
+
     /// Register an event handler. Called on every backend event (Tick ~8 Hz +
     /// Queue on mutation), from the pump thread. Handlers must not call back into
     /// this handle. Works before or after the actor has started.
@@ -325,11 +350,22 @@ impl PlayerHandle {
         // (player) then briefly `replay_gain`; `set_replay_gain` never holds
         // `replay_gain` while taking `player`, so the two can't deadlock.
         let (rg_mode, rg_preamp) = *self.inner.replay_gain.lock().expect("replay_gain mutex");
+        // Snapshot the persisted loudness cache the same way, to re-seed the fresh
+        // actor so previously-analyzed untagged tracks are normalized immediately.
+        let loudness_seed = self
+            .inner
+            .loudness_seed
+            .lock()
+            .expect("loudness seed mutex")
+            .clone();
         let actor = sink::build_actor(self.inner.mode, device, lib, forward);
         actor.send(Command::SetReplayGain {
             mode: rg_mode,
             preamp_db: rg_preamp,
         });
+        if !loudness_seed.is_empty() {
+            actor.send(Command::SeedLoudness(loudness_seed));
+        }
         *guard = Some(actor);
     }
 }
@@ -386,6 +422,26 @@ mod tests {
         assert_eq!(
             *h.inner.replay_gain.lock().unwrap(),
             (ReplayGainMode::Track, 6.0)
+        );
+    }
+
+    #[test]
+    fn seed_loudness_before_open_is_remembered_without_spawning() {
+        // Seeding the loudness cache must not spawn an actor (no device stream
+        // before playback) and must not panic — it's banked for the next spawn.
+        let h = PlayerHandle::offline();
+        h.seed_loudness(vec![
+            (PathBuf::from("/music/a.flac"), -6.0),
+            (PathBuf::from("/music/b.wav"), 2.5),
+        ]);
+        assert_eq!(
+            h.inner.loudness_seed.lock().unwrap().len(),
+            2,
+            "the seed is remembered for the next spawn"
+        );
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "no actor is spawned just to seed the cache"
         );
     }
 
