@@ -4,12 +4,18 @@
 //! bottom edge, right above the player panel, rather than pinned to the top.
 #![forbid(unsafe_code)]
 
-use rune::tok::type_;
-use rune::{El, ScrollSpec, col, row, text};
+use rune::{El, ScrollSpec, TextStyle, col, row, text};
 use soul_player_host::Command;
 
 use crate::State;
 use crate::theme::Palette;
+use crate::views::player::{QUEUE_COVER, cover};
+
+/// Queue-row title — the old app's `TrackItem` `text-sm` (14 px, regular; the
+/// now-playing title is the semibold one).
+const Q_TITLE: TextStyle = TextStyle::new(14.0, 400.0);
+/// Queue-row subtitle — muted `text-xs` (12 px).
+const Q_SUB: TextStyle = TextStyle::new(12.0, 400.0);
 
 /// One compact queue row: title (`p.fg`) over artist (`p.text_secondary`),
 /// both small and truncated so a long tag can't overflow the sidebar.
@@ -21,7 +27,7 @@ use crate::theme::Palette;
 /// context lookahead); it's only there to keep sibling `.key`s unique, since
 /// the two sections can otherwise derive the same `natural_pos` for
 /// different ids.
-fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32) -> El {
+fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, scale: f32) -> El {
     let (title, artist) = match s.track(id) {
         Some(t) => (
             t.title.clone().unwrap_or_else(|| "Unknown".into()),
@@ -31,20 +37,21 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32) -> 
     };
     row()
         .key(format!("queue-{slot}-{id}"))
-        .padding(6.0)
+        .gap(8.0)
+        .center_y()
+        .px(4.0)
+        .py(4.0)
+        .radius(6.0)
+        .hover(p.muted)
+        .child(cover(s, Some(id), QUEUE_COVER, p, scale))
         .child(
             col()
                 .key("queue-text")
-                .gap(2.0)
+                .gap(1.0)
                 .grow(1.0)
                 .min_w(0.0)
-                .child(text(title).font(type_::LABEL).color(p.fg).truncate())
-                .child(
-                    text(artist)
-                        .font(type_::LABEL)
-                        .color(p.text_secondary)
-                        .truncate(),
-                ),
+                .child(text(title).font(Q_TITLE).color(p.fg).truncate())
+                .child(text(artist).font(Q_SUB).color(p.text_secondary).truncate()),
         )
         .on_press(move |st: &mut State| st.host.send(Command::Goto(natural_pos)))
 }
@@ -63,12 +70,12 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32) -> 
 /// bottom, longer ones scroll with the soonest-up row anchored there, the
 /// same `justify_end`-inside-`scroll` combination the engine documents for
 /// a bottom-anchored stack (`crates/rune/src/runtime/scroll/bottom.rs`).
-pub fn queue_section(s: &State, p: &Palette) -> El {
-    let mut rows = col().key("queue-rows").gap(2.0).justify_end();
+pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
+    let mut rows = col().key("queue-rows").gap(4.0).justify_end();
     let mut slot = 0usize;
     for (i, &id) in s.up_next.iter().enumerate() {
         let natural_pos = s.context_pos + 1 + i as u32;
-        rows = rows.child(queue_row(s, p, slot, id, natural_pos));
+        rows = rows.child(queue_row(s, p, slot, id, natural_pos, scale));
         slot += 1;
     }
     for (i, t) in s
@@ -79,16 +86,17 @@ pub fn queue_section(s: &State, p: &Palette) -> El {
         .enumerate()
     {
         let natural_pos = s.context_pos + 1 + i as u32;
-        rows = rows.child(queue_row(s, p, slot, t.id, natural_pos));
+        rows = rows.child(queue_row(s, p, slot, t.id, natural_pos, scale));
         slot += 1;
     }
+    // No header (the old app's QueueSection has none): just the bottom-anchored,
+    // scrollable list (`px-4 pb-2`) filling the space between nav and player.
     col()
         .key("queue")
-        .gap(8.0)
-        .padding(16.0)
+        .px(12.0)
+        .pb(8.0)
         .grow(1.0)
         .min_h(0.0)
-        .child(text("Up Next").font(type_::SECTION).color(p.text_secondary))
         .child(
             rows.scroll(ScrollSpec {
                 stick_bottom: false,
