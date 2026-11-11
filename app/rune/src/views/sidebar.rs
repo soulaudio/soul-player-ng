@@ -187,16 +187,19 @@ pub fn collapsed_strip(p: &Palette) -> El {
         .align(Align::Center)
         .center_y()
         .cursor(Cursor::ResizeColumn)
+        .hover(p.fg.alpha(0.06))
         .on_press(move |s: &mut State| {
             s.sidebar_collapsed = false;
             config::save_sidebar(s.sidebar_width, false);
         })
         .child(
+            // The grabber pill, `foreground/15%` as the old app's
+            // `CollapsedSidebarStrip` (the rail tints on hover above).
             el().key("grabber")
                 .w(4.0)
                 .h(56.0)
                 .radius(2.0)
-                .fill(p.border),
+                .fill(p.fg.alpha(0.15)),
         )
 }
 
