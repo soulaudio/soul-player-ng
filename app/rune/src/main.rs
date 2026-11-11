@@ -93,6 +93,11 @@ struct State {
     /// transport shortcuts). `/` or clicking the search bar turns it on; Esc/Enter
     /// turn it off.
     searching: bool,
+    /// The resizable sidebar's width (clamped 240–480) and whether it's collapsed
+    /// to a thin rail. Persisted via [`config::load_sidebar`]/[`config::save_sidebar`]
+    /// and driven by the drag handle in `views::sidebar`.
+    sidebar_width: f32,
+    sidebar_collapsed: bool,
 }
 
 impl State {
@@ -107,6 +112,7 @@ impl State {
             .filter(|p| !p.is_dir())
             .cloned()
             .collect();
+        let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
         Self {
             host,
             library,
@@ -131,6 +137,8 @@ impl State {
             update_available: None,
             search: String::new(),
             searching: false,
+            sidebar_width,
+            sidebar_collapsed,
         }
     }
 
@@ -211,7 +219,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .w_full()
         .h_full()
         .fill(p.bg)
-        .child(views::sidebar::sidebar(s, &p, cx, scale))
+        .child(if s.sidebar_collapsed {
+            views::sidebar::collapsed_strip(&p)
+        } else {
+            views::sidebar::sidebar(s, &p, cx, scale)
+        })
+        .child(views::sidebar::resize_handle())
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
             Route::Library => views::library::track_list(s, &p).grow(1.0),
             Route::Settings => views::settings::settings_page(s, &p).grow(1.0),
@@ -476,6 +489,60 @@ mod tests {
         );
         assert!(rt.find("add-source").is_some(), "Sources offers Add Source");
         assert!(rt.find("rescan-sources").is_some(), "Sources offers Rescan");
+    }
+
+    #[test]
+    fn sidebar_resize_handle_present_and_collapses_to_a_rail() {
+        // Expanded: the full sidebar and its always-present resize handle render,
+        // and there is no collapsed rail.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false; // explicit — don't depend on persisted config
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(rt.find("sidebar").is_some(), "the full sidebar renders");
+        assert!(
+            rt.find("sidebar-resize").is_some(),
+            "the resize handle is present"
+        );
+        assert!(
+            rt.find("sidebar-collapsed").is_none(),
+            "no collapsed rail while expanded"
+        );
+
+        // Collapsed: the rail replaces the full sidebar; the handle stays so a
+        // drag (or click) can re-open it.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = true;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("sidebar-collapsed").is_some(),
+            "collapsing shows the thin rail"
+        );
+        assert!(
+            rt.find("sidebar").is_none(),
+            "the full sidebar is gone when collapsed"
+        );
+        assert!(
+            rt.find("sidebar-resize").is_some(),
+            "the handle remains, to re-open"
+        );
     }
 
     #[test]
