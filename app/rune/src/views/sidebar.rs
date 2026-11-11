@@ -100,29 +100,28 @@ fn settings_footer(s: &State, p: &Palette) -> El {
                 .role("button")
                 .label("Settings")
                 .focusable(true)
-                .px(8.0)
-                .py(5.0)
-                .radius(6.0)
+                .padding(6.0)
+                .radius(8.0)
                 .cursor(Cursor::Pointer)
                 .on_press(move |s: &mut State| s.route = Route::Settings)
                 .child(icon(&icons::SETTINGS, 16.0).color(if active {
-                    p.bg
+                    p.primary
                 } else {
                     p.text_secondary
                 }));
-            // On the Settings page the gear gets a filled primary pill so "picked"
-            // reads clearly — the same active treatment as the sort/theme buttons;
-            // otherwise it just highlights on hover.
+            // 1:1 with the old app's SettingsFooter button: on /settings a primary
+            // icon on a subtle accent-20% pill (`text-primary bg-accent/20`),
+            // otherwise a faint foreground-10% hover (`hover:bg-foreground/10`).
             if active {
-                gear.fill(p.primary)
+                gear.fill(p.accent.alpha(0.2))
             } else {
-                gear.hover(p.muted)
+                gear.hover(p.fg.alpha(0.1))
             }
         })
         .child(
             text(VERSION)
                 .font(type_::MONO_CAPTION.mono())
-                .color(p.text_secondary)
+                .color(p.text_secondary.alpha(0.6))
                 .grow(1.0)
                 .align(Align::End),
         )
