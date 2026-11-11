@@ -4,7 +4,7 @@
 //! bottom edge, right above the player panel, rather than pinned to the top.
 #![forbid(unsafe_code)]
 
-use rune::{Cursor, El, ScrollSpec, TextStyle, col, row, text};
+use rune::{Cursor, El, ScrollSpec, TextStyle, col, el, row, text};
 use soul_player_host::Command;
 
 use crate::State;
@@ -16,6 +16,8 @@ use crate::views::player::{QUEUE_COVER, cover};
 const Q_TITLE: TextStyle = TextStyle::new(14.0, 400.0);
 /// Queue-row subtitle — muted `text-xs` (12 px).
 const Q_SUB: TextStyle = TextStyle::new(12.0, 400.0);
+/// Height of the top gradient overlay that fades queue rows into the nav.
+const FADE_H: f32 = 44.0;
 
 /// One compact queue row: title (`p.fg`) over artist (`p.text_secondary`),
 /// both small and truncated so a long tag can't overflow the sidebar.
@@ -92,6 +94,9 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
     }
     // No header (the old app's QueueSection has none): just the bottom-anchored,
     // scrollable list (`px-4 pb-2`) filling the space between nav and player.
+    // A top gradient overlay (card -> transparent) fades the upper rows out as
+    // they scroll up into the nav, like a `mask-image` edge fade. It covers only
+    // the top fade zone — the soonest-up rows sit at the bottom, clear of it.
     col()
         .key("queue")
         .px(12.0)
@@ -104,5 +109,12 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
             })
             .grow(1.0)
             .min_h(0.0),
+        )
+        .child(
+            el().key("queue-fade")
+                .w_full()
+                .h(FADE_H)
+                .absolute(0.0, 0.0)
+                .gradient(p.card, p.card.alpha(0.0)),
         )
 }
