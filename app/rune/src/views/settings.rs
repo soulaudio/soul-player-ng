@@ -268,7 +268,8 @@ fn language_section(s: &State, p: &Palette) -> El {
                 .child(lang_button("Deutsch".into(), "de", cur == "de", p))
                 .child(lang_button("Español".into(), "es", cur == "es", p))
                 .child(lang_button("中文".into(), "zh", cur == "zh", p))
-                .child(lang_button("Čeština".into(), "cs", cur == "cs", p)),
+                .child(lang_button("Čeština".into(), "cs", cur == "cs", p))
+                .child(lang_button("日本語".into(), "ja", cur == "ja", p)),
         )
 }
 

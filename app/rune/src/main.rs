@@ -23,6 +23,8 @@ use soul_player_host::{
 };
 
 mod config;
+#[cfg(test)]
+mod i18n_tests;
 mod theme;
 mod update;
 mod views;
@@ -30,7 +32,7 @@ mod views;
 use views::player::ArtCache;
 
 /// The UI locales shipped besides the English fallback (see `locales/app.yml`).
-pub(crate) const LOCALES: &[&str] = &["en", "de", "es", "zh", "cs"];
+pub(crate) const LOCALES: &[&str] = &["en", "de", "es", "zh", "cs", "ja"];
 
 /// Resolve a locale preference to a concrete locale code. A supported pref
 /// ("de", "zh", …) is used as-is; "system" — or anything unsupported — matches

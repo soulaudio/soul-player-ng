@@ -32,10 +32,12 @@ const FADE_H: f32 = 44.0;
 fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, scale: f32) -> El {
     let (title, artist) = match s.track(id) {
         Some(t) => (
-            t.title.clone().unwrap_or_else(|| "Unknown".into()),
+            t.title
+                .clone()
+                .unwrap_or_else(|| t!("library.unknown").to_string()),
             t.artist.clone().unwrap_or_default(),
         ),
-        None => ("Unknown".into(), String::new()),
+        None => (t!("library.unknown").to_string(), String::new()),
     };
     row()
         .key(format!("queue-{slot}-{id}"))
