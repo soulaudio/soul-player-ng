@@ -183,6 +183,9 @@ impl State {
                 self.context_pos = q.context_pos;
                 self.context_len = q.context_len;
             }
+            // Persisted off-thread in the subscribe closure (see `main`); the
+            // hybrid-ReplayGain cache is silent — no UI state to fold in here.
+            Event::TrackLoudnessAnalyzed { .. } => {}
         }
     }
 }
@@ -366,6 +369,10 @@ fn main() -> anyhow::Result<()> {
     // actor on spawn).
     let (rg_mode, rg_preamp) = config::load_replaygain();
     host.set_replay_gain(rg_mode, rg_preamp);
+    // Seed the hybrid-ReplayGain loudness cache from the persisted file (stale
+    // entries already dropped on load) BEFORE any spawn, so a previously-analyzed
+    // untagged track is normalized this session with no re-scan.
+    host.seed_loudness(config::load_loudness_cache());
     // The dev/e2e harness loads a single folder from the env; otherwise restore
     // the persisted watched-folder set so Sources survive a restart.
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
@@ -422,6 +429,12 @@ fn main() -> anyhow::Result<()> {
         });
     }
     host.subscribe(move |ev: Event| {
+        // Persist a completed background analysis to the on-disk cache (best-effort,
+        // off the UI thread) so it seeds the NEXT launch; the fold into playback is
+        // the backend's, already in its in-memory cache.
+        if let Event::TrackLoudnessAnalyzed { path, gain_db } = &ev {
+            config::record_loudness(path, *gain_db);
+        }
         ah.update(move |s: &mut State, tx: &mut Tx| {
             s.apply(&ev);
             tx.instant(); // don't animate fast-moving numeric fields

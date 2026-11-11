@@ -95,6 +95,9 @@ pub fn apply_command<K: Sink, D: SeekableDecoder>(
         // access to) — there is no `Player` transport call for it, so here it is
         // a no-op. See [`apply_replay_gain`].
         Command::SetReplayGain { .. } => Ok(()),
+        // Seeding the loudness cache is pump state (the cache lives there), not a
+        // transport action — the pump intercepts it before this call. No-op here.
+        Command::SeedLoudness(_) => Ok(()),
     }
 }
 

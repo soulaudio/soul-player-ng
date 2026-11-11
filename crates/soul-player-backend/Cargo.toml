@@ -17,6 +17,10 @@ soul-audio-queue = { git = "https://github.com/soulaudio/soul-audio-core", branc
 soul-audio-control = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 soul-audio-tags = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["std"] }
+# Streaming ITU-R BS.1770 / EBU R128 integrated-loudness analyzer (ReplayGain 2.0
+# target −18 LUFS). Drives the hybrid path: tracks with NO ReplayGain tags are
+# background-analyzed here so a computed gain can stand in for the missing tag.
+soul-audio-loudness = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 # The shared data layer (new): the scan/model/index the de-fork consumes, now
 # that the desktop and the DAP read the one catalog/index built in core.
 soul-audio-catalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
