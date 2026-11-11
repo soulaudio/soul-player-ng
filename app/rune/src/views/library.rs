@@ -41,6 +41,7 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
         .radius(6.0)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.06))
+        .press(p.fg.alpha(0.1))
         .child(
             if playing {
                 // ▶/⏸ are already proven-good glyphs in this font (the
