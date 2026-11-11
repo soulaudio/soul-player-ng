@@ -4,7 +4,7 @@
 //! bottom edge, right above the player panel, rather than pinned to the top.
 #![forbid(unsafe_code)]
 
-use rune::{Cursor, El, ScrollSpec, TextStyle, col, el, row, text};
+use rune::{Cursor, El, ScrollSpec, TextStyle, col, row, text};
 use soul_player_host::Command;
 
 use crate::State;
@@ -16,8 +16,9 @@ use crate::views::player::{QUEUE_COVER, cover};
 const Q_TITLE: TextStyle = TextStyle::new(14.0, 400.0);
 /// Queue-row subtitle — muted `text-xs` (12 px).
 const Q_SUB: TextStyle = TextStyle::new(12.0, 400.0);
-/// Height of the top gradient overlay that fades queue rows into the nav.
-const FADE_H: f32 = 44.0;
+/// Width of the scroll-edge fade that eases queue rows into the nav at the top
+/// (Rune suggests 16–32 pt).
+const FADE_H: f32 = 32.0;
 
 /// One compact queue row: title (`p.fg`) over artist (`p.text_secondary`),
 /// both small and truncated so a long tag can't overflow the sidebar.
@@ -48,6 +49,7 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
         .radius(6.0)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.06))
+        .press(p.fg.alpha(0.1))
         .child(cover(s, Some(id), QUEUE_COVER, p, scale))
         .child(
             col()
@@ -56,7 +58,14 @@ fn queue_row(s: &State, p: &Palette, slot: usize, id: u32, natural_pos: u32, sca
                 .grow(1.0)
                 .min_w(0.0)
                 .child(text(title).font(Q_TITLE).color(p.fg).truncate())
-                .child(text(artist).font(Q_SUB).color(p.text_secondary).truncate()),
+                // Subtitle dimmer than the title, as the old app's `TrackItem`
+                // artist line (`text-muted-foreground/70`).
+                .child(
+                    text(artist)
+                        .font(Q_SUB)
+                        .color(p.text_secondary.alpha(0.7))
+                        .truncate(),
+                ),
         )
         .on_press(move |st: &mut State| st.host.send(Command::Goto(natural_pos)))
 }
@@ -96,9 +105,9 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
     }
     // No header (the old app's QueueSection has none): just the bottom-anchored,
     // scrollable list (`px-4 pb-2`) filling the space between nav and player.
-    // A top gradient overlay (card -> transparent) fades the upper rows out as
-    // they scroll up into the nav, like a `mask-image` edge fade. It covers only
-    // the top fade zone — the soonest-up rows sit at the bottom, clear of it.
+    // `scroll_edge_fade` fades the top edge as rows scroll up into the nav — only
+    // while content is hidden above, and (unlike a layered overlay) it's part of
+    // the viewport, so it never eats wheel/scroll events over the fade band.
     col()
         .key("queue")
         .px(12.0)
@@ -109,14 +118,8 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
             rows.scroll(ScrollSpec {
                 stick_bottom: false,
             })
+            .scroll_edge_fade(FADE_H)
             .grow(1.0)
             .min_h(0.0),
-        )
-        .child(
-            el().key("queue-fade")
-                .w_full()
-                .h(FADE_H)
-                .absolute(0.0, 0.0)
-                .gradient(p.card, p.card.alpha(0.0)),
         )
 }
