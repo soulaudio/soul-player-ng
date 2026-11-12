@@ -94,11 +94,14 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                             }
                         })
                         .child(
-                            // Old app's `w-14 h-14 rounded-xl bg-black/50` button.
+                            // Old app's `w-14 h-14 rounded-xl bg-black/50` button,
+                            // darkening to ~black/70 on direct hover (its
+                            // `hover:bg-black/70`).
                             el().key("play-btn")
                                 .size(PLAY_BTN, PLAY_BTN)
                                 .radius(radius::LG)
                                 .fill(Color::BLACK.alpha(0.5))
+                                .hover(Color::BLACK.alpha(0.3))
                                 .center()
                                 .child(icon(&icons::PLAY, 32.0).color(Color::WHITE)),
                         ),

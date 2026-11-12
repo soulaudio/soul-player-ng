@@ -80,6 +80,10 @@ pub fn slider(
         })
         .h(h)
         .grow(1.0)
+        // The old app's ProgressBar hides its thumb at rest and fades it in on
+        // hover/drag (`opacity: isHovering || isDragging ? 1 : 0`); `hover_group`
+        // here drives the knob's `group_opacity` below.
+        .hover_group()
         .motion(motion::SNAPPY)
         .on_drag(move |s: &mut State, d: &mut Drag, tx| {
             // The gesture's own width (see module doc), not the value this
@@ -137,20 +141,24 @@ pub fn slider(
                 .a11y_hidden(),
         )
         .child(
+            // Filled portion is `bg-primary`, as the old app's ProgressBar.
             el().key("fill")
                 .size(k / 2.0 + v * travel, bar)
                 .absolute(0.0, (h - bar) / 2.0)
                 .radius(bar / 2.0)
-                .fill(p.accent)
+                .fill(p.primary)
                 .a11y_hidden(),
         )
         .child(
+            // The thumb (`bg-primary`), hidden at rest and faded in on hover/drag
+            // via `group_opacity` (old app's `opacity: isHovering ? 1 : 0`).
             el().key("knob")
                 .size(k, k)
                 .absolute(v * travel, (h - k) / 2.0)
                 .radius(k / 2.0)
-                .fill(p.fg)
+                .fill(p.primary)
                 .shadow(1.0, 2.0, p.border)
+                .group_opacity(0.0, 1.0)
                 .a11y_hidden(),
         )
 }
