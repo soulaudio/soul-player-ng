@@ -445,6 +445,18 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 fn scene_settings(s: &mut State) {
     s.route = Route::Settings;
 }
+fn scene_settings_music(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+}
+fn scene_settings_audio(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Audio;
+}
+fn scene_settings_about(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::About;
+}
 fn scene_albums(s: &mut State) {
     s.route = Route::Albums;
 }
@@ -512,6 +524,9 @@ fn main() -> anyhow::Result<()> {
         on_key: Some(handle_key),
         scenes: &[
             ("settings", scene_settings),
+            ("settings-music", scene_settings_music),
+            ("settings-audio", scene_settings_audio),
+            ("settings-about", scene_settings_about),
             ("albums", scene_albums),
             ("search", scene_search),
             ("no-match", scene_no_match),

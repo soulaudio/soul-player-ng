@@ -48,6 +48,10 @@ fn basename(p: &std::path::Path) -> String {
 fn card(key: &str, p: &Palette) -> El {
     col()
         .key(key.to_string())
+        // Fill the content column so every card shares one width and left edge,
+        // regardless of how wide its own controls are (the About card's lone
+        // version line would otherwise shrink the whole column and drift centred).
+        .w_full()
         .fill(p.card)
         .radius(radius::LG)
         .padding(space::LG)
@@ -568,10 +572,19 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 .grow(1.0)
                 .min_h(0.0)
                 .padding(space::XL)
-                .child(el().key("settings-pad-l").grow(1.0))
-                .child(content.max_w(CONTENT_MAX_W).min_h(0.0).scroll(ScrollSpec {
-                    stick_bottom: false,
-                }))
-                .child(el().key("settings-pad-r").grow(1.0)),
+                // `grow` lets the column claim the body width so every tab's cards
+                // fill one consistent width and share a left edge (this engine splits
+                // free space evenly across grow children, so flanking spacers would
+                // only ever leave the column a third-width and drifting); `max_w`
+                // caps it on wide windows — the original's `max-w-4xl` column.
+                .child(
+                    content
+                        .grow(1.0)
+                        .max_w(CONTENT_MAX_W)
+                        .min_h(0.0)
+                        .scroll(ScrollSpec {
+                            stick_bottom: false,
+                        }),
+                ),
         )
 }
