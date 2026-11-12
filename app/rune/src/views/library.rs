@@ -12,6 +12,7 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::icons;
+use crate::views::player::cover;
 
 fn fmt_dur(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -28,7 +29,7 @@ fn track_matches(t: &TrackView, q: &str) -> bool {
 /// One track row. `ids` is the id list of the *currently visible* (possibly
 /// filtered) tracks, so playing starts a context over exactly what's on screen;
 /// `index` is the row's position within it.
-fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -> El {
+fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize, scale: f32) -> El {
     let playing = s.now_playing_id == Some(t.id);
     let ids = ids.to_vec();
     let start = index as u32;
@@ -37,7 +38,8 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
     row()
         .key(format!("track-{}", t.id))
         .gap(space::MD)
-        .padding(space::SM)
+        .px(space::MD)
+        .py(space::SM)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(0.06))
@@ -52,29 +54,56 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize) -
             } else {
                 text(format!("{}", index + 1)).color(p.text_secondary)
             }
+            .font(type_::ITEM)
             .w(28.0),
         )
+        // Cover + title hug each other, mirroring the old app's `flex items-center`
+        // title column with its `w-8 h-8 rounded-lg` (32 px) thumbnail. The pair
+        // grows to fill the title column; `min_w(0)` lets the title truncate.
         .child(
-            text(
-                t.title
-                    .clone()
-                    .unwrap_or_else(|| t!("library.unknown").to_string()),
-            )
-            .color(if playing { p.accent } else { p.fg })
-            .grow(1.0),
+            row()
+                .key("track-title")
+                .gap(space::SM)
+                .center_y()
+                .grow(1.0)
+                .min_w(0.0)
+                .child(el().key(format!("track-cover-{}", t.id)).child(cover(
+                    s,
+                    Some(t.id),
+                    32.0,
+                    radius::MD,
+                    p,
+                    scale,
+                )))
+                .child(
+                    text(
+                        t.title
+                            .clone()
+                            .unwrap_or_else(|| t!("library.unknown").to_string()),
+                    )
+                    .font(type_::ITEM)
+                    .color(if playing { p.accent } else { p.fg })
+                    .truncate()
+                    .grow(1.0),
+                ),
         )
         .child(
             text(t.artist.clone().unwrap_or_default())
+                .font(type_::ITEM)
                 .color(p.text_secondary)
+                .truncate()
                 .grow(1.0),
         )
         .child(
             text(t.album.clone().unwrap_or_default())
+                .font(type_::ITEM)
                 .color(p.text_secondary)
+                .truncate()
                 .grow(1.0),
         )
         .child(
             text(fmt_dur(t.duration_secs))
+                .font(type_::ITEM)
                 .color(p.text_secondary)
                 .w(56.0),
         )
@@ -180,7 +209,7 @@ fn search_bar(s: &State, p: &Palette) -> El {
 /// `.grow(1.0).min_h(0.0)` make the viewport take its bounded parent's full
 /// remaining height (rather than its content's natural height) so it scrolls
 /// instead of overflowing — see `El::scroll`'s doc comment.
-pub fn track_list(s: &State, p: &Palette) -> El {
+pub fn track_list(s: &State, p: &Palette, scale: f32) -> El {
     if s.library.is_empty() {
         // Cold launch with no SOUL_PLAYER_FOLDER: a usable entry point rather
         // than a blank list.
@@ -221,7 +250,7 @@ pub fn track_list(s: &State, p: &Palette) -> El {
         let ids: Vec<u32> = visible.iter().map(|t| t.id).collect();
         let mut list = col().key("tracks").gap(space::XXS);
         for (i, t) in visible.iter().enumerate() {
-            list = list.child(track_row(s, p, t, &ids, i));
+            list = list.child(track_row(s, p, t, &ids, i, scale));
         }
         list.scroll(ScrollSpec {
             stick_bottom: false,

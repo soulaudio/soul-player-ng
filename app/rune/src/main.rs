@@ -348,7 +348,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         })
         .child(views::sidebar::resize_handle(&p))
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
-            Route::Library => views::library::track_list(s, &p).grow(1.0),
+            Route::Library => views::library::track_list(s, &p, scale).grow(1.0),
             Route::Albums => views::albums::albums_page(s, &p, cx, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, &p, cx).grow(1.0),
         }))
@@ -1145,6 +1145,29 @@ mod tests {
         assert!(
             rt.find(&format!("enqueue-{first_id}")).is_some(),
             "a track row offers an add-to-queue button"
+        );
+    }
+
+    /// Track rows show a 32 pt cover thumbnail hugging the title — the old app's
+    /// `w-8 h-8 rounded-lg` TrackList cover column (ours previously had none).
+    #[test]
+    fn track_rows_show_a_32pt_cover_thumbnail() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let s = State::new(host);
+        let first_id = s.library[0].id;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let ([_, _, w, h], _) = rt
+            .presented(&format!("track-cover-{first_id}"))
+            .expect("the track row renders a cover thumbnail");
+        assert!(
+            (w - 32.0).abs() <= 0.5 && (h - 32.0).abs() <= 0.5,
+            "the cover is 32x32 pt (old app's w-8 h-8), got {w}x{h}"
         );
     }
 
