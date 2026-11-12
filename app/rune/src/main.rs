@@ -348,7 +348,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         })
         .child(views::sidebar::resize_handle(&p))
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
-            Route::Library => views::library::track_list(s, &p, scale).grow(1.0),
+            Route::Library => views::library::track_list(s, &p, cx, scale).grow(1.0),
             Route::Albums => views::albums::albums_page(s, &p, cx, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, &p, cx).grow(1.0),
         }))
@@ -1188,6 +1188,45 @@ mod tests {
         assert!(
             (w - 32.0).abs() <= 0.5 && (h - 32.0).abs() <= 0.5,
             "the cover is 32x32 pt (old app's w-8 h-8), got {w}x{h}"
+        );
+    }
+
+    /// The Tracks page genuinely reflows with its content-pane width (the old
+    /// app's TrackList hides the artist/album columns below `sm`): on a narrow
+    /// pane the artist moves under the title into a `track-titleblock` that the
+    /// wide layout never builds. It is width-driven via `cx.layout_size`, which
+    /// reads the *prior* frame — hence two frames before asserting. The sidebar is
+    /// collapsed so the content pane tracks the window width deterministically.
+    #[test]
+    fn tracks_reflow_to_a_compact_subtitle_layout_when_narrow() {
+        let seed = || {
+            let host = PlayerHandle::offline();
+            host.open_folder(&testdata_dir()).expect("scan testdata");
+            let mut s = State::new(host);
+            s.sidebar_collapsed = true; // pane ≈ window width, no sidebar variance
+            s
+        };
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+
+        // Narrow window → compact rows (artist as subtitle).
+        let mut rt = Runtime::new(seed(), view, (600.0, 720.0), env);
+        rt.frame(0.0); // establish layout
+        rt.frame(0.0); // second frame reads last frame's pane width → compact
+        assert!(
+            rt.find("track-titleblock").is_some(),
+            "a narrow pane uses the compact (artist-as-subtitle) track rows"
+        );
+
+        // Wide window → full columns, no subtitle block.
+        let mut rt = Runtime::new(seed(), view, (1200.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("track-titleblock").is_none(),
+            "a wide pane keeps the artist/album columns (no subtitle block)"
         );
     }
 

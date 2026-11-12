@@ -108,7 +108,10 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
 fn sources_section(s: &State, p: &Palette) -> El {
     let mut sources = col().key("sources").gap(space::XXS).child(
         row()
+            .flex_wrap()
+            .gap(space::SM)
             .padding(space::SM)
+            .center_y()
             .child(
                 text(t!("settings.sources").to_string())
                     .font(type_::HEADING)
@@ -219,6 +222,7 @@ fn appearance_section(s: &State, p: &Palette) -> El {
         )
         .child(
             row()
+                .flex_wrap()
                 .gap(space::SM)
                 .padding(space::SM)
                 .child(theme_button(
@@ -283,6 +287,7 @@ fn language_section(s: &State, p: &Palette) -> El {
         )
         .child(
             row()
+                .flex_wrap()
                 .gap(space::SM)
                 .padding(space::SM)
                 .child(lang_button(
@@ -409,6 +414,7 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let preamp = s.replaygain_preamp;
     let value01 = ((preamp - RG_PREAMP_MIN) / (RG_PREAMP_MAX - RG_PREAMP_MIN)).clamp(0.0, 1.0);
     let modes = row()
+        .flex_wrap()
         .gap(space::SM)
         .padding(space::SM)
         .child(rg_mode_button(

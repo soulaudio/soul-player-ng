@@ -4,7 +4,7 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Cursor, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row, text,
+    Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row, text,
 };
 use soul_player_host::{BrowseAxis, Command, TrackView};
 
@@ -29,13 +29,69 @@ fn track_matches(t: &TrackView, q: &str) -> bool {
 /// One track row. `ids` is the id list of the *currently visible* (possibly
 /// filtered) tracks, so playing starts a context over exactly what's on screen;
 /// `index` is the row's position within it.
-fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize, scale: f32) -> El {
+fn track_row(
+    s: &State,
+    p: &Palette,
+    t: &TrackView,
+    ids: &[u32],
+    index: usize,
+    compact: bool,
+    scale: f32,
+) -> El {
     let playing = s.now_playing_id == Some(t.id);
     let ids = ids.to_vec();
     let start = index as u32;
     let tid = t.id; // Copy out of the borrow so the button/menu closures can own it.
     let menu_ids = ids.clone(); // the context menu's "Play" needs its own copy.
-    row()
+    let artist = t.artist.clone().unwrap_or_default();
+
+    let title = text(
+        t.title
+            .clone()
+            .unwrap_or_else(|| t!("library.unknown").to_string()),
+    )
+    .font(type_::ITEM)
+    .color(if playing { p.accent } else { p.fg })
+    .truncate();
+    // Compact (narrow pane) drops the artist/album columns — the old app's
+    // TrackList hides them below `sm` — so the artist rides under the title as a
+    // subtitle instead of disappearing. Wide keeps the title a single line.
+    let title_block: El = if compact && !artist.is_empty() {
+        col()
+            .key("track-titleblock")
+            .gap(space::XXS)
+            .min_w(0.0)
+            .grow(1.0)
+            .child(title)
+            .child(
+                text(artist.clone())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary)
+                    .truncate(),
+            )
+    } else {
+        title.grow(1.0)
+    };
+    // Cover + title hug each other, mirroring the old app's `flex items-center`
+    // title column with its `w-8 h-8 rounded-lg` (32 px) thumbnail. The pair
+    // grows to fill the title column; `min_w(0)` lets the title truncate.
+    let title_col = row()
+        .key("track-title")
+        .gap(space::SM)
+        .center_y()
+        .grow(1.0)
+        .min_w(0.0)
+        .child(el().key(format!("track-cover-{}", t.id)).child(cover(
+            s,
+            Some(t.id),
+            32.0,
+            radius::MD,
+            p,
+            scale,
+        )))
+        .child(title_block);
+
+    let mut r = row()
         .key(format!("track-{}", t.id))
         .gap(space::MD)
         .px(space::MD)
@@ -57,103 +113,79 @@ fn track_row(s: &State, p: &Palette, t: &TrackView, ids: &[u32], index: usize, s
             .font(type_::ITEM)
             .w(28.0),
         )
-        // Cover + title hug each other, mirroring the old app's `flex items-center`
-        // title column with its `w-8 h-8 rounded-lg` (32 px) thumbnail. The pair
-        // grows to fill the title column; `min_w(0)` lets the title truncate.
-        .child(
-            row()
-                .key("track-title")
-                .gap(space::SM)
-                .center_y()
-                .grow(1.0)
-                .min_w(0.0)
-                .child(el().key(format!("track-cover-{}", t.id)).child(cover(
-                    s,
-                    Some(t.id),
-                    32.0,
-                    radius::MD,
-                    p,
-                    scale,
-                )))
-                .child(
-                    text(
-                        t.title
-                            .clone()
-                            .unwrap_or_else(|| t!("library.unknown").to_string()),
-                    )
+        .child(title_col);
+    // The standard layout keeps the artist and album as their own columns; the
+    // compact layout dropped them above (artist moved under the title).
+    if !compact {
+        r = r
+            .child(
+                text(artist)
                     .font(type_::ITEM)
-                    .color(if playing { p.accent } else { p.fg })
+                    .color(p.text_secondary)
                     .truncate()
                     .grow(1.0),
-                ),
-        )
-        .child(
-            text(t.artist.clone().unwrap_or_default())
-                .font(type_::ITEM)
-                .color(p.text_secondary)
-                .truncate()
-                .grow(1.0),
-        )
-        .child(
-            text(t.album.clone().unwrap_or_default())
-                .font(type_::ITEM)
-                .color(p.text_secondary)
-                .truncate()
-                .grow(1.0),
-        )
-        .child(
-            text(fmt_dur(t.duration_secs))
-                .font(type_::ITEM)
-                .color(p.text_secondary)
-                .w(56.0),
-        )
-        // Add-to-queue (`+`): appends the track to the override queue, which
-        // shows up in the "Up Next" sidebar. Nested in the clickable row, but
-        // Rune hit-tests to the innermost target, so pressing it enqueues
-        // without also starting playback.
-        .child(
-            el().key(format!("enqueue-{}", t.id))
-                .padding(space::SNUG)
-                .radius(radius::SM)
-                .fill(p.muted)
-                .cursor(Cursor::Pointer)
-                .child(icon(&icons::PLUS, 14.0).color(p.text_secondary))
-                .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
-        )
-        // Right-click: a context menu with the fuller per-track actions (Play,
-        // Play next, Add to queue). Anchored at the click point. Where popup
-        // menus aren't supported, the inline + button remains the fallback.
-        .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
-            let play_ids = menu_ids.clone();
-            tx.popup_menu(
-                PopupMenu::new()
-                    .item(PopupItem::new("play", t!("player.play").to_string()))
-                    .item(PopupItem::new(
-                        "play-next",
-                        t!("library.playNext").to_string(),
-                    ))
-                    .item(PopupItem::new(
-                        "enqueue",
-                        t!("library.addToQueue").to_string(),
-                    )),
-                press,
-                move |st: &mut State, picked, _tx: &mut Tx| match picked {
-                    Some("play") => st.host.send(Command::PlayContext {
-                        ids: play_ids.clone(),
-                        start,
-                    }),
-                    Some("play-next") => st.host.send(Command::PlayNext(tid)),
-                    Some("enqueue") => st.host.send(Command::Enqueue(tid)),
-                    _ => {}
-                },
+            )
+            .child(
+                text(t.album.clone().unwrap_or_default())
+                    .font(type_::ITEM)
+                    .color(p.text_secondary)
+                    .truncate()
+                    .grow(1.0),
             );
+    }
+    r.child(
+        text(fmt_dur(t.duration_secs))
+            .font(type_::ITEM)
+            .color(p.text_secondary)
+            .w(56.0),
+    )
+    // Add-to-queue (`+`): appends the track to the override queue, which
+    // shows up in the "Up Next" sidebar. Nested in the clickable row, but
+    // Rune hit-tests to the innermost target, so pressing it enqueues
+    // without also starting playback.
+    .child(
+        el().key(format!("enqueue-{}", t.id))
+            .padding(space::SNUG)
+            .radius(radius::SM)
+            .fill(p.muted)
+            .cursor(Cursor::Pointer)
+            .child(icon(&icons::PLUS, 14.0).color(p.text_secondary))
+            .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
+    )
+    // Right-click: a context menu with the fuller per-track actions (Play,
+    // Play next, Add to queue). Anchored at the click point. Where popup
+    // menus aren't supported, the inline + button remains the fallback.
+    .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
+        let play_ids = menu_ids.clone();
+        tx.popup_menu(
+            PopupMenu::new()
+                .item(PopupItem::new("play", t!("player.play").to_string()))
+                .item(PopupItem::new(
+                    "play-next",
+                    t!("library.playNext").to_string(),
+                ))
+                .item(PopupItem::new(
+                    "enqueue",
+                    t!("library.addToQueue").to_string(),
+                )),
+            press,
+            move |st: &mut State, picked, _tx: &mut Tx| match picked {
+                Some("play") => st.host.send(Command::PlayContext {
+                    ids: play_ids.clone(),
+                    start,
+                }),
+                Some("play-next") => st.host.send(Command::PlayNext(tid)),
+                Some("enqueue") => st.host.send(Command::Enqueue(tid)),
+                _ => {}
+            },
+        );
+    })
+    .on_press(move |st: &mut State| {
+        st.host.send(Command::PlayContext {
+            ids: ids.clone(),
+            start,
         })
-        .on_press(move |st: &mut State| {
-            st.host.send(Command::PlayContext {
-                ids: ids.clone(),
-                start,
-            })
-        })
+    })
 }
 
 /// The search bar: shows the current filter and, while active, a cursor. Click
@@ -209,7 +241,15 @@ fn search_bar(s: &State, p: &Palette) -> El {
 /// `.grow(1.0).min_h(0.0)` make the viewport take its bounded parent's full
 /// remaining height (rather than its content's natural height) so it scrolls
 /// instead of overflowing — see `El::scroll`'s doc comment.
-pub fn track_list(s: &State, p: &Palette, scale: f32) -> El {
+pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
+    // Respond to the content pane's own width (window − sidebar − paddings), read
+    // from last frame's layout — not the window — so a wide sidebar also triggers
+    // the compact rows. Below the old app's `sm` (640) the artist/album columns
+    // collapse into a subtitle. First frame has no prior layout → assume standard.
+    let compact = cx
+        .layout_size("library-page")
+        .map(|[w, _]| w <= 640.0)
+        .unwrap_or(false);
     if s.library.is_empty() {
         // Cold launch with no SOUL_PLAYER_FOLDER: a usable entry point rather
         // than a blank list.
@@ -250,7 +290,7 @@ pub fn track_list(s: &State, p: &Palette, scale: f32) -> El {
         let ids: Vec<u32> = visible.iter().map(|t| t.id).collect();
         let mut list = col().key("tracks").gap(space::XXS);
         for (i, t) in visible.iter().enumerate() {
-            list = list.child(track_row(s, p, t, &ids, i, scale));
+            list = list.child(track_row(s, p, t, &ids, i, compact, scale));
         }
         list.scroll(ScrollSpec {
             stick_bottom: false,
@@ -259,6 +299,7 @@ pub fn track_list(s: &State, p: &Palette, scale: f32) -> El {
         .min_h(0.0)
     };
     col()
+        .key("library-page")
         .grow(1.0)
         .min_h(0.0)
         .child(search_bar(s, p))
