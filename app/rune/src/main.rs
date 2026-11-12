@@ -1217,6 +1217,139 @@ mod tests {
         );
     }
 
+    /// A `State` with a populated queue backed by a RECORDING host, so the
+    /// `Command` a click/drag dispatches can be read back with
+    /// `host.recorded_commands()`. The library is empty — rows render as "Unknown"
+    /// but stay clickable, and the command carries the row index, not the title.
+    fn recording_queue_state(up_next: &[u32], context_ids: &[u32]) -> State {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.up_next = up_next.to_vec();
+        s.context_ids = context_ids.to_vec();
+        s
+    }
+
+    /// Click (press + release, no travel) the element keyed `key`, then advance a
+    /// frame so its `on_press` dispatches.
+    fn click(rt: &mut Runtime<State>, key: &str) {
+        let (x, y) = rt
+            .find(key)
+            .unwrap_or_else(|| panic!("element {key} not found"));
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+    }
+
+    #[test]
+    fn clicking_a_manual_queue_row_plays_that_upcoming_slot() {
+        let mut rt = Runtime::new(
+            recording_queue_state(&[10, 20], &[30, 40]),
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        click(&mut rt, "queue-manual-10"); // first manual row (index 0)
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayUpcoming(1)],
+            "clicking the first manual row plays upcoming slot 1"
+        );
+    }
+
+    #[test]
+    fn clicking_a_context_row_plays_its_merged_upcoming_slot() {
+        let mut rt = Runtime::new(
+            recording_queue_state(&[10, 20], &[30, 40]),
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        // Context row 30 is the 3rd upcoming (2 manual rows precede it): k = 3.
+        click(&mut rt, "queue-context-30");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayUpcoming(3)],
+            "a context row plays its merged upcoming slot, after the manual band"
+        );
+    }
+
+    #[test]
+    fn the_remove_button_removes_that_manual_index() {
+        let mut rt = Runtime::new(
+            recording_queue_state(&[10, 20, 30], &[]),
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        click(&mut rt, "remove-20"); // id 20 is manual index 1
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::RemoveFromQueue(1)],
+            "the ✕ removes that manual-queue index (not the clicked id)"
+        );
+    }
+
+    #[test]
+    fn clear_empties_the_manual_queue() {
+        let mut rt = Runtime::new(
+            recording_queue_state(&[10, 20], &[30]),
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        click(&mut rt, "clear-queue");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::ClearQueue],
+            "Clear empties the manual queue"
+        );
+    }
+
+    #[test]
+    fn dragging_a_manual_row_dispatches_a_move_command_on_release() {
+        use crate::views::queue::QUEUE_ROW_H;
+        let mut rt = Runtime::new(
+            recording_queue_state(&[10, 20, 30], &[]),
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        // Press row 0's grip, drag down exactly one row (→ target index 1), release.
+        let (gx, gy) = rt.find("grip-10").expect("manual row grip");
+        rt.pointer_move(gx, gy);
+        rt.pointer_down(gx, gy);
+        rt.pointer_move(gx, gy + QUEUE_ROW_H);
+        rt.frame(0.0);
+        rt.pointer_up(gx, gy + QUEUE_ROW_H);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::MoveInQueue { from: 0, to: 1 }],
+            "releasing the drag commits a MoveInQueue for the dragged row"
+        );
+    }
+
     /// Drag-reorder, driven through the real pointer: pressing a manual row's grip
     /// picks it up, dragging down past a row height advances the drop target and
     /// shows the drop indicator, and releasing ends the gesture (committing the
