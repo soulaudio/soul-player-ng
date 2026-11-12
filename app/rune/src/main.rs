@@ -1085,6 +1085,40 @@ mod tests {
         assert!(hov > 0.8, "thumb fades in on hover (opacity {hov})");
     }
 
+    /// Transport controls are disabled — dimmed to 0.5 and inert — when there is
+    /// no current track, as the old app's `disabled={!hasCurrentTrack}` →
+    /// `opacity-0.5`; full opacity once a track is loaded.
+    #[test]
+    fn transport_is_disabled_with_no_current_track() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        // Nothing loaded → the play/pause button is dimmed.
+        let mut idle = State::new(PlayerHandle::offline());
+        idle.sidebar_collapsed = false; // the transport lives in the sidebar
+        let mut rt = Runtime::new(idle, view, (1100.0, 720.0), env);
+        for _ in 0..6 {
+            rt.frame(0.05);
+        }
+        let (_, off) = rt.presented("play-pause").expect("transport renders");
+        assert!(
+            (off - 0.5).abs() < 0.12,
+            "disabled transport is dimmed to ~0.5 (opacity {off})"
+        );
+
+        // A loaded track → full opacity.
+        let mut live = State::new(PlayerHandle::offline());
+        live.sidebar_collapsed = false;
+        live.now_playing_id = Some(42);
+        let mut rt = Runtime::new(live, view, (1100.0, 720.0), env);
+        for _ in 0..6 {
+            rt.frame(0.05);
+        }
+        let (_, on) = rt.presented("play-pause").expect("transport renders");
+        assert!(on > 0.9, "enabled transport is full opacity (opacity {on})");
+    }
+
     #[test]
     fn settings_shows_updates_section_without_install_by_default() {
         let env = Env {
