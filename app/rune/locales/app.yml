@@ -252,6 +252,20 @@ settings.sources:
   zh: '来源'
   cs: 'Zdroje'
   ja: 'ソース'
+settings.musicData:
+  en: 'Music Data'
+  de: 'Musikdaten'
+  es: 'Datos de música'
+  zh: '音乐数据'
+  cs: 'Hudební data'
+  ja: '音楽データ'
+settings.musicDataDesc:
+  en: 'Folders scanned into your library. Edits never interrupt playback.'
+  de: 'Ordner, die in deine Bibliothek eingelesen werden. Änderungen unterbrechen nie die Wiedergabe.'
+  es: 'Carpetas que se añaden a tu biblioteca. Los cambios nunca interrumpen la reproducción.'
+  zh: '扫描到音乐库中的文件夹。编辑不会中断播放。'
+  cs: 'Složky načtené do knihovny. Úpravy nikdy nepřeruší přehrávání.'
+  ja: 'ライブラリに読み込むフォルダ。編集しても再生は止まりません。'
 settings.noSources:
   en: 'No sources yet — add a folder to build your library.'
   de: 'Noch keine Quellen — fügen Sie einen Ordner hinzu.'
@@ -294,6 +308,13 @@ settings.appearance:
   zh: '外观'
   cs: 'Vzhled'
   ja: '外観'
+settings.appearanceDesc:
+  en: 'Choose how Soul Player looks.'
+  de: 'Lege fest, wie Soul Player aussieht.'
+  es: 'Elige el aspecto de Soul Player.'
+  zh: '选择 Soul Player 的外观。'
+  cs: 'Zvolte, jak Soul Player vypadá.'
+  ja: 'Soul Player の外観を選びます。'
 settings.themeSystem:
   en: 'System'
   de: 'System'
@@ -322,6 +343,13 @@ settings.language:
   zh: '语言'
   cs: 'Jazyk'
   ja: '言語'
+settings.languageDesc:
+  en: 'The language of the interface.'
+  de: 'Die Sprache der Benutzeroberfläche.'
+  es: 'El idioma de la interfaz.'
+  zh: '界面的语言。'
+  cs: 'Jazyk rozhraní.'
+  ja: 'インターフェースの言語。'
 settings.langSystem:
   en: 'System'
   de: 'System'
@@ -329,6 +357,20 @@ settings.langSystem:
   zh: '跟随系统'
   cs: 'Systém'
   ja: 'システム'
+settings.about:
+  en: 'About'
+  de: 'Über'
+  es: 'Acerca de'
+  zh: '关于'
+  cs: 'O aplikaci'
+  ja: '情報'
+settings.aboutDesc:
+  en: 'Version and updates.'
+  de: 'Version und Updates.'
+  es: 'Versión y actualizaciones.'
+  zh: '版本与更新。'
+  cs: 'Verze a aktualizace.'
+  ja: 'バージョンとアップデート。'
 settings.updates:
   en: 'Updates'
   de: 'Updates'
@@ -357,6 +399,13 @@ settings.installRestart:
   zh: '安装并重启'
   cs: 'Nainstalovat a restartovat'
   ja: 'インストールして再起動'
+settings.audio:
+  en: 'Audio'
+  de: 'Audio'
+  es: 'Audio'
+  zh: '音频'
+  cs: 'Zvuk'
+  ja: 'オーディオ'
 settings.output:
   en: 'Output'
   de: 'Ausgabe'
@@ -364,6 +413,13 @@ settings.output:
   zh: '输出'
   cs: 'Výstup'
   ja: '出力'
+settings.outputDesc:
+  en: 'Which device plays audio. Applies to the next playback session.'
+  de: 'Welches Gerät Audio wiedergibt. Gilt für die nächste Wiedergabe.'
+  es: 'Qué dispositivo reproduce el audio. Se aplica a la próxima reproducción.'
+  zh: '用于播放音频的设备。将在下次播放时生效。'
+  cs: 'Které zařízení přehrává zvuk. Projeví se při příštím přehrávání.'
+  ja: '音声を再生するデバイス。次の再生から適用されます。'
 settings.systemDefault:
   en: 'System default'
   de: 'Systemstandard'
@@ -385,6 +441,13 @@ settings.replayGain:
   zh: 'ReplayGain'
   cs: 'ReplayGain'
   ja: 'ReplayGain'
+settings.replayGainDesc:
+  en: 'Even out loudness across tracks. Album preserves per-album dynamics.'
+  de: 'Gleicht die Lautstärke zwischen Titeln aus. Album erhält die Album-Dynamik.'
+  es: 'Iguala el volumen entre pistas. Álbum conserva la dinámica del álbum.'
+  zh: '平衡曲目间的响度。专辑模式保留整张专辑的动态。'
+  cs: 'Vyrovná hlasitost mezi skladbami. Album zachová dynamiku alba.'
+  ja: 'トラック間の音量をそろえます。アルバムはアルバムごとの強弱を保ちます。'
 settings.rgOff:
   en: 'Off'
   de: 'Aus'

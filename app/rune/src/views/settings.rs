@@ -1,30 +1,151 @@
-//! Settings page. Its one section, "Sources", manages the host's watched-folder
-//! set (`soul_player_host::PlayerHandle::{add_folder, remove_folder,
-//! watched_folders}`); edits refresh the library + list but never disturb
-//! playback. Add uses the native folder dialog — Rune's IME is pre-release, so
-//! there is no text entry here.
+//! Settings page — a left category rail (Appearance / Music Data / Audio /
+//! About) switching a content pane of grouped **cards**, mirroring the original
+//! soul-player's `SettingsLayout` (a narrow nav aside + a `max-w` content column
+//! of rounded `bg-muted` cards, each a heading + description per group).
+//!
+//! The groups manage: the Day/Night theme and UI language (Appearance), the
+//! host's watched-folder set (Music Data), the output device + ReplayGain
+//! (Audio), and the running version / updater (About). Add-source uses the
+//! native folder dialog — Rune's IME is pre-release, so there is no text entry
+//! here. The rail lives INSIDE this page (not the main sidebar), so it only
+//! shows while Settings is routed.
 #![forbid(unsafe_code)]
 
-use rune::{Align, Cursor, Cx, El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
+use rune::{
+    Align, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text,
+};
 use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
+use crate::views::icons;
 use crate::views::slider::slider;
 use crate::{
-    State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_output_device,
-    set_replaygain_mode, set_replaygain_preamp, set_theme_pref,
+    SettingsTab, State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
 const RG_PREAMP_MIN: f32 = -15.0;
 const RG_PREAMP_MAX: f32 = 15.0;
 
+/// Width of the category rail (the original's narrow settings `aside`, widened
+/// to seat an icon + label per row).
+const NAV_WIDTH: f32 = 184.0;
+/// Width cap on the content column (the original's `max-w-4xl mx-auto`).
+const CONTENT_MAX_W: f32 = 860.0;
+
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| p.to_string_lossy().into_owned())
 }
+
+// ── Card scaffolding ─────────────────────────────────────────────────────────
+
+/// A settings group as a card: a rounded, padded panel on the card surface —
+/// mirrors the original's `bg-muted/30 rounded-lg p-6`.
+fn card(key: &str, p: &Palette) -> El {
+    col()
+        .key(key.to_string())
+        .fill(p.card)
+        .radius(radius::LG)
+        .padding(space::LG)
+        .gap(space::MD)
+}
+
+/// A card's heading: a bold title over a secondary-colour description line.
+fn heading(title: String, desc: String, p: &Palette) -> El {
+    col()
+        .gap(space::XXS)
+        .child(text(title).font(type_::TITLE).color(p.fg))
+        .child(text(desc).font(type_::CAPTION).color(p.text_secondary))
+}
+
+// ── Category rail ────────────────────────────────────────────────────────────
+
+/// One category row: an icon + label that switches `State::settings_tab`. The
+/// active row is filled with the primary colour (like the original's
+/// `bg-primary` active item); the rest tint faintly on hover. Pointer cursor
+/// throughout.
+fn category_item(
+    key: &str,
+    glyph: &'static Icon,
+    label: String,
+    tab: SettingsTab,
+    active: bool,
+    p: &Palette,
+) -> El {
+    let fg = if active { p.bg } else { p.text_secondary };
+    let item = el()
+        .key(key.to_string())
+        .w_full()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::MD)
+        .cursor(Cursor::Pointer)
+        .child(
+            row()
+                .gap(space::SM)
+                .center_y()
+                .child(icon(glyph, 18.0).color(fg))
+                .child(text(label).font(type_::ITEM_STRONG).color(fg)),
+        )
+        .on_press(move |s: &mut State| set_settings_tab(s, tab));
+    if active {
+        item.fill(p.primary)
+    } else {
+        item.hover(p.fg.alpha(0.07))
+    }
+}
+
+/// The left category rail: Appearance / Music Data / Audio / About, each icon +
+/// label. Music Data uses the music note and Audio the speaker; Appearance and
+/// About use the palette / info glyphs added to `views::icons`.
+fn category_nav(s: &State, p: &Palette) -> El {
+    let tab = s.settings_tab;
+    col()
+        .key("settings-nav")
+        .w(NAV_WIDTH)
+        .h_full()
+        .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
+        .padding(space::MD)
+        .gap(space::XXS)
+        .child(category_item(
+            "cat-appearance",
+            &icons::PALETTE,
+            t!("settings.appearance").to_string(),
+            SettingsTab::Appearance,
+            tab == SettingsTab::Appearance,
+            p,
+        ))
+        .child(category_item(
+            "cat-music-data",
+            &icons::MUSIC,
+            t!("settings.musicData").to_string(),
+            SettingsTab::MusicData,
+            tab == SettingsTab::MusicData,
+            p,
+        ))
+        .child(category_item(
+            "cat-audio",
+            &icons::VOLUME,
+            t!("settings.audio").to_string(),
+            SettingsTab::Audio,
+            tab == SettingsTab::Audio,
+            p,
+        ))
+        .child(category_item(
+            "cat-about",
+            &icons::INFO,
+            t!("settings.about").to_string(),
+            SettingsTab::About,
+            tab == SettingsTab::About,
+            p,
+        ))
+}
+
+// ── Leaf controls ────────────────────────────────────────────────────────────
 
 /// `+ Add Source` — native folder dialog, then `host.add_folder` folded in via
 /// `apply_watch`. Mirrors `views::open_folder`'s dialog pattern.
@@ -81,6 +202,7 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
     let mut r = row()
         .key(format!("source-{name}"))
         .gap(space::MD)
+        .center_y()
         .padding(space::SM)
         .child(text(name.clone()).color(p.fg).grow(1.0));
     if unavailable {
@@ -104,86 +226,6 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
     )
 }
 
-/// The Sources section: + Add Source and one row per watched folder.
-fn sources_section(s: &State, p: &Palette) -> El {
-    let mut sources = col().key("sources").gap(space::XXS).child(
-        row()
-            .padding(space::SM)
-            .child(
-                text(t!("settings.sources").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
-                    .grow(1.0),
-            )
-            .child(rescan_button(p))
-            .child(add_source_button(p)),
-    );
-    if s.watched_folders.is_empty() {
-        sources = sources.child(
-            text(t!("settings.noSources").to_string())
-                .color(p.text_secondary)
-                .padding(space::SM),
-        );
-    } else {
-        for i in 0..s.watched_folders.len() {
-            sources = sources.child(source_row(s, p, i));
-        }
-    }
-    sources
-}
-
-/// The Updates section: the running version, plus — when the launch-time check
-/// (`update::available`) found a newer signed release — an "Install & Restart"
-/// button. Install runs off the UI thread because `update::install` blocks on
-/// the download and then relaunches the process.
-fn updates_section(s: &State, p: &Palette) -> El {
-    let mut sec = col()
-        .key("updates")
-        .gap(space::XXS)
-        .child(
-            row().padding(space::SM).child(
-                text(t!("settings.updates").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
-                    .grow(1.0),
-            ),
-        )
-        .child(
-            text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
-                .color(p.text_secondary)
-                .padding(space::SM),
-        );
-    if let Some(version) = &s.update_available {
-        sec = sec.child(
-            row()
-                .gap(space::MD)
-                .padding(space::SM)
-                .child(
-                    text(t!("settings.updateAvailable", version => version).to_string())
-                        .color(p.fg)
-                        .grow(1.0),
-                )
-                .child(
-                    el().key("install-update")
-                        .padding(space::MD)
-                        .radius(radius::MD)
-                        .fill(p.primary)
-                        .center()
-                        .cursor(Cursor::Pointer)
-                        .child(text(t!("settings.installRestart").to_string()).color(p.bg))
-                        .on_press(|_s: &mut State| {
-                            std::thread::spawn(|| {
-                                if let Err(e) = crate::update::install() {
-                                    eprintln!("[updater] install failed: {e}");
-                                }
-                            });
-                        }),
-                ),
-        );
-    }
-    sec
-}
-
 /// One theme choice; the active preference is filled with the primary color.
 fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
@@ -193,47 +235,6 @@ fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Pal
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
         .on_press(move |s: &mut State| set_theme_pref(s, pref))
-}
-
-/// The Appearance section: a System / Light / Dark theme override.
-fn appearance_section(s: &State, p: &Palette) -> El {
-    col()
-        .key("appearance")
-        .gap(space::XXS)
-        .child(
-            row().padding(space::SM).child(
-                text(t!("settings.appearance").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
-                    .grow(1.0),
-            ),
-        )
-        .child(
-            row()
-                .gap(space::SM)
-                .padding(space::SM)
-                .child(theme_button(
-                    t!("settings.themeSystem").to_string(),
-                    "theme-system",
-                    ThemePref::System,
-                    s.theme_pref == ThemePref::System,
-                    p,
-                ))
-                .child(theme_button(
-                    t!("settings.themeLight").to_string(),
-                    "theme-light",
-                    ThemePref::Light,
-                    s.theme_pref == ThemePref::Light,
-                    p,
-                ))
-                .child(theme_button(
-                    t!("settings.themeDark").to_string(),
-                    "theme-dark",
-                    ThemePref::Dark,
-                    s.theme_pref == ThemePref::Dark,
-                    p,
-                )),
-        )
 }
 
 /// One language choice; the active pref is filled with the primary colour. Each
@@ -246,40 +247,6 @@ fn lang_button(label: String, pref: &'static str, active: bool, p: &Palette) -> 
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
         .on_press(move |s: &mut State| set_locale_pref(s, pref))
-}
-
-/// The Language section: System (follow the OS) plus each shipped locale in its
-/// native name.
-fn language_section(s: &State, p: &Palette) -> El {
-    let cur = s.locale_pref.as_str();
-    col()
-        .key("language")
-        .gap(space::XXS)
-        .child(
-            row().padding(space::SM).child(
-                text(t!("settings.language").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
-                    .grow(1.0),
-            ),
-        )
-        .child(
-            row()
-                .gap(space::SM)
-                .padding(space::SM)
-                .child(lang_button(
-                    t!("settings.langSystem").to_string(),
-                    "system",
-                    cur == "system",
-                    p,
-                ))
-                .child(lang_button("English".into(), "en", cur == "en", p))
-                .child(lang_button("Deutsch".into(), "de", cur == "de", p))
-                .child(lang_button("Español".into(), "es", cur == "es", p))
-                .child(lang_button("中文".into(), "zh", cur == "zh", p))
-                .child(lang_button("Čeština".into(), "cs", cur == "cs", p))
-                .child(lang_button("日本語".into(), "ja", cur == "ja", p)),
-        )
 }
 
 /// One output-device choice; the active device is filled with the primary color.
@@ -306,55 +273,6 @@ fn device_button(
         .on_press(move |s: &mut State| set_output_device(s, choice.clone()))
 }
 
-/// The Output section: a "System default" choice plus one button per enumerated
-/// output device, stacked vertically (device names can be long, and a host may
-/// expose many). The active choice (matching `State.output_device`, `None` =
-/// system default) is filled. Selecting a device applies to the NEXT playback
-/// session — the host does not respawn the live stream.
-fn output_section(s: &State, p: &Palette) -> El {
-    let mut choices = col()
-        .key("output-devices")
-        .gap(space::SM)
-        .padding(space::SM)
-        .child(device_button(
-            t!("settings.systemDefault").to_string(),
-            "output-default",
-            None,
-            s.output_device.is_none(),
-            p,
-        ));
-    if s.output_devices.is_empty() {
-        choices = choices.child(
-            text(t!("settings.noOutputDevices").to_string())
-                .color(p.text_secondary)
-                .padding(space::SM),
-        );
-    } else {
-        for (i, name) in s.output_devices.iter().enumerate() {
-            let active = s.output_device.as_deref() == Some(name.as_str());
-            choices = choices.child(device_button(
-                name.clone(),
-                &format!("output-{i}"),
-                Some(name.clone()),
-                active,
-                p,
-            ));
-        }
-    }
-    col()
-        .key("output")
-        .gap(space::XXS)
-        .child(
-            row().padding(space::SM).child(
-                text(t!("settings.output").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
-                    .grow(1.0),
-            ),
-        )
-        .child(choices)
-}
-
 /// One ReplayGain mode choice; the active mode is filled with the primary color
 /// (mirrors `theme_button` / `device_button`).
 fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, p: &Palette) -> El {
@@ -367,17 +285,148 @@ fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, 
         .on_press(move |s: &mut State| set_replaygain_mode(s, mode))
 }
 
-/// The ReplayGain section: an Off / Track / Album mode row plus a preamp slider
-/// (−15..+15 dB). Selecting a mode or moving the preamp updates the live actor
-/// immediately and persists the choice. The slider commits on release (its value
-/// maps the 0..1 track position onto the dB range), and the current dB is shown
-/// to its right.
-fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
+// ── Cards (one per settings group) ───────────────────────────────────────────
+
+/// Appearance: a System / Light / Dark theme override.
+fn appearance_card(s: &State, p: &Palette) -> El {
+    card("appearance", p)
+        .child(heading(
+            t!("settings.appearance").to_string(),
+            t!("settings.appearanceDesc").to_string(),
+            p,
+        ))
+        .child(
+            row()
+                .gap(space::SM)
+                .child(theme_button(
+                    t!("settings.themeSystem").to_string(),
+                    "theme-system",
+                    ThemePref::System,
+                    s.theme_pref == ThemePref::System,
+                    p,
+                ))
+                .child(theme_button(
+                    t!("settings.themeLight").to_string(),
+                    "theme-light",
+                    ThemePref::Light,
+                    s.theme_pref == ThemePref::Light,
+                    p,
+                ))
+                .child(theme_button(
+                    t!("settings.themeDark").to_string(),
+                    "theme-dark",
+                    ThemePref::Dark,
+                    s.theme_pref == ThemePref::Dark,
+                    p,
+                )),
+        )
+}
+
+/// Language: System (follow the OS) plus each shipped locale in its native name.
+fn language_card(s: &State, p: &Palette) -> El {
+    let cur = s.locale_pref.as_str();
+    card("language", p)
+        .child(heading(
+            t!("settings.language").to_string(),
+            t!("settings.languageDesc").to_string(),
+            p,
+        ))
+        .child(
+            row()
+                .gap(space::SM)
+                .child(lang_button(
+                    t!("settings.langSystem").to_string(),
+                    "system",
+                    cur == "system",
+                    p,
+                ))
+                .child(lang_button("English".into(), "en", cur == "en", p))
+                .child(lang_button("Deutsch".into(), "de", cur == "de", p))
+                .child(lang_button("Español".into(), "es", cur == "es", p))
+                .child(lang_button("中文".into(), "zh", cur == "zh", p))
+                .child(lang_button("Čeština".into(), "cs", cur == "cs", p))
+                .child(lang_button("日本語".into(), "ja", cur == "ja", p)),
+        )
+}
+
+/// Music Data: the watched-folder set (+ Add Source / Rescan, one row per
+/// folder). Named like the original soul-player so the heading doesn't clash
+/// with the sidebar's "Tracks" library view.
+fn music_data_card(s: &State, p: &Palette) -> El {
+    let mut c = card("sources", p).child(
+        row()
+            .gap(space::MD)
+            .center_y()
+            .child(
+                heading(
+                    t!("settings.musicData").to_string(),
+                    t!("settings.musicDataDesc").to_string(),
+                    p,
+                )
+                .grow(1.0),
+            )
+            .child(rescan_button(p))
+            .child(add_source_button(p)),
+    );
+    if s.watched_folders.is_empty() {
+        c = c.child(text(t!("settings.noSources").to_string()).color(p.text_secondary));
+    } else {
+        for i in 0..s.watched_folders.len() {
+            c = c.child(source_row(s, p, i));
+        }
+    }
+    c
+}
+
+/// Output: a "System default" choice plus one button per enumerated output
+/// device, stacked vertically (device names can be long, and a host may expose
+/// many). The active choice (matching `State.output_device`, `None` = system
+/// default) is filled. Selecting a device applies to the NEXT playback session.
+fn output_card(s: &State, p: &Palette) -> El {
+    let mut choices = col()
+        .key("output-devices")
+        .gap(space::SM)
+        .child(device_button(
+            t!("settings.systemDefault").to_string(),
+            "output-default",
+            None,
+            s.output_device.is_none(),
+            p,
+        ));
+    if s.output_devices.is_empty() {
+        choices =
+            choices.child(text(t!("settings.noOutputDevices").to_string()).color(p.text_secondary));
+    } else {
+        for (i, name) in s.output_devices.iter().enumerate() {
+            let active = s.output_device.as_deref() == Some(name.as_str());
+            choices = choices.child(device_button(
+                name.clone(),
+                &format!("output-{i}"),
+                Some(name.clone()),
+                active,
+                p,
+            ));
+        }
+    }
+    card("output", p)
+        .child(heading(
+            t!("settings.output").to_string(),
+            t!("settings.outputDesc").to_string(),
+            p,
+        ))
+        .child(choices)
+}
+
+/// ReplayGain: an Off / Track / Album mode row plus a preamp slider (−15..+15
+/// dB). Selecting a mode or moving the preamp updates the live actor immediately
+/// and persists the choice. The slider commits on release (its value maps the
+/// 0..1 track position onto the dB range), and the current dB is shown to its
+/// right.
+fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let preamp = s.replaygain_preamp;
     let value01 = ((preamp - RG_PREAMP_MIN) / (RG_PREAMP_MAX - RG_PREAMP_MIN)).clamp(0.0, 1.0);
     let modes = row()
         .gap(space::SM)
-        .padding(space::SM)
         .child(rg_mode_button(
             t!("settings.rgOff").to_string(),
             "rg-off",
@@ -402,7 +451,6 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let preamp_row = row()
         .key("rg-preamp-row")
         .gap(space::MD)
-        .padding(space::SM)
         .center_y()
         .child(
             text(t!("settings.preamp").to_string())
@@ -428,49 +476,102 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 .w(64.0)
                 .align(Align::End),
         );
-    col()
-        .key("replaygain")
-        .gap(space::XXS)
-        .child(
-            row().padding(space::SM).child(
-                text(t!("settings.replayGain").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
-                    .grow(1.0),
-            ),
-        )
+    card("replaygain", p)
+        .child(heading(
+            t!("settings.replayGain").to_string(),
+            t!("settings.replayGainDesc").to_string(),
+            p,
+        ))
         .child(modes)
         .child(preamp_row)
 }
 
-/// The Settings page: a title plus scrollable sections (Sources, Appearance,
-/// Language, Output, ReplayGain, Updates).
+/// About: the running version and, when the launch-time check (`update::available`)
+/// found a newer signed release, an "Install & Restart" button. Install runs off
+/// the UI thread because `update::install` blocks on the download and relaunches.
+fn about_card(s: &State, p: &Palette) -> El {
+    let mut c = card("updates", p)
+        .child(heading(
+            t!("settings.about").to_string(),
+            t!("settings.aboutDesc").to_string(),
+            p,
+        ))
+        .child(
+            text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
+                .color(p.text_secondary),
+        );
+    if let Some(version) = &s.update_available {
+        c = c.child(
+            row()
+                .gap(space::MD)
+                .center_y()
+                .child(
+                    text(t!("settings.updateAvailable", version => version).to_string())
+                        .color(p.fg)
+                        .grow(1.0),
+                )
+                .child(
+                    el().key("install-update")
+                        .padding(space::MD)
+                        .radius(radius::MD)
+                        .fill(p.primary)
+                        .center()
+                        .cursor(Cursor::Pointer)
+                        .child(text(t!("settings.installRestart").to_string()).color(p.bg))
+                        .on_press(|_s: &mut State| {
+                            std::thread::spawn(|| {
+                                if let Err(e) = crate::update::install() {
+                                    eprintln!("[updater] install failed: {e}");
+                                }
+                            });
+                        }),
+                ),
+        );
+    }
+    c
+}
+
+// ── Page ─────────────────────────────────────────────────────────────────────
+
+/// The Settings page: the category rail on the left, the selected category's
+/// cards centred and width-capped on the right (mirroring the original's
+/// `max-w-4xl mx-auto`), scrollable.
 pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
-    let content = col()
-        .key("settings-content")
-        .gap(space::LG)
-        .child(sources_section(s, p))
-        .child(appearance_section(s, p))
-        .child(language_section(s, p))
-        .child(output_section(s, p))
-        .child(replaygain_section(s, p, cx))
-        .child(updates_section(s, p));
-    col()
+    let content = match s.settings_tab {
+        SettingsTab::Appearance => col()
+            .key("settings-content")
+            .gap(space::LG)
+            .child(appearance_card(s, p))
+            .child(language_card(s, p)),
+        SettingsTab::MusicData => col()
+            .key("settings-content")
+            .gap(space::LG)
+            .child(music_data_card(s, p)),
+        SettingsTab::Audio => col()
+            .key("settings-content")
+            .gap(space::LG)
+            .child(output_card(s, p))
+            .child(replaygain_card(s, p, cx)),
+        SettingsTab::About => col()
+            .key("settings-content")
+            .gap(space::LG)
+            .child(about_card(s, p)),
+    };
+    row()
         .key("settings")
         .grow(1.0)
         .min_h(0.0)
+        .child(category_nav(s, p))
         .child(
-            text(t!("settings.title").to_string())
-                .font(type_::TITLE)
-                .color(p.fg)
-                .padding(space::LG),
-        )
-        .child(
-            content
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
+            row()
+                .key("settings-body")
                 .grow(1.0)
-                .min_h(0.0),
+                .min_h(0.0)
+                .padding(space::XL)
+                .child(el().key("settings-pad-l").grow(1.0))
+                .child(content.max_w(CONTENT_MAX_W).min_h(0.0).scroll(ScrollSpec {
+                    stick_bottom: false,
+                }))
+                .child(el().key("settings-pad-r").grow(1.0)),
         )
 }

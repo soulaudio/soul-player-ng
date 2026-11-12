@@ -77,9 +77,21 @@ pub(crate) enum Route {
     Settings,
 }
 
+/// Which Settings category the content pane shows — a sub-navigation inside the
+/// Settings route, mirroring the original soul-player's settings rail
+/// (Appearance / Music Data / Audio / About). Ephemeral UI state (not persisted);
+/// defaults to `Appearance` each launch.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum SettingsTab {
+    Appearance,
+    MusicData,
+    Audio,
+    About,
+}
+
 /// Light/dark preference: follow the OS, or force one. Persisted; the Appearance
 /// settings section sets it.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum ThemePref {
     System,
     Light,
@@ -129,6 +141,9 @@ struct State {
     context_len: u32,
     /// Current page (Library vs Settings).
     route: Route,
+    /// Which Settings category the content pane shows (ephemeral; defaults to
+    /// `Appearance`). Switched by the settings page's own category rail.
+    settings_tab: SettingsTab,
     /// Light/dark preference (persisted); `System` follows the OS.
     theme_pref: ThemePref,
     /// Which baked axis the library list is ordered by.
@@ -211,6 +226,7 @@ impl State {
             context_pos: 0,
             context_len: 0,
             route: Route::Library,
+            settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
@@ -295,6 +311,12 @@ pub(crate) fn is_dark(pref: ThemePref, system_dark: bool) -> bool {
 pub(crate) fn set_theme_pref(s: &mut State, pref: ThemePref) {
     s.theme_pref = pref;
     config::save_theme_pref(pref.as_config());
+}
+
+/// Switch the active Settings category (ephemeral — not persisted). Used by the
+/// settings page's category rail.
+pub(crate) fn set_settings_tab(s: &mut State, tab: SettingsTab) {
+    s.settings_tab = tab;
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
@@ -645,13 +667,28 @@ mod tests {
         s
     }
 
+    /// Click the element with `key`: find its position, drive a full
+    /// move/down/up pointer gesture there, then re-render. The harness-level
+    /// analogue of a real click, for e2e navigation tests.
+    fn click_key(rt: &mut Runtime<State>, key: &str) {
+        let (x, y) = rt
+            .find(key)
+            .unwrap_or_else(|| panic!("no element with key {key:?} to click"));
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+    }
+
     #[test]
     fn settings_route_shows_sources_section_and_add_button() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find("sources").is_some(),
@@ -924,12 +961,9 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(
-            settings_state(std::slice::from_ref(&dir), &[]),
-            view,
-            (1100.0, 720.0),
-            env,
-        );
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find(&format!("source-{name}")).is_some(),
@@ -949,15 +983,12 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(
-            settings_state(
-                std::slice::from_ref(&missing),
-                std::slice::from_ref(&missing),
-            ),
-            view,
-            (1100.0, 720.0),
-            env,
+        let mut s = settings_state(
+            std::slice::from_ref(&missing),
+            std::slice::from_ref(&missing),
         );
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find(&format!("offline-{name}")).is_some(),
@@ -1013,7 +1044,9 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Audio;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find("replaygain").is_some(),
@@ -1030,11 +1063,13 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::About;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find("updates").is_some(),
-            "Settings has an Updates section"
+            "Settings has an About/Updates section"
         );
         assert!(
             rt.find("install-update").is_none(),
@@ -1045,6 +1080,7 @@ mod tests {
     #[test]
     fn settings_offers_install_when_update_available() {
         let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::About;
         s.update_available = Some("9.9.9".to_string());
         let env = Env {
             system_dark: true,
@@ -1056,6 +1092,100 @@ mod tests {
             rt.find("install-update").is_some(),
             "a flagged update offers Install & Restart"
         );
+    }
+
+    #[test]
+    fn settings_nav_lists_categories_and_defaults_to_appearance() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        for key in ["cat-appearance", "cat-music-data", "cat-audio", "cat-about"] {
+            assert!(rt.find(key).is_some(), "settings category rail has {key}");
+        }
+        // The default category is Appearance (theme + language cards); the Audio
+        // category's ReplayGain card isn't rendered until it's selected.
+        assert!(
+            rt.find("appearance").is_some(),
+            "default category shows the Appearance card"
+        );
+        assert!(
+            rt.find("language").is_some(),
+            "Appearance also hosts the Language card"
+        );
+        assert!(
+            rt.find("replaygain").is_none(),
+            "ReplayGain lives under the Audio category, not the default view"
+        );
+    }
+
+    #[test]
+    fn clicking_settings_categories_switches_the_content() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Default category is Appearance.
+        assert!(rt.find("appearance").is_some());
+        assert!(rt.find("replaygain").is_none());
+        // Click Audio → the Output + ReplayGain cards appear, Appearance hides.
+        click_key(&mut rt, "cat-audio");
+        assert!(rt.find("output").is_some(), "Audio shows the Output card");
+        assert!(
+            rt.find("replaygain").is_some(),
+            "Audio shows the ReplayGain card"
+        );
+        assert!(
+            rt.find("appearance").is_none(),
+            "the Appearance card is hidden under Audio"
+        );
+        // Click Music Data → the sources card (keyed "sources").
+        click_key(&mut rt, "cat-music-data");
+        assert!(
+            rt.find("sources").is_some(),
+            "Music Data shows the sources card"
+        );
+        assert!(rt.find("replaygain").is_none());
+        // Click About → the version / updater card (keyed "updates").
+        click_key(&mut rt, "cat-about");
+        assert!(rt.find("updates").is_some(), "About shows the version card");
+        assert!(rt.find("sources").is_none());
+        // Back to Appearance.
+        click_key(&mut rt, "cat-appearance");
+        assert!(rt.find("appearance").is_some(), "back to Appearance");
+    }
+
+    #[test]
+    fn settings_controls_apply_their_effect_on_click() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        // Appearance (the default tab): clicking a theme updates the preference.
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert_eq!(rt.state.settings_tab, SettingsTab::Appearance);
+        click_key(&mut rt, "theme-dark");
+        assert_eq!(rt.state.theme_pref, ThemePref::Dark);
+        click_key(&mut rt, "theme-light");
+        assert_eq!(rt.state.theme_pref, ThemePref::Light);
+
+        // Audio controls: start on the Audio tab so the ReplayGain buttons are
+        // laid out, then clicking a mode flows through to the state.
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Audio;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "rg-track");
+        assert_eq!(rt.state.replaygain_mode, ReplayGainMode::Track);
+        click_key(&mut rt, "rg-album");
+        assert_eq!(rt.state.replaygain_mode, ReplayGainMode::Album);
+        click_key(&mut rt, "rg-off");
+        assert_eq!(rt.state.replaygain_mode, ReplayGainMode::Off);
     }
 
     #[test]
