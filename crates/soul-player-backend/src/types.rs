@@ -32,6 +32,16 @@ pub enum Command {
     PlayNext(u32),
     Enqueue(u32),
     ClearQueue,
+    /// Remove the manually queued track at this index (per-row ✕).
+    RemoveFromQueue(u32),
+    /// Reorder the manual queue: move the item at `from` to `to` (drag-reorder).
+    MoveInQueue {
+        from: u32,
+        to: u32,
+    },
+    /// Click the upcoming row at 1-based offset `k`: play it now, consuming the
+    /// rows above it (routes to the manual queue or the source, shuffle-correct).
+    PlayUpcoming(u32),
     SetShuffle(bool),
     SetRepeat(RepeatMode),
     /// Jump to a natural position within the current context.
@@ -151,7 +161,13 @@ pub struct Tick {
 /// Up-Next + context position, emitted on queue mutation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueueState {
+    /// The manual queue ("Next in queue"): tracks the user explicitly queued via
+    /// `PlayNext`/`Enqueue`, in play order. Reorderable/removable.
     pub up_next_ids: Vec<u32>,
+    /// The real upcoming CONTEXT tracks ("Next from <album/playlist>") after the
+    /// manual queue — bounded, shuffle-correct, projected from the player (not
+    /// synthesized from library order). Not reorderable.
+    pub context_ids: Vec<u32>,
     /// u32 since context positions fit comfortably.
     pub context_pos: u32,
     pub context_len: u32,
