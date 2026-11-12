@@ -8,29 +8,48 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use rune::tok::{motion, type_};
-use rune::{Align, Cx, El, Image, ImageCache, SurfaceFit, Waker, col, el, row, text};
+use rune::tok::motion;
+use rune::{
+    Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, Waker, col, el, icon, row, text,
+};
 use soul_player_host::{Command, PlayerHandle, RepeatMode, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
+use crate::ui::{radius, space, type_};
+use crate::views::icons;
 use crate::views::slider::slider;
 
-/// Cover art side, in points (the brief's "~64-96px" range).
-const COVER_SIZE: f32 = 72.0;
-/// The panel's own padding on every side (`player_panel`'s `.padding(..)`).
-const PANEL_PADDING: f32 = 20.0;
+/// Now-playing cover side, in points — the old app's `w-10` (40 px).
+const COVER_SIZE: f32 = 40.0;
+/// Queue-row cover side — the old app's small `TrackItem` thumbnail.
+pub const QUEUE_COVER: f32 = 36.0;
+/// Covers decode at this size (×the device scale) — generous so the 160 pt
+/// album-grid cards stay crisp, with the 40 pt now-playing and 36 pt queue
+/// covers downscaling from the same cached decode.
+const DECODE_PX: f32 = 160.0;
+/// NowPlayingPanel padding — the old app's `p-4` (16 px).
+const NP_PAD: f32 = space::LG;
+/// The controls block below the now-playing row (old app's `px-4 pt-2 pb-4`).
+const CTRL_PAD_X: f32 = space::LG;
+const CTRL_PAD_T: f32 = space::SM;
+const CTRL_PAD_B: f32 = space::LG;
+/// Gap between the controls rows (old app's `space-y-3`) and eyebrow→row (`mb-3`).
+const CTRL_GAP: f32 = space::MD;
 /// Fixed label widths flanking the seek bar (current/duration, e.g.
 /// `"12:34"`) and the volume bar (`"Vol"` / `"100%"`); the sliders
 /// (`.grow(1.0)`, see `views::slider`) take whatever's left of the row
 /// after these and the row gaps.
 const TIME_LABEL_W: f32 = 36.0;
-const VOL_LABEL_W: f32 = 24.0;
 const VOL_PCT_W: f32 = 38.0;
 /// Gap between a row's fixed labels and its slider, and between the
 /// transport row's buttons — tightened from Task 5-6's full-width numbers
 /// so shuffle/prev/play/next/repeat fit the sidebar's ~248pt content width.
-const ROW_GAP: f32 = 8.0;
+const ROW_GAP: f32 = space::SM;
+/// Transport-button side (circular, so each button's radius is half this); the
+/// centre play/pause button is a touch larger.
+const BTN_SIZE: f32 = 32.0;
+const PLAY_SIZE: f32 = 40.0;
 
 /// Cover-art decode cache (cheat-sheet §6a). Rune's pre-release has no
 /// "load this track's art" helper, so this wraps `rune::ImageCache` +
@@ -66,7 +85,7 @@ impl ArtCache {
         }
         let cache = self.cache.as_ref()?;
         let cover = host.art(id)?;
-        let image = cache.load_mime(cover.bytes, &cover.mime, COVER_SIZE, scale);
+        let image = cache.load_mime(cover.bytes, &cover.mime, DECODE_PX, scale);
         self.images.borrow_mut().insert(id, image.clone());
         Some(image)
     }
@@ -83,59 +102,81 @@ fn fmt_dur(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-/// The muted cover box with a centered music-note glyph, for no now-playing
-/// track, a track with no embedded art, or art that is still decoding or
-/// failed to — a placeholder that reads as "no art" rather than a blank box.
-fn cover_placeholder(p: &Palette) -> El {
+/// The muted cover box at `size` pt with a centered music-note glyph, for no
+/// now-playing track, a track with no embedded art, or art that is still
+/// decoding or failed — a placeholder that reads as "no art", not a blank box.
+fn cover_placeholder(size: f32, p: &Palette) -> El {
     el().key("cover")
-        .size(COVER_SIZE, COVER_SIZE)
-        .radius(10.0)
+        .size(size, size)
+        .radius(radius::SM)
         .fill(p.muted)
         .center()
-        .child(text("♪").font(type_::TITLE).color(p.text_secondary))
+        .child(icon(&icons::MUSIC, (size * 0.5).round()).color(p.text_secondary))
 }
 
-fn cover_el(s: &State, id: Option<u32>, p: &Palette, scale: f32) -> El {
+/// A rounded cover box at `size` pt: the track's decoded art if ready, else the
+/// placeholder. Shared by the now-playing panel (40 pt) and the queue rows
+/// (36 pt), matching the old app's `w-10` cover and `TrackItem` thumbnail.
+pub fn cover(s: &State, id: Option<u32>, size: f32, p: &Palette, scale: f32) -> El {
     let Some(id) = id else {
-        return cover_placeholder(p);
+        return cover_placeholder(size, p);
     };
     match s.art.image_for(id, &s.host, scale) {
         // Ready and error-free: show it. Pending or failed covers keep the
         // placeholder rather than a blank or broken texture.
         Some(image) if image.is_ready() && image.error().is_none() => el()
             .key("cover")
-            .size(COVER_SIZE, COVER_SIZE)
-            .radius(10.0)
+            .size(size, size)
+            .radius(radius::SM)
             .fill(p.muted)
             .pixels_fit(image.pixels(), SurfaceFit::Fit),
-        _ => cover_placeholder(p),
+        _ => cover_placeholder(size, p),
     }
 }
 
 fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) -> El {
-    let title = now
-        .and_then(|t| t.title.clone())
-        .unwrap_or_else(|| "Nothing playing".to_string());
-    let artist = now.and_then(|t| t.artist.clone()).unwrap_or_default();
+    let Some(track) = now else {
+        // Empty state, as the old app's NowPlayingPanel: a larger muted cover and
+        // "nothing playing", no title/artist row and no heart.
+        return row()
+            .key("now-playing")
+            .gap(space::MD)
+            .center_y()
+            .child(cover(s, None, 48.0, p, scale))
+            .child(
+                text(t!("player.nothingPlaying").to_string())
+                    .font(type_::BODY)
+                    .color(p.text_secondary),
+            );
+    };
+    let title = track
+        .title
+        .clone()
+        .unwrap_or_else(|| t!("library.unknown").to_string());
+    let artist = track.artist.clone().unwrap_or_default();
     row()
         .key("now-playing")
-        .gap(14.0)
-        .child(cover_el(s, now.map(|t| t.id), p, scale))
+        .gap(space::COZY)
+        .center_y()
+        .child(cover(s, Some(track.id), COVER_SIZE, p, scale))
         .child(
             col()
                 .key("now-playing-text")
-                .gap(4.0)
-                .center_y()
+                .gap(space::XXS)
+                .align(Align::Start)
                 .grow(1.0)
                 .min_w(0.0)
                 .child(text(title).font(type_::TITLE).color(p.fg).truncate())
                 .child(
                     text(artist)
-                        .font(type_::BODY)
+                        .font(type_::CAPTION)
                         .color(p.text_secondary)
                         .truncate(),
                 ),
         )
+        // A muted heart on the right (old app's `Heart` button); decorative
+        // here — favourites aren't a feature of this focused build.
+        .child(icon(&icons::HEART, 16.0).color(p.text_secondary))
 }
 
 /// The seek slider now fills whatever's left of the row after the two fixed
@@ -156,7 +197,7 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .center_y()
         .child(
             text(fmt_dur(s.position_secs))
-                .font(type_::MONO_CAPTION.mono())
+                .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(TIME_LABEL_W),
         )
@@ -174,7 +215,7 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         ))
         .child(
             text(fmt_dur(s.duration_secs))
-                .font(type_::MONO_CAPTION.mono())
+                .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(TIME_LABEL_W)
                 .align(Align::End),
@@ -183,8 +224,8 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
 
 fn transport_button(
     key: &str,
-    label: &str,
-    glyph: &str,
+    label: String,
+    ic: &'static Icon,
     p: &Palette,
     on_press: impl Fn(&mut State) + 'static,
 ) -> El {
@@ -192,25 +233,35 @@ fn transport_button(
         .role("button")
         .label(label)
         .focusable(true)
-        .size(32.0, 32.0)
+        .size(BTN_SIZE, BTN_SIZE)
         .center()
-        .radius(16.0)
-        .hover(p.muted)
-        .press(p.border)
+        .radius(BTN_SIZE * 0.5)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.08))
+        .press(p.fg.alpha(0.14))
         .on_press(on_press)
-        .child(text(glyph).font(type_::TITLE).color(p.fg))
+        .child(icon(ic, 16.0).color(p.text_secondary))
 }
 
 fn play_pause_button(s: &State, p: &Palette) -> El {
-    let glyph = if s.playing { "⏸" } else { "▶" };
+    let ic: &'static Icon = if s.playing {
+        &icons::PAUSE
+    } else {
+        &icons::PLAY
+    };
     el().key("play-pause")
         .role("button")
-        .label(if s.playing { "Pause" } else { "Play" })
+        .label(if s.playing {
+            t!("player.pause").to_string()
+        } else {
+            t!("player.play").to_string()
+        })
         .focusable(true)
-        .size(48.0, 48.0)
+        .size(PLAY_SIZE, PLAY_SIZE)
         .center()
-        .radius(24.0)
+        .radius(PLAY_SIZE * 0.5)
         .fill(p.primary)
+        .cursor(Cursor::Pointer)
         .motion(motion::SNAPPY)
         .on_press(|st: &mut State| {
             st.host.send(if st.playing {
@@ -219,7 +270,7 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
                 Command::Play
             });
         })
-        .child(text(glyph).font(type_::TITLE).color(p.bg))
+        .child(icon(ic, 18.0).color(p.bg))
 }
 
 /// Compact icon button (32x32, matching `transport_button`'s size): the old
@@ -230,16 +281,17 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
 fn shuffle_button(s: &State, p: &Palette) -> El {
     el().key("shuffle")
         .role("switch")
-        .label("Shuffle")
+        .label(t!("player.shuffle").to_string())
         .checked(s.shuffle)
         .focusable(true)
-        .size(32.0, 32.0)
+        .size(BTN_SIZE, BTN_SIZE)
         .center()
-        .radius(16.0)
-        .hover(p.muted)
-        .press(p.border)
+        .radius(BTN_SIZE * 0.5)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.08))
+        .press(p.fg.alpha(0.14))
         .on_press(|st: &mut State| st.host.send(Command::SetShuffle(!st.shuffle)))
-        .child(text("⤭").font(type_::TITLE).color(if s.shuffle {
+        .child(icon(&icons::SHUFFLE, 14.0).color(if s.shuffle {
             p.accent
         } else {
             p.text_secondary
@@ -247,20 +299,21 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
 }
 
 fn repeat_button(s: &State, p: &Palette) -> El {
-    let (glyph, label, on) = match s.repeat {
-        RepeatMode::Off => ("⟳", "Repeat", false),
-        RepeatMode::All => ("⟳", "Repeat: All", true),
-        RepeatMode::One => ("⟳¹", "Repeat: One", true),
+    let (ic, label, on): (&'static Icon, String, bool) = match s.repeat {
+        RepeatMode::Off => (&icons::REPEAT, t!("player.repeat").to_string(), false),
+        RepeatMode::All => (&icons::REPEAT, t!("player.repeatAll").to_string(), true),
+        RepeatMode::One => (&icons::REPEAT_1, t!("player.repeatOne").to_string(), true),
     };
     el().key("repeat")
         .role("button")
         .label(label)
         .focusable(true)
-        .size(32.0, 32.0)
+        .size(BTN_SIZE, BTN_SIZE)
         .center()
-        .radius(16.0)
-        .hover(p.muted)
-        .press(p.border)
+        .radius(BTN_SIZE * 0.5)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.08))
+        .press(p.fg.alpha(0.14))
         .on_press(|st: &mut State| {
             let next = match st.repeat {
                 RepeatMode::Off => RepeatMode::All,
@@ -269,11 +322,7 @@ fn repeat_button(s: &State, p: &Palette) -> El {
             };
             st.host.send(Command::SetRepeat(next));
         })
-        .child(
-            text(glyph)
-                .font(type_::TITLE)
-                .color(if on { p.accent } else { p.text_secondary }),
-        )
+        .child(icon(ic, 14.0).color(if on { p.accent } else { p.text_secondary }))
 }
 
 /// Shuffle/prev/play/next/repeat in one row. At 32+32+48+32+32 = 176pt of
@@ -287,16 +336,16 @@ fn transport_row(s: &State, p: &Palette) -> El {
         .child(shuffle_button(s, p))
         .child(transport_button(
             "prev",
-            "Previous",
-            "◀◀",
+            t!("player.previous").to_string(),
+            &icons::SKIP_BACK,
             p,
             |st: &mut State| st.host.send(Command::Prev),
         ))
         .child(play_pause_button(s, p))
         .child(transport_button(
             "next",
-            "Next",
-            "▶▶",
+            t!("player.next").to_string(),
+            &icons::SKIP_FORWARD,
             p,
             |st: &mut State| st.host.send(Command::Next),
         ))
@@ -312,10 +361,15 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .gap(ROW_GAP)
         .center_y()
         .child(
-            text("Vol")
-                .font(type_::LABEL)
-                .color(p.text_secondary)
-                .w(VOL_LABEL_W),
+            icon(
+                if s.volume <= 0.0 {
+                    &icons::VOLUME_X
+                } else {
+                    &icons::VOLUME
+                },
+                16.0,
+            )
+            .color(p.text_secondary),
         )
         .child(slider(
             "volume",
@@ -326,8 +380,8 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             |st: &mut State, v: f32| st.host.send(Command::SetVolume(v)),
         ))
         .child(
-            text(format!("{:.0}%", s.volume * 100.0))
-                .font(type_::MONO_CAPTION.mono())
+            text(format!("{:.0}", s.volume * 100.0))
+                .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(VOL_PCT_W)
                 .align(Align::End),
@@ -346,19 +400,37 @@ pub fn player_panel(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     col()
         .key("player")
         .w_full()
-        .fill(p.card)
-        .padding(PANEL_PADDING)
-        .gap(14.0)
-        // Uppercase eyebrow over the now-playing row, as the old app's panel.
+        // No own fill: the sidebar already paints `p.card` behind us. A full-width
+        // fill here would overpaint the sidebar's 1 px right border along this
+        // band, breaking the divider into "only beside some containers" — so we
+        // stay transparent and let the one continuous border show through.
+        // NowPlayingPanel (old app's `p-4`): the uppercase eyebrow then the
+        // cover + title/artist row, `mb-3` apart.
         .child(
-            text("NOW PLAYING")
-                .font(type_::SECTION)
-                .color(p.text_secondary),
+            col()
+                .key("now-playing-panel")
+                .padding(NP_PAD)
+                .gap(CTRL_GAP)
+                .child(
+                    text(t!("player.nowPlaying").to_string())
+                        .font(type_::SECTION)
+                        .color(p.text_secondary),
+                )
+                .child(now_playing_row(s, now, p, scale)),
         )
-        .child(now_playing_row(s, now, p, scale))
-        .child(seek_row(s, p, cx))
-        .child(transport_row(s, p))
-        .child(volume_row(s, p, cx))
+        // Controls block (old app's `px-4 pt-2 pb-4 space-y-3`): seek, transport,
+        // volume.
+        .child(
+            col()
+                .key("player-controls")
+                .px(CTRL_PAD_X)
+                .pt(CTRL_PAD_T)
+                .pb(CTRL_PAD_B)
+                .gap(CTRL_GAP)
+                .child(seek_row(s, p, cx))
+                .child(transport_row(s, p))
+                .child(volume_row(s, p, cx)),
+        )
 }
 
 #[cfg(test)]

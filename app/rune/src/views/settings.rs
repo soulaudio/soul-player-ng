@@ -5,15 +5,15 @@
 //! there is no text entry here.
 #![forbid(unsafe_code)]
 
-use rune::tok::type_;
-use rune::{Align, Cx, El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
+use rune::{Align, Cursor, Cx, El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
 use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
+use crate::ui::{radius, space, type_};
 use crate::views::slider::slider;
 use crate::{
-    State, ThemePref, apply_and_save, apply_watch, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_theme_pref,
+    State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -30,15 +30,16 @@ fn basename(p: &std::path::Path) -> String {
 /// `apply_watch`. Mirrors `views::open_folder`'s dialog pattern.
 fn add_source_button(p: &Palette) -> El {
     el().key("add-source")
-        .padding(12.0)
-        .radius(8.0)
+        .padding(space::MD)
+        .radius(radius::MD)
         .fill(p.primary)
         .center()
-        .child(text("+ Add Source").color(p.bg))
+        .cursor(Cursor::Pointer)
+        .child(text(t!("settings.addSource").to_string()).color(p.bg))
         .on_press_tx(|_s: &mut State, tx: &mut Tx| {
             tx.open_folder(
                 FileDialogOptions {
-                    title: "Add a music folder".into(),
+                    title: t!("settings.addFolderDialog").to_string(),
                     ..Default::default()
                 },
                 |s: &mut State, result, _tx| {
@@ -57,11 +58,12 @@ fn add_source_button(p: &Palette) -> El {
 /// not apply_and_save).
 fn rescan_button(p: &Palette) -> El {
     el().key("rescan-sources")
-        .padding(12.0)
-        .radius(8.0)
+        .padding(space::MD)
+        .radius(radius::MD)
         .fill(p.muted)
         .center()
-        .child(text("Rescan").color(p.fg))
+        .cursor(Cursor::Pointer)
+        .child(text(t!("settings.rescan").to_string()).color(p.fg))
         .on_press(|s: &mut State| {
             if let Ok(up) = s.host.set_folders(&s.watched_folders) {
                 apply_watch(s, up);
@@ -78,20 +80,21 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
     let remove_for = folder.clone();
     let mut r = row()
         .key(format!("source-{name}"))
-        .gap(12.0)
-        .padding(8.0)
+        .gap(space::MD)
+        .padding(space::SM)
         .child(text(name.clone()).color(p.fg).grow(1.0));
     if unavailable {
         r = r.child(
             el().key(format!("offline-{name}"))
-                .child(text("offline").color(p.text_secondary)),
+                .child(text(t!("settings.offline").to_string()).color(p.text_secondary)),
         );
     }
     r.child(
         el().key(format!("remove-{name}"))
-            .padding(6.0)
-            .radius(6.0)
+            .padding(space::SNUG)
+            .radius(radius::SM)
             .fill(p.muted)
+            .cursor(Cursor::Pointer)
             .child(text("✕").color(p.text_secondary))
             .on_press(move |st: &mut State| {
                 if let Ok(up) = st.host.remove_folder(&remove_for) {
@@ -103,11 +106,11 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
 
 /// The Sources section: + Add Source and one row per watched folder.
 fn sources_section(s: &State, p: &Palette) -> El {
-    let mut sources = col().key("sources").gap(2.0).child(
+    let mut sources = col().key("sources").gap(space::XXS).child(
         row()
-            .padding(8.0)
+            .padding(space::SM)
             .child(
-                text("Sources")
+                text(t!("settings.sources").to_string())
                     .font(type_::TITLE)
                     .color(p.primary)
                     .grow(1.0),
@@ -117,9 +120,9 @@ fn sources_section(s: &State, p: &Palette) -> El {
     );
     if s.watched_folders.is_empty() {
         sources = sources.child(
-            text("No sources yet — add a folder to build your library.")
+            text(t!("settings.noSources").to_string())
                 .color(p.text_secondary)
-                .padding(8.0),
+                .padding(space::SM),
         );
     } else {
         for i in 0..s.watched_folders.len() {
@@ -136,37 +139,38 @@ fn sources_section(s: &State, p: &Palette) -> El {
 fn updates_section(s: &State, p: &Palette) -> El {
     let mut sec = col()
         .key("updates")
-        .gap(2.0)
+        .gap(space::XXS)
         .child(
-            row().padding(8.0).child(
-                text("Updates")
+            row().padding(space::SM).child(
+                text(t!("settings.updates").to_string())
                     .font(type_::TITLE)
                     .color(p.primary)
                     .grow(1.0),
             ),
         )
         .child(
-            text(format!("Version {}", env!("CARGO_PKG_VERSION")))
+            text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
                 .color(p.text_secondary)
-                .padding(8.0),
+                .padding(space::SM),
         );
     if let Some(version) = &s.update_available {
         sec = sec.child(
             row()
-                .gap(12.0)
-                .padding(8.0)
+                .gap(space::MD)
+                .padding(space::SM)
                 .child(
-                    text(format!("Version {version} is available."))
+                    text(t!("settings.updateAvailable", version => version).to_string())
                         .color(p.fg)
                         .grow(1.0),
                 )
                 .child(
                     el().key("install-update")
-                        .padding(12.0)
-                        .radius(8.0)
+                        .padding(space::MD)
+                        .radius(radius::MD)
                         .fill(p.primary)
                         .center()
-                        .child(text("Install & Restart").color(p.bg))
+                        .cursor(Cursor::Pointer)
+                        .child(text(t!("settings.installRestart").to_string()).color(p.bg))
                         .on_press(|_s: &mut State| {
                             std::thread::spawn(|| {
                                 if let Err(e) = crate::update::install() {
@@ -181,10 +185,11 @@ fn updates_section(s: &State, p: &Palette) -> El {
 }
 
 /// One theme choice; the active preference is filled with the primary color.
-fn theme_button(label: &str, key: &str, pref: ThemePref, active: bool, p: &Palette) -> El {
+fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
-        .padding(8.0)
-        .radius(6.0)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
         .on_press(move |s: &mut State| set_theme_pref(s, pref))
@@ -194,10 +199,10 @@ fn theme_button(label: &str, key: &str, pref: ThemePref, active: bool, p: &Palet
 fn appearance_section(s: &State, p: &Palette) -> El {
     col()
         .key("appearance")
-        .gap(2.0)
+        .gap(space::XXS)
         .child(
-            row().padding(8.0).child(
-                text("Appearance")
+            row().padding(space::SM).child(
+                text(t!("settings.appearance").to_string())
                     .font(type_::TITLE)
                     .color(p.primary)
                     .grow(1.0),
@@ -205,24 +210,24 @@ fn appearance_section(s: &State, p: &Palette) -> El {
         )
         .child(
             row()
-                .gap(8.0)
-                .padding(8.0)
+                .gap(space::SM)
+                .padding(space::SM)
                 .child(theme_button(
-                    "System",
+                    t!("settings.themeSystem").to_string(),
                     "theme-system",
                     ThemePref::System,
                     s.theme_pref == ThemePref::System,
                     p,
                 ))
                 .child(theme_button(
-                    "Light",
+                    t!("settings.themeLight").to_string(),
                     "theme-light",
                     ThemePref::Light,
                     s.theme_pref == ThemePref::Light,
                     p,
                 ))
                 .child(theme_button(
-                    "Dark",
+                    t!("settings.themeDark").to_string(),
                     "theme-dark",
                     ThemePref::Dark,
                     s.theme_pref == ThemePref::Dark,
@@ -231,14 +236,67 @@ fn appearance_section(s: &State, p: &Palette) -> El {
         )
 }
 
+/// One language choice; the active pref is filled with the primary colour. Each
+/// language shows in its own native name; "System" follows the OS locale.
+fn lang_button(label: String, pref: &'static str, active: bool, p: &Palette) -> El {
+    el().key(format!("lang-{pref}"))
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_locale_pref(s, pref))
+}
+
+/// The Language section: System (follow the OS) plus each shipped locale in its
+/// native name.
+fn language_section(s: &State, p: &Palette) -> El {
+    let cur = s.locale_pref.as_str();
+    col()
+        .key("language")
+        .gap(space::XXS)
+        .child(
+            row().padding(space::SM).child(
+                text(t!("settings.language").to_string())
+                    .font(type_::TITLE)
+                    .color(p.primary)
+                    .grow(1.0),
+            ),
+        )
+        .child(
+            row()
+                .gap(space::SM)
+                .padding(space::SM)
+                .child(lang_button(
+                    t!("settings.langSystem").to_string(),
+                    "system",
+                    cur == "system",
+                    p,
+                ))
+                .child(lang_button("English".into(), "en", cur == "en", p))
+                .child(lang_button("Deutsch".into(), "de", cur == "de", p))
+                .child(lang_button("Español".into(), "es", cur == "es", p))
+                .child(lang_button("中文".into(), "zh", cur == "zh", p))
+                .child(lang_button("Čeština".into(), "cs", cur == "cs", p))
+                .child(lang_button("日本語".into(), "ja", cur == "ja", p)),
+        )
+}
+
 /// One output-device choice; the active device is filled with the primary color.
 /// `choice` is the device this button selects (`None` = follow the system
-/// default). Full-width so a long device name has room (and the whole row is the
-/// hit target), mirroring `theme_button`'s selected-fill treatment.
-fn device_button(label: &str, key: &str, choice: Option<String>, active: bool, p: &Palette) -> El {
+/// default). Full-width so a long device name has room (the whole row is the hit
+/// target), mirroring `theme_button`'s selected-fill treatment.
+fn device_button(
+    label: String,
+    key: &str,
+    choice: Option<String>,
+    active: bool,
+    p: &Palette,
+) -> El {
     el().key(key.to_string())
-        .padding(8.0)
-        .radius(6.0)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(
             text(label)
@@ -256,10 +314,10 @@ fn device_button(label: &str, key: &str, choice: Option<String>, active: bool, p
 fn output_section(s: &State, p: &Palette) -> El {
     let mut choices = col()
         .key("output-devices")
-        .gap(8.0)
-        .padding(8.0)
+        .gap(space::SM)
+        .padding(space::SM)
         .child(device_button(
-            "System default",
+            t!("settings.systemDefault").to_string(),
             "output-default",
             None,
             s.output_device.is_none(),
@@ -267,15 +325,15 @@ fn output_section(s: &State, p: &Palette) -> El {
         ));
     if s.output_devices.is_empty() {
         choices = choices.child(
-            text("No output devices detected.")
+            text(t!("settings.noOutputDevices").to_string())
                 .color(p.text_secondary)
-                .padding(8.0),
+                .padding(space::SM),
         );
     } else {
         for (i, name) in s.output_devices.iter().enumerate() {
             let active = s.output_device.as_deref() == Some(name.as_str());
             choices = choices.child(device_button(
-                name,
+                name.clone(),
                 &format!("output-{i}"),
                 Some(name.clone()),
                 active,
@@ -285,21 +343,25 @@ fn output_section(s: &State, p: &Palette) -> El {
     }
     col()
         .key("output")
-        .gap(2.0)
+        .gap(space::XXS)
         .child(
-            row()
-                .padding(8.0)
-                .child(text("Output").font(type_::TITLE).color(p.primary).grow(1.0)),
+            row().padding(space::SM).child(
+                text(t!("settings.output").to_string())
+                    .font(type_::TITLE)
+                    .color(p.primary)
+                    .grow(1.0),
+            ),
         )
         .child(choices)
 }
 
 /// One ReplayGain mode choice; the active mode is filled with the primary color
 /// (mirrors `theme_button` / `device_button`).
-fn rg_mode_button(label: &str, key: &str, mode: ReplayGainMode, active: bool, p: &Palette) -> El {
+fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
-        .padding(8.0)
-        .radius(6.0)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(text(label).color(if active { p.bg } else { p.fg }))
         .on_press(move |s: &mut State| set_replaygain_mode(s, mode))
@@ -314,24 +376,24 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let preamp = s.replaygain_preamp;
     let value01 = ((preamp - RG_PREAMP_MIN) / (RG_PREAMP_MAX - RG_PREAMP_MIN)).clamp(0.0, 1.0);
     let modes = row()
-        .gap(8.0)
-        .padding(8.0)
+        .gap(space::SM)
+        .padding(space::SM)
         .child(rg_mode_button(
-            "Off",
+            t!("settings.rgOff").to_string(),
             "rg-off",
             ReplayGainMode::Off,
             s.replaygain_mode == ReplayGainMode::Off,
             p,
         ))
         .child(rg_mode_button(
-            "Track",
+            t!("settings.rgTrack").to_string(),
             "rg-track",
             ReplayGainMode::Track,
             s.replaygain_mode == ReplayGainMode::Track,
             p,
         ))
         .child(rg_mode_button(
-            "Album",
+            t!("settings.rgAlbum").to_string(),
             "rg-album",
             ReplayGainMode::Album,
             s.replaygain_mode == ReplayGainMode::Album,
@@ -339,10 +401,14 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         ));
     let preamp_row = row()
         .key("rg-preamp-row")
-        .gap(12.0)
-        .padding(8.0)
+        .gap(space::MD)
+        .padding(space::SM)
         .center_y()
-        .child(text("Preamp").color(p.text_secondary).w(56.0))
+        .child(
+            text(t!("settings.preamp").to_string())
+                .color(p.text_secondary)
+                .w(56.0),
+        )
         .child(slider(
             "rg-preamp",
             value01,
@@ -364,10 +430,10 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         );
     col()
         .key("replaygain")
-        .gap(2.0)
+        .gap(space::XXS)
         .child(
-            row().padding(8.0).child(
-                text("ReplayGain")
+            row().padding(space::SM).child(
+                text(t!("settings.replayGain").to_string())
                     .font(type_::TITLE)
                     .color(p.primary)
                     .grow(1.0),
@@ -378,13 +444,14 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
 }
 
 /// The Settings page: a title plus scrollable sections (Sources, Appearance,
-/// Output, ReplayGain, Updates).
+/// Language, Output, ReplayGain, Updates).
 pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let content = col()
         .key("settings-content")
-        .gap(16.0)
+        .gap(space::LG)
         .child(sources_section(s, p))
         .child(appearance_section(s, p))
+        .child(language_section(s, p))
         .child(output_section(s, p))
         .child(replaygain_section(s, p, cx))
         .child(updates_section(s, p));
@@ -393,10 +460,10 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .grow(1.0)
         .min_h(0.0)
         .child(
-            text("Settings")
+            text(t!("settings.title").to_string())
                 .font(type_::TITLE)
                 .color(p.fg)
-                .padding(16.0),
+                .padding(space::LG),
         )
         .child(
             content

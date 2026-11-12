@@ -7,25 +7,73 @@
 //! `views::library` track list or `views::settings` — filling the rest.
 #![forbid(unsafe_code)]
 
+#[macro_use]
+extern crate rust_i18n;
+
+// Compile-time-embed the translations in `locales/app.yml`; the crate-wide
+// `t!("key")` macro then resolves against the current locale (set per the saved
+// pref / OS language in `apply_locale`), falling back to English.
+i18n!("locales", fallback = "en");
+
 use std::path::PathBuf;
 
 use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
+// Linked only to union parley_engine's `complex-scripts` feature on (see
+// Cargo.toml) — enables CJK text segmentation. Not called directly.
+use parley_engine as _;
 use soul_player_host::{
     BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, TrackView,
     WatchUpdate,
 };
 
 mod config;
+#[cfg(test)]
+mod i18n_tests;
 mod theme;
+mod ui;
 mod update;
 mod views;
 
 use views::player::ArtCache;
 
+/// The UI locales shipped besides the English fallback (see `locales/app.yml`).
+pub(crate) const LOCALES: &[&str] = &["en", "de", "es", "zh", "cs", "ja"];
+
+/// Resolve a locale preference to a concrete locale code. A supported pref
+/// ("de", "zh", …) is used as-is; "system" — or anything unsupported — matches
+/// the OS language via `sys-locale`, falling back to English.
+fn resolve_locale(pref: &str) -> &'static str {
+    if let Some(&code) = LOCALES.iter().find(|&&c| c == pref) {
+        return code;
+    }
+    let sys = sys_locale::get_locale().unwrap_or_default();
+    let lang = sys.split(['-', '_']).next().unwrap_or("en").to_lowercase();
+    LOCALES
+        .iter()
+        .copied()
+        .find(|&c| c == lang.as_str())
+        .unwrap_or("en")
+}
+
+/// Point the global `rust_i18n` locale at `pref`'s resolved code, so the next
+/// render's `t!` calls translate against it.
+fn apply_locale(pref: &str) {
+    rust_i18n::set_locale(resolve_locale(pref));
+}
+
+/// Switch the UI language (Settings → Language): remember the pref, apply it, and
+/// persist. The next frame re-renders in the new locale.
+pub(crate) fn set_locale_pref(s: &mut State, pref: &str) {
+    s.locale_pref = pref.to_string();
+    apply_locale(pref);
+    config::save_locale(pref);
+}
+
 /// Which page the main area shows. The sidebar switches it; `view` dispatches on it.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Route {
     Library,
+    Albums,
     Settings,
 }
 
@@ -66,7 +114,17 @@ struct State {
     volume: f32,
     shuffle: bool,
     repeat: RepeatMode,
+    /// The manual queue ("Next in queue"): tracks the user queued via
+    /// `PlayNext`/`Enqueue`, in play order. Reorderable and removable.
     up_next: Vec<u32>,
+    /// The real upcoming CONTEXT tracks (shuffle-correct) after the manual queue,
+    /// from the backend's `QueueState` — the "Next from <context>" band. This
+    /// replaces the old synthesis from `library` order (wrong under shuffle).
+    context_ids: Vec<u32>,
+    /// Transient drag-reorder state for the Up-Next band: `Some((from, to))` while
+    /// a row is being dragged, `None` at rest. Drives the drop indicator; the
+    /// commit (`Command::MoveInQueue`) fires on release.
+    queue_drag: Option<(usize, usize)>,
     context_pos: u32,
     context_len: u32,
     /// Current page (Library vs Settings).
@@ -106,6 +164,14 @@ struct State {
     /// transport shortcuts). `/` or clicking the search bar turns it on; Esc/Enter
     /// turn it off.
     searching: bool,
+    /// The resizable sidebar's width (clamped 240–480) and whether it's collapsed
+    /// to a thin rail. Persisted via [`config::load_sidebar`]/[`config::save_sidebar`]
+    /// and driven by the drag handle in `views::sidebar`.
+    sidebar_width: f32,
+    sidebar_collapsed: bool,
+    /// UI language preference ("system"/"en"/"de"/…); drives the global
+    /// `rust_i18n` locale via [`apply_locale`]. Changed by Settings → Language.
+    locale_pref: String,
 }
 
 impl State {
@@ -126,6 +192,9 @@ impl State {
         // Restore the persisted ReplayGain choice (defaults: Off, 0 dB); main()
         // has already pushed the same value to the host before the first spawn.
         let (replaygain_mode, replaygain_preamp) = config::load_replaygain();
+        let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
+        let locale_pref = config::load_locale();
+        apply_locale(&locale_pref);
         Self {
             host,
             library,
@@ -137,6 +206,8 @@ impl State {
             shuffle: false,
             repeat: RepeatMode::Off,
             up_next: Vec::new(),
+            context_ids: Vec::new(),
+            queue_drag: None,
             context_pos: 0,
             context_len: 0,
             route: Route::Library,
@@ -156,6 +227,9 @@ impl State {
             update_available: None,
             search: String::new(),
             searching: false,
+            sidebar_width,
+            sidebar_collapsed,
+            locale_pref,
         }
     }
 
@@ -180,6 +254,7 @@ impl State {
             }
             Event::Queue(q) => {
                 self.up_next = q.up_next_ids.clone();
+                self.context_ids = q.context_ids.clone();
                 self.context_pos = q.context_pos;
                 self.context_len = q.context_len;
             }
@@ -266,9 +341,15 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .w_full()
         .h_full()
         .fill(p.bg)
-        .child(views::sidebar::sidebar(s, &p, cx, scale))
+        .child(if s.sidebar_collapsed {
+            views::sidebar::collapsed_strip(&p)
+        } else {
+            views::sidebar::sidebar(s, &p, cx, scale)
+        })
+        .child(views::sidebar::resize_handle(&p))
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
             Route::Library => views::library::track_list(s, &p).grow(1.0),
+            Route::Albums => views::albums::albums_page(s, &p, cx, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, &p, cx).grow(1.0),
         }))
 }
@@ -342,11 +423,30 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 fn scene_settings(s: &mut State) {
     s.route = Route::Settings;
 }
+fn scene_albums(s: &mut State) {
+    s.route = Route::Albums;
+}
 fn scene_search(s: &mut State) {
     s.search = "aria".to_string();
 }
 fn scene_no_match(s: &mut State) {
     s.search = "zzz-no-such-track".to_string();
+}
+fn scene_collapsed(s: &mut State) {
+    s.sidebar_collapsed = true;
+}
+/// Seed a populated banded queue from the loaded library so `--snap` can capture
+/// the "Up Next" sidebar (which is empty until playback otherwise).
+fn scene_queue(s: &mut State) {
+    let ids: Vec<u32> = s.library.iter().take(9).map(|t| t.id).collect();
+    if let Some(&first) = ids.first() {
+        s.now_playing_id = Some(first);
+        s.playing = true;
+        s.up_next = ids.iter().skip(1).take(2).copied().collect();
+        s.context_ids = ids.iter().skip(3).copied().collect();
+        s.context_pos = 0;
+        s.context_len = s.library.len() as u32;
+    }
 }
 
 fn main() -> anyhow::Result<()> {
@@ -390,11 +490,14 @@ fn main() -> anyhow::Result<()> {
         on_key: Some(handle_key),
         scenes: &[
             ("settings", scene_settings),
+            ("albums", scene_albums),
             ("search", scene_search),
             ("no-match", scene_no_match),
+            ("collapsed", scene_collapsed),
+            ("queue", scene_queue),
         ],
         ..AppSpec::new(
-            "Soul Player (Rune)",
+            "Soul Player",
             (1100.0, 720.0),
             || unreachable!("init overridden"),
             view,
@@ -440,6 +543,11 @@ fn main() -> anyhow::Result<()> {
             tx.instant(); // don't animate fast-moving numeric fields
         });
     });
+    // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
+    // installer uses the same icons via [package.metadata.packager]).
+    if let Err(e) = rune::set_app_icon(include_bytes!("../icons/icon.png").to_vec()) {
+        eprintln!("[icon] set_app_icon failed: {e}");
+    }
     app.run();
     Ok(())
 }
@@ -450,9 +558,10 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use rune::{Env, Mods, Runtime};
+    use rune::{Cursor, Env, Mods, Runtime};
 
     use super::*;
+    use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
 
     fn testdata_dir() -> PathBuf {
         // app/rune -> repo-root/testdata
@@ -550,6 +659,261 @@ mod tests {
         );
         assert!(rt.find("add-source").is_some(), "Sources offers Add Source");
         assert!(rt.find("rescan-sources").is_some(), "Sources offers Rescan");
+    }
+
+    #[test]
+    fn sidebar_resize_handle_present_and_collapses_to_a_rail() {
+        // Expanded: the full sidebar and its always-present resize handle render,
+        // and there is no collapsed rail.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false; // explicit — don't depend on persisted config
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(rt.find("sidebar").is_some(), "the full sidebar renders");
+        assert!(
+            rt.find("sidebar-resize").is_some(),
+            "the resize handle is present"
+        );
+        assert!(
+            rt.find("sidebar-collapsed").is_none(),
+            "no collapsed rail while expanded"
+        );
+
+        // Collapsed: the rail replaces the full sidebar; the handle stays so a
+        // drag (or click) can re-open it.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = true;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("sidebar-collapsed").is_some(),
+            "collapsing shows the thin rail"
+        );
+        assert!(
+            rt.find("sidebar").is_none(),
+            "the full sidebar is gone when collapsed"
+        );
+        assert!(
+            rt.find("sidebar-resize").is_some(),
+            "the handle remains, to re-open"
+        );
+    }
+
+    // ── Sidebar resize & collapsed-mode e2e, driven through the real pointer ──
+    // gestures and measured against the original soul-player's live
+    // `useCollapsibleSidebar` + `CollapsedSidebarStrip`. Parity asserted here
+    // (original → ours): width range 240–480 default 288; collapse snap < 200 px;
+    // collapsed rail 12 px (`w-3`) with a 4×56 px grabber (`w-1 h-14`), centred;
+    // `cursor-ew-resize` on both the handle and the rail; and a collapse that
+    // preserves the expanded width (the original never overwrites `sidebar-width`
+    // on snap, so re-opening restores it).
+    //
+    // Two intentional divergences, documented so a future reader doesn't "fix"
+    // them into regressions: (1) ours resizes by pointer *delta*
+    // (`width_at_press + dx`) rather than the original's absolute
+    // `width = clientX`, so grabbing the handle never jumps the edge to the
+    // cursor; (2) there is no 20 px re-open hysteresis — we re-open the instant
+    // the drag target clears 200 px where the original waits for 220 px.
+    //
+    // Every drag deliberately stops at `Phase::Move` and never calls
+    // `pointer_up`: `config::save_sidebar` only fires on release, so no test
+    // here writes the user's real `config.toml`.
+
+    /// A framed headless runtime whose sidebar starts at an explicit geometry,
+    /// overriding whatever the user's persisted `config.toml` holds so the test
+    /// is deterministic (as the other sidebar tests do). One frame is pumped so
+    /// `find`/`presented` have layout.
+    fn sidebar_rt(width: f32, collapsed: bool) -> Runtime<State> {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_width = width;
+        s.sidebar_collapsed = collapsed;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        rt
+    }
+
+    #[test]
+    fn expanded_sidebar_draws_at_its_configured_width() {
+        // The old app applies the width via an inline `style={{ width }}`; ours
+        // binds `.w(s.sidebar_width)`. Prove a non-default 360 px reaches the
+        // drawn element (not merely the state), and that the right edge offers
+        // the resize handle's `cursor-ew-resize`.
+        let mut rt = sidebar_rt(360.0, false);
+        let drawn = rt.presented("sidebar").expect("sidebar renders").0;
+        assert!(
+            (drawn[2] - 360.0).abs() < 0.5,
+            "the sidebar draws at its configured width, got {}",
+            drawn[2]
+        );
+        let (hx, hy) = rt.find("sidebar-resize").expect("handle present");
+        rt.pointer_move(hx, hy);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.cursor(),
+            Cursor::ResizeColumn,
+            "the right-edge handle shows the resize cursor"
+        );
+    }
+
+    #[test]
+    fn dragging_the_handle_resizes_within_the_min_max_range() {
+        // One captured drag with several moves — the e2e twin of the pure
+        // `resize_to` unit test. `Drag::data` caches 288 at press; each move's
+        // `dx` is travel from the press point.
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, false);
+        let (hx, hy) = rt.find("sidebar-resize").expect("handle present");
+        rt.pointer_move(hx, hy);
+        rt.pointer_down(hx, hy);
+        // Pointer events dispatch on the next `frame`, so each move is applied by
+        // the `frame` that follows it. `Drag::data` (288, cached at press) and the
+        // press origin both persist across the gesture, so every `dx` below is
+        // travel from the original press point.
+        // Out by 100 → 388, inside the range.
+        rt.pointer_move(hx + 100.0, hy);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.sidebar_width, 388.0,
+            "drag-out widens by the pointer travel"
+        );
+        // Keep pulling out hard → clamps at MAX, never wider.
+        rt.pointer_move(hx + 400.0, hy);
+        rt.frame(0.0);
+        assert_eq!(rt.state.sidebar_width, MAX_WIDTH, "clamps to the max width");
+        // Back in, but still above the collapse threshold (288 - 60 = 228) →
+        // clamps up to MIN rather than collapsing.
+        rt.pointer_move(hx - 60.0, hy);
+        rt.frame(0.0);
+        assert_eq!(rt.state.sidebar_width, MIN_WIDTH, "clamps to the min width");
+        assert!(
+            !rt.state.sidebar_collapsed,
+            "stays expanded while above the threshold"
+        );
+    }
+
+    #[test]
+    fn dragging_the_handle_below_the_threshold_collapses_to_the_rail() {
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, false);
+        let (hx, hy) = rt.find("sidebar-resize").expect("handle present");
+        rt.pointer_move(hx, hy);
+        rt.pointer_down(hx, hy);
+        // 288 - 150 = 138 < 200 → snap collapsed (applied on the next frame).
+        rt.pointer_move(hx - 150.0, hy);
+        rt.frame(0.0);
+        assert!(
+            rt.state.sidebar_collapsed,
+            "dragging below the 200 px threshold snaps collapsed"
+        );
+        assert_eq!(
+            rt.state.sidebar_width, DEFAULT_WIDTH,
+            "a collapse preserves the expanded width for re-opening"
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("sidebar-collapsed").is_some(),
+            "the thin rail replaces the full sidebar"
+        );
+        assert!(rt.find("sidebar").is_none(), "the full sidebar is gone");
+        assert!(
+            rt.find("sidebar-resize").is_some(),
+            "the handle stays, so one gesture can drag back out"
+        );
+    }
+
+    #[test]
+    fn dragging_out_from_the_collapsed_rail_reopens_the_sidebar() {
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, true);
+        let (hx, hy) = rt
+            .find("sidebar-resize")
+            .expect("handle present beside the rail");
+        rt.pointer_move(hx, hy);
+        // Phase::Down caches the rail width (STRIP_WIDTH) as the drag origin.
+        rt.pointer_down(hx, hy);
+        // 12 + 250 = 262 ≥ 200 → re-opens to the dragged width (next frame).
+        rt.pointer_move(hx + 250.0, hy);
+        rt.frame(0.0);
+        assert!(
+            !rt.state.sidebar_collapsed,
+            "dragging out past the threshold re-opens the sidebar"
+        );
+        assert_eq!(
+            rt.state.sidebar_width,
+            STRIP_WIDTH + 250.0,
+            "re-opens to the dragged width"
+        );
+        rt.frame(0.0);
+        assert!(rt.find("sidebar").is_some(), "the full sidebar is back");
+        assert!(
+            rt.find("sidebar-collapsed").is_none(),
+            "the collapsed rail is gone"
+        );
+    }
+
+    #[test]
+    fn collapsed_rail_is_a_thin_strip_with_a_centered_grabber() {
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, true);
+        // The rail is the old app's `w-3` (12 px) CollapsedSidebarStrip.
+        let rail = rt.presented("sidebar-collapsed").expect("rail renders").0;
+        assert!(
+            (rail[2] - STRIP_WIDTH).abs() < 0.5,
+            "the collapsed rail is a 12 px strip, got {}",
+            rail[2]
+        );
+        // Its grabber pill is the old app's `w-1 h-14` → 4 × 56 px.
+        let pill = rt.presented("grabber").expect("grabber renders").0;
+        assert!(
+            (pill[2] - 4.0).abs() < 0.5,
+            "the grabber is 4 px wide, got {}",
+            pill[2]
+        );
+        assert!(
+            (pill[3] - 56.0).abs() < 0.5,
+            "the grabber is 56 px tall, got {}",
+            pill[3]
+        );
+        // Centred within the rail on BOTH axes (horizontal and vertical).
+        let (rail_cx, rail_cy) = rt.find("sidebar-collapsed").unwrap();
+        let (pill_cx, pill_cy) = rt.find("grabber").unwrap();
+        assert!(
+            (pill_cx - rail_cx).abs() < 0.5,
+            "the grabber is centred horizontally in the rail"
+        );
+        assert!(
+            (pill_cy - rail_cy).abs() < 1.0,
+            "the grabber is centred vertically in the rail (not pinned to the top)"
+        );
+        // The rail itself offers the resize cursor (old app's `cursor-ew-resize`),
+        // sampled above the pill so the pointer is over bare rail.
+        rt.pointer_move(rail_cx, 120.0);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.cursor(),
+            Cursor::ResizeColumn,
+            "the collapsed rail shows the resize cursor"
+        );
     }
 
     #[test]
@@ -781,6 +1145,130 @@ mod tests {
         assert!(
             rt.find(&format!("enqueue-{first_id}")).is_some(),
             "a track row offers an add-to-queue button"
+        );
+    }
+
+    /// A populated queue renders both bands — the manual "Next in queue" (with a
+    /// drag grip, remove ✕, and Clear) and the "Next from <context>" remainder.
+    #[test]
+    fn populated_queue_renders_both_bands_with_controls() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        s.sidebar_collapsed = false; // deterministic — don't depend on persisted config
+        let ids: Vec<u32> = s.library.iter().take(5).map(|t| t.id).collect();
+        assert!(ids.len() >= 5, "testdata has enough tracks for the bands");
+        s.now_playing_id = Some(ids[0]);
+        s.up_next = ids[1..3].to_vec(); // two manual rows
+        s.context_ids = ids[3..].to_vec(); // context rows
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("queue-next-in-queue").is_some(),
+            "the manual band header renders"
+        );
+        assert!(
+            rt.find("queue-next-from").is_some(),
+            "the context band header renders"
+        );
+        assert!(rt.find("clear-queue").is_some(), "Clear is offered");
+        let m0 = ids[1];
+        assert!(
+            rt.find(&format!("queue-manual-{m0}")).is_some(),
+            "a manual queue row renders"
+        );
+        assert!(
+            rt.find(&format!("grip-{m0}")).is_some(),
+            "the manual row has a drag grip"
+        );
+        assert!(
+            rt.find(&format!("remove-{m0}")).is_some(),
+            "the manual row has a remove control"
+        );
+        let c0 = ids[3];
+        assert!(
+            rt.find(&format!("queue-context-{c0}")).is_some(),
+            "a context row renders"
+        );
+        assert!(
+            rt.find(&format!("grip-{c0}")).is_none(),
+            "context rows are not reorderable (no grip)"
+        );
+    }
+
+    /// Nothing queued and nothing upcoming shows the empty state, not stale rows.
+    #[test]
+    fn empty_queue_shows_the_empty_state() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("queue-empty").is_some(),
+            "an empty queue shows the empty state"
+        );
+    }
+
+    /// Drag-reorder, driven through the real pointer: pressing a manual row's grip
+    /// picks it up, dragging down past a row height advances the drop target and
+    /// shows the drop indicator, and releasing ends the gesture (committing the
+    /// move). The same `Runtime` + `pointer_*` harness the sidebar resize uses.
+    #[test]
+    fn dragging_a_queue_row_shows_a_drop_target_then_commits_on_release() {
+        use crate::views::queue::QUEUE_ROW_H;
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        s.sidebar_collapsed = false;
+        let ids: Vec<u32> = s.library.iter().take(6).map(|t| t.id).collect();
+        assert!(ids.len() >= 6, "testdata has enough tracks");
+        s.now_playing_id = Some(ids[0]);
+        s.up_next = ids[1..4].to_vec(); // 3 manual rows at indices 0, 1, 2
+        s.context_ids = ids[4..].to_vec();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        // Press the first manual row's grip and drag it down ~1.5 row heights.
+        let (gx, gy) = rt
+            .find(&format!("grip-{}", ids[1]))
+            .expect("the first manual row has a drag grip");
+        rt.pointer_move(gx, gy);
+        rt.pointer_down(gx, gy);
+        rt.pointer_move(gx, gy + QUEUE_ROW_H * 1.5);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.queue_drag.map(|(from, _)| from),
+            Some(0),
+            "pressing a grip picks up that row"
+        );
+        assert!(
+            rt.state.queue_drag.map(|(_, to)| to).unwrap_or(0) >= 1,
+            "dragging down advances the drop target"
+        );
+        assert!(
+            rt.find("drop-line").is_some(),
+            "a drop indicator shows while dragging"
+        );
+
+        // Release ends the gesture and clears the transient drag state.
+        rt.pointer_up(gx, gy + QUEUE_ROW_H * 1.5);
+        rt.frame(0.0);
+        assert_eq!(rt.state.queue_drag, None, "releasing ends the drag");
+        assert!(
+            rt.find("drop-line").is_none(),
+            "the drop indicator is gone once released"
         );
     }
 

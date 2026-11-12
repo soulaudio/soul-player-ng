@@ -26,10 +26,25 @@ debug = 0
 
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830", features = ["native-file-dialog"] }
+# Rune's parley stack pulls parley_engine WITHOUT its `complex-scripts` feature,
+# so CJK (Chinese/Japanese) text hits `new_for_non_complex_scripts` and logs
+# "No segmentation model for complex script". We don't use parley_engine
+# directly — this dep exists only to union that feature on across the graph, so
+# the dictionary segmenter (and the CJK data already baked via icu_segmenter's
+# compiled_data) is used. Must track Rune's parley version (0.12).
+parley_engine = { version = "0.12", features = ["complex-scripts"] }
 soul-player-host = { path = "../../crates/soul-player-host" }
 anyhow = "1"
-# Per-user config dir, to persist the watched-folder set across launches.
+# Per-user config dir, to persist settings across launches.
 dirs = "6"
+# Settings persistence (best practice): one structured TOML file in the OS config
+# dir, (de)serialised via serde — replaces the earlier scattered plain-text files.
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+# Internationalisation: compile-time-embedded translations (locales/app.yml) with
+# a global `t!()` macro; `sys-locale` detects the OS language for the default.
+rust-i18n = "3"
+sys-locale = "0.3"
 # Auto-update: checks GitHub Releases for a newer signed build and installs it.
 # The updater's own key (independent of OS code-signing) verifies each update.
 cargo-packager-updater = "0.2"
