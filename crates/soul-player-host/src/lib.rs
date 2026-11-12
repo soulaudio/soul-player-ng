@@ -58,6 +58,10 @@ struct Inner {
     /// hybrid-ReplayGain cache for previously-untagged tracks survives the actor's
     /// lazy start just like the ReplayGain choice does.
     loudness_seed: Mutex<Vec<(PathBuf, f32)>>,
+    /// Test-support: when `Some`, [`send`](PlayerHandle::send) records commands
+    /// here instead of driving the actor, so a head's command wiring can be
+    /// asserted headlessly. `None` (the default) in every real handle.
+    recorder: Mutex<Option<Vec<Command>>>,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -90,6 +94,27 @@ impl PlayerHandle {
         Self::with_sink_mode(SinkMode::Offline)
     }
 
+    /// Test-support: a handle that RECORDS sent commands instead of driving the
+    /// actor (headless — no library, no audio). A head's command wiring (which
+    /// `Command` a click/drag dispatches) can be asserted with
+    /// [`recorded_commands`](PlayerHandle::recorded_commands).
+    pub fn recording() -> Self {
+        let h = Self::offline();
+        *h.inner.recorder.lock().expect("recorder mutex") = Some(Vec::new());
+        h
+    }
+
+    /// The commands sent to a [`recording`](PlayerHandle::recording) handle, in
+    /// order (empty for a normal handle).
+    pub fn recorded_commands(&self) -> Vec<Command> {
+        self.inner
+            .recorder
+            .lock()
+            .expect("recorder mutex")
+            .clone()
+            .unwrap_or_default()
+    }
+
     /// Build with an explicit sink mode.
     pub fn with_sink_mode(mode: SinkMode) -> Self {
         Self {
@@ -102,6 +127,7 @@ impl PlayerHandle {
                 output_device: Mutex::new(None),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
+                recorder: Mutex::new(None),
             }),
         }
     }
@@ -285,6 +311,13 @@ impl PlayerHandle {
     /// Fire one transport/queue command (fire-and-forget). No-op until a folder
     /// has been opened (the actor needs a library to start).
     pub fn send(&self, cmd: Command) {
+        // Test-support: a recording handle captures the command instead of driving
+        // a live actor, so a head's command wiring can be asserted without a
+        // backend. A no-op for every real handle (recorder is `None`).
+        if let Some(rec) = self.inner.recorder.lock().expect("recorder mutex").as_mut() {
+            rec.push(cmd);
+            return;
+        }
         self.ensure_actor();
         if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
             actor.send(cmd);
@@ -381,6 +414,26 @@ mod tests {
     fn offline_handle_has_empty_views_before_open() {
         let h = PlayerHandle::offline();
         assert!(h.views().is_empty());
+    }
+
+    #[test]
+    fn a_recording_handle_captures_sent_commands_in_order() {
+        let h = PlayerHandle::recording();
+        assert!(h.recorded_commands().is_empty(), "nothing sent yet");
+        h.send(Command::PlayNext(7));
+        h.send(Command::ClearQueue);
+        assert_eq!(
+            h.recorded_commands(),
+            vec![Command::PlayNext(7), Command::ClearQueue],
+            "a recording handle captures commands in send order"
+        );
+        // A normal handle never records (recorder is None).
+        let normal = PlayerHandle::offline();
+        normal.send(Command::ClearQueue);
+        assert!(
+            normal.recorded_commands().is_empty(),
+            "a normal handle records nothing"
+        );
     }
 
     #[test]
