@@ -93,6 +93,8 @@ pub mod fx {
     pub const HOVER_FILL: f32 = 0.10;
     /// Stronger bleed on press of a filled control (0.18).
     pub const PRESS_FILL: f32 = 0.18;
+    /// A disabled control's opacity (old app's `disabled:opacity-0.5`).
+    pub const DISABLED: f32 = 0.5;
 }
 
 /// Type tokens: `TextStyle` (size + weight; line-height derived) pairs that
