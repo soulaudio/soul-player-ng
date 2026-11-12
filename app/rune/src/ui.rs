@@ -91,6 +91,8 @@ pub mod type_ {
     pub const CARD_TITLE: TextStyle = TextStyle::new(16.0, 500.0).lh(24.0);
     /// 14 / 600 — the now-playing panel title.
     pub const TITLE: TextStyle = TextStyle::new(14.0, 600.0);
+    /// 20 / 600 — a page / section heading (the old app's settings `h2`).
+    pub const HEADING: TextStyle = TextStyle::new(20.0, 600.0);
     /// 20 / 600 — the sidebar nav labels.
     pub const NAV: TextStyle = TextStyle::new(20.0, 600.0);
 }

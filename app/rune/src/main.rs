@@ -1024,6 +1024,26 @@ mod tests {
         }
     }
 
+    /// Settings toggle buttons match the old app's control metrics: ~36 pt tall
+    /// (py 8 + a 14 pt label), the same button height the original's settings
+    /// controls use.
+    #[test]
+    fn settings_toggle_buttons_are_36pt_tall() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let ([_, _, _, h], _) = rt
+            .presented("theme-system")
+            .expect("the Appearance section renders a theme toggle");
+        assert!(
+            (h - 36.0).abs() <= 4.0,
+            "a settings toggle is ~36 pt tall (old app's control height), got {h}"
+        );
+    }
+
     #[test]
     fn settings_shows_updates_section_without_install_by_default() {
         let env = Env {
