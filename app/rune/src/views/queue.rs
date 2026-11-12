@@ -15,7 +15,7 @@ use soul_player_host::Command;
 
 use crate::State;
 use crate::theme::Palette;
-use crate::ui::{radius, space, type_};
+use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::player::{QUEUE_COVER, cover};
 
@@ -107,7 +107,10 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .label(t!("queue.reorder").to_string())
         .size(16.0, QUEUE_ROW_H)
         .center()
+        .radius(radius::SM)
         .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .child(icon(&icons::GRIP, 14.0).color(p.text_secondary.alpha(0.5)))
         .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
             Phase::Down => {
@@ -140,7 +143,8 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .padding(space::XS)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.1))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .child(icon(&icons::X, 14.0).color(p.text_secondary))
         .on_press(move |st: &mut State| st.host.send(Command::RemoveFromQueue(i as u32)));
 
@@ -152,8 +156,8 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .py(space::XS)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.06))
-        .press(p.fg.alpha(0.1))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .child(grip)
         .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale))
         .child(row_text(s, p, id))
@@ -187,8 +191,8 @@ fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
         .py(space::XS)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.06))
-        .press(p.fg.alpha(0.1))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         // Align with the manual rows (which lead with a 16 pt grip) so both bands'
         // covers line up.
         .child(el().key("ctx-indent").w(16.0))
@@ -207,8 +211,8 @@ fn clear_button(p: &Palette) -> El {
         .py(space::XXS)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.08))
-        .press(p.fg.alpha(0.14))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .child(
             text(t!("queue.clear").to_string())
                 .font(type_::CAPTION)

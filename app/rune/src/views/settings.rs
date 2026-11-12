@@ -9,7 +9,7 @@ use rune::{Align, Cursor, Cx, El, FileDialogOptions, ScrollSpec, Tx, col, el, ro
 use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
-use crate::ui::{radius, space, type_};
+use crate::ui::{fx, radius, space, type_};
 use crate::views::slider::slider;
 use crate::{
     State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_output_device,
@@ -35,6 +35,8 @@ fn add_source_button(p: &Palette) -> El {
         .fill(p.primary)
         .center()
         .cursor(Cursor::Pointer)
+        .hover(p.bg.alpha(fx::HOVER_FILL))
+        .press(p.bg.alpha(fx::PRESS_FILL))
         .child(text(t!("settings.addSource").to_string()).color(p.bg))
         .on_press_tx(|_s: &mut State, tx: &mut Tx| {
             tx.open_folder(
@@ -63,6 +65,8 @@ fn rescan_button(p: &Palette) -> El {
         .fill(p.muted)
         .center()
         .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .child(text(t!("settings.rescan").to_string()).color(p.fg))
         .on_press(|s: &mut State| {
             if let Ok(up) = s.host.set_folders(&s.watched_folders) {
@@ -95,6 +99,8 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
             .radius(radius::SM)
             .fill(p.muted)
             .cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(fx::HOVER))
+            .press(p.fg.alpha(fx::PRESS))
             .child(text("✕").color(p.text_secondary))
             .on_press(move |st: &mut State| {
                 if let Ok(up) = st.host.remove_folder(&remove_for) {
@@ -173,6 +179,8 @@ fn updates_section(s: &State, p: &Palette) -> El {
                         .fill(p.primary)
                         .center()
                         .cursor(Cursor::Pointer)
+                        .hover(p.bg.alpha(fx::HOVER_FILL))
+                        .press(p.bg.alpha(fx::PRESS_FILL))
                         .child(text(t!("settings.installRestart").to_string()).color(p.bg))
                         .on_press(|_s: &mut State| {
                             std::thread::spawn(|| {
@@ -195,6 +203,16 @@ fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Pal
         .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
+        .hover(if active {
+            p.bg.alpha(fx::HOVER_FILL)
+        } else {
+            p.fg.alpha(fx::HOVER)
+        })
+        .press(if active {
+            p.bg.alpha(fx::PRESS_FILL)
+        } else {
+            p.fg.alpha(fx::PRESS)
+        })
         .child(
             text(label)
                 .font(if active {
@@ -258,6 +276,16 @@ fn lang_button(label: String, pref: &'static str, active: bool, p: &Palette) -> 
         .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
+        .hover(if active {
+            p.bg.alpha(fx::HOVER_FILL)
+        } else {
+            p.fg.alpha(fx::HOVER)
+        })
+        .press(if active {
+            p.bg.alpha(fx::PRESS_FILL)
+        } else {
+            p.fg.alpha(fx::PRESS)
+        })
         .child(
             text(label)
                 .font(if active {
@@ -322,6 +350,16 @@ fn device_button(
         .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
+        .hover(if active {
+            p.bg.alpha(fx::HOVER_FILL)
+        } else {
+            p.fg.alpha(fx::HOVER)
+        })
+        .press(if active {
+            p.bg.alpha(fx::PRESS_FILL)
+        } else {
+            p.fg.alpha(fx::PRESS)
+        })
         .child(
             text(label)
                 .font(if active {
@@ -393,6 +431,16 @@ fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, 
         .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
+        .hover(if active {
+            p.bg.alpha(fx::HOVER_FILL)
+        } else {
+            p.fg.alpha(fx::HOVER)
+        })
+        .press(if active {
+            p.bg.alpha(fx::PRESS_FILL)
+        } else {
+            p.fg.alpha(fx::PRESS)
+        })
         .child(
             text(label)
                 .font(if active {

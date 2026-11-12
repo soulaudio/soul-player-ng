@@ -16,7 +16,7 @@ use soul_player_host::{Command, PlayerHandle, RepeatMode, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
-use crate::ui::{radius, space, type_};
+use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::slider::slider;
 
@@ -237,8 +237,8 @@ fn transport_button(
         .center()
         .radius(BTN_SIZE * 0.5)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.08))
-        .press(p.fg.alpha(0.14))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .on_press(on_press)
         .child(icon(ic, 16.0).color(p.text_secondary))
 }
@@ -262,6 +262,8 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
         .radius(PLAY_SIZE * 0.5)
         .fill(p.primary)
         .cursor(Cursor::Pointer)
+        .hover(p.bg.alpha(fx::HOVER_FILL))
+        .press(p.bg.alpha(fx::PRESS_FILL))
         .motion(motion::SNAPPY)
         .on_press(|st: &mut State| {
             st.host.send(if st.playing {
@@ -288,8 +290,8 @@ fn shuffle_button(s: &State, p: &Palette) -> El {
         .center()
         .radius(BTN_SIZE * 0.5)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.08))
-        .press(p.fg.alpha(0.14))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .on_press(|st: &mut State| st.host.send(Command::SetShuffle(!st.shuffle)))
         .child(icon(&icons::SHUFFLE, 14.0).color(if s.shuffle {
             p.accent
@@ -312,8 +314,8 @@ fn repeat_button(s: &State, p: &Palette) -> El {
         .center()
         .radius(BTN_SIZE * 0.5)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.08))
-        .press(p.fg.alpha(0.14))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .on_press(|st: &mut State| {
             let next = match st.repeat {
                 RepeatMode::Off => RepeatMode::All,
