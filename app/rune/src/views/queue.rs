@@ -155,7 +155,7 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .hover(p.fg.alpha(0.06))
         .press(p.fg.alpha(0.1))
         .child(grip)
-        .child(cover(s, Some(id), QUEUE_COVER, p, scale))
+        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale))
         .child(row_text(s, p, id))
         .child(remove)
         .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
@@ -192,7 +192,7 @@ fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
         // Align with the manual rows (which lead with a 16 pt grip) so both bands'
         // covers line up.
         .child(el().key("ctx-indent").w(16.0))
-        .child(cover(s, Some(id), QUEUE_COVER, p, scale))
+        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale))
         .child(row_text(s, p, id))
         .on_press(move |st: &mut State| st.host.send(Command::PlayUpcoming(k)))
 }
