@@ -4150,6 +4150,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "soul-audio-loudness"
+version = "0.1.0"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
+
+[[package]]
 name = "soul-audio-multicatalog"
 version = "0.1.0"
 source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#e6837221a89d53925b9a0b3b275fc5ddece74379"
@@ -4190,6 +4195,7 @@ dependencies = [
  "soul-audio-engine",
  "soul-audio-import",
  "soul-audio-index",
+ "soul-audio-loudness",
  "soul-audio-multicatalog",
  "soul-audio-queue",
  "soul-audio-tags",

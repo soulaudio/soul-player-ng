@@ -2,6 +2,8 @@
 //! Concrete (u32 track ids, seconds) and serde-serializable — distinct from
 //! `soul_audio_control::Command<C>` (generic, frames).
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use soul_audio_core::DeckState;
 use soul_audio_queue::Repeat;
@@ -44,6 +46,40 @@ pub enum Command {
     SetRepeat(RepeatMode),
     /// Jump to a natural position within the current context.
     Goto(u32),
+    /// Set ReplayGain loudness normalization: the `mode` picks track vs album
+    /// (vs off) gain, `preamp_db` is a constant dB offset added on top. The pump
+    /// applies the resulting gain to the deck at each track boundary (see
+    /// [`ReplayGainMode`]). `Command` is `PartialEq` but not `Eq` precisely so
+    /// this `f32` preamp can ride along.
+    SetReplayGain {
+        mode: ReplayGainMode,
+        preamp_db: f32,
+    },
+    /// Seed the backend's in-memory loudness cache from the app's persisted cache
+    /// at startup, so a previously-untagged track analyzed in a past session is
+    /// already normalized this session with no re-scan. Each entry is a
+    /// `(path, track_gain_db)` pair (the computed gain to the −18 LUFS RG2 target).
+    /// The pump inserts them into the cache; see the hybrid ReplayGain path in
+    /// `crate::loudness`.
+    SeedLoudness(Vec<(PathBuf, f32)>),
+}
+
+/// How ReplayGain tags are applied during playback, chosen in Settings →
+/// ReplayGain. The per-track dB the pump sets on the deck is:
+/// - [`Off`](ReplayGainMode::Off): `0.0` (unity — RG ignored, no preamp).
+/// - [`Track`](ReplayGainMode::Track): `track_gain + preamp` (untagged → `preamp`).
+/// - [`Album`](ReplayGainMode::Album): `album_gain` (falling back to the track
+///   gain), `+ preamp` (untagged → `preamp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ReplayGainMode {
+    /// No normalization — the deck plays at unity gain.
+    #[default]
+    Off,
+    /// Normalize each track to its own ReplayGain track-gain tag.
+    Track,
+    /// Normalize to the album-gain tag (preserving inter-track dynamics), so a
+    /// whole album plays at one consistent level.
+    Album,
 }
 
 /// Repeat mode as seen by the UI (mirrors `soul_audio_queue::Repeat`, decoupled
@@ -98,6 +134,16 @@ impl From<DeckState> for PlayState {
 pub enum Event {
     Tick(Tick),
     Queue(QueueState),
+    /// A previously-untagged track finished background loudness analysis: `path`
+    /// identifies the file and `gain_db` is the computed ReplayGain track gain (to
+    /// the −18 LUFS RG2 target), emitted once when the analysis completes. The app
+    /// persists it (keyed by path + mtime/size) and seeds it back next launch via
+    /// [`Command::SeedLoudness`]. No UI is required — a silent background cache is
+    /// the intended behavior.
+    TrackLoudnessAnalyzed {
+        path: PathBuf,
+        gain_db: f32,
+    },
 }
 
 /// Now-playing + transport snapshot, emitted ~8×/s and on any change.
@@ -156,6 +202,36 @@ mod tests {
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn set_replay_gain_command_serde_roundtrips() {
+        let cmd = Command::SetReplayGain {
+            mode: ReplayGainMode::Album,
+            preamp_db: -3.5,
+        };
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn seed_loudness_command_serde_roundtrips() {
+        let cmd = Command::SeedLoudness(vec![
+            (PathBuf::from("/music/a.flac"), -6.0),
+            (PathBuf::from("/music/b.wav"), 2.5),
+        ]);
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn track_loudness_analyzed_event_serde_roundtrips() {
+        let ev = Event::TrackLoudnessAnalyzed {
+            path: PathBuf::from("/music/untagged.flac"),
+            gain_db: -3.25,
+        };
+        let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), ev);
     }
 
     #[test]

@@ -12,7 +12,8 @@ use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
 pub use sink::SinkMode;
 pub use soul_player_backend::{
-    BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, Tick, TrackView,
+    BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode, Tick,
+    TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -40,6 +41,23 @@ struct Inner {
     /// The configured watched folders (deduped, in order), including any that are
     /// currently unavailable — so a folder is never lost to a transient outage.
     folders: Mutex<Vec<PathBuf>>,
+    /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
+    /// or `None` for the system default. Read when the actor is (re)spawned and
+    /// passed to the sink factory; a change applies to the NEXT spawn, not the
+    /// live stream (see [`set_output_device`](PlayerHandle::set_output_device)).
+    output_device: Mutex<Option<String>>,
+    /// The ReplayGain normalization choice `(mode, preamp_db)`. Remembered so a
+    /// freshly-spawned actor is told the current setting (via a `SetReplayGain`
+    /// command) the moment it starts — and, unlike the output device, a change
+    /// also applies to the LIVE actor immediately (see
+    /// [`set_replay_gain`](PlayerHandle::set_replay_gain)).
+    replay_gain: Mutex<(ReplayGainMode, f32)>,
+    /// The app's persisted loudness cache (`(path, computed track_gain_db)`),
+    /// supplied once at startup by [`seed_loudness`](PlayerHandle::seed_loudness).
+    /// Banked so a lazily- (or re-) spawned actor is re-seeded on spawn — the
+    /// hybrid-ReplayGain cache for previously-untagged tracks survives the actor's
+    /// lazy start just like the ReplayGain choice does.
+    loudness_seed: Mutex<Vec<(PathBuf, f32)>>,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -81,6 +99,9 @@ impl PlayerHandle {
                 library: Mutex::new(None),
                 subscribers: Mutex::new(Vec::new()),
                 folders: Mutex::new(Vec::new()),
+                output_device: Mutex::new(None),
+                replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
+                loudness_seed: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -155,6 +176,69 @@ impl PlayerHandle {
     /// unavailable (so a folder is never lost to a transient outage).
     pub fn watched_folders(&self) -> Vec<PathBuf> {
         self.inner.folders.lock().expect("folders mutex").clone()
+    }
+
+    /// Choose the output device the next playback session opens, by name (one of
+    /// [`output_devices`](Self::output_devices)); `None` (or an empty string,
+    /// normalized to `None`) means the system default. If the named device is gone
+    /// when the sink is built, playback falls back to the system default.
+    ///
+    /// This applies to the **next** actor spawn — the next `open_folder` /
+    /// `set_folders`-then-play. A live device switch mid-playback (respawning the
+    /// running actor onto the new device) is a deliberate follow-up, not done here:
+    /// the current stream keeps playing on its original device until the next
+    /// session starts.
+    pub fn set_output_device(&self, name: Option<String>) {
+        let name = name.filter(|n| !n.is_empty());
+        *self.inner.output_device.lock().expect("device mutex") = name;
+    }
+
+    /// The available output device names on this host, for a device picker. Empty
+    /// if the host exposes none (e.g. a headless CI machine). Delegates to
+    /// [`soul_audio_desktop::output_device_names`].
+    pub fn output_devices(&self) -> Vec<String> {
+        soul_audio_desktop::output_device_names()
+    }
+
+    /// The current system-default output device name, if any — to label / preselect
+    /// the "system default" choice. Delegates to
+    /// [`soul_audio_desktop::default_output_device_name`].
+    pub fn default_output_device(&self) -> Option<String> {
+        soul_audio_desktop::default_output_device_name()
+    }
+
+    /// Set the ReplayGain playback normalization: `mode` picks track vs album (vs
+    /// off) gain, `preamp_db` is a constant dB offset applied on top. Remembered
+    /// so the NEXT playback session starts already normalized (the stored value is
+    /// sent to the actor on spawn), AND — unlike the output device — applied to the
+    /// LIVE actor right away if one is running, so a change in Settings is heard on
+    /// the current track at its next pump cycle. Safe to call before any folder is
+    /// opened: it just records the choice (no actor is spawned just to set it).
+    pub fn set_replay_gain(&self, mode: ReplayGainMode, preamp_db: f32) {
+        *self.inner.replay_gain.lock().expect("replay_gain mutex") = (mode, preamp_db);
+        // Apply to a live actor only — never spawn one just to set the gain (that
+        // would open a device stream before the user has played anything).
+        if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
+            actor.send(Command::SetReplayGain { mode, preamp_db });
+        }
+    }
+
+    /// Seed the backend's in-memory loudness cache from the app's persisted cache
+    /// — `(path, computed track_gain_db)` pairs for previously-untagged tracks the
+    /// hybrid-ReplayGain path analyzed in a past session. Call once at startup
+    /// (before the first playback). Banked so the (lazily-spawned, or later
+    /// re-spawned) actor is re-seeded on spawn, and pushed to a live actor right
+    /// away if one is already running. Like [`set_replay_gain`](Self::set_replay_gain),
+    /// it never spawns an actor just to seed.
+    pub fn seed_loudness(&self, entries: Vec<(PathBuf, f32)>) {
+        *self
+            .inner
+            .loudness_seed
+            .lock()
+            .expect("loudness seed mutex") = entries.clone();
+        if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
+            actor.send(Command::SeedLoudness(entries));
+        }
     }
 
     /// Register an event handler. Called on every backend event (Tick ~8 Hz +
@@ -255,7 +339,37 @@ impl PlayerHandle {
                 sub(ev.clone());
             }
         };
-        *guard = Some(sink::build_actor(self.inner.mode, lib, forward));
+        // Snapshot the chosen device for this spawn — the `Device` arm opens it (or
+        // falls back to the system default); a later `set_output_device` only takes
+        // effect on the NEXT spawn, never this live stream.
+        let device = self
+            .inner
+            .output_device
+            .lock()
+            .expect("device mutex")
+            .clone();
+        // Snapshot the ReplayGain choice the same way, then tell the fresh actor so
+        // the session starts already normalized. Lock ordering: this holds `guard`
+        // (player) then briefly `replay_gain`; `set_replay_gain` never holds
+        // `replay_gain` while taking `player`, so the two can't deadlock.
+        let (rg_mode, rg_preamp) = *self.inner.replay_gain.lock().expect("replay_gain mutex");
+        // Snapshot the persisted loudness cache the same way, to re-seed the fresh
+        // actor so previously-analyzed untagged tracks are normalized immediately.
+        let loudness_seed = self
+            .inner
+            .loudness_seed
+            .lock()
+            .expect("loudness seed mutex")
+            .clone();
+        let actor = sink::build_actor(self.inner.mode, device, lib, forward);
+        actor.send(Command::SetReplayGain {
+            mode: rg_mode,
+            preamp_db: rg_preamp,
+        });
+        if !loudness_seed.is_empty() {
+            actor.send(Command::SeedLoudness(loudness_seed));
+        }
+        *guard = Some(actor);
     }
 }
 
@@ -274,6 +388,64 @@ mod tests {
         let h = PlayerHandle::offline();
         h.send(Command::TogglePlay); // no library yet → no actor → no panic
         assert!(h.views().is_empty());
+    }
+
+    #[test]
+    fn output_device_selection_is_set_without_panicking() {
+        // The device picker's host surface: enumerate, read the default, and store a
+        // choice. None of these open a stream (the Offline handle never spawns a
+        // CpalSink), so this runs device-free in CI — it just asserts the plumbing
+        // doesn't panic and tolerates a host with no output devices (empty list).
+        let h = PlayerHandle::offline();
+        let _names = h.output_devices(); // may be empty on a headless runner
+        let _default = h.default_output_device();
+        h.set_output_device(Some("Some Soundcard".to_string()));
+        h.set_output_device(Some(String::new())); // empty normalizes to the default
+        h.set_output_device(None);
+    }
+
+    #[test]
+    fn set_replay_gain_before_open_is_remembered_without_spawning() {
+        // Recording the choice must not spawn an actor (no device stream before
+        // playback) and must not panic — it is just stored for the next spawn.
+        let h = PlayerHandle::offline();
+        h.set_replay_gain(ReplayGainMode::Album, -3.0);
+        assert_eq!(
+            *h.inner.replay_gain.lock().unwrap(),
+            (ReplayGainMode::Album, -3.0),
+            "the choice is remembered"
+        );
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "no actor is spawned just to set the gain"
+        );
+        // A live change on a running actor also just flows through (no panic):
+        // open a folder (spawns the actor), then set it again.
+        h.set_replay_gain(ReplayGainMode::Track, 6.0);
+        assert_eq!(
+            *h.inner.replay_gain.lock().unwrap(),
+            (ReplayGainMode::Track, 6.0)
+        );
+    }
+
+    #[test]
+    fn seed_loudness_before_open_is_remembered_without_spawning() {
+        // Seeding the loudness cache must not spawn an actor (no device stream
+        // before playback) and must not panic — it's banked for the next spawn.
+        let h = PlayerHandle::offline();
+        h.seed_loudness(vec![
+            (PathBuf::from("/music/a.flac"), -6.0),
+            (PathBuf::from("/music/b.wav"), 2.5),
+        ]);
+        assert_eq!(
+            h.inner.loudness_seed.lock().unwrap().len(),
+            2,
+            "the seed is remembered for the next spawn"
+        );
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "no actor is spawned just to seed the cache"
+        );
     }
 
     /// Minimal stereo-16-bit WAV (mirrors the backend actor tests' writer).

@@ -5,11 +5,20 @@
 //! there is no text entry here.
 #![forbid(unsafe_code)]
 
-use rune::{Cursor, El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
+use rune::{Align, Cursor, Cx, El, FileDialogOptions, ScrollSpec, Tx, col, el, row, text};
+use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
-use crate::{State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_theme_pref};
+use crate::views::slider::slider;
+use crate::{
+    State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_theme_pref,
+};
+
+/// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
+const RG_PREAMP_MIN: f32 = -15.0;
+const RG_PREAMP_MAX: f32 = 15.0;
 
 fn basename(p: &std::path::Path) -> String {
     p.file_name()
@@ -273,14 +282,178 @@ fn language_section(s: &State, p: &Palette) -> El {
         )
 }
 
-/// The Settings page: a title plus scrollable sections (Sources, Appearance).
-pub fn settings_page(s: &State, p: &Palette) -> El {
+/// One output-device choice; the active device is filled with the primary color.
+/// `choice` is the device this button selects (`None` = follow the system
+/// default). Full-width so a long device name has room (the whole row is the hit
+/// target), mirroring `theme_button`'s selected-fill treatment.
+fn device_button(
+    label: String,
+    key: &str,
+    choice: Option<String>,
+    active: bool,
+    p: &Palette,
+) -> El {
+    el().key(key.to_string())
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(
+            text(label)
+                .color(if active { p.bg } else { p.fg })
+                .grow(1.0),
+        )
+        .on_press(move |s: &mut State| set_output_device(s, choice.clone()))
+}
+
+/// The Output section: a "System default" choice plus one button per enumerated
+/// output device, stacked vertically (device names can be long, and a host may
+/// expose many). The active choice (matching `State.output_device`, `None` =
+/// system default) is filled. Selecting a device applies to the NEXT playback
+/// session — the host does not respawn the live stream.
+fn output_section(s: &State, p: &Palette) -> El {
+    let mut choices = col()
+        .key("output-devices")
+        .gap(space::SM)
+        .padding(space::SM)
+        .child(device_button(
+            t!("settings.systemDefault").to_string(),
+            "output-default",
+            None,
+            s.output_device.is_none(),
+            p,
+        ));
+    if s.output_devices.is_empty() {
+        choices = choices.child(
+            text(t!("settings.noOutputDevices").to_string())
+                .color(p.text_secondary)
+                .padding(space::SM),
+        );
+    } else {
+        for (i, name) in s.output_devices.iter().enumerate() {
+            let active = s.output_device.as_deref() == Some(name.as_str());
+            choices = choices.child(device_button(
+                name.clone(),
+                &format!("output-{i}"),
+                Some(name.clone()),
+                active,
+                p,
+            ));
+        }
+    }
+    col()
+        .key("output")
+        .gap(space::XXS)
+        .child(
+            row().padding(space::SM).child(
+                text(t!("settings.output").to_string())
+                    .font(type_::TITLE)
+                    .color(p.primary)
+                    .grow(1.0),
+            ),
+        )
+        .child(choices)
+}
+
+/// One ReplayGain mode choice; the active mode is filled with the primary color
+/// (mirrors `theme_button` / `device_button`).
+fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, p: &Palette) -> El {
+    el().key(key.to_string())
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_replaygain_mode(s, mode))
+}
+
+/// The ReplayGain section: an Off / Track / Album mode row plus a preamp slider
+/// (−15..+15 dB). Selecting a mode or moving the preamp updates the live actor
+/// immediately and persists the choice. The slider commits on release (its value
+/// maps the 0..1 track position onto the dB range), and the current dB is shown
+/// to its right.
+fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let preamp = s.replaygain_preamp;
+    let value01 = ((preamp - RG_PREAMP_MIN) / (RG_PREAMP_MAX - RG_PREAMP_MIN)).clamp(0.0, 1.0);
+    let modes = row()
+        .gap(space::SM)
+        .padding(space::SM)
+        .child(rg_mode_button(
+            t!("settings.rgOff").to_string(),
+            "rg-off",
+            ReplayGainMode::Off,
+            s.replaygain_mode == ReplayGainMode::Off,
+            p,
+        ))
+        .child(rg_mode_button(
+            t!("settings.rgTrack").to_string(),
+            "rg-track",
+            ReplayGainMode::Track,
+            s.replaygain_mode == ReplayGainMode::Track,
+            p,
+        ))
+        .child(rg_mode_button(
+            t!("settings.rgAlbum").to_string(),
+            "rg-album",
+            ReplayGainMode::Album,
+            s.replaygain_mode == ReplayGainMode::Album,
+            p,
+        ));
+    let preamp_row = row()
+        .key("rg-preamp-row")
+        .gap(space::MD)
+        .padding(space::SM)
+        .center_y()
+        .child(
+            text(t!("settings.preamp").to_string())
+                .color(p.text_secondary)
+                .w(56.0),
+        )
+        .child(slider(
+            "rg-preamp",
+            value01,
+            cx,
+            false,
+            p,
+            |st: &mut State, v: f32| {
+                // Map the 0..1 slider position back onto the dB range, rounded to
+                // 0.1 dB so the persisted value stays clean.
+                let db = RG_PREAMP_MIN + v * (RG_PREAMP_MAX - RG_PREAMP_MIN);
+                set_replaygain_preamp(st, (db * 10.0).round() / 10.0);
+            },
+        ))
+        .child(
+            text(format!("{preamp:+.1} dB"))
+                .color(p.text_secondary)
+                .w(64.0)
+                .align(Align::End),
+        );
+    col()
+        .key("replaygain")
+        .gap(space::XXS)
+        .child(
+            row().padding(space::SM).child(
+                text(t!("settings.replayGain").to_string())
+                    .font(type_::TITLE)
+                    .color(p.primary)
+                    .grow(1.0),
+            ),
+        )
+        .child(modes)
+        .child(preamp_row)
+}
+
+/// The Settings page: a title plus scrollable sections (Sources, Appearance,
+/// Language, Output, ReplayGain, Updates).
+pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let content = col()
         .key("settings-content")
         .gap(space::LG)
         .child(sources_section(s, p))
         .child(appearance_section(s, p))
         .child(language_section(s, p))
+        .child(output_section(s, p))
+        .child(replaygain_section(s, p, cx))
         .child(updates_section(s, p));
     col()
         .key("settings")
