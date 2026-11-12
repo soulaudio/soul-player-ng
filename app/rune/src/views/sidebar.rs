@@ -7,7 +7,7 @@
 use rune::{Align, Cursor, Cx, Drag, El, Phase, col, el, icon, row, text};
 
 use crate::theme::Palette;
-use crate::ui::{radius, space, type_};
+use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::player::player_panel;
 use crate::views::queue::queue_section;
@@ -50,7 +50,8 @@ fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -
         .py(space::XS)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.07))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .child(
             row()
                 .w_full()
@@ -133,7 +134,8 @@ fn settings_footer(s: &State, p: &Palette) -> El {
             if active {
                 gear.fill(p.accent.alpha(0.2))
             } else {
-                gear.hover(p.fg.alpha(0.1))
+                gear.hover(p.fg.alpha(fx::HOVER))
+                    .press(p.fg.alpha(fx::PRESS))
             }
         })
         .child(
@@ -213,7 +215,7 @@ pub fn collapsed_strip(p: &Palette) -> El {
         // to the top.
         .center()
         .cursor(Cursor::ResizeColumn)
-        .hover(p.fg.alpha(0.06))
+        .hover(p.fg.alpha(fx::HOVER))
         // Re-open on release. A click (no travel) restores the saved width; a
         // drag-out re-opens to where it was dragged. We decide once, on `Up`,
         // because opening swaps this rail out for the full sidebar — which ends

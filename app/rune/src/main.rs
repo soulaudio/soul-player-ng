@@ -1044,6 +1044,47 @@ mod tests {
         );
     }
 
+    /// The slider thumb is hidden at rest and fades in on hover — the old app's
+    /// ProgressBar `opacity: isHovering ? 1 : 0`, driven here by `group_opacity`.
+    /// Rendered as a lone slider so the `knob` key is unambiguous.
+    #[test]
+    fn slider_thumb_is_hidden_until_hover() {
+        fn solo_slider(_s: &State, cx: &mut Cx<State>) -> El {
+            let p = theme::palette(false);
+            col().padding(40.0).child(crate::views::slider::slider(
+                "solo",
+                0.5,
+                cx,
+                false,
+                &p,
+                |_s: &mut State, _v: f32| {},
+            ))
+        }
+        let env = Env {
+            system_dark: false,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(
+            State::new(PlayerHandle::offline()),
+            solo_slider,
+            (400.0, 200.0),
+            env,
+        );
+        for _ in 0..10 {
+            rt.frame(0.05);
+        }
+        let (_, rest) = rt.presented("knob").expect("the slider thumb renders");
+        assert!(rest < 0.2, "thumb is hidden at rest (opacity {rest})");
+
+        let (cx_pt, cy_pt) = rt.find("solo").expect("the slider is present");
+        rt.pointer_move(cx_pt, cy_pt);
+        for _ in 0..16 {
+            rt.frame(0.05);
+        }
+        let (_, hov) = rt.presented("knob").expect("the slider thumb renders");
+        assert!(hov > 0.8, "thumb fades in on hover (opacity {hov})");
+    }
+
     #[test]
     fn settings_shows_updates_section_without_install_by_default() {
         let env = Env {

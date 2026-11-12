@@ -68,6 +68,33 @@ pub mod radius {
     pub const FULL: f32 = 9999.0;
 }
 
+/// Interaction feedback — one hover/press/selected system, mirroring the
+/// original's `ThemeInteractions` (hover 0.1, selected 0.2, buttons 0.9) instead
+/// of the per-element alpha guesses this app had grown. Apply as overlays:
+///
+/// - **Ghost / row / icon** control: `.hover(p.fg.alpha(fx::HOVER))` lays a 10 %
+///   foreground wash (old app's `hover:bg-foreground/0.1`); `.press(..fx::PRESS)`
+///   is one step up (the old app has no distinct press — this is extra tactile
+///   feedback, kept subtle).
+/// - **Filled** control (primary/accent fill): `.hover(p.bg.alpha(fx::HOVER_FILL))`
+///   bleeds ~10 % of the page background through, reproducing the old app's
+///   `hover:opacity-0.9` (the page shows *through* the button) — Rune's hover is
+///   an overlay, not an element opacity, so a bg wash is the faithful stand-in.
+/// - **Selected / active** row: `fx::SELECTED` (0.2) foreground wash.
+pub mod fx {
+    /// Foreground wash on a ghost / row / icon control on hover (0.10).
+    pub const HOVER: f32 = 0.10;
+    /// One step stronger on press (0.16).
+    pub const PRESS: f32 = 0.16;
+    /// A selected / active list row's foreground wash (0.20).
+    pub const SELECTED: f32 = 0.20;
+    /// Page background bled through a filled control on hover (0.10) — the
+    /// faithful stand-in for the old app's `hover:opacity-0.9`.
+    pub const HOVER_FILL: f32 = 0.10;
+    /// Stronger bleed on press of a filled control (0.18).
+    pub const PRESS_FILL: f32 = 0.18;
+}
+
 /// Type tokens: `TextStyle` (size + weight; line-height derived) pairs that
 /// replace inline `TextStyle::new(..)`. Sizes preserve the current design
 /// exactly. Chain `.mono()` / `.lh()` etc. as needed (they are `const fn`).

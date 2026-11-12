@@ -10,7 +10,7 @@ use soul_player_host::{BrowseAxis, Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
-use crate::ui::{radius, space, type_};
+use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::player::cover;
 
@@ -98,8 +98,8 @@ fn track_row(
         .py(space::SM)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(0.06))
-        .press(p.fg.alpha(0.1))
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .child(
             if playing {
                 // ▶/⏸ are already proven-good glyphs in this font (the
@@ -149,6 +149,8 @@ fn track_row(
             .radius(radius::SM)
             .fill(p.muted)
             .cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(fx::HOVER))
+            .press(p.fg.alpha(fx::PRESS))
             .child(icon(&icons::PLUS, 14.0).color(p.text_secondary))
             .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
     )
@@ -212,6 +214,8 @@ fn search_bar(s: &State, p: &Palette) -> El {
                 .radius(radius::SM)
                 .fill(p.muted)
                 .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
                 .child(text(shown).color(if dim { p.text_secondary } else { p.fg }))
                 .on_press(|st: &mut State| st.searching = true),
         );
@@ -222,6 +226,8 @@ fn search_bar(s: &State, p: &Palette) -> El {
                 .radius(radius::SM)
                 .fill(p.muted)
                 .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
                 .child(text("✕").color(p.text_secondary))
                 .on_press(|st: &mut State| {
                     st.search.clear();
@@ -272,6 +278,8 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                     .fill(p.primary)
                     .center()
                     .cursor(Cursor::Pointer)
+                    .hover(p.bg.alpha(fx::HOVER_FILL))
+                    .press(p.bg.alpha(fx::PRESS_FILL))
                     .child(text(t!("library.addSource").to_string()).color(p.bg))
                     .on_press(|s: &mut State| s.route = crate::Route::Settings),
             );
@@ -314,6 +322,16 @@ fn sort_button(label: String, key: &str, axis: BrowseAxis, active: bool, p: &Pal
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
+        .hover(if active {
+            p.bg.alpha(fx::HOVER_FILL)
+        } else {
+            p.fg.alpha(fx::HOVER)
+        })
+        .press(if active {
+            p.bg.alpha(fx::PRESS_FILL)
+        } else {
+            p.fg.alpha(fx::PRESS)
+        })
         .child(text(label).color(if active { p.bg } else { p.fg }))
         .on_press(move |s: &mut State| crate::set_sort(s, axis))
 }
