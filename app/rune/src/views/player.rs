@@ -226,53 +226,67 @@ fn transport_button(
     key: &str,
     label: String,
     ic: &'static Icon,
+    enabled: bool,
     p: &Palette,
     on_press: impl Fn(&mut State) + 'static,
 ) -> El {
-    el().key(key)
+    let base = el()
+        .key(key)
         .role("button")
         .label(label)
-        .focusable(true)
+        .focusable(enabled)
         .size(BTN_SIZE, BTN_SIZE)
         .center()
         .radius(BTN_SIZE * 0.5)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .on_press(on_press)
-        .child(icon(ic, 16.0).color(p.text_secondary))
+        .child(icon(ic, 16.0).color(p.text_secondary));
+    if enabled {
+        base.cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(fx::HOVER))
+            .press(p.fg.alpha(fx::PRESS))
+            .on_press(on_press)
+    } else {
+        // Disabled with no current track (old app's `disabled:opacity-0.5
+        // cursor-not-allowed`): dimmed, no cursor/hover/press, inert.
+        base.opacity(fx::DISABLED)
+    }
 }
 
 fn play_pause_button(s: &State, p: &Palette) -> El {
+    let enabled = s.now_playing_id.is_some();
     let ic: &'static Icon = if s.playing {
         &icons::PAUSE
     } else {
         &icons::PLAY
     };
-    el().key("play-pause")
+    let base = el()
+        .key("play-pause")
         .role("button")
         .label(if s.playing {
             t!("player.pause").to_string()
         } else {
             t!("player.play").to_string()
         })
-        .focusable(true)
+        .focusable(enabled)
         .size(PLAY_SIZE, PLAY_SIZE)
         .center()
         .radius(PLAY_SIZE * 0.5)
         .fill(p.primary)
-        .cursor(Cursor::Pointer)
-        .hover(p.bg.alpha(fx::HOVER_FILL))
-        .press(p.bg.alpha(fx::PRESS_FILL))
         .motion(motion::SNAPPY)
-        .on_press(|st: &mut State| {
-            st.host.send(if st.playing {
-                Command::Pause
-            } else {
-                Command::Play
-            });
-        })
-        .child(icon(ic, 18.0).color(p.bg))
+        .child(icon(ic, 18.0).color(p.bg));
+    if enabled {
+        base.cursor(Cursor::Pointer)
+            .hover(p.bg.alpha(fx::HOVER_FILL))
+            .press(p.bg.alpha(fx::PRESS_FILL))
+            .on_press(|st: &mut State| {
+                st.host.send(if st.playing {
+                    Command::Pause
+                } else {
+                    Command::Play
+                });
+            })
+    } else {
+        base.opacity(fx::DISABLED)
+    }
 }
 
 /// Compact icon button (32x32, matching `transport_button`'s size): the old
@@ -281,23 +295,29 @@ fn play_pause_button(s: &State, p: &Palette) -> El {
 /// across five transport buttons, so these render a glyph instead. The
 /// descriptive `label`/`role` stay for accessibility regardless.
 fn shuffle_button(s: &State, p: &Palette) -> El {
-    el().key("shuffle")
+    let enabled = s.now_playing_id.is_some();
+    let base = el()
+        .key("shuffle")
         .role("switch")
         .label(t!("player.shuffle").to_string())
         .checked(s.shuffle)
-        .focusable(true)
+        .focusable(enabled)
         .size(BTN_SIZE, BTN_SIZE)
         .center()
         .radius(BTN_SIZE * 0.5)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .on_press(|st: &mut State| st.host.send(Command::SetShuffle(!st.shuffle)))
         .child(icon(&icons::SHUFFLE, 14.0).color(if s.shuffle {
             p.accent
         } else {
             p.text_secondary
-        }))
+        }));
+    if enabled {
+        base.cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(fx::HOVER))
+            .press(p.fg.alpha(fx::PRESS))
+            .on_press(|st: &mut State| st.host.send(Command::SetShuffle(!st.shuffle)))
+    } else {
+        base.opacity(fx::DISABLED)
+    }
 }
 
 fn repeat_button(s: &State, p: &Palette) -> El {
@@ -306,31 +326,40 @@ fn repeat_button(s: &State, p: &Palette) -> El {
         RepeatMode::All => (&icons::REPEAT, t!("player.repeatAll").to_string(), true),
         RepeatMode::One => (&icons::REPEAT_1, t!("player.repeatOne").to_string(), true),
     };
-    el().key("repeat")
+    let enabled = s.now_playing_id.is_some();
+    let base = el()
+        .key("repeat")
         .role("button")
         .label(label)
-        .focusable(true)
+        .focusable(enabled)
         .size(BTN_SIZE, BTN_SIZE)
         .center()
         .radius(BTN_SIZE * 0.5)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .on_press(|st: &mut State| {
-            let next = match st.repeat {
-                RepeatMode::Off => RepeatMode::All,
-                RepeatMode::All => RepeatMode::One,
-                RepeatMode::One => RepeatMode::Off,
-            };
-            st.host.send(Command::SetRepeat(next));
-        })
-        .child(icon(ic, 14.0).color(if on { p.accent } else { p.text_secondary }))
+        .child(icon(ic, 14.0).color(if on { p.accent } else { p.text_secondary }));
+    if enabled {
+        base.cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(fx::HOVER))
+            .press(p.fg.alpha(fx::PRESS))
+            .on_press(|st: &mut State| {
+                let next = match st.repeat {
+                    RepeatMode::Off => RepeatMode::All,
+                    RepeatMode::All => RepeatMode::One,
+                    RepeatMode::One => RepeatMode::Off,
+                };
+                st.host.send(Command::SetRepeat(next));
+            })
+    } else {
+        base.opacity(fx::DISABLED)
+    }
 }
 
 /// Shuffle/prev/play/next/repeat in one row. At 32+32+48+32+32 = 176pt of
 /// buttons plus 4 gaps, this must stay under the sidebar's ~248pt content
 /// width (`ROW_GAP` keeps the 4 gaps to 32pt, for 208pt total).
 fn transport_row(s: &State, p: &Palette) -> El {
+    // With no current track every control is disabled, as the old app's
+    // PlaybackControls (`disabled={!hasCurrentTrack}` on all five).
+    let enabled = s.now_playing_id.is_some();
     row()
         .key("transport")
         .gap(ROW_GAP)
@@ -340,6 +369,7 @@ fn transport_row(s: &State, p: &Palette) -> El {
             "prev",
             t!("player.previous").to_string(),
             &icons::SKIP_BACK,
+            enabled,
             p,
             |st: &mut State| st.host.send(Command::Prev),
         ))
@@ -348,6 +378,7 @@ fn transport_row(s: &State, p: &Palette) -> El {
             "next",
             t!("player.next").to_string(),
             &icons::SKIP_FORWARD,
+            enabled,
             p,
             |st: &mut State| st.host.send(Command::Next),
         ))
