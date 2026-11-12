@@ -86,6 +86,9 @@ pub mod type_ {
     pub const ITEM: TextStyle = TextStyle::new(14.0, 400.0);
     /// 14 / 500 — a card or now-playing track title (medium weight).
     pub const ITEM_STRONG: TextStyle = TextStyle::new(14.0, 500.0);
+    /// 16 / 500 / 24 — an album/media-card title (the old app's `text-base
+    /// font-medium` card heading).
+    pub const CARD_TITLE: TextStyle = TextStyle::new(16.0, 500.0).lh(24.0);
     /// 14 / 600 — the now-playing panel title.
     pub const TITLE: TextStyle = TextStyle::new(14.0, 600.0);
     /// 20 / 600 — the sidebar nav labels.
