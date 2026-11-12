@@ -111,8 +111,8 @@ fn sources_section(s: &State, p: &Palette) -> El {
             .padding(space::SM)
             .child(
                 text(t!("settings.sources").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
+                    .font(type_::HEADING)
+                    .color(p.fg)
                     .grow(1.0),
             )
             .child(rescan_button(p))
@@ -143,8 +143,8 @@ fn updates_section(s: &State, p: &Palette) -> El {
         .child(
             row().padding(space::SM).child(
                 text(t!("settings.updates").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
+                    .font(type_::HEADING)
+                    .color(p.fg)
                     .grow(1.0),
             ),
         )
@@ -187,11 +187,20 @@ fn updates_section(s: &State, p: &Palette) -> El {
 /// One theme choice; the active preference is filled with the primary color.
 fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
-        .padding(space::SM)
-        .radius(radius::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
-        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .child(
+            text(label)
+                .font(if active {
+                    type_::ITEM_STRONG
+                } else {
+                    type_::ITEM
+                })
+                .color(if active { p.bg } else { p.fg }),
+        )
         .on_press(move |s: &mut State| set_theme_pref(s, pref))
 }
 
@@ -203,8 +212,8 @@ fn appearance_section(s: &State, p: &Palette) -> El {
         .child(
             row().padding(space::SM).child(
                 text(t!("settings.appearance").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
+                    .font(type_::HEADING)
+                    .color(p.fg)
                     .grow(1.0),
             ),
         )
@@ -240,11 +249,20 @@ fn appearance_section(s: &State, p: &Palette) -> El {
 /// language shows in its own native name; "System" follows the OS locale.
 fn lang_button(label: String, pref: &'static str, active: bool, p: &Palette) -> El {
     el().key(format!("lang-{pref}"))
-        .padding(space::SM)
-        .radius(radius::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
-        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .child(
+            text(label)
+                .font(if active {
+                    type_::ITEM_STRONG
+                } else {
+                    type_::ITEM
+                })
+                .color(if active { p.bg } else { p.fg }),
+        )
         .on_press(move |s: &mut State| set_locale_pref(s, pref))
 }
 
@@ -258,8 +276,8 @@ fn language_section(s: &State, p: &Palette) -> El {
         .child(
             row().padding(space::SM).child(
                 text(t!("settings.language").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
+                    .font(type_::HEADING)
+                    .color(p.fg)
                     .grow(1.0),
             ),
         )
@@ -294,12 +312,18 @@ fn device_button(
     p: &Palette,
 ) -> El {
     el().key(key.to_string())
-        .padding(space::SM)
-        .radius(radius::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
         .child(
             text(label)
+                .font(if active {
+                    type_::ITEM_STRONG
+                } else {
+                    type_::ITEM
+                })
                 .color(if active { p.bg } else { p.fg })
                 .grow(1.0),
         )
@@ -347,8 +371,8 @@ fn output_section(s: &State, p: &Palette) -> El {
         .child(
             row().padding(space::SM).child(
                 text(t!("settings.output").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
+                    .font(type_::HEADING)
+                    .color(p.fg)
                     .grow(1.0),
             ),
         )
@@ -359,11 +383,20 @@ fn output_section(s: &State, p: &Palette) -> El {
 /// (mirrors `theme_button` / `device_button`).
 fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
-        .padding(space::SM)
-        .radius(radius::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::MD)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
-        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .child(
+            text(label)
+                .font(if active {
+                    type_::ITEM_STRONG
+                } else {
+                    type_::ITEM
+                })
+                .color(if active { p.bg } else { p.fg }),
+        )
         .on_press(move |s: &mut State| set_replaygain_mode(s, mode))
 }
 
@@ -434,8 +467,8 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(
             row().padding(space::SM).child(
                 text(t!("settings.replayGain").to_string())
-                    .font(type_::TITLE)
-                    .color(p.primary)
+                    .font(type_::HEADING)
+                    .color(p.fg)
                     .grow(1.0),
             ),
         )
@@ -448,7 +481,7 @@ fn replaygain_section(s: &State, p: &Palette, cx: &Cx<State>) -> El {
 pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let content = col()
         .key("settings-content")
-        .gap(space::LG)
+        .gap(space::SECTION)
         .child(sources_section(s, p))
         .child(appearance_section(s, p))
         .child(language_section(s, p))
@@ -461,7 +494,7 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .min_h(0.0)
         .child(
             text(t!("settings.title").to_string())
-                .font(type_::TITLE)
+                .font(type_::HEADING)
                 .color(p.fg)
                 .padding(space::LG),
         )
