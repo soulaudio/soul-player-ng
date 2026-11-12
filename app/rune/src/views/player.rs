@@ -22,8 +22,8 @@ use crate::views::slider::slider;
 
 /// Now-playing cover side, in points — the old app's `w-10` (40 px).
 const COVER_SIZE: f32 = 40.0;
-/// Queue-row cover side — the old app's small `TrackItem` thumbnail.
-pub const QUEUE_COVER: f32 = 36.0;
+/// Queue-row cover side — the old app's small `TrackItem` thumbnail (`w-8`, 32 px).
+pub const QUEUE_COVER: f32 = 32.0;
 /// Covers decode at this size (×the device scale) — generous so the 160 pt
 /// album-grid cards stay crisp, with the 40 pt now-playing and 36 pt queue
 /// covers downscaling from the same cached decode.
@@ -105,10 +105,10 @@ fn fmt_dur(secs: f64) -> String {
 /// The muted cover box at `size` pt with a centered music-note glyph, for no
 /// now-playing track, a track with no embedded art, or art that is still
 /// decoding or failed — a placeholder that reads as "no art", not a blank box.
-fn cover_placeholder(size: f32, p: &Palette) -> El {
+fn cover_placeholder(size: f32, corner: f32, p: &Palette) -> El {
     el().key("cover")
         .size(size, size)
-        .radius(radius::SM)
+        .radius(corner)
         .fill(p.muted)
         .center()
         .child(icon(&icons::MUSIC, (size * 0.5).round()).color(p.text_secondary))
@@ -117,9 +117,9 @@ fn cover_placeholder(size: f32, p: &Palette) -> El {
 /// A rounded cover box at `size` pt: the track's decoded art if ready, else the
 /// placeholder. Shared by the now-playing panel (40 pt) and the queue rows
 /// (36 pt), matching the old app's `w-10` cover and `TrackItem` thumbnail.
-pub fn cover(s: &State, id: Option<u32>, size: f32, p: &Palette, scale: f32) -> El {
+pub fn cover(s: &State, id: Option<u32>, size: f32, corner: f32, p: &Palette, scale: f32) -> El {
     let Some(id) = id else {
-        return cover_placeholder(size, p);
+        return cover_placeholder(size, corner, p);
     };
     match s.art.image_for(id, &s.host, scale) {
         // Ready and error-free: show it. Pending or failed covers keep the
@@ -127,10 +127,10 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, p: &Palette, scale: f32) -> 
         Some(image) if image.is_ready() && image.error().is_none() => el()
             .key("cover")
             .size(size, size)
-            .radius(radius::SM)
+            .radius(corner)
             .fill(p.muted)
             .pixels_fit(image.pixels(), SurfaceFit::Fit),
-        _ => cover_placeholder(size, p),
+        _ => cover_placeholder(size, corner, p),
     }
 }
 
@@ -142,7 +142,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
             .key("now-playing")
             .gap(space::MD)
             .center_y()
-            .child(cover(s, None, 48.0, p, scale))
+            .child(cover(s, None, 48.0, radius::MD, p, scale))
             .child(
                 text(t!("player.nothingPlaying").to_string())
                     .font(type_::BODY)
@@ -158,7 +158,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .key("now-playing")
         .gap(space::COZY)
         .center_y()
-        .child(cover(s, Some(track.id), COVER_SIZE, p, scale))
+        .child(cover(s, Some(track.id), COVER_SIZE, radius::MD, p, scale))
         .child(
             col()
                 .key("now-playing-text")
