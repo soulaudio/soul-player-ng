@@ -374,6 +374,17 @@ pub(crate) fn set_sort(s: &mut State, axis: BrowseAxis) {
     s.library = s.host.views_by(axis);
 }
 
+/// Set the output volume (0..1): clamp, update `State::volume` optimistically so
+/// the UI (slider + %) tracks immediately, and tell the host. Optimistic because
+/// scroll/keyboard nudges are incremental — the next one must read this new value,
+/// not wait for the host's echo. Shared by the volume slider, the Up/Down keys,
+/// and the scroll-over-volume gesture.
+pub(crate) fn set_volume(s: &mut State, v: f32) {
+    let v = v.clamp(0.0, 1.0);
+    s.volume = v;
+    s.host.send(Command::SetVolume(v));
+}
+
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let p = theme::palette(is_dark(s.theme_pref, cx.system_dark()));
     let scale = cx.env().scale;
@@ -450,8 +461,8 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Text(t) if t == " " => s.host.send(Command::TogglePlay),
         Key::Right => s.host.send(Command::Next),
         Key::Left => s.host.send(Command::Prev),
-        Key::Up => s.host.send(Command::SetVolume((s.volume + 0.05).min(1.0))),
-        Key::Down => s.host.send(Command::SetVolume((s.volume - 0.05).max(0.0))),
+        Key::Up => set_volume(s, s.volume + 0.05),
+        Key::Down => set_volume(s, s.volume - 0.05),
         Key::Text(t) if t.eq_ignore_ascii_case("s") => {
             s.host.send(Command::SetShuffle(!s.shuffle));
         }
@@ -665,7 +676,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use rune::{Cursor, Env, Mods, Runtime};
+    use rune::{Cursor, Env, Mods, Runtime, WheelEvent};
 
     use super::*;
     use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
@@ -987,6 +998,40 @@ mod tests {
             offenders.is_empty(),
             "dropdowns must use views::dropdown, not rune's native PopupMenu::picker:\n{}",
             offenders.join("\n")
+        );
+    }
+
+    /// Scrolling the wheel over the volume row nudges the volume — up (dy < 0)
+    /// louder, down quieter — the end-to-end path through `on_wheel` →
+    /// `wheel_volume_delta` → `set_volume`. Starts mid-range so both directions
+    /// move (the default 1.0 is already at the ceiling).
+    #[test]
+    fn scrolling_over_the_volume_row_changes_the_volume() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false; // the player panel (volume row) must render
+        s.volume = 0.5;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("volume-row").expect("the volume row renders");
+        // Scroll up → one 5% step louder.
+        rt.wheel_event(WheelEvent::new(0.0, -10.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            (rt.state.volume - 0.55).abs() < 1e-6,
+            "scroll up raised the volume, got {}",
+            rt.state.volume
+        );
+        // Scroll down → back to 0.5.
+        rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            (rt.state.volume - 0.50).abs() < 1e-6,
+            "scroll down lowered the volume, got {}",
+            rt.state.volume
         );
     }
 

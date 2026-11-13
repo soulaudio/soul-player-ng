@@ -10,15 +10,54 @@ use std::collections::HashMap;
 
 use rune::tok::motion;
 use rune::{
-    Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, Waker, col, el, icon, row, text,
+    Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, Waker, WheelEvent, col, el, icon,
+    row, text,
 };
 use soul_player_host::{Command, PlayerHandle, RepeatMode, TrackView};
 
-use crate::State;
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::icons;
 use crate::views::slider::slider;
+use crate::{State, set_volume};
+
+/// The researched default volume step for a notched wheel tick — 5%, as
+/// YouTube/Spotify-style players use (and the Up/Down keys). `Shift` drops to a
+/// 1% fine step.
+const VOL_WHEEL_STEP: f32 = 0.05;
+const VOL_WHEEL_STEP_FINE: f32 = 0.01;
+/// Trackpad (precise) deltas are proportional to travel at this gain, capped to
+/// one coarse step per event so a flick can't lurch the volume 0→100.
+const VOL_WHEEL_PRECISE_GAIN: f32 = 0.005;
+const VOL_WHEEL_PRECISE_FINE_GAIN: f32 = 0.001;
+
+/// The volume change for one wheel/trackpad event, following researched best
+/// practice. A notched wheel steps a fixed amount per notch (5%, or 1% with
+/// `Shift`); a trackpad's `precise` deltas move proportionally but are capped to
+/// one coarse step so a fling can't jump far; coasting `momentum` is ignored so a
+/// swipe nudges a few steps rather than flinging. `dy` follows rune's convention
+/// (positive = content moves down = scrolling down), so scrolling UP (`dy < 0`)
+/// raises the volume. Pure, so the mapping is unit-tested without a Runtime.
+fn wheel_volume_delta(e: &WheelEvent) -> f32 {
+    if e.momentum || e.dy == 0.0 {
+        return 0.0;
+    }
+    if e.precise {
+        let gain = if e.mods.shift {
+            VOL_WHEEL_PRECISE_FINE_GAIN
+        } else {
+            VOL_WHEEL_PRECISE_GAIN
+        };
+        (-e.dy * gain).clamp(-VOL_WHEEL_STEP, VOL_WHEEL_STEP)
+    } else {
+        let step = if e.mods.shift {
+            VOL_WHEEL_STEP_FINE
+        } else {
+            VOL_WHEEL_STEP
+        };
+        if e.dy < 0.0 { step } else { -step }
+    }
+}
 
 /// Now-playing cover side, in points — the old app's `w-10` (40 px).
 const COVER_SIZE: f32 = 40.0;
@@ -360,6 +399,16 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .key("volume-row")
         .gap(ROW_GAP)
         .center_y()
+        // Scrolling anywhere over the whole volume row (icon + slider + %) nudges
+        // the volume — a bigger, more forgiving target than the thin slider.
+        // Returns true to take the gesture so the sidebar never scrolls under it.
+        .on_wheel(|st: &mut State, e: WheelEvent, _tx| {
+            let delta = wheel_volume_delta(&e);
+            if delta != 0.0 {
+                set_volume(st, st.volume + delta);
+            }
+            true
+        })
         .child(
             icon(
                 if s.volume <= 0.0 {
@@ -371,14 +420,7 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             )
             .color(p.text_secondary),
         )
-        .child(slider(
-            "volume",
-            s.volume,
-            cx,
-            true,
-            p,
-            |st: &mut State, v: f32| st.host.send(Command::SetVolume(v)),
-        ))
+        .child(slider("volume", s.volume, cx, true, p, set_volume))
         .child(
             text(format!("{:.0}", s.volume * 100.0))
                 .font(type_::LABEL.mono())
@@ -438,9 +480,52 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use rune::{Mods, WheelEvent};
     use soul_player_host::PlayerHandle;
 
-    use super::ArtCache;
+    use super::{ArtCache, wheel_volume_delta};
+
+    /// A notched mouse wheel steps the researched 5% per notch, up on scroll-up
+    /// (dy < 0) and down on scroll-down, regardless of the notch's magnitude.
+    #[test]
+    fn wheel_notched_steps_five_percent_by_direction() {
+        assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, -10.0)), 0.05);
+        assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, 10.0)), -0.05);
+        // One step per notch — a bigger line-delta is still one 5% step.
+        assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, -120.0)), 0.05);
+    }
+
+    /// Shift is fine control: 1% per notch.
+    #[test]
+    fn wheel_shift_is_fine_one_percent() {
+        let fine = WheelEvent::new(0.0, -10.0).mods(Mods {
+            shift: true,
+            ..Default::default()
+        });
+        assert!((wheel_volume_delta(&fine) - 0.01).abs() < 1e-6);
+    }
+
+    /// A trackpad's precise deltas move proportionally to travel, but a fling is
+    /// capped to one coarse step so it can't lurch the volume 0→100.
+    #[test]
+    fn wheel_precise_is_proportional_and_capped() {
+        let small = WheelEvent::new(0.0, -4.0).precise(true);
+        assert!((wheel_volume_delta(&small) - 0.02).abs() < 1e-6); // 4 * 0.005
+        assert_eq!(
+            wheel_volume_delta(&WheelEvent::new(0.0, -400.0).precise(true)),
+            0.05
+        );
+        assert_eq!(
+            wheel_volume_delta(&WheelEvent::new(0.0, 400.0).precise(true)),
+            -0.05
+        );
+    }
+
+    /// A zero delta is a no-op (nothing to change).
+    #[test]
+    fn wheel_zero_delta_is_noop() {
+        assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, 0.0)), 0.0);
+    }
 
     fn testdata_dir() -> PathBuf {
         // app/rune -> repo-root/testdata
