@@ -74,6 +74,9 @@ pub(crate) fn set_locale_pref(s: &mut State, pref: &str) {
 pub(crate) enum Route {
     Library,
     Albums,
+    /// An album's detail page; which album is in [`State::open_album`] (a unit
+    /// variant keeps `Route: Copy`).
+    Album,
     Settings,
 }
 
@@ -129,6 +132,9 @@ struct State {
     context_len: u32,
     /// Current page (Library vs Settings).
     route: Route,
+    /// The album whose detail page is open (by album name, the `group_albums`
+    /// key), when `route == Route::Album`. Set from an album card's body click.
+    open_album: Option<String>,
     /// Light/dark preference (persisted); `System` follows the OS.
     theme_pref: ThemePref,
     /// Which baked axis the library list is ordered by.
@@ -211,6 +217,7 @@ impl State {
             context_pos: 0,
             context_len: 0,
             route: Route::Library,
+            open_album: None,
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
@@ -355,6 +362,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
             Route::Library => views::library::track_list(s, &p, cx, scale).grow(1.0),
             Route::Albums => views::albums::albums_page(s, &p, cx, scale).grow(1.0),
+            Route::Album => views::albums::album_detail(s, &p, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, &p, cx).grow(1.0),
         }))
 }
@@ -431,6 +439,12 @@ fn scene_settings(s: &mut State) {
 fn scene_albums(s: &mut State) {
     s.route = Route::Albums;
 }
+fn scene_album_detail(s: &mut State) {
+    s.route = Route::Album;
+    s.open_album = s.library.first().and_then(|t| t.album.clone());
+    s.now_playing_id = s.library.first().map(|t| t.id);
+    s.playing = true;
+}
 fn scene_search(s: &mut State) {
     s.search = "aria".to_string();
 }
@@ -496,6 +510,7 @@ fn main() -> anyhow::Result<()> {
         scenes: &[
             ("settings", scene_settings),
             ("albums", scene_albums),
+            ("album-detail", scene_album_detail),
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
@@ -1124,22 +1139,14 @@ mod tests {
         assert!(on > 0.9, "enabled transport is full opacity (opacity {on})");
     }
 
-    /// Clicking an album card whose track is already the one playing toggles
-    /// pause/resume (the old app's MediaCard), instead of restarting it from the
-    /// top — end-to-end through the real card press, not just the decision fn.
+    /// The play button of an album that is already playing toggles pause/resume
+    /// (the old app's MediaCard), instead of restarting it from the top —
+    /// end-to-end through the real button press, not just the decision fn.
     #[test]
-    fn clicking_the_playing_album_card_toggles_instead_of_restarting() {
-        use soul_player_host::TrackView;
-        let track = |id: u32| TrackView {
-            id,
-            title: Some(format!("T{id}")),
-            artist: Some("A".into()),
-            album: Some("Alb".into()),
-            duration_secs: 1.0,
-        };
+    fn the_play_button_of_the_active_album_toggles_instead_of_restarting() {
         let mut s = State::new(PlayerHandle::recording());
         s.sidebar_collapsed = false;
-        s.library = vec![track(1), track(2)]; // one album "Alb" with ids 1,2
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")]; // album "Alb", ids 1,2
         s.route = Route::Albums;
         s.now_playing_id = Some(1); // a track of this album is the current one
         s.playing = true;
@@ -1149,11 +1156,118 @@ mod tests {
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        click(&mut rt, "album-0");
+        click(&mut rt, "play-btn");
         assert_eq!(
             rt.state.host.recorded_commands(),
             vec![Command::TogglePlay],
             "an already-playing album toggles rather than restarting"
+        );
+    }
+
+    fn album_track(id: u32, title: &str) -> soul_player_host::TrackView {
+        soul_player_host::TrackView {
+            id,
+            title: Some(title.to_string()),
+            artist: Some("A".into()),
+            album: Some("Alb".into()),
+            duration_secs: 1.0,
+        }
+    }
+
+    /// Clicking the card body (its title/artist area, not the play button) opens
+    /// the album's detail page and issues no playback command — the old app's
+    /// MediaCard navigate-on-body-click.
+    #[test]
+    fn clicking_the_album_card_body_opens_the_detail_page() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.route = Route::Albums;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "album-text"); // the title/artist area — not the play button
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "the card body opens the album detail page"
+        );
+        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
+        assert!(
+            rt.state.host.recorded_commands().is_empty(),
+            "navigating does not start playback"
+        );
+    }
+
+    /// Clicking the small play button plays the album and does NOT navigate — the
+    /// counterpart to the body click.
+    #[test]
+    fn clicking_the_card_play_button_plays_without_navigating() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.route = Route::Albums;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "play-btn");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 0
+            }],
+            "the play button plays the album"
+        );
+        assert!(
+            matches!(rt.state.route, Route::Albums),
+            "the play button does not navigate"
+        );
+    }
+
+    /// The album detail page lists the album's tracks (click plays from that
+    /// position), a Play button, and a back link to the grid.
+    #[test]
+    fn the_album_detail_page_lists_tracks_with_play_and_back() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.route = Route::Album;
+        s.open_album = Some("Alb".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("album-header").is_some(),
+            "the detail header renders"
+        );
+        assert!(rt.find("album-play-all").is_some(), "a Play-all button");
+        assert!(rt.find("album-back").is_some(), "a back link");
+        assert!(
+            rt.find("album-track-0").is_some() && rt.find("album-track-1").is_some(),
+            "both album tracks are listed"
+        );
+        click(&mut rt, "album-track-1");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 1
+            }],
+            "clicking a track plays the album from that position"
+        );
+        click(&mut rt, "album-back");
+        assert!(
+            matches!(rt.state.route, Route::Albums),
+            "back returns to the albums grid"
         );
     }
 

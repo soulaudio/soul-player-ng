@@ -14,7 +14,7 @@ use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::player::cover;
 
-fn fmt_dur(secs: f64) -> String {
+pub(crate) fn fmt_dur(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     format!("{}:{:02}", s / 60, s % 60)
 }

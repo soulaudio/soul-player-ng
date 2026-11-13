@@ -18,6 +18,20 @@ nav.albums:
   zh: '专辑'
   cs: 'Alba'
   ja: 'アルバム'
+album.eyebrow:
+  en: 'Album'
+  de: 'Album'
+  es: 'Álbum'
+  zh: '专辑'
+  cs: 'Album'
+  ja: 'アルバム'
+album.trackCount:
+  en: '%{count} tracks'
+  de: '%{count} Titel'
+  es: '%{count} pistas'
+  zh: '%{count} 首'
+  cs: '%{count} skladeb'
+  ja: '%{count} 曲'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
