@@ -111,9 +111,12 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .center()
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
+        // Hidden until the row is hovered (the original drawer reveals row
+        // controls on hover), so the resting list stays clean.
+        .group_opacity(0.0, 1.0)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
-        .child(icon(&icons::GRIP, 14.0).color(p.text_secondary.alpha(0.5)))
+        .child(icon(&icons::GRIP, 14.0).color(p.text_secondary.alpha(0.6)))
         .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
             Phase::Down => {
                 // The row's own index is the drag origin — a search by track id
@@ -147,30 +150,45 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .padding(space::XS)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
+        // Reveal on hover, alongside the grip.
+        .group_opacity(0.0, 1.0)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(icon(&icons::X, 14.0).color(p.text_secondary))
         .on_press(move |st: &mut State| st.host.send(Command::RemoveFromQueue(i as u32)));
 
+    // The hover "pill" lives on this inner body (cover + text + remove), not the
+    // whole row — so the highlight is an inset rounded pill rather than an odd
+    // edge-to-edge bar. The body starts after the grip gutter, so its cover still
+    // lands at the 16 pt pane inset, left-aligned with the now-playing cover.
+    let body = row()
+        .key(format!("queue-manual-body-{i}"))
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(0.0)
+        .center_y()
+        .py(space::XS)
+        .radius(radius::SM)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale).key(format!("qcover-m-{i}")))
+        .child(row_text(s, p, id).pl(space::COZY).grow(1.0))
+        .child(remove);
+
     let r = row()
         // Keyed by position `i`, not track id: the same track can sit in the
         // queue more than once, which would collide an id key.
         .key(format!("queue-manual-{i}"))
-        // No inter-child gap: the 16 pt grip IS the left gutter, so the cover
-        // lands at the 16 pt pane inset — left-aligned with the now-playing
-        // cover — instead of being pushed out by a grip + gap.
+        // No inter-child gap: the 16 pt grip IS the left gutter, so the body's
+        // cover lands at the 16 pt pane inset. `pr` insets the pill from the
+        // right edge; `hover_group` reveals the grip + remove on hover.
         .gap(0.0)
         .center_y()
-        .pr(space::LG)
-        .py(space::XS)
-        .radius(radius::SM)
+        .pr(space::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
+        .hover_group()
         .child(grip)
-        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale).key(format!("qcover-m-{i}")))
-        .child(row_text(s, p, id).pl(space::COZY))
-        .child(remove)
+        .child(body)
         .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
             tx.popup_menu(
                 PopupMenu::new()
@@ -192,6 +210,19 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
 /// One context ("Next from") row: cover + title/artist, click to jump there.
 /// Not reorderable/removable — it's the source remainder, not a user list.
 fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
+    // Inset hover pill on the body, matching the manual rows (minus the grip).
+    let body = row()
+        .key(format!("queue-context-body-{k}"))
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(0.0)
+        .center_y()
+        .py(space::XS)
+        .radius(radius::SM)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale).key(format!("qcover-c-{k}")))
+        .child(row_text(s, p, id).pl(space::COZY).grow(1.0));
     row()
         // Keyed by the upcoming-slot position `k`, not the track id: the same
         // track can appear more than once in the context (the same recording in
@@ -199,18 +230,13 @@ fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
         .key(format!("queue-context-{k}"))
         .gap(0.0)
         .center_y()
-        .pr(space::LG)
-        .py(space::XS)
-        .radius(radius::SM)
+        .pr(space::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
         // A 16 pt leading spacer mirrors the manual rows' grip gutter, so both
         // bands' covers land at the pane inset, aligned with the now-playing
         // cover. Keyed by `k` (positional, no id collisions).
         .child(el().key(format!("ctx-indent-{k}")).w(space::LG))
-        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale).key(format!("qcover-c-{k}")))
-        .child(row_text(s, p, id).pl(space::COZY))
+        .child(body)
         .on_press(move |st: &mut State| st.host.send(Command::PlayUpcoming(k)))
 }
 

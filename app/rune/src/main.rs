@@ -1983,6 +1983,59 @@ mod tests {
         );
     }
 
+    /// The hover highlight is an inset rounded "pill" on the row body, not an
+    /// edge-to-edge bar, and the drag grip stays hidden until the row is hovered
+    /// — so the resting queue reads as a clean, aligned list.
+    #[test]
+    fn a_resting_queue_row_hides_its_grip_and_the_pill_is_inset() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            album_track(1, "A"),
+            album_track(2, "B"),
+            album_track(3, "C"),
+        ];
+        s.up_next = vec![1];
+        s.context_ids = vec![2, 3];
+        s.context_len = 3;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        rt.frame(0.0);
+        // The grip is revealed only on hover: hidden (opacity ~0) at rest.
+        let (_, grip_rest) = rt.presented("grip-0").expect("grip renders");
+        assert!(
+            grip_rest < 0.05,
+            "the drag grip is hidden at rest, got opacity {grip_rest}"
+        );
+        // The hover pill (row body) is inset: it starts at the 16 pt cover inset
+        // (past the grip gutter) and ends inside the sidebar's right edge, rather
+        // than spanning the full width.
+        let body = rt
+            .presented("queue-manual-body-0")
+            .expect("row body renders")
+            .0;
+        let sidebar = rt.presented("sidebar").expect("sidebar renders").0;
+        assert!(
+            (body[0] - 16.0).abs() < 0.5,
+            "the pill starts at the 16 pt inset, got {}",
+            body[0]
+        );
+        assert!(
+            body[0] + body[2] <= sidebar[0] + sidebar[2] - 4.0,
+            "the pill is inset from the sidebar's right edge (body ends at {}, sidebar at {})",
+            body[0] + body[2],
+            sidebar[0] + sidebar[2]
+        );
+    }
+
     #[test]
     fn a_wide_window_shows_both_panes_side_by_side() {
         let rt = booted(1100.0, 720.0, |_| {});
