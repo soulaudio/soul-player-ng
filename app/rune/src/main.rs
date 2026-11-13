@@ -803,6 +803,65 @@ mod tests {
         );
     }
 
+    /// A library scanned from the committed testdata, so Library / Albums / the
+    /// queue render real rows (not just empty states) for the layout sweep.
+    fn populated_state() -> State {
+        let mut s = State::new(PlayerHandle::offline());
+        if let Ok(up) = s.host.add_folder(&testdata_dir()) {
+            apply_watch(&mut s, up);
+        }
+        s
+    }
+
+    /// The same contain-itself invariant as settings, but swept across the whole
+    /// app — Library, Albums and a populated queue/now-playing panel — in every
+    /// locale at two widths. This is the general i18n-overflow net; new views get
+    /// coverage by adding a scene here.
+    #[test]
+    fn app_layout_contains_itself_in_every_locale() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let viewports = [(1100.0_f32, 720.0_f32), (900.0, 640.0)];
+        // Name → state tweak, the same `fn(&mut State)` shape as a `--scene`.
+        type NamedScene = (&'static str, fn(&mut State));
+        let scenes: [NamedScene; 4] = [
+            ("library", |s: &mut State| s.route = Route::Library),
+            ("albums", |s: &mut State| s.route = Route::Albums),
+            // Populates now-playing + both queue bands from the library; the
+            // sidebar panel then renders over whatever route is active.
+            ("queue", scene_queue),
+            ("settings-music", |s: &mut State| {
+                s.route = Route::Settings;
+                s.settings_tab = SettingsTab::MusicData;
+            }),
+        ];
+        let mut failures = Vec::new();
+        for &viewport in &viewports {
+            for &loc in LOCALES {
+                for (scene_name, scene) in scenes {
+                    let mut s = populated_state();
+                    scene(&mut s);
+                    // AFTER State::new, which re-applies the persisted locale.
+                    apply_locale(loc);
+                    let mut rt = Runtime::new(s, view, viewport, env);
+                    rt.frame(0.0);
+                    for bad in horizontal_overflows(&rt, viewport.0) {
+                        failures.push(format!("[{loc}/{scene_name}@{}] {bad}", viewport.0));
+                    }
+                }
+            }
+        }
+        apply_locale("en");
+        assert!(
+            failures.is_empty(),
+            "{} app layout overflow(s) across locales:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
     #[test]
     fn settings_route_shows_sources_section_and_add_button() {
         let env = Env {

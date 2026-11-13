@@ -73,10 +73,14 @@ fn band_header(key: &str, label: String, trailing: Option<El>, p: &Palette) -> E
         .center_y()
         .px(space::XS)
         .child(
+            // `truncate` (ellipsis + shrink-to-0) so a long "Next from <album>"
+            // or a longer-locale eyebrow ellipsizes instead of overflowing the
+            // rail and squeezing the trailing Clear off.
             text(label)
                 .font(type_::SECTION)
                 .color(p.text_secondary)
-                .grow(1.0),
+                .grow(1.0)
+                .truncate(),
         );
     if let Some(t) = trailing {
         r = r.child(t);
