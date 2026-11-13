@@ -216,13 +216,6 @@ queue.nextInQueue:
   zh: '队列中的下一首'
   cs: 'Další ve frontě'
   ja: 'キューの次'
-queue.nextFrom:
-  en: 'Next from %{name}'
-  de: 'Weiter aus %{name}'
-  es: 'A continuación de %{name}'
-  zh: '继续播放 %{name}'
-  cs: 'Dále z %{name}'
-  ja: '%{name} から続けて'
 queue.upNext:
   en: 'Up next'
   de: 'Als Nächstes'

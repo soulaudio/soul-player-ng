@@ -228,20 +228,6 @@ fn clear_button(p: &Palette) -> El {
         .on_press(|st: &mut State| st.host.send(Command::ClearQueue))
 }
 
-/// "Next from <album>" using the now-playing track's album; a generic "Up next"
-/// when there's no album to name.
-fn context_label(s: &State) -> String {
-    let album = s
-        .now_playing_id
-        .and_then(|id| s.track(id))
-        .and_then(|t| t.album.clone())
-        .filter(|a| !a.is_empty());
-    match album {
-        Some(a) => t!("queue.nextFrom", name => a).to_string(),
-        None => t!("queue.upNext").to_string(),
-    }
-}
-
 /// The empty state: nothing queued and nothing upcoming.
 fn empty_state(p: &Palette) -> El {
     col()
@@ -305,12 +291,19 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
         content = content.child(band);
     }
 
-    // Context band ("Next from <album>") — the real shuffle-correct remainder.
+    // Context band — the real shuffle-correct remainder of what's playing. Just
+    // "Up next" (short, like Spotify's queue) rather than a verbose
+    // "Next from <album>".
     if !s.context_ids.is_empty() {
         let mut band = col()
             .key("queue-context-band")
             .gap(space::XXS)
-            .child(band_header("queue-next-from", context_label(s), None, p));
+            .child(band_header(
+                "queue-next-from",
+                t!("queue.upNext").to_string(),
+                None,
+                p,
+            ));
         for (j, &id) in s.context_ids.iter().enumerate() {
             let k = (manual_len + j + 1) as u32;
             band = band.child(context_row(s, p, scale, id, k));
