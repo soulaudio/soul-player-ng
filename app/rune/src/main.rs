@@ -22,8 +22,8 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, TrackView,
-    WatchUpdate,
+    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
+    TrackView, WatchUpdate,
 };
 
 mod config;
@@ -151,6 +151,10 @@ struct State {
     queue_drag: Option<(usize, usize)>,
     context_pos: u32,
     context_len: u32,
+    /// The current track's decode→output chain (source/rate/bits/ReplayGain/
+    /// resample), from the backend's `Event::SignalPath`. `None` when nothing
+    /// plays. Rendered as the now-playing signal-path line.
+    signal_path: Option<SignalPath>,
     /// Current page (Library vs Settings).
     route: Route,
     /// The album whose detail page is open (by album name, the `group_albums`
@@ -262,6 +266,7 @@ impl State {
             queue_drag: None,
             context_pos: 0,
             context_len: 0,
+            signal_path: None,
             route: Route::Library,
             open_album: None,
             open_artist: None,
@@ -337,6 +342,9 @@ impl State {
                 self.context_ids = q.context_ids.clone();
                 self.context_pos = q.context_pos;
                 self.context_len = q.context_len;
+            }
+            Event::SignalPath(sp) => {
+                self.signal_path = *sp;
             }
             // Persisted off-thread in the subscribe closure (see `main`); the
             // hybrid-ReplayGain cache is silent — no UI state to fold in here.
@@ -1124,6 +1132,53 @@ mod tests {
             "{} app layout overflow(s) across locales:\n{}",
             failures.len(),
             failures.join("\n")
+        );
+    }
+
+    /// The now-playing signal-path line renders the formatted chain when a
+    /// `SignalPath` is present, and is absent when it isn't.
+    #[test]
+    fn signal_path_line_renders_in_now_playing() {
+        use soul_player_host::{SignalPath, SourceFormat};
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        scene_queue(&mut s); // populates now-playing
+        s.signal_path = Some(SignalPath {
+            source: SourceFormat::Dsd { rate_hz: 2_822_400 },
+            decoded_rate: 44_100,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db: 0.0,
+            device_rate: 48_000,
+            resampling: true,
+            output_bits: 24,
+        });
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("signal-path").is_some(),
+            "the signal-path line renders when a chain is present"
+        );
+        assert!(
+            rt.elements()
+                .into_iter()
+                .any(|e| e.text.as_deref() == Some("DSD64 · 44.1→48 kHz")),
+            "it shows the formatted DSD→resample chain"
+        );
+
+        // Absent when there is no signal path.
+        let mut s2 = populated_state();
+        scene_queue(&mut s2);
+        s2.signal_path = None;
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("signal-path").is_none(),
+            "no signal-path line when there is no chain"
         );
     }
 
