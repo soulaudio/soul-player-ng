@@ -102,7 +102,7 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
     // (drives the drop line), Up commits the reorder. The backing list is unchanged
     // until release, so `from` stays valid for the whole gesture.
     let grip = el()
-        .key(format!("grip-{id}"))
+        .key(format!("grip-{i}"))
         .role("button")
         .label(t!("queue.reorder").to_string())
         .size(16.0, QUEUE_ROW_H)
@@ -114,8 +114,10 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .child(icon(&icons::GRIP, 14.0).color(p.text_secondary.alpha(0.5)))
         .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
             Phase::Down => {
-                let from = st.up_next.iter().position(|&x| x == id).unwrap_or(i);
-                st.queue_drag = Some((from, from));
+                // The row's own index is the drag origin — a search by track id
+                // would find the FIRST copy, so a track queued more than once
+                // would move the wrong row.
+                st.queue_drag = Some((i, i));
             }
             Phase::Move => {
                 if let Some((from, _)) = st.queue_drag {
@@ -136,7 +138,7 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         });
 
     let remove = el()
-        .key(format!("remove-{id}"))
+        .key(format!("remove-{i}"))
         .role("button")
         .label(t!("queue.remove").to_string())
         .focusable(true)
@@ -149,7 +151,9 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .on_press(move |st: &mut State| st.host.send(Command::RemoveFromQueue(i as u32)));
 
     let r = row()
-        .key(format!("queue-manual-{id}"))
+        // Keyed by position `i`, not track id: the same track can sit in the
+        // queue more than once, which would collide an id key.
+        .key(format!("queue-manual-{i}"))
         .gap(space::XS)
         .center_y()
         .px(space::XS)
@@ -184,7 +188,10 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
 /// Not reorderable/removable — it's the source remainder, not a user list.
 fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
     row()
-        .key(format!("queue-context-{id}"))
+        // Keyed by the upcoming-slot position `k`, not the track id: the same
+        // track can appear more than once in the context (the same recording in
+        // several formats), so an id key would collide. `k` is unique per row.
+        .key(format!("queue-context-{k}"))
         .gap(space::XS)
         .center_y()
         .px(space::XS)
