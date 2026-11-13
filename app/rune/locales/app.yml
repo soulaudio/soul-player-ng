@@ -18,6 +18,13 @@ nav.albums:
   zh: '专辑'
   cs: 'Alba'
   ja: 'アルバム'
+nav.artists:
+  en: 'Artists'
+  de: 'Künstler'
+  es: 'Artistas'
+  zh: '艺术家'
+  cs: 'Interpreti'
+  ja: 'アーティスト'
 album.eyebrow:
   en: 'Album'
   de: 'Album'
@@ -39,6 +46,20 @@ album.playAll:
   zh: '全部播放'
   cs: 'Přehrát vše'
   ja: 'すべて再生'
+artist.eyebrow:
+  en: 'Artist'
+  de: 'Künstler'
+  es: 'Artista'
+  zh: '艺术家'
+  cs: 'Interpret'
+  ja: 'アーティスト'
+artist.trackCount:
+  en: '%{count} tracks'
+  de: '%{count} Titel'
+  es: '%{count} pistas'
+  zh: '%{count} 首'
+  cs: '%{count} skladeb'
+  ja: '%{count} 曲'
 
 player.nowPlaying:
   en: 'NOW PLAYING'

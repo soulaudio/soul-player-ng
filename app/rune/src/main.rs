@@ -77,6 +77,9 @@ pub(crate) enum Route {
     /// An album's detail page; which album is in [`State::open_album`] (a unit
     /// variant keeps `Route: Copy`).
     Album,
+    Artists,
+    /// An artist's detail page; which artist is in [`State::open_artist`].
+    Artist,
     Settings,
 }
 
@@ -139,6 +142,9 @@ struct State {
     /// The album whose detail page is open (by album name, the `group_albums`
     /// key), when `route == Route::Album`. Set from an album card's body click.
     open_album: Option<String>,
+    /// Which artist's detail page is showing, when `route == Route::Artist`.
+    /// Set from an artist card's body click.
+    open_artist: Option<String>,
     /// Light/dark preference (persisted); `System` follows the OS.
     theme_pref: ThemePref,
     /// Which baked axis the library list is ordered by.
@@ -227,6 +233,7 @@ impl State {
             context_len: 0,
             route: Route::Library,
             open_album: None,
+            open_artist: None,
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
@@ -413,6 +420,8 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
             Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
             Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
             Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
+            Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
+            Route::Artist => views::artists::artist_detail(s, p, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
         })
 }
@@ -426,6 +435,11 @@ fn mobile_title(s: &State) -> String {
             .open_album
             .clone()
             .unwrap_or_else(|| t!("nav.albums").to_string()),
+        Route::Artists => t!("nav.artists").to_string(),
+        Route::Artist => s
+            .open_artist
+            .clone()
+            .unwrap_or_else(|| t!("nav.artists").to_string()),
         Route::Settings => t!("settings.title").to_string(),
     }
 }
@@ -501,6 +515,15 @@ fn scene_settings(s: &mut State) {
 }
 fn scene_albums(s: &mut State) {
     s.route = Route::Albums;
+}
+fn scene_artists(s: &mut State) {
+    s.route = Route::Artists;
+}
+fn scene_artist_detail(s: &mut State) {
+    s.route = Route::Artist;
+    s.open_artist = s.library.first().and_then(|t| t.artist.clone());
+    s.now_playing_id = s.library.first().map(|t| t.id);
+    s.playing = true;
 }
 fn scene_album_detail(s: &mut State) {
     s.route = Route::Album;
@@ -581,6 +604,8 @@ fn main() -> anyhow::Result<()> {
             ("settings", scene_settings),
             ("albums", scene_albums),
             ("album-detail", scene_album_detail),
+            ("artists", scene_artists),
+            ("artist-detail", scene_artist_detail),
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
@@ -1276,6 +1301,110 @@ mod tests {
             album: Some("Alb".into()),
             duration_secs: 1.0,
         }
+    }
+
+    fn artist_track(id: u32, artist: &str) -> soul_player_host::TrackView {
+        soul_player_host::TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some(artist.to_string()),
+            album: Some("Alb".into()),
+            duration_secs: 1.0,
+        }
+    }
+
+    /// The sidebar offers an Artists nav entry alongside Tracks and Albums.
+    #[test]
+    fn the_sidebar_offers_an_artists_nav_item() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("nav-artists").is_some(),
+            "the Artists nav item renders"
+        );
+    }
+
+    /// Clicking an artist card opens that artist's detail page (and issues no
+    /// playback) — the library grouped by artist, first-seen order.
+    #[test]
+    fn clicking_an_artist_card_opens_the_detail_page() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![artist_track(1, "Bach"), artist_track(2, "Satie")];
+        s.route = Route::Artists;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        click(&mut rt, "artist-0"); // the first grouped artist (Bach)
+        assert!(
+            matches!(rt.state.route, Route::Artist),
+            "the card opens the artist detail page"
+        );
+        assert_eq!(rt.state.open_artist.as_deref(), Some("Bach"));
+        assert!(
+            rt.state.host.recorded_commands().is_empty(),
+            "opening an artist does not start playback"
+        );
+    }
+
+    /// The artist detail page lists the artist's tracks, with a Play All that
+    /// plays them from the top and a back link.
+    #[test]
+    fn the_artist_detail_lists_tracks_with_play_all_and_back() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            artist_track(1, "Bach"),
+            artist_track(2, "Bach"),
+            artist_track(3, "Satie"),
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("artist-header").is_some(),
+            "the detail header renders"
+        );
+        assert!(rt.find("artist-back").is_some(), "a back link renders");
+        assert!(
+            rt.find("album-track-0").is_some(),
+            "the artist's tracks are listed"
+        );
+        click(&mut rt, "artist-play-all");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 0
+            }],
+            "Play All plays only this artist's tracks, from the top"
+        );
     }
 
     /// Clicking the card body (its title/artist area, not the play button) opens
