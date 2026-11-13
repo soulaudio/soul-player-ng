@@ -105,6 +105,9 @@ fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -
         dot.border_sides([1.0, 1.0, 1.0, 1.0], p.border)
     };
     el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
         .w_full()
         .px(space::MD)
         .py(space::XS)

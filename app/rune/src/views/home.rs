@@ -25,6 +25,9 @@ fn album_tile(s: &State, p: &Palette, slot: usize, name: String, cover_id: u32, 
     let open = name.clone();
     col()
         .key(format!("home-album-{slot}"))
+        .role("button")
+        .label(name.clone())
+        .focusable(true)
         .w(TILE)
         .gap(space::XS)
         .cursor(Cursor::Pointer)
@@ -87,6 +90,9 @@ pub fn home_page(s: &State, p: &Palette, _cx: &Cx<State>, scale: f32) -> El {
                 // The same primary pill as the album/artist pages — plays the
                 // whole library from the top.
                 el().key("home-play-all")
+                    .role("button")
+                    .label(t!("album.playAll").to_string())
+                    .focusable(true)
                     .px(space::XL)
                     .py(space::MD)
                     .radius(radius::FULL)
@@ -139,7 +145,11 @@ pub fn home_page(s: &State, p: &Palette, _cx: &Cx<State>, scale: f32) -> El {
                 .font(type_::TITLE)
                 .color(p.fg),
         );
-        let mut grid = row().key("home-albums").flex_wrap().gap(space::GUTTER);
+        let mut grid = row()
+            .key("home-albums")
+            .role("grid")
+            .flex_wrap()
+            .gap(space::GUTTER);
         for (slot, a) in albums.iter().take(PREVIEW).enumerate() {
             grid = grid.child(album_tile(s, p, slot, a.name.clone(), a.cover_id, scale));
         }
