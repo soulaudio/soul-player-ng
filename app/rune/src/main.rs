@@ -72,6 +72,8 @@ pub(crate) fn set_locale_pref(s: &mut State, pref: &str) {
 /// Which page the main area shows. The sidebar switches it; `view` dispatches on it.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) enum Route {
+    /// The landing page (library overview + quick actions).
+    Home,
     Library,
     Albums,
     /// An album's detail page; which album is in [`State::open_album`] (a unit
@@ -189,6 +191,9 @@ struct State {
     /// (nav + queue + player), `true` shows the content page with a back bar —
     /// the old app's `mobileShowContent`. Ignored on desktop (both panes show).
     mobile_show_content: bool,
+    /// Primary nav items the user has hidden (by id — see `sidebar::NAV_DEFS`);
+    /// empty = all shown. Toggled from Settings → Navigation, persisted.
+    nav_hidden: Vec<String>,
     /// UI language preference ("system"/"en"/"de"/…); drives the global
     /// `rust_i18n` locale via [`apply_locale`]. Changed by Settings → Language.
     locale_pref: String,
@@ -254,8 +259,14 @@ impl State {
             sidebar_collapsed,
             // The menu is the mobile home view; a nav tap flips this true.
             mobile_show_content: false,
+            nav_hidden: config::load_nav_hidden(),
             locale_pref,
         }
+    }
+
+    /// Whether the primary nav item `id` is currently shown.
+    pub(crate) fn nav_visible(&self, id: &str) -> bool {
+        !self.nav_hidden.iter().any(|h| h == id)
     }
 
     /// Resolve a library track by id. Shared by the now-playing panel
@@ -417,6 +428,7 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
         .grow(1.0)
         .min_h(0.0)
         .child(match s.route {
+            Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
             Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
             Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
             Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
@@ -429,6 +441,7 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
 /// The current page's title, shown in the mobile back bar.
 fn mobile_title(s: &State) -> String {
     match s.route {
+        Route::Home => t!("nav.home").to_string(),
         Route::Library => t!("nav.tracks").to_string(),
         Route::Albums => t!("nav.albums").to_string(),
         Route::Album => s
@@ -442,6 +455,22 @@ fn mobile_title(s: &State) -> String {
             .unwrap_or_else(|| t!("nav.artists").to_string()),
         Route::Settings => t!("settings.title").to_string(),
     }
+}
+
+/// Show or hide a primary nav item (Settings → Navigation), persisting the
+/// change. Hiding only removes the sidebar entry; the Settings gear is always
+/// reachable, so the nav can never strand the user.
+pub(crate) fn set_nav_visible(s: &mut State, id: &str, visible: bool) {
+    let was = s.nav_visible(id);
+    if visible == was {
+        return;
+    }
+    if visible {
+        s.nav_hidden.retain(|h| h != id);
+    } else {
+        s.nav_hidden.push(id.to_string());
+    }
+    config::save_nav_hidden(&s.nav_hidden);
 }
 
 /// `AppSpec::setup`: wires the app's `Waker` into the cover-art cache
@@ -512,6 +541,9 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 /// normal use — only Rune's tooling `--scene` flag ever runs them.
 fn scene_settings(s: &mut State) {
     s.route = Route::Settings;
+}
+fn scene_home(s: &mut State) {
+    s.route = Route::Home;
 }
 fn scene_albums(s: &mut State) {
     s.route = Route::Albums;
@@ -602,6 +634,7 @@ fn main() -> anyhow::Result<()> {
         on_key: Some(handle_key),
         scenes: &[
             ("settings", scene_settings),
+            ("home", scene_home),
             ("albums", scene_albums),
             ("album-detail", scene_album_detail),
             ("artists", scene_artists),
@@ -1405,6 +1438,126 @@ mod tests {
             }],
             "Play All plays only this artist's tracks, from the top"
         );
+    }
+
+    // ── Configurable navigation + Home ───────────────────────────────────────
+
+    #[test]
+    fn the_sidebar_offers_a_home_nav_item_by_default() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.nav_hidden = Vec::new();
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("nav-home").is_some(),
+            "Home is a nav item, shown by default"
+        );
+    }
+
+    #[test]
+    fn a_hidden_nav_item_is_absent_from_the_sidebar() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.nav_hidden = vec!["artists".into(), "home".into()];
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("nav-artists").is_none(),
+            "a hidden item leaves the nav"
+        );
+        assert!(rt.find("nav-home").is_none());
+        assert!(rt.find("nav-albums").is_some(), "non-hidden items remain");
+        assert!(rt.find("nav-library").is_some());
+    }
+
+    #[test]
+    fn toggling_navigation_in_settings_hides_the_item_and_persists() {
+        // Redirect config to a scratch dir so the real user config is untouched.
+        let dir = std::env::temp_dir().join("soul-player-test-nav-toggle");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        config::use_test_config_dir(dir);
+
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Settings;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(rt.state.nav_visible("albums"), "albums shown by default");
+        assert!(rt.find("nav-albums").is_some());
+        click(&mut rt, "nav-toggle-albums");
+        assert!(!rt.state.nav_visible("albums"), "the toggle hides albums");
+        assert!(
+            rt.find("nav-albums").is_none(),
+            "the hidden item leaves the sidebar immediately"
+        );
+        assert!(
+            config::load_nav_hidden().iter().any(|h| h == "albums"),
+            "the choice persists to (the test) config"
+        );
+    }
+
+    #[test]
+    fn the_home_page_previews_albums_plays_all_and_opens_one() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.route = Route::Home;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(rt.find("home-play-all").is_some(), "Home offers Play all");
+        assert!(
+            rt.find("home-album-0").is_some(),
+            "Home previews the library's albums"
+        );
+        click(&mut rt, "home-play-all");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 0
+            }],
+            "Play all plays the whole library from the top"
+        );
+        click(&mut rt, "home-album-0");
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "an album tile opens its detail page"
+        );
+        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
     }
 
     /// Clicking the card body (its title/artist area, not the play button) opens

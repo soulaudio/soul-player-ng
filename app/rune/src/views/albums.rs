@@ -26,16 +26,16 @@ const MIN_CARD: f32 = 130.0;
 
 /// One grouped album: display name, its artist, a track id to draw the cover
 /// from, and every track id (in library order) to play on click.
-struct Album {
-    name: String,
-    artist: String,
-    cover_id: u32,
-    ids: Vec<u32>,
+pub(crate) struct Album {
+    pub(crate) name: String,
+    pub(crate) artist: String,
+    pub(crate) cover_id: u32,
+    pub(crate) ids: Vec<u32>,
 }
 
 /// Group the flat library into albums, preserving first-seen (library) order so
 /// the grid follows the baked sort. Tracks with no album fall under "Unknown".
-fn group_albums(library: &[TrackView]) -> Vec<Album> {
+pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     let mut albums: Vec<Album> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for t in library {

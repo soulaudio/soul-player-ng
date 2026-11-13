@@ -22,7 +22,7 @@ const DETAIL_COVER: f32 = 176.0;
 
 /// One grouped artist: display name, a track id to draw a cover from, and every
 /// track id (in library order) for Play All / the detail list.
-struct Artist {
+pub(crate) struct Artist {
     name: String,
     cover_id: u32,
     ids: Vec<u32>,
@@ -30,7 +30,7 @@ struct Artist {
 
 /// Group the flat library by artist, preserving first-seen (library) order so
 /// the grid follows the baked sort. Tracks with no artist fall under "Unknown".
-fn group_artists(library: &[TrackView]) -> Vec<Artist> {
+pub(crate) fn group_artists(library: &[TrackView]) -> Vec<Artist> {
     let mut artists: Vec<Artist> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
     for t in library {

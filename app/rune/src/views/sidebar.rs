@@ -34,6 +34,62 @@ const HANDLE_WIDTH: f32 = 6.0;
 /// The app version, shown muted in the footer beside the Settings gear.
 const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
+/// A primary nav item: its config id (persisted hidden-set key), its element
+/// key, and the route it opens. The label comes from [`nav_label`].
+pub(crate) struct NavDef {
+    pub(crate) id: &'static str,
+    pub(crate) key: &'static str,
+    pub(crate) route: Route,
+}
+
+/// The primary nav, in the original's order (Home, Albums, Artists, Tracks).
+/// Settings stays in the footer gear, not here. Each item is individually
+/// show/hide-able via Settings → Navigation (`State::nav_visible`).
+pub(crate) const NAV_DEFS: &[NavDef] = &[
+    NavDef {
+        id: "home",
+        key: "nav-home",
+        route: Route::Home,
+    },
+    NavDef {
+        id: "albums",
+        key: "nav-albums",
+        route: Route::Albums,
+    },
+    NavDef {
+        id: "artists",
+        key: "nav-artists",
+        route: Route::Artists,
+    },
+    NavDef {
+        id: "tracks",
+        key: "nav-library",
+        route: Route::Library,
+    },
+];
+
+/// The localized label for nav item `id` (a dynamic `t!` key isn't allowed, so
+/// this maps each id to its literal key). Shared by the sidebar and the
+/// Settings → Navigation toggles.
+pub(crate) fn nav_label(id: &str) -> String {
+    match id {
+        "home" => t!("nav.home").to_string(),
+        "albums" => t!("nav.albums").to_string(),
+        "artists" => t!("nav.artists").to_string(),
+        _ => t!("nav.tracks").to_string(),
+    }
+}
+
+/// Whether `route` should light up nav item `def` — a detail sub-route (an
+/// album/artist page) lights its parent tab.
+fn nav_active(route: Route, def: &NavDef) -> bool {
+    match def.route {
+        Route::Albums => matches!(route, Route::Albums | Route::Album),
+        Route::Artists => matches!(route, Route::Artists | Route::Artist),
+        other => route == other,
+    }
+}
+
 /// A clickable nav entry that switches `State::route`. A large semibold label
 /// with a trailing status dot — filled with the primary colour when active, a
 /// faint ring otherwise — mirroring the old app's sidebar nav.
@@ -121,34 +177,23 @@ pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32, full_width: b
     shell
         // Nav (old app's `p-4 pt-6`): just the page link — Settings lives in the
         // footer gear below, as the original.
-        .child(
-            col()
-                .key("nav")
-                .px(space::LG)
-                .pt(space::XL)
-                .pb(space::LG)
-                .child(nav_item(
-                    "nav-library",
-                    t!("nav.tracks").to_string(),
-                    Route::Library,
-                    s.route == Route::Library,
-                    p,
-                ))
-                .child(nav_item(
-                    "nav-albums",
-                    t!("nav.albums").to_string(),
-                    Route::Albums,
-                    matches!(s.route, Route::Albums | Route::Album),
-                    p,
-                ))
-                .child(nav_item(
-                    "nav-artists",
-                    t!("nav.artists").to_string(),
-                    Route::Artists,
-                    matches!(s.route, Route::Artists | Route::Artist),
-                    p,
-                )),
-        )
+        .child({
+            // Render the primary nav from NAV_DEFS, skipping items the user has
+            // hidden (Settings → Navigation). Order mirrors the original.
+            let mut nav = col().key("nav").px(space::LG).pt(space::XL).pb(space::LG);
+            for def in NAV_DEFS {
+                if s.nav_visible(def.id) {
+                    nav = nav.child(nav_item(
+                        def.key,
+                        nav_label(def.id),
+                        def.route,
+                        nav_active(s.route, def),
+                        p,
+                    ));
+                }
+            }
+            nav
+        })
         .child(queue_section(s, p, scale))
         .child(player_panel(s, p, cx, scale))
         .child(settings_footer(s, p))

@@ -16,9 +16,33 @@ use soul_player_host::ReplayGainMode;
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
 
+#[cfg(test)]
+thread_local! {
+    /// Per-test-thread config directory override, so tests that persist settings
+    /// never read or write the real user config.
+    static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Redirect config reads/writes to `dir` for the current test thread. Call at
+/// the start of any test that toggles a persisted setting.
+#[cfg(test)]
+pub(crate) fn use_test_config_dir(dir: PathBuf) {
+    TEST_CONFIG_DIR.with(|d| *d.borrow_mut() = Some(dir));
+}
+
+/// The config directory — the test override when set, else the OS config dir.
+fn config_dir() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(d) = TEST_CONFIG_DIR.with(|d| d.borrow().clone()) {
+        return Some(d);
+    }
+    Some(dirs::config_dir()?.join("soul-player"))
+}
+
 /// `<config>/soul-player/config.toml` — the one settings file.
 fn config_path() -> Option<PathBuf> {
-    Some(dirs::config_dir()?.join("soul-player").join("config.toml"))
+    Some(config_dir()?.join("config.toml"))
 }
 
 /// The on-disk settings. `#[serde(default)]` fills any field a config written by
@@ -36,6 +60,10 @@ struct Config {
     sidebar_collapsed: bool,
     /// UI language preference: `system` | `en` | `de` | `es` | `zh` | `cs`.
     locale: String,
+    /// Primary nav items the user has hidden (by id: `home`/`albums`/`artists`/
+    /// `tracks`). Empty = all shown. Storing the *hidden* set means a new nav
+    /// item added in a later build defaults to visible.
+    nav_hidden: Vec<String>,
 }
 
 impl Default for Config {
@@ -46,6 +74,7 @@ impl Default for Config {
             sidebar_width: DEFAULT_WIDTH,
             sidebar_collapsed: false,
             locale: "system".into(),
+            nav_hidden: Vec::new(),
         }
     }
 }
@@ -77,7 +106,7 @@ fn save(cfg: &Config) {
 /// Build a `Config` from the legacy plain-text files if any are present, and
 /// persist it as `config.toml` so the migration happens exactly once.
 fn migrate_legacy() -> Option<Config> {
-    let dir = dirs::config_dir()?.join("soul-player");
+    let dir = config_dir()?;
     let mut cfg = Config::default();
     let mut found = false;
     if let Ok(s) = std::fs::read_to_string(dir.join("sources.txt")) {
@@ -154,6 +183,18 @@ pub fn save_sidebar(width: f32, collapsed: bool) {
     let mut cfg = load();
     cfg.sidebar_width = width;
     cfg.sidebar_collapsed = collapsed;
+    save(&cfg);
+}
+
+/// The nav items the user has hidden (empty = all visible).
+pub fn load_nav_hidden() -> Vec<String> {
+    load().nav_hidden
+}
+
+/// Persist the hidden nav items.
+pub fn save_nav_hidden(hidden: &[String]) {
+    let mut cfg = load();
+    cfg.nav_hidden = hidden.to_vec();
     save(&cfg);
 }
 
@@ -434,6 +475,7 @@ mod tests {
             sidebar_width: 300.0,
             sidebar_collapsed: true,
             locale: "de".into(),
+            nav_hidden: vec!["home".into()],
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -442,6 +484,7 @@ mod tests {
         assert_eq!(back.sidebar_width, 300.0);
         assert!(back.sidebar_collapsed);
         assert_eq!(back.locale, "de");
+        assert_eq!(back.nav_hidden, vec!["home".to_string()]);
     }
 
     #[test]
