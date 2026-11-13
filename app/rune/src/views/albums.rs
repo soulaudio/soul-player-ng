@@ -55,10 +55,29 @@ fn group_albums(library: &[TrackView]) -> Vec<Album> {
     albums
 }
 
-/// One album card: a square cover, the title, and the artist; clicking plays the
-/// album from its first track.
+/// The command an album card's play action issues, mirroring the old app's
+/// MediaCard `handlePlayPause`: if a track of this album is the one playing,
+/// toggle pause/resume; otherwise start the album from the top. Pure, so the
+/// view and its test share exactly one rule. "Active" = the now-playing track
+/// belongs to this album.
+fn album_play_command(now_playing: Option<u32>, ids: &[u32]) -> Command {
+    if now_playing.is_some_and(|id| ids.contains(&id)) {
+        Command::TogglePlay
+    } else {
+        Command::PlayContext {
+            ids: ids.to_vec(),
+            start: 0,
+        }
+    }
+}
+
+/// One album card: a square cover, the title, and the artist. Clicking plays the
+/// album, or toggles pause/resume if it is already the playing context.
 fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
     let ids = a.ids.clone();
+    // When this album is the active, playing context the overlay shows a pause
+    // glyph and its press toggles — the old app's MediaCard behaviour.
+    let show_pause = s.now_playing_id.is_some_and(|id| a.ids.contains(&id)) && s.playing;
     col()
         .key(format!("album-{slot}"))
         .w(card_w)
@@ -87,10 +106,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                         .on_press({
                             let ids = ids.clone();
                             move |st: &mut State| {
-                                st.host.send(Command::PlayContext {
-                                    ids: ids.clone(),
-                                    start: 0,
-                                })
+                                st.host.send(album_play_command(st.now_playing_id, &ids))
                             }
                         })
                         .child(
@@ -103,7 +119,17 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                                 .fill(Color::BLACK.alpha(0.5))
                                 .hover(Color::BLACK.alpha(0.3))
                                 .center()
-                                .child(icon(&icons::PLAY, 32.0).color(Color::WHITE)),
+                                .child(
+                                    icon(
+                                        if show_pause {
+                                            &icons::PAUSE
+                                        } else {
+                                            &icons::PLAY
+                                        },
+                                        32.0,
+                                    )
+                                    .color(Color::WHITE),
+                                ),
                         ),
                 ),
         )
@@ -125,12 +151,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                         .truncate(),
                 ),
         )
-        .on_press(move |st: &mut State| {
-            st.host.send(Command::PlayContext {
-                ids: ids.clone(),
-                start: 0,
-            })
-        })
+        .on_press(move |st: &mut State| st.host.send(album_play_command(st.now_playing_id, &ids)))
 }
 
 /// Columns and per-card width for a content pane `pane_w` points wide: fill the
@@ -175,6 +196,34 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_active_album_toggles_play_pause_otherwise_plays_from_the_start() {
+        // The old app's MediaCard play button toggles pause/resume when its own
+        // context is the active one, and starts the entity otherwise. We judge
+        // "active" by the now-playing track belonging to this album.
+        assert_eq!(
+            album_play_command(Some(6), &[5, 6, 7]),
+            Command::TogglePlay,
+            "a track of this album is playing → toggle"
+        );
+        assert_eq!(
+            album_play_command(Some(9), &[5, 6, 7]),
+            Command::PlayContext {
+                ids: vec![5, 6, 7],
+                start: 0
+            },
+            "a different album is playing → play this one from the top"
+        );
+        assert_eq!(
+            album_play_command(None, &[5, 6, 7]),
+            Command::PlayContext {
+                ids: vec![5, 6, 7],
+                start: 0
+            },
+            "nothing playing → play from the top"
+        );
+    }
 
     #[test]
     fn grid_fills_the_pane_with_more_columns_as_it_widens() {
