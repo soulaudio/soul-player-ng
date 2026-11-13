@@ -1338,27 +1338,57 @@ mod tests {
             "the context band header renders"
         );
         assert!(rt.find("clear-queue").is_some(), "Clear is offered");
-        let m0 = ids[1];
+        // Rows are keyed by position: two manual rows at indices 0,1; two context
+        // rows at upcoming slots 3,4 (the 2 manual rows precede them).
         assert!(
-            rt.find(&format!("queue-manual-{m0}")).is_some(),
+            rt.find("queue-manual-0").is_some(),
             "a manual queue row renders"
         );
         assert!(
-            rt.find(&format!("grip-{m0}")).is_some(),
+            rt.find("grip-0").is_some(),
             "the manual row has a drag grip"
         );
         assert!(
-            rt.find(&format!("remove-{m0}")).is_some(),
+            rt.find("remove-0").is_some(),
             "the manual row has a remove control"
         );
-        let c0 = ids[3];
         assert!(
-            rt.find(&format!("queue-context-{c0}")).is_some(),
+            rt.find("queue-context-3").is_some(),
             "a context row renders"
         );
         assert!(
-            rt.find(&format!("grip-{c0}")).is_none(),
-            "context rows are not reorderable (no grip)"
+            rt.find("grip-2").is_none(),
+            "context rows are not reorderable (only the 2 manual rows have grips)"
+        );
+    }
+
+    /// A track that appears more than once in the context — e.g. the same
+    /// recording in several formats, as the test library has — must still produce
+    /// two independently-addressable rows. Queue rows are keyed by position, not
+    /// track id, so duplicate ids never collide into one key.
+    #[test]
+    fn a_repeated_track_in_the_context_yields_distinct_rows() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        s.sidebar_collapsed = false;
+        let id = s.library[0].id;
+        s.now_playing_id = Some(id);
+        s.context_ids = vec![id, id]; // the same track twice
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // No manual band → the two context rows are upcoming slots 1 and 2.
+        assert!(
+            rt.find("queue-context-1").is_some(),
+            "first context row is addressable by its position"
+        );
+        assert!(
+            rt.find("queue-context-2").is_some(),
+            "the second (duplicate-id) context row is addressable by its position"
         );
     }
 
@@ -1415,7 +1445,7 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        click(&mut rt, "queue-manual-10"); // first manual row (index 0)
+        click(&mut rt, "queue-manual-0"); // first manual row (index 0)
         assert_eq!(
             rt.state.host.recorded_commands(),
             vec![Command::PlayUpcoming(1)],
@@ -1435,8 +1465,9 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        // Context row 30 is the 3rd upcoming (2 manual rows precede it): k = 3.
-        click(&mut rt, "queue-context-30");
+        // The first context row is the 3rd upcoming (2 manual rows precede it):
+        // k = 3, and rows are keyed by that position.
+        click(&mut rt, "queue-context-3");
         assert_eq!(
             rt.state.host.recorded_commands(),
             vec![Command::PlayUpcoming(3)],
@@ -1456,7 +1487,7 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        click(&mut rt, "remove-20"); // id 20 is manual index 1
+        click(&mut rt, "remove-1"); // manual index 1
         assert_eq!(
             rt.state.host.recorded_commands(),
             vec![Command::RemoveFromQueue(1)],
@@ -1498,7 +1529,7 @@ mod tests {
         );
         rt.frame(0.0);
         // Press row 0's grip, drag down exactly one row (→ target index 1), release.
-        let (gx, gy) = rt.find("grip-10").expect("manual row grip");
+        let (gx, gy) = rt.find("grip-0").expect("manual row grip");
         rt.pointer_move(gx, gy);
         rt.pointer_down(gx, gy);
         rt.pointer_move(gx, gy + QUEUE_ROW_H);
@@ -1509,6 +1540,39 @@ mod tests {
             rt.state.host.recorded_commands(),
             vec![Command::MoveInQueue { from: 0, to: 1 }],
             "releasing the drag commits a MoveInQueue for the dragged row"
+        );
+    }
+
+    /// Dragging a track that appears twice in the manual queue moves the row the
+    /// user actually grabbed, not the first copy. Rows and grips are keyed by
+    /// position, and the drag reads the row's own index — so grabbing the second
+    /// copy (index 2) and nudging it up one row commits a move FROM index 2, not
+    /// index 0 (where a search-by-track-id would land).
+    #[test]
+    fn dragging_a_repeated_manual_track_moves_the_grabbed_row() {
+        use crate::views::queue::QUEUE_ROW_H;
+        let mut rt = Runtime::new(
+            recording_queue_state(&[10, 20, 10], &[]), // id 10 at index 0 AND index 2
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        // Grab the SECOND copy (index 2) by its position-keyed grip, drag up one row.
+        let (gx, gy) = rt.find("grip-2").expect("the third manual row's grip");
+        rt.pointer_move(gx, gy);
+        rt.pointer_down(gx, gy);
+        rt.pointer_move(gx, gy - QUEUE_ROW_H);
+        rt.frame(0.0);
+        rt.pointer_up(gx, gy - QUEUE_ROW_H);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::MoveInQueue { from: 2, to: 1 }],
+            "the grabbed row (index 2) moves, not the first copy of the same track"
         );
     }
 
@@ -1535,9 +1599,9 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
 
-        // Press the first manual row's grip and drag it down ~1.5 row heights.
+        // Press the first manual row's grip (index 0) and drag it down ~1.5 rows.
         let (gx, gy) = rt
-            .find(&format!("grip-{}", ids[1]))
+            .find("grip-0")
             .expect("the first manual row has a drag grip");
         rt.pointer_move(gx, gy);
         rt.pointer_down(gx, gy);
