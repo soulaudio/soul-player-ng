@@ -25,7 +25,7 @@
 #![forbid(unsafe_code)]
 
 use rune::tok::motion;
-use rune::{Cx, Drag, El, Phase, el};
+use rune::{Cursor, Cx, Drag, El, Phase, el};
 
 use crate::State;
 use crate::theme::Palette;
@@ -38,21 +38,25 @@ use crate::theme::Palette;
 const FALLBACK_W: f32 = 160.0;
 
 /// `value01` (clamped 0..1) renders at height 22 pt (the ported example's
-/// own number) and fills its row's width. Dragging always commits the
-/// dropped-at value on `Phase::Up`; passing `live = true` also commits on
-/// every `Phase::Move`, for a control that should track the pointer
-/// continuously (volume). `live = false` matches the old app's seek bar: no
-/// scrubbing feedback, the seek lands once on release. Keyboard (Tab to
-/// focus, then arrows/Page Up-Down/Home/End) always steps and commits
-/// immediately, as in the ported example. `on_commit` is `Clone` (not
-/// boxed) so the same callback can be shared between the keyboard and
-/// pointer handlers without a `dyn Fn`.
+/// own number) and fills its row's width. Two callbacks split the gesture:
+/// `on_scrub` fires on the initial track press and every `Phase::Move` — a
+/// live preview, so the caller updates the rendered value as the pointer
+/// moves (volume applies it straight away; the seek bar previews a scrub
+/// position without seeking). `on_commit` fires once on `Phase::Up` with the
+/// dropped value — the final action (the actual `Seek`). Keyboard (Tab to
+/// focus, then arrows/Page Up-Down/Home/End) steps via `on_commit`, as in the
+/// ported example. `dragging` (the caller passes whether this slider is the
+/// one being dragged) switches the cursor to a horizontal-resize affordance
+/// for the duration of the drag only. Both callbacks are `Clone` (not boxed)
+/// so they can be shared across the keyboard and pointer handlers without a
+/// `dyn Fn`.
 pub fn slider(
     key: &str,
     value01: f32,
+    dragging: bool,
     cx: &Cx<State>,
-    live: bool,
     p: &Palette,
+    on_scrub: impl Fn(&mut State, f32) + Clone + 'static,
     on_commit: impl Fn(&mut State, f32) + Clone + 'static,
 ) -> El {
     let (h, k, bar) = (22.0, 18.0, 4.0);
@@ -67,14 +71,24 @@ pub fn slider(
         .max(k + 1.0);
     let travel = w - k;
 
+    let key_down = key.to_string();
     let step_commit = on_commit.clone();
-    let drag_commit = on_commit;
+    let scrub = on_scrub;
+    let commit = on_commit;
     el().key(key)
         .role("slider")
         .label(key)
         .range_value(f64::from(v), 0.0, 1.0)
         .range_step(0.01)
         .a11y_value(format!("{:.0}%", v * 100.0))
+        // A horizontal-drag cursor, but only while this slider is actually being
+        // dragged — hovering keeps the plain pointer, so the cursor change reads
+        // as "you are dragging" rather than a persistent hint.
+        .cursor(if dragging {
+            Cursor::ResizeColumn
+        } else {
+            Cursor::Default
+        })
         .on_step(move |s: &mut State, steps, _| {
             step_commit(s, (v + steps as f32 * 0.01).clamp(0.0, 1.0));
         })
@@ -91,41 +105,40 @@ pub fn slider(
             // the last render and this event.
             let drag_travel = (d.w - k).max(1.0);
             let drag_to_value = move |x: f32| ((x - k / 2.0) / drag_travel).clamp(0.0, 1.0);
+            // How far the pointer sits from the knob's centre at press, so dragging
+            // the knob itself doesn't snap it under the pointer. Zero for a track
+            // press (the value jumps to the pointer).
+            let grab = move |d: &Drag| {
+                let knob = k / 2.0 + d.data * drag_travel;
+                if (d.start_x - knob).abs() <= k / 2.0 + 2.0 {
+                    d.start_x - knob
+                } else {
+                    0.0
+                }
+            };
             match d.phase {
                 Phase::Down => {
                     d.data = v;
+                    s.dragging_slider = Some(key_down.clone());
                     let knob = k / 2.0 + v * drag_travel;
                     if (d.x - knob).abs() > k / 2.0 + 2.0 {
-                        // Clicked the track (not the knob): jump straight there.
-                        drag_commit(s, drag_to_value(d.x));
+                        // Pressed the track (not the knob): preview-jump there.
+                        scrub(s, drag_to_value(d.x));
                     }
+                    tx.instant();
                 }
                 Phase::Move => {
-                    if live {
-                        let knob = k / 2.0 + d.data * drag_travel;
-                        let grab = if (d.start_x - knob).abs() <= k / 2.0 + 2.0 {
-                            d.start_x - knob
-                        } else {
-                            0.0
-                        };
-                        drag_commit(s, drag_to_value(d.x - grab));
-                        tx.instant();
-                    }
+                    scrub(s, drag_to_value(d.x - grab(d)));
+                    tx.instant();
                 }
                 Phase::Up => {
-                    if d.cancelled() {
-                        if live {
-                            drag_commit(s, d.data);
-                        }
+                    s.dragging_slider = None;
+                    let final_v = if d.cancelled() {
+                        d.data
                     } else {
-                        let knob = k / 2.0 + d.data * drag_travel;
-                        let grab = if (d.start_x - knob).abs() <= k / 2.0 + 2.0 {
-                            d.start_x - knob
-                        } else {
-                            0.0
-                        };
-                        drag_commit(s, drag_to_value(d.x - grab));
-                    }
+                        drag_to_value(d.x - grab(d))
+                    };
+                    commit(s, final_v);
                 }
             }
         })

@@ -78,7 +78,28 @@ pub static MUSIC: Icon = stroke_icon!(
     r#"<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>"#
 );
 
+/// lucide `palette` — the Appearance settings category. A stroked blob with four
+/// filled swatch dots (each carries its own `fill="currentColor"`, overriding the
+/// group's `fill:none`, so they read as solid dots). Source: lucide.dev/icons/palette.
+pub static PALETTE: Icon = stroke_icon!(
+    "palette",
+    r#"<path d="M12 22a1 1 0 0 1 0-20 10 9 0 0 1 10 9 5 5 0 0 1-5 5h-2.25a1.75 1.75 0 0 0-1.4 2.8l.3.4a1.75 1.75 0 0 1-1.4 2.8z"/><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/>"#
+);
+
+/// lucide `info` — the About settings category (an "i" in a circle). Pure stroke.
+/// Source: lucide.dev/icons/info.
+pub static INFO: Icon = stroke_icon!(
+    "info",
+    r#"<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>"#
+);
+
 pub static PLUS: Icon = stroke_icon!("plus", r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#);
+
+/// lucide `chevron-down` — the disclosure caret on the language dropdown.
+pub static CHEVRON_DOWN: Icon = stroke_icon!("chevron-down", r#"<path d="m6 9 6 6 6-6"/>"#);
+
+/// lucide `check` — marks the selected row in the dropdown panel.
+pub static CHECK: Icon = stroke_icon!("check", r#"<path d="M20 6 9 17l-5-5"/>"#);
 
 /// lucide `grip-vertical` (six dots) — the drag affordance on a reorderable
 /// queue row. Filled circles so it reads at the 16 pt grip size.

@@ -17,7 +17,7 @@ i18n!("locales", fallback = "en");
 
 use std::path::PathBuf;
 
-use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
+use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Linked only to union parley_engine's `complex-scripts` feature on (see
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
@@ -85,9 +85,21 @@ pub(crate) enum Route {
     Settings,
 }
 
+/// Which Settings category the content pane shows — a sub-navigation inside the
+/// Settings route, mirroring the original soul-player's settings rail
+/// (Appearance / Music Data / Audio / About). Ephemeral UI state (not persisted);
+/// defaults to `Appearance` each launch.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum SettingsTab {
+    Appearance,
+    MusicData,
+    Audio,
+    About,
+}
+
 /// Light/dark preference: follow the OS, or force one. Persisted; the Appearance
 /// settings section sets it.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum ThemePref {
     System,
     Light,
@@ -147,6 +159,9 @@ struct State {
     /// Which artist's detail page is showing, when `route == Route::Artist`.
     /// Set from an artist card's body click.
     open_artist: Option<String>,
+    /// Which Settings category the content pane shows (ephemeral; defaults to
+    /// `Appearance`). Switched by the settings page's own category rail.
+    settings_tab: SettingsTab,
     /// Light/dark preference (persisted); `System` follows the OS.
     theme_pref: ThemePref,
     /// Which baked axis the library list is ordered by.
@@ -197,6 +212,17 @@ struct State {
     /// UI language preference ("system"/"en"/"de"/…); drives the global
     /// `rust_i18n` locale via [`apply_locale`]. Changed by Settings → Language.
     locale_pref: String,
+    /// Which in-app dropdown is open, by its key (`None` = none). Ephemeral UI
+    /// state — the themed `views::dropdown` component reads it to show its panel,
+    /// and a full-window backdrop closes it on an outside click.
+    open_dropdown: Option<String>,
+    /// The key of the slider being dragged right now (`None` = none), so it alone
+    /// shows the horizontal-drag cursor. Ephemeral.
+    dragging_slider: Option<String>,
+    /// While the seek bar is being scrubbed, the previewed position in seconds —
+    /// the knob and the elapsed-time label follow it, and the real `Seek` fires
+    /// only on release. `None` when not scrubbing. Ephemeral.
+    scrub_secs: Option<f64>,
 }
 
 impl State {
@@ -239,6 +265,7 @@ impl State {
             route: Route::Library,
             open_album: None,
             open_artist: None,
+            settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
@@ -261,6 +288,9 @@ impl State {
             mobile_show_content: false,
             nav_hidden: config::load_nav_hidden(),
             locale_pref,
+            open_dropdown: None,
+            dragging_slider: None,
+            scrub_secs: None,
         }
     }
 
@@ -282,9 +312,22 @@ impl State {
             Event::Tick(t) => {
                 self.now_playing_id = t.now_playing_id;
                 self.position_secs = t.position_secs;
+                // Hold a committed seek's preview until playback reaches it (and
+                // keep the live preview while still dragging), so the knob doesn't
+                // flick to this stale position and back.
+                self.scrub_secs = settle_scrub(
+                    self.scrub_secs,
+                    self.dragging_slider.as_deref() == Some("seek"),
+                    t.position_secs,
+                );
                 self.duration_secs = t.duration_secs.unwrap_or(0.0);
                 self.playing = matches!(t.state, PlayState::Playing);
-                self.volume = t.volume;
+                // Don't let a stale tick overwrite the volume mid-drag (the drag
+                // sets it optimistically; the host echo catches up after release).
+                if self.dragging_slider.as_deref() != Some("volume") {
+                    self.volume = t.volume;
+                }
+                // Mute lives in the backend (#105): reflect its `Tick.muted`.
                 self.muted = t.muted;
                 self.shuffle = t.shuffle;
                 self.repeat = t.repeat;
@@ -334,6 +377,27 @@ pub(crate) fn set_theme_pref(s: &mut State, pref: ThemePref) {
     config::save_theme_pref(pref.as_config());
 }
 
+/// Switch the active Settings category (ephemeral — not persisted). Used by the
+/// settings page's category rail.
+pub(crate) fn set_settings_tab(s: &mut State, tab: SettingsTab) {
+    s.settings_tab = tab;
+}
+
+/// Open the dropdown with this key, or close it if it is already open (clicking
+/// the trigger again). Only one dropdown is open at a time.
+pub(crate) fn toggle_dropdown(s: &mut State, key: &str) {
+    s.open_dropdown = if s.open_dropdown.as_deref() == Some(key) {
+        None
+    } else {
+        Some(key.to_string())
+    };
+}
+
+/// Close any open dropdown (an outside click, or after a choice is made).
+pub(crate) fn close_dropdown(s: &mut State) {
+    s.open_dropdown = None;
+}
+
 /// Choose + persist the output device (used by the Output settings buttons).
 /// `None` means the system default. Updates the UI selection, writes the config,
 /// and tells the host — which applies it to the NEXT playback session (a live
@@ -369,13 +433,54 @@ pub(crate) fn set_sort(s: &mut State, axis: BrowseAxis) {
     s.library = s.host.views_by(axis);
 }
 
+/// Set the output volume (0..1): clamp, update `State::volume` optimistically so
+/// the UI (slider + %) tracks immediately, and tell the host. Optimistic because
+/// scroll/keyboard nudges are incremental — the next one must read this new value,
+/// not wait for the host's echo. Shared by the volume slider, the Up/Down keys,
+/// and the scroll-over-volume gesture.
+pub(crate) fn set_volume(s: &mut State, v: f32) {
+    let v = v.clamp(0.0, 1.0);
+    s.volume = v;
+    // Raising the volume unmutes (the backend's `VolumeState` clears mute on a
+    // positive level); reflect that optimistically so the speaker icon flips
+    // without waiting for the next `Tick`.
+    if v > 0.0 {
+        s.muted = false;
+    }
+    s.host.send(Command::SetVolume(v));
+}
+
+/// Toggle mute (the volume icon). The backend owns the mute state and the
+/// pre-mute level (`VolumeState`, #105), so this just dispatches `ToggleMute`
+/// and the UI reflects `Tick.muted`.
+pub(crate) fn toggle_mute(s: &mut State) {
+    s.host.send(Command::ToggleMute);
+}
+
+/// How close playback must get to a committed seek target (seconds) before the
+/// seek bar stops previewing it and follows real playback again.
+const SEEK_SETTLE_SECS: f64 = 0.5;
+
+/// The scrub preview to keep for the next frame, given the committed target
+/// (`scrub`), whether the seek bar is still being dragged, and the latest
+/// playback `position`. While dragging, the preview is the live drag position and
+/// is always kept. Once the user lets go, the target is held until playback lands
+/// within [`SEEK_SETTLE_SECS`] of it — so the knob doesn't flick to the stale
+/// position and back while the seek is in flight. Pure, so it's unit-tested
+/// without a backend.
+fn settle_scrub(scrub: Option<f64>, still_dragging: bool, position: f64) -> Option<f64> {
+    match scrub {
+        Some(target) if !still_dragging && (position - target).abs() < SEEK_SETTLE_SECS => None,
+        other => other,
+    }
+}
+
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let p = theme::palette(is_dark(s.theme_pref, cx.system_dark()));
     let scale = cx.env().scale;
     // Keyboard focus ring in the theme's own colour (the old app's
-    // `focus-visible:ring-1 ring-ring`, where `ring` == `primary`), with a small
-    // offset so it reads even on a primary-filled control — in place of Rune's
-    // default OS-accent ring.
+    // `focus-visible:ring-1 ring-ring`, where `ring` == `primary`), in place of
+    // Rune's default OS-accent ring.
     cx.focus_ring(2.0, 2.0, p.primary);
 
     // The root's committed width this frame (= the window width). The first
@@ -388,7 +493,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .unwrap_or(1100.0);
     let mobile = window_w < views::sidebar::MOBILE_BREAKPOINT;
 
-    if mobile {
+    // The shell keeps the stable `"app-root"` key that `window_w` measures above
+    // (a `col`/`row` reports its laid-out width back reliably).
+    let shell = if mobile {
         // Mobile single-pane (the old app's `isMobile`): the sidebar is the
         // full-width "menu" home view; a nav tap flips to full-screen content
         // with a back bar. Collapse and the resize handle are desktop-only.
@@ -417,6 +524,17 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             })
             .child(views::sidebar::resize_handle(s.sidebar_collapsed, &p))
             .child(content_pane(s, &p, cx, scale))
+    };
+
+    // Overlay layer: the shell, plus any open dropdown's panel (Settings →
+    // Language) mounted on top so it draws over everything and escapes the
+    // content scroll viewport's clip (see `views::dropdown`). Empty when nothing
+    // is open — then this is just the shell.
+    let overlays = views::settings::settings_overlays(s, &p, cx);
+    if overlays.is_empty() {
+        shell
+    } else {
+        el().w_full().h_full().child(shell).children(overlays)
     }
 }
 
@@ -518,8 +636,8 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Text(t) if t == " " => s.host.send(Command::TogglePlay),
         Key::Right => s.host.send(Command::Next),
         Key::Left => s.host.send(Command::Prev),
-        Key::Up => s.host.send(Command::SetVolume((s.volume + 0.05).min(1.0))),
-        Key::Down => s.host.send(Command::SetVolume((s.volume - 0.05).max(0.0))),
+        Key::Up => set_volume(s, s.volume + 0.05),
+        Key::Down => set_volume(s, s.volume - 0.05),
         Key::Text(t) if t.eq_ignore_ascii_case("s") => {
             s.host.send(Command::SetShuffle(!s.shuffle));
         }
@@ -544,6 +662,53 @@ fn scene_settings(s: &mut State) {
 }
 fn scene_home(s: &mut State) {
     s.route = Route::Home;
+}
+fn scene_settings_music(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+}
+fn scene_settings_audio(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Audio;
+}
+fn scene_settings_about(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::About;
+}
+/// German settings scenes: the longest-label locale we ship, for catching text
+/// overflow in `--snap`. `apply_locale` (not `set_locale_pref`) so the snapshot
+/// never writes the user's persisted language.
+fn scene_settings_music_de(s: &mut State) {
+    apply_locale("de");
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+}
+fn scene_settings_audio_de(s: &mut State) {
+    apply_locale("de");
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Audio;
+}
+fn scene_settings_appearance_de(s: &mut State) {
+    apply_locale("de");
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Appearance;
+}
+/// Appearance with the language dropdown open, for snapshotting the themed panel.
+fn scene_settings_lang_open(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Appearance;
+    s.open_dropdown = Some("lang-picker".to_string());
+}
+/// Same, forced to the light (Day) palette, for a theme-robustness snapshot.
+fn scene_settings_lang_open_light(s: &mut State) {
+    s.theme_pref = ThemePref::Light;
+    scene_settings_lang_open(s);
+}
+/// Same, in German — confirms the panel's localized "System" + native names.
+fn scene_settings_lang_open_de(s: &mut State) {
+    apply_locale("de");
+    s.theme_pref = ThemePref::Dark;
+    scene_settings_lang_open(s);
 }
 fn scene_albums(s: &mut State) {
     s.route = Route::Albums;
@@ -635,6 +800,15 @@ fn main() -> anyhow::Result<()> {
         scenes: &[
             ("settings", scene_settings),
             ("home", scene_home),
+            ("settings-music", scene_settings_music),
+            ("settings-audio", scene_settings_audio),
+            ("settings-about", scene_settings_about),
+            ("settings-music-de", scene_settings_music_de),
+            ("settings-audio-de", scene_settings_audio_de),
+            ("settings-appearance-de", scene_settings_appearance_de),
+            ("settings-lang-open", scene_settings_lang_open),
+            ("settings-lang-open-light", scene_settings_lang_open_light),
+            ("settings-lang-open-de", scene_settings_lang_open_de),
             ("albums", scene_albums),
             ("album-detail", scene_album_detail),
             ("artists", scene_artists),
@@ -707,7 +881,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use rune::{Cursor, Env, Mods, Runtime};
+    use rune::{Cursor, Env, Mods, Runtime, WheelEvent};
 
     use super::*;
     use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
@@ -794,13 +968,387 @@ mod tests {
         s
     }
 
+    /// Click the element with `key`: find its position, drive a full
+    /// move/down/up pointer gesture there, then re-render. The harness-level
+    /// analogue of a real click, for e2e navigation tests.
+    fn click_key(rt: &mut Runtime<State>, key: &str) {
+        let (x, y) = rt
+            .find(key)
+            .unwrap_or_else(|| panic!("no element with key {key:?} to click"));
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+    }
+
+    /// Walk every laid-out node and return human-readable offenders: a visible
+    /// node whose box leaves the window horizontally, or a text node an ancestor
+    /// clips horizontally. Both are the signature of a label or action row a
+    /// longer locale overflowed because it didn't wrap or shrink. We judge the
+    /// horizontal axis only — vertical overflow is legitimate (the settings pane
+    /// and the queue scroll), so comparing `rect` against `visible`/the window on
+    /// x alone keeps scrolled content from reading as a failure.
+    fn horizontal_overflows(rt: &Runtime<State>, viewport_w: f32) -> Vec<String> {
+        const TOL: f32 = 1.0;
+        let mut bad = Vec::new();
+        for e in rt.elements() {
+            // A node mid-exit or faded out is allowed off-stage.
+            if e.exiting || e.opacity <= 0.01 {
+                continue;
+            }
+            let [x, _y, w, _h] = e.rect;
+            let id = e.key.clone().unwrap_or_else(|| e.path.clone());
+            let shows = e.text.as_deref().unwrap_or("");
+            // (a) the drawn box must stay inside the window horizontally.
+            if x < -TOL || x + w > viewport_w + TOL {
+                bad.push(format!(
+                    "off-window [{id}] text={shows:?} x={x:.0} w={w:.0} (window {viewport_w:.0})"
+                ));
+                continue;
+            }
+            // (b) text must not be horizontally clipped by an ancestor: `visible`
+            // (what ancestors' clips leave) must still span the drawn width.
+            if !shows.is_empty() {
+                let [vx, _vy, vw, _vh] = e.visible;
+                if vx > x + TOL || vw + TOL < w {
+                    bad.push(format!(
+                        "clipped text [{id}] {shows:?} rect_w={w:.0} visible_w={vw:.0}"
+                    ));
+                }
+            }
+        }
+        bad
+    }
+
+    /// Settings must survive every shipped locale without a label or action row
+    /// overflowing the window or being clipped — German and Spanish run far
+    /// longer than the English the layout was first sized against. Renders each
+    /// category in each locale through the real `view` and asserts the layout
+    /// contains itself. This is the regression net for i18n text robustness.
+    #[test]
+    fn settings_layout_contains_itself_in_every_locale() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let tabs = [
+            ("Appearance", SettingsTab::Appearance),
+            ("MusicData", SettingsTab::MusicData),
+            ("Audio", SettingsTab::Audio),
+            ("About", SettingsTab::About),
+        ];
+        // A roomy window and a cramped one: the narrow pass is where button rows
+        // (theme / language / ReplayGain) must wrap rather than overflow.
+        let viewports = [(1100.0_f32, 720.0_f32), (900.0, 640.0)];
+        // One watched folder so the Music Data source row (name + remove ✕) is
+        // exercised too, not just the empty state.
+        let folder = testdata_dir().join("a-reasonably-long-source-folder-name");
+        let mut failures = Vec::new();
+        for &viewport in &viewports {
+            for &loc in LOCALES {
+                for (tab_name, tab) in tabs {
+                    let mut s = settings_state(std::slice::from_ref(&folder), &[]);
+                    s.settings_tab = tab;
+                    // AFTER State::new, which re-applies the persisted locale over ours.
+                    apply_locale(loc);
+                    let mut rt = Runtime::new(s, view, viewport, env);
+                    rt.frame(0.0);
+                    for bad in horizontal_overflows(&rt, viewport.0) {
+                        failures.push(format!("[{loc}/{tab_name}@{}] {bad}", viewport.0));
+                    }
+                }
+            }
+        }
+        apply_locale("en"); // don't leak the locale into sibling tests
+        assert!(
+            failures.is_empty(),
+            "{} settings layout overflow(s) across locales:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// A library scanned from the committed testdata, so Library / Albums / the
+    /// queue render real rows (not just empty states) for the layout sweep.
+    fn populated_state() -> State {
+        let mut s = State::new(PlayerHandle::offline());
+        if let Ok(up) = s.host.add_folder(&testdata_dir()) {
+            apply_watch(&mut s, up);
+        }
+        s
+    }
+
+    /// The same contain-itself invariant as settings, but swept across the whole
+    /// app — Library, Albums and a populated queue/now-playing panel — in every
+    /// locale at two widths. This is the general i18n-overflow net; new views get
+    /// coverage by adding a scene here.
+    #[test]
+    fn app_layout_contains_itself_in_every_locale() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let viewports = [(1100.0_f32, 720.0_f32), (900.0, 640.0)];
+        // Name → state tweak, the same `fn(&mut State)` shape as a `--scene`.
+        type NamedScene = (&'static str, fn(&mut State));
+        let scenes: [NamedScene; 4] = [
+            ("library", |s: &mut State| s.route = Route::Library),
+            ("albums", |s: &mut State| s.route = Route::Albums),
+            // Populates now-playing + both queue bands from the library; the
+            // sidebar panel then renders over whatever route is active.
+            ("queue", scene_queue),
+            ("settings-music", |s: &mut State| {
+                s.route = Route::Settings;
+                s.settings_tab = SettingsTab::MusicData;
+            }),
+        ];
+        let mut failures = Vec::new();
+        for &viewport in &viewports {
+            for &loc in LOCALES {
+                for (scene_name, scene) in scenes {
+                    let mut s = populated_state();
+                    scene(&mut s);
+                    // AFTER State::new, which re-applies the persisted locale.
+                    apply_locale(loc);
+                    let mut rt = Runtime::new(s, view, viewport, env);
+                    rt.frame(0.0);
+                    for bad in horizontal_overflows(&rt, viewport.0) {
+                        failures.push(format!("[{loc}/{scene_name}@{}] {bad}", viewport.0));
+                    }
+                }
+            }
+        }
+        apply_locale("en");
+        assert!(
+            failures.is_empty(),
+            "{} app layout overflow(s) across locales:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// The language picker is the themed `views::dropdown`: pressing the trigger
+    /// opens a floating panel (mounted at the root, escaping the settings scroll
+    /// clip), the choices render, and picking one commits the locale + closes.
+    #[test]
+    fn language_dropdown_opens_renders_and_picks() {
+        // Picking flows through `set_locale_pref`, which writes config — isolate it.
+        config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Appearance;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Closed: the trigger renders, no panel.
+        assert!(
+            rt.find("lang-picker").is_some(),
+            "the language dropdown trigger renders"
+        );
+        assert!(
+            rt.find("lang-picker-menu").is_none(),
+            "the panel is closed initially"
+        );
+        // Open it, then settle the panel's enter transition (it fades/scales in
+        // from opacity 0, so it isn't hit-testable until the animation finishes).
+        click_key(&mut rt, "lang-picker");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(rt.state.open_dropdown.as_deref(), Some("lang-picker"));
+        assert!(
+            rt.find("lang-picker-menu").is_some(),
+            "pressing the trigger opens the panel"
+        );
+        assert!(
+            rt.find("lang-picker-opt-de").is_some(),
+            "the panel lists the language choices"
+        );
+        // Pick German: commits the locale and closes.
+        click_key(&mut rt, "lang-picker-opt-de");
+        assert_eq!(rt.state.locale_pref, "de", "picking commits the locale");
+        assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
+
+        apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
+    }
+
+    /// Architecture: `views::dropdown` is the ONE way to build a dropdown. No view
+    /// may fall back to rune's native picker (`PopupMenu::picker`), which draws an
+    /// OS-styled menu that clashes with the app's look. Native `popup_menu`
+    /// CONTEXT menus (library/queue right-click) are a different control and stay
+    /// allowed — this bans only the picker/select constructor. New pickers go
+    /// through `dropdown::trigger` + `dropdown::panel`.
+    #[test]
+    fn dropdowns_only_use_the_shared_component() {
+        let views_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/views");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&views_dir).expect("read views dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let src = std::fs::read_to_string(&path).expect("read view source");
+            for (i, line) in src.lines().enumerate() {
+                // Only code, not doc/comments that may name the banned API.
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains("PopupMenu::picker") || code.contains(".picker(") {
+                    offenders.push(format!("{name}:{} {}", i + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "dropdowns must use views::dropdown, not rune's native PopupMenu::picker:\n{}",
+            offenders.join("\n")
+        );
+    }
+
+    /// A slider shows the horizontal-drag cursor only while it is actually being
+    /// dragged — hovering keeps the plain cursor, so the change reads as "you are
+    /// dragging" rather than a persistent hint.
+    #[test]
+    fn slider_shows_a_drag_cursor_only_while_dragging() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.volume = 0.5;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("volume").expect("the volume slider renders");
+        // Hover: plain cursor.
+        rt.pointer_move(x, y);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.cursor(),
+            Cursor::Default,
+            "hovering the slider keeps the default cursor"
+        );
+        // Press + move = a drag: the horizontal-resize cursor appears.
+        rt.pointer_down(x, y);
+        rt.pointer_move(x + 12.0, y);
+        rt.frame(0.0);
+        assert_eq!(rt.state.dragging_slider.as_deref(), Some("volume"));
+        assert_eq!(
+            rt.cursor(),
+            Cursor::ResizeColumn,
+            "dragging the slider shows the horizontal-drag cursor"
+        );
+        // Release clears the drag state.
+        rt.pointer_up(x + 12.0, y);
+        rt.frame(0.0);
+        assert_eq!(rt.state.dragging_slider, None);
+    }
+
+    /// Dragging the seek bar scrubs a live preview (knob + elapsed time follow the
+    /// pointer) without seeking on every move, then commits one Seek on release.
+    #[test]
+    fn dragging_the_seek_bar_scrubs_then_commits_on_release() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.duration_secs = 100.0;
+        s.position_secs = 10.0;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("seek").expect("the seek slider renders");
+        // Drag toward the right: a scrub preview appears and moves forward, with
+        // no seek committed mid-drag.
+        rt.pointer_down(x, y);
+        rt.pointer_move(x + 40.0, y);
+        rt.frame(0.0);
+        let scrub = rt
+            .state
+            .scrub_secs
+            .expect("dragging previews a scrub position");
+        assert!(scrub > 10.0, "scrubbed forward from 10s, got {scrub}");
+        // Release commits the seek (sent to the host) and HOLDS that target as the
+        // preview — it is not cleared here, so the knob can't flick back to the
+        // stale position; `State::apply`'s `settle_scrub` clears it once playback
+        // reaches the target (covered by `settle_scrub_holds_the_target...`).
+        rt.pointer_up(x + 40.0, y);
+        rt.frame(0.0);
+        let held = rt
+            .state
+            .scrub_secs
+            .expect("the committed target stays previewed until playback arrives");
+        assert!(
+            (held - scrub).abs() < 5.0,
+            "held target ≈ the dropped position ({held} vs {scrub})"
+        );
+        assert_eq!(rt.state.dragging_slider, None, "the drag has ended");
+    }
+
+    /// Scrolling the wheel over the volume row nudges the volume — up (dy < 0)
+    /// louder, down quieter — the end-to-end path through `on_wheel` →
+    /// `wheel_volume_delta` → `set_volume`. Starts mid-range so both directions
+    /// move (the default 1.0 is already at the ceiling).
+    #[test]
+    fn scrolling_over_the_volume_row_changes_the_volume() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false; // the player panel (volume row) must render
+        s.volume = 0.5;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("volume-row").expect("the volume row renders");
+        // Scroll up → one 5% step louder.
+        rt.wheel_event(WheelEvent::new(0.0, -10.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            (rt.state.volume - 0.55).abs() < 1e-6,
+            "scroll up raised the volume, got {}",
+            rt.state.volume
+        );
+        // Scroll down → back to 0.5.
+        rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            (rt.state.volume - 0.50).abs() < 1e-6,
+            "scroll down lowered the volume, got {}",
+            rt.state.volume
+        );
+    }
+
+    // (The volume icon is a mute toggle driven by the command-based backend mute,
+    // #105 — see `the_speaker_icon_sends_toggle_mute`. The old UI-side toggle test
+    // was dropped in the settings-refresh reconciliation.)
+
+    /// After a seek is committed (the user let go), the knob keeps previewing the
+    /// target until playback actually reaches it, so it doesn't flick to the stale
+    /// position and back. While still dragging, the live preview is always kept.
+    #[test]
+    fn settle_scrub_holds_the_target_until_playback_arrives() {
+        // No scrub pending: nothing to hold.
+        assert_eq!(settle_scrub(None, false, 10.0), None);
+        // Released, seek in flight (playback far from target): keep previewing it.
+        assert_eq!(settle_scrub(Some(50.0), false, 10.0), Some(50.0));
+        // Playback has reached the target: stop previewing.
+        assert_eq!(settle_scrub(Some(50.0), false, 50.2), None);
+        // Still dragging: always keep the live preview, even at the target.
+        assert_eq!(settle_scrub(Some(50.0), true, 50.0), Some(50.0));
+    }
+
     #[test]
     fn settings_route_shows_sources_section_and_add_button() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find("sources").is_some(),
@@ -1106,12 +1654,9 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(
-            settings_state(std::slice::from_ref(&dir), &[]),
-            view,
-            (1100.0, 720.0),
-            env,
-        );
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find(&format!("source-{name}")).is_some(),
@@ -1131,15 +1676,12 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(
-            settings_state(
-                std::slice::from_ref(&missing),
-                std::slice::from_ref(&missing),
-            ),
-            view,
-            (1100.0, 720.0),
-            env,
+        let mut s = settings_state(
+            std::slice::from_ref(&missing),
+            std::slice::from_ref(&missing),
         );
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find(&format!("offline-{name}")).is_some(),
@@ -1195,7 +1737,9 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Audio;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find("replaygain").is_some(),
@@ -1236,9 +1780,10 @@ mod tests {
             col().padding(40.0).child(crate::views::slider::slider(
                 "solo",
                 0.5,
-                cx,
                 false,
+                cx,
                 &p,
+                |_s: &mut State, _v: f32| {},
                 |_s: &mut State, _v: f32| {},
             ))
         }
@@ -1490,10 +2035,7 @@ mod tests {
     #[test]
     fn toggling_navigation_in_settings_hides_the_item_and_persists() {
         // Redirect config to a scratch dir so the real user config is untouched.
-        let dir = std::env::temp_dir().join("soul-player-test-nav-toggle");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        config::use_test_config_dir(dir);
+        config::use_test_config_dir();
 
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
@@ -1814,11 +2356,13 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::About;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
             rt.find("updates").is_some(),
-            "Settings has an Updates section"
+            "Settings has an About/Updates section"
         );
         assert!(
             rt.find("install-update").is_none(),
@@ -1829,6 +2373,7 @@ mod tests {
     #[test]
     fn settings_offers_install_when_update_available() {
         let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::About;
         s.update_available = Some("9.9.9".to_string());
         let env = Env {
             system_dark: true,
@@ -1840,6 +2385,103 @@ mod tests {
             rt.find("install-update").is_some(),
             "a flagged update offers Install & Restart"
         );
+    }
+
+    #[test]
+    fn settings_nav_lists_categories_and_defaults_to_appearance() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        for key in ["cat-appearance", "cat-music-data", "cat-audio", "cat-about"] {
+            assert!(rt.find(key).is_some(), "settings category rail has {key}");
+        }
+        // The default category is Appearance (theme + language cards); the Audio
+        // category's ReplayGain card isn't rendered until it's selected.
+        assert!(
+            rt.find("appearance").is_some(),
+            "default category shows the Appearance card"
+        );
+        assert!(
+            rt.find("language").is_some(),
+            "Appearance also hosts the Language card"
+        );
+        assert!(
+            rt.find("replaygain").is_none(),
+            "ReplayGain lives under the Audio category, not the default view"
+        );
+    }
+
+    #[test]
+    fn clicking_settings_categories_switches_the_content() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Default category is Appearance.
+        assert!(rt.find("appearance").is_some());
+        assert!(rt.find("replaygain").is_none());
+        // Click Audio → the Output + ReplayGain cards appear, Appearance hides.
+        click_key(&mut rt, "cat-audio");
+        assert!(rt.find("output").is_some(), "Audio shows the Output card");
+        assert!(
+            rt.find("replaygain").is_some(),
+            "Audio shows the ReplayGain card"
+        );
+        assert!(
+            rt.find("appearance").is_none(),
+            "the Appearance card is hidden under Audio"
+        );
+        // Click Music Data → the sources card (keyed "sources").
+        click_key(&mut rt, "cat-music-data");
+        assert!(
+            rt.find("sources").is_some(),
+            "Music Data shows the sources card"
+        );
+        assert!(rt.find("replaygain").is_none());
+        // Click About → the version / updater card (keyed "updates").
+        click_key(&mut rt, "cat-about");
+        assert!(rt.find("updates").is_some(), "About shows the version card");
+        assert!(rt.find("sources").is_none());
+        // Back to Appearance.
+        click_key(&mut rt, "cat-appearance");
+        assert!(rt.find("appearance").is_some(), "back to Appearance");
+    }
+
+    #[test]
+    fn settings_controls_apply_their_effect_on_click() {
+        // These clicks persist (theme/ReplayGain `save_*`) — isolate config to a
+        // temp dir so the test never clobbers the user's real settings.
+        config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        // Appearance (the default tab): clicking a theme updates the preference.
+        let mut rt = Runtime::new(settings_state(&[], &[]), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert_eq!(rt.state.settings_tab, SettingsTab::Appearance);
+        click_key(&mut rt, "theme-dark");
+        assert_eq!(rt.state.theme_pref, ThemePref::Dark);
+        click_key(&mut rt, "theme-light");
+        assert_eq!(rt.state.theme_pref, ThemePref::Light);
+
+        // Audio controls: start on the Audio tab so the ReplayGain buttons are
+        // laid out, then clicking a mode flows through to the state.
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Audio;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "rg-track");
+        assert_eq!(rt.state.replaygain_mode, ReplayGainMode::Track);
+        click_key(&mut rt, "rg-album");
+        assert_eq!(rt.state.replaygain_mode, ReplayGainMode::Album);
+        click_key(&mut rt, "rg-off");
+        assert_eq!(rt.state.replaygain_mode, ReplayGainMode::Off);
     }
 
     #[test]
@@ -2134,6 +2776,10 @@ mod tests {
     fn booted(w: f32, h: f32, mutate: impl FnOnce(&mut State)) -> Runtime<State> {
         let mut s = State::new(PlayerHandle::recording());
         s.sidebar_collapsed = false;
+        // Pin the nav visible explicitly — `State::new` loads `nav_hidden` from
+        // the (process-shared) test config, which another test's toggle may have
+        // written, so don't depend on it here.
+        s.nav_hidden = Vec::new();
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         mutate(&mut s);
         let mut rt = Runtime::new(

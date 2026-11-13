@@ -8,8 +8,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Cursor, Drag, El, Phase, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon,
-    row, text,
+    Align, Cursor, Drag, El, Phase, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el,
+    icon, row, text,
 };
 use soul_player_host::Command;
 
@@ -75,10 +75,14 @@ fn band_header(key: &str, label: String, trailing: Option<El>, p: &Palette) -> E
         // so the eyebrow left-aligns with everything else in the sidebar.
         .px(space::LG)
         .child(
+            // `truncate` (ellipsis + shrink-to-0) so a long "Next from <album>"
+            // or a longer-locale eyebrow ellipsizes instead of overflowing the
+            // rail and squeezing the trailing Clear off.
             text(label)
                 .font(type_::SECTION)
                 .color(p.text_secondary)
-                .grow(1.0),
+                .grow(1.0)
+                .truncate(),
         );
     if let Some(t) = trailing {
         r = r.child(t);
@@ -269,15 +273,24 @@ fn empty_state(p: &Palette) -> El {
         .center()
         .gap(space::XS)
         .px(space::MD)
+        // `w_full` + `wrap` bound the lines to the sidebar width and let a longer
+        // locale wrap onto a second line instead of overflowing the rail (it is
+        // only ~288 pt wide); centre the wrapped lines to match the empty state.
         .child(
             text(t!("queue.empty").to_string())
                 .font(type_::CAPTION)
-                .color(p.text_secondary),
+                .color(p.text_secondary)
+                .w_full()
+                .wrap()
+                .align(Align::Center),
         )
         .child(
             text(t!("queue.emptyHint").to_string())
                 .font(type_::CAPTION)
-                .color(p.text_secondary.alpha(0.6)),
+                .color(p.text_secondary.alpha(0.6))
+                .w_full()
+                .wrap()
+                .align(Align::Center),
         )
 }
 

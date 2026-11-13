@@ -10,15 +10,54 @@ use std::collections::HashMap;
 
 use rune::tok::motion;
 use rune::{
-    Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, Waker, col, el, icon, row, text,
+    Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, Waker, WheelEvent, col, el, icon,
+    row, text,
 };
 use soul_player_host::{Command, PlayerHandle, RepeatMode, TrackView};
 
-use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::slider::slider;
+use crate::{State, set_volume, toggle_mute};
+
+/// The researched default volume step for a notched wheel tick — 5%, as
+/// YouTube/Spotify-style players use (and the Up/Down keys). `Shift` drops to a
+/// 1% fine step.
+const VOL_WHEEL_STEP: f32 = 0.05;
+const VOL_WHEEL_STEP_FINE: f32 = 0.01;
+/// Trackpad (precise) deltas are proportional to travel at this gain, capped to
+/// one coarse step per event so a flick can't lurch the volume 0→100.
+const VOL_WHEEL_PRECISE_GAIN: f32 = 0.005;
+const VOL_WHEEL_PRECISE_FINE_GAIN: f32 = 0.001;
+
+/// The volume change for one wheel/trackpad event, following researched best
+/// practice. A notched wheel steps a fixed amount per notch (5%, or 1% with
+/// `Shift`); a trackpad's `precise` deltas move proportionally but are capped to
+/// one coarse step so a fling can't jump far; coasting `momentum` is ignored so a
+/// swipe nudges a few steps rather than flinging. `dy` follows rune's convention
+/// (positive = content moves down = scrolling down), so scrolling UP (`dy < 0`)
+/// raises the volume. Pure, so the mapping is unit-tested without a Runtime.
+fn wheel_volume_delta(e: &WheelEvent) -> f32 {
+    if e.momentum || e.dy == 0.0 {
+        return 0.0;
+    }
+    if e.precise {
+        let gain = if e.mods.shift {
+            VOL_WHEEL_PRECISE_FINE_GAIN
+        } else {
+            VOL_WHEEL_PRECISE_GAIN
+        };
+        (-e.dy * gain).clamp(-VOL_WHEEL_STEP, VOL_WHEEL_STEP)
+    } else {
+        let step = if e.mods.shift {
+            VOL_WHEEL_STEP_FINE
+        } else {
+            VOL_WHEEL_STEP
+        };
+        if e.dy < 0.0 { step } else { -step }
+    }
+}
 
 /// Now-playing cover side, in points — the old app's `w-10` (40 px).
 const COVER_SIZE: f32 = 40.0;
@@ -201,17 +240,21 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
 /// unambiguously reads the slider's own laid-out width, not this row's.
 fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let duration = s.duration_secs;
+    // While scrubbing, the knob and elapsed-time label follow the previewed
+    // position (`scrub_secs`); otherwise they track real playback.
+    let shown_secs = s.scrub_secs.unwrap_or(s.position_secs);
     let value01 = if duration > 0.0 {
-        (s.position_secs / duration).clamp(0.0, 1.0) as f32
+        (shown_secs / duration).clamp(0.0, 1.0) as f32
     } else {
         0.0
     };
+    let dragging = s.dragging_slider.as_deref() == Some("seek");
     row()
         .key("seek-row")
         .gap(ROW_GAP)
         .center_y()
         .child(
-            text(fmt_dur(s.position_secs))
+            text(fmt_dur(shown_secs))
                 .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(TIME_LABEL_W),
@@ -219,13 +262,23 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(slider(
             "seek",
             value01,
+            dragging,
             cx,
-            false,
             p,
+            // Scrub: preview the dragged position (no seek yet), so the knob and
+            // time track the pointer without decoding a seek on every move.
             move |st: &mut State, v: f32| {
-                st.host.send(Command::Seek {
-                    secs: f64::from(v) * duration,
-                });
+                st.scrub_secs = Some(f64::from(v) * duration);
+            },
+            // Commit on release: seek once to the dropped position, and keep
+            // previewing that target (do NOT clear scrub here) until playback
+            // actually reaches it — `State::apply`'s `settle_scrub` clears it then,
+            // so the knob holds steady instead of flicking to the stale position
+            // and back while the seek is in flight.
+            move |st: &mut State, v: f32| {
+                let target = f64::from(v) * duration;
+                st.host.send(Command::Seek { secs: target });
+                st.scrub_secs = Some(target);
             },
         ))
         .child(
@@ -408,14 +461,25 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     // While muted the slider and % read 0 (the old app's `displayVolume`); the
     // real level is preserved in the backend and restored on un-mute.
     let display_vol = if muted { 0.0 } else { s.volume };
+    let dragging = s.dragging_slider.as_deref() == Some("volume");
     row()
         .key("volume-row")
         .gap(ROW_GAP)
         .center_y()
+        // Scrolling anywhere over the whole volume row (icon + slider + %) nudges
+        // the volume — a bigger, more forgiving target than the thin slider.
+        // Returns true to take the gesture so the sidebar never scrolls under it.
+        .on_wheel(|st: &mut State, e: WheelEvent, _tx| {
+            let delta = wheel_volume_delta(&e);
+            if delta != 0.0 {
+                set_volume(st, st.volume + delta);
+            }
+            true
+        })
         .child(
             // The speaker icon is a mute toggle (the old app's VolumeControl); the
             // backend owns the mute state (and the pre-mute level), so the UI just
-            // sends `ToggleMute` and reflects `Tick.muted`.
+            // sends `ToggleMute` and reflects `Tick.muted` (#105).
             el().key("volume-mute")
                 .role("button")
                 .label(
@@ -432,7 +496,7 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 .cursor(Cursor::Pointer)
                 .hover(p.fg.alpha(fx::HOVER))
                 .press(p.fg.alpha(fx::PRESS))
-                .on_press(|st: &mut State| st.host.send(Command::ToggleMute))
+                .on_press(toggle_mute)
                 .child(
                     icon(
                         if muted {
@@ -445,13 +509,16 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                     .color(p.text_secondary),
                 ),
         )
+        // Volume commits live: scrubbing and the final release both set the
+        // volume, so the knob tracks the pointer and the host hears every move.
         .child(slider(
             "volume",
             display_vol,
+            dragging,
             cx,
-            true,
             p,
-            |st: &mut State, v: f32| st.host.send(Command::SetVolume(v)),
+            set_volume,
+            set_volume,
         ))
         .child(
             text(format!("{:.0}", display_vol * 100.0))
@@ -512,9 +579,52 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use rune::{Mods, WheelEvent};
     use soul_player_host::PlayerHandle;
 
-    use super::ArtCache;
+    use super::{ArtCache, wheel_volume_delta};
+
+    /// A notched mouse wheel steps the researched 5% per notch, up on scroll-up
+    /// (dy < 0) and down on scroll-down, regardless of the notch's magnitude.
+    #[test]
+    fn wheel_notched_steps_five_percent_by_direction() {
+        assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, -10.0)), 0.05);
+        assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, 10.0)), -0.05);
+        // One step per notch — a bigger line-delta is still one 5% step.
+        assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, -120.0)), 0.05);
+    }
+
+    /// Shift is fine control: 1% per notch.
+    #[test]
+    fn wheel_shift_is_fine_one_percent() {
+        let fine = WheelEvent::new(0.0, -10.0).mods(Mods {
+            shift: true,
+            ..Default::default()
+        });
+        assert!((wheel_volume_delta(&fine) - 0.01).abs() < 1e-6);
+    }
+
+    /// A trackpad's precise deltas move proportionally to travel, but a fling is
+    /// capped to one coarse step so it can't lurch the volume 0→100.
+    #[test]
+    fn wheel_precise_is_proportional_and_capped() {
+        let small = WheelEvent::new(0.0, -4.0).precise(true);
+        assert!((wheel_volume_delta(&small) - 0.02).abs() < 1e-6); // 4 * 0.005
+        assert_eq!(
+            wheel_volume_delta(&WheelEvent::new(0.0, -400.0).precise(true)),
+            0.05
+        );
+        assert_eq!(
+            wheel_volume_delta(&WheelEvent::new(0.0, 400.0).precise(true)),
+            -0.05
+        );
+    }
+
+    /// A zero delta is a no-op (nothing to change).
+    #[test]
+    fn wheel_zero_delta_is_noop() {
+        assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, 0.0)), 0.0);
+    }
 
     fn testdata_dir() -> PathBuf {
         // app/rune -> repo-root/testdata

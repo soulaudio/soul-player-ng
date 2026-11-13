@@ -24,6 +24,19 @@ unsafe_code = "forbid"
 [profile.dev]
 debug = 0
 
+# Playback decodes through soul-audio-core's cascaded 128-tap FIR DSD decimators
+# and the resampler — far too slow unoptimized to sustain the audio clock, so DSD
+# starves the sink and plays at the WRONG SPEED in a debug build. Optimize the
+# audio pipeline crates at -O3 even in dev so playback is real-time, while the UI
+# code stays debuggable. (soul-audio-core guards this with its own
+# `dsd_decodes_faster_than_real_time` test.)
+[profile.dev.package.soul-audio-core]
+opt-level = 3
+[profile.dev.package.soul-audio-desktop]
+opt-level = 3
+[profile.dev.package.soul-audio-engine]
+opt-level = 3
+
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830", features = ["native-file-dialog"] }
 # Rune's parley stack pulls parley_engine WITHOUT its `complex-scripts` feature,
