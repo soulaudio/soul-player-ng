@@ -2965,6 +2965,219 @@ mod tests {
         );
     }
 
+    // ── Keyboard & accessibility ─────────────────────────────────────────────
+
+    /// The key of the currently-focused element, from the a11y element tree.
+    fn focused_key(rt: &Runtime<State>) -> Option<String> {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.focused)
+            .and_then(|e| e.key)
+    }
+
+    /// Find the rendered element keyed `key`.
+    fn el_info(rt: &Runtime<State>, key: &str) -> rune::ElementInfo {
+        rt.elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some(key))
+            .unwrap_or_else(|| panic!("no element keyed {key}"))
+    }
+
+    /// Press a key and advance a frame (keys dispatch on the next frame).
+    fn key(rt: &mut Runtime<State>, k: Key) {
+        rt.key(KeyEvent {
+            key: k,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+    }
+
+    /// Tab forward until the element keyed `key` is focused, up to `max` presses.
+    fn tab_to(rt: &mut Runtime<State>, target: &str, max: usize) -> bool {
+        for _ in 0..max {
+            if focused_key(rt).as_deref() == Some(target) {
+                return true;
+            }
+            key(rt, Key::Tab);
+        }
+        focused_key(rt).as_deref() == Some(target)
+    }
+
+    /// Keyboard reaches the primary nav and Space activates it: a nav item is a
+    /// labeled, focusable button; Tab lands on it; Space routes to its page
+    /// (without the Space=play shortcut swallowing the activation).
+    #[test]
+    fn keyboard_reaches_and_activates_the_primary_nav() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.nav_hidden = Vec::new();
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        let nav = el_info(&rt, "nav-albums");
+        assert!(nav.focusable, "the nav item is keyboard-focusable");
+        assert_eq!(nav.role, "button", "and exposes a button role");
+        assert!(
+            nav.label.as_deref().is_some_and(|l| !l.is_empty()),
+            "and carries an accessible label"
+        );
+        assert!(
+            tab_to(&mut rt, "nav-albums", 25),
+            "Tab reaches the Albums nav item"
+        );
+        key(&mut rt, Key::Text(" ".into()));
+        assert!(
+            matches!(rt.state.route, Route::Albums),
+            "Space activates the focused nav item (not the play shortcut)"
+        );
+    }
+
+    /// The track list is an accessible list of focusable rows: the container
+    /// carries the `list` role (so assistive tech announces it as a list), each
+    /// row is a focusable button, Tab reaches a row, and Space plays it.
+    #[test]
+    fn the_track_list_is_an_accessible_list_of_focusable_rows() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.nav_hidden = Vec::new();
+        s.library = vec![
+            album_track(1, "A"),
+            album_track(2, "B"),
+            album_track(3, "C"),
+        ];
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        assert_eq!(
+            el_info(&rt, "tracks").role,
+            "list",
+            "the track list is a list group for assistive tech"
+        );
+        let first = el_info(&rt, "track-1");
+        assert!(first.focusable, "each track row is keyboard-focusable");
+        assert_eq!(first.role, "button");
+        assert!(
+            first.label.as_deref().is_some_and(|l| !l.is_empty()),
+            "and carries an accessible name"
+        );
+        assert!(tab_to(&mut rt, "track-1", 30), "Tab reaches a track row");
+        key(&mut rt, Key::Text(" ".into()));
+        assert_eq!(
+            rt.state.host.recorded_commands().last(),
+            Some(&Command::PlayContext {
+                ids: vec![1, 2, 3],
+                start: 0
+            }),
+            "Space plays the focused track"
+        );
+    }
+
+    /// Every interactive control exposes keyboard a11y: focusable, with a role and
+    /// an accessible name. A broad audit across the sidebar, library, transport,
+    /// and each Settings tab — so a regression that drops `.focusable`/`.role`/
+    /// `.label` from a control is caught.
+    #[test]
+    fn interactive_controls_expose_keyboard_a11y() {
+        fn assert_a11y(rt: &Runtime<State>, k: &str) {
+            let e = el_info(rt, k);
+            assert!(e.focusable, "{k} is keyboard-focusable");
+            assert!(
+                !e.role.is_empty() && e.role != "none",
+                "{k} exposes an a11y role (got {:?})",
+                e.role
+            );
+            assert!(
+                e.label.as_deref().is_some_and(|l| !l.is_empty()),
+                "{k} carries an accessible label"
+            );
+        }
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.nav_hidden = Vec::new();
+        s.library = vec![album_track(1, "A")];
+        s.now_playing_id = Some(1);
+        s.playing = true;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        // Sidebar nav + footer, library controls, transport, now-playing.
+        for k in [
+            "nav-home",
+            "nav-albums",
+            "nav-artists",
+            "nav-library",
+            "nav-settings",
+            "sort-artist",
+            "sort-folder",
+            "track-1",
+            "enqueue-1",
+            "play-pause",
+            "shuffle",
+            "repeat",
+            "volume-mute",
+            "now-playing-text",
+        ] {
+            assert_a11y(&rt, k);
+        }
+        // Settings — the category rail + the Appearance tab controls (a fresh
+        // Runtime routed to Settings, the pattern the other settings tests use).
+        let settings_rt = |tab: SettingsTab| {
+            let mut s = State::new(PlayerHandle::offline());
+            s.sidebar_collapsed = false;
+            s.route = Route::Settings;
+            s.settings_tab = tab;
+            let mut rt = Runtime::new(
+                s,
+                view,
+                (1100.0, 720.0),
+                Env {
+                    system_dark: true,
+                    scale: 2.0,
+                },
+            );
+            rt.frame(0.0);
+            rt
+        };
+        let appearance = settings_rt(SettingsTab::Appearance);
+        for k in [
+            "cat-appearance",
+            "cat-audio",
+            "cat-about",
+            "theme-dark",
+            "nav-toggle-home",
+            "nav-toggle-tracks",
+        ] {
+            assert_a11y(&appearance, k);
+        }
+        // The Music Data tab's source actions.
+        let music = settings_rt(SettingsTab::MusicData);
+        assert_a11y(&music, "add-source");
+        assert_a11y(&music, "rescan-sources");
+    }
+
     #[test]
     fn a_wide_window_shows_both_panes_side_by_side() {
         let rt = booted(1100.0, 720.0, |_| {});

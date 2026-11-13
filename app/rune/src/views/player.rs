@@ -210,7 +210,11 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
                 .truncate(),
         );
     if album.is_some() {
+        let a11y_label = album.clone().unwrap_or_default();
         text_col = text_col
+            .role("button")
+            .label(a11y_label)
+            .focusable(true)
             .cursor(Cursor::Pointer)
             .on_press(move |st: &mut State| {
                 if let Some(a) = &album {
