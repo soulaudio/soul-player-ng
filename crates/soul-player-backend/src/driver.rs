@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 
 use soul_audio_control::Player;
 use soul_audio_core::{DeckError, SeekableDecoder, Sink};
-use soul_audio_queue::{SliceContext, TwoLevelQueue};
+use soul_audio_queue::{Repeat, SliceContext, TwoLevelQueue};
 
 use crate::types::{Command, PlayState, QueueState, ReplayGainMode, Tick};
 
@@ -264,13 +264,20 @@ const UPCOMING_CONTEXT_CAP: usize = 64;
 pub fn project_queue<K: Sink, D: SeekableDecoder>(player: &ServicePlayer<K, D>) -> QueueState {
     let q = player.sequencer();
     let manual = q.upnext_len();
+    // `upcoming_iter` is INFINITE under Repeat::All (it loops the context) and
+    // Repeat::One (it freezes on the current). Taken naively that fills the
+    // "Next from…" band with the same tracks over and over — the "shows tracks
+    // twice" bug. Bound it to ONE pass over the other source tracks (`source_len-1`,
+    // the whole context minus the current), still capped for a huge library; under
+    // Repeat::One the source is frozen, so there is no upcoming context at all.
+    let context_cap = if q.repeat() == Repeat::One {
+        0
+    } else {
+        q.source_len().saturating_sub(1).min(UPCOMING_CONTEXT_CAP)
+    };
     QueueState {
         up_next_ids: q.upnext_iter().collect(),
-        context_ids: q
-            .upcoming_iter()
-            .skip(manual)
-            .take(UPCOMING_CONTEXT_CAP)
-            .collect(),
+        context_ids: q.upcoming_iter().skip(manual).take(context_cap).collect(),
         context_pos: q.pos() as u32,
         context_len: q.source_len() as u32,
     }
@@ -400,6 +407,82 @@ mod tests {
         apply_command(&mut p, Command::PlayUpcoming(1), 0).unwrap();
         drive(&mut p, 3);
         assert_eq!(project_tick(&p, 1.0, false).now_playing_id, Some(11));
+    }
+
+    /// A 5-track context playing track 10 at source position 0 (cur = 10).
+    fn band_player() -> ServicePlayer<NullSink, ConstDecoder> {
+        let mut p = player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![10, 20, 30, 40, 50],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        drive(&mut p, 5);
+        p
+    }
+
+    #[test]
+    fn context_band_repeat_off_is_the_remainder() {
+        // Baseline: Repeat::Off already terminates at the source end, so the band is
+        // just the tracks after the current — no bounding needed, and the fix must
+        // not disturb it.
+        let mut p = band_player();
+        apply_command(&mut p, Command::SetRepeat(RepeatMode::Off), 0).unwrap();
+        assert_eq!(project_queue(&p).context_ids, vec![20, 30, 40, 50]);
+    }
+
+    #[test]
+    fn context_band_repeat_all_is_one_pass_not_repeated_cycles() {
+        // THE bug: upcoming_iter loops forever under Repeat::All, so the band must be
+        // bounded to one pass over the OTHER source tracks — the current must not
+        // re-appear, and no track may repeat.
+        let mut p = band_player();
+        apply_command(&mut p, Command::SetRepeat(RepeatMode::All), 0).unwrap();
+        let ctx = project_queue(&p).context_ids;
+        assert_eq!(
+            ctx,
+            vec![20, 30, 40, 50],
+            "Repeat::All band is the album remainder once, not repeated cycles"
+        );
+        assert!(
+            !ctx.contains(&10),
+            "the current track must not re-appear upcoming"
+        );
+    }
+
+    #[test]
+    fn context_band_repeat_all_shuffle_has_no_duplicates() {
+        // Same bound under shuffle: one pass over the four other tracks, no repeats.
+        let mut p = band_player();
+        apply_command(&mut p, Command::SetRepeat(RepeatMode::All), 0).unwrap();
+        apply_command(&mut p, Command::SetShuffle(true), 777).unwrap();
+        let ctx = project_queue(&p).context_ids;
+        let mut uniq = ctx.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(
+            ctx.len(),
+            uniq.len(),
+            "no duplicate tracks under shuffle+Repeat::All"
+        );
+        assert_eq!(ctx.len(), 4, "one pass over the other four source tracks");
+        assert!(!ctx.contains(&10), "current excluded under shuffle too");
+    }
+
+    #[test]
+    fn context_band_repeat_one_is_empty() {
+        // Repeat::One freezes the source on the current track (upcoming_iter yields
+        // the current forever) — so there is NO upcoming context to list.
+        let mut p = band_player();
+        apply_command(&mut p, Command::SetRepeat(RepeatMode::One), 0).unwrap();
+        assert!(
+            project_queue(&p).context_ids.is_empty(),
+            "Repeat::One has no upcoming context band"
+        );
     }
 
     #[test]
