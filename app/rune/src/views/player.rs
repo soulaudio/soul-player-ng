@@ -19,7 +19,7 @@ use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::icons;
 use crate::views::slider::slider;
-use crate::{State, set_volume};
+use crate::{State, set_volume, toggle_mute};
 
 /// The researched default volume step for a notched wheel tick — 5%, as
 /// YouTube/Spotify-style players use (and the Up/Down keys). `Shift` drops to a
@@ -255,13 +255,15 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             move |st: &mut State, v: f32| {
                 st.scrub_secs = Some(f64::from(v) * duration);
             },
-            // Commit on release: seek once to the dropped position, then stop
-            // previewing so the bar follows real playback again.
+            // Commit on release: seek once to the dropped position, and keep
+            // previewing that target (do NOT clear scrub here) until playback
+            // actually reaches it — `State::apply`'s `settle_scrub` clears it then,
+            // so the knob holds steady instead of flicking to the stale position
+            // and back while the seek is in flight.
             move |st: &mut State, v: f32| {
-                st.host.send(Command::Seek {
-                    secs: f64::from(v) * duration,
-                });
-                st.scrub_secs = None;
+                let target = f64::from(v) * duration;
+                st.host.send(Command::Seek { secs: target });
+                st.scrub_secs = Some(target);
             },
         ))
         .child(
@@ -422,17 +424,35 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             }
             true
         })
-        .child(
-            icon(
-                if s.volume <= 0.0 {
-                    &icons::VOLUME_X
+        // The volume icon is a mute toggle: click to drop to 0, click again to
+        // restore the previous volume.
+        .child({
+            let muted = s.volume <= 0.0;
+            el().key("mute")
+                .role("button")
+                .label(if muted {
+                    t!("player.unmute").to_string()
                 } else {
-                    &icons::VOLUME
-                },
-                16.0,
-            )
-            .color(p.text_secondary),
-        )
+                    t!("player.mute").to_string()
+                })
+                .focusable(true)
+                .padding(space::XXS)
+                .radius(radius::SM)
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(0.1))
+                .on_press(toggle_mute)
+                .child(
+                    icon(
+                        if muted {
+                            &icons::VOLUME_X
+                        } else {
+                            &icons::VOLUME
+                        },
+                        16.0,
+                    )
+                    .color(p.text_secondary),
+                )
+        })
         // Volume commits live: scrubbing and the final release both set the
         // volume, so the knob tracks the pointer and the host hears every move.
         .child(slider(

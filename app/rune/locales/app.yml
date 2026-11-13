@@ -33,6 +33,20 @@ player.nothingPlaying:
   zh: '未播放'
   cs: 'Nic se nepřehrává'
   ja: '再生していません'
+player.mute:
+  en: 'Mute'
+  de: 'Stumm'
+  es: 'Silenciar'
+  zh: '静音'
+  cs: 'Ztlumit'
+  ja: 'ミュート'
+player.unmute:
+  en: 'Unmute'
+  de: 'Ton an'
+  es: 'Activar sonido'
+  zh: '取消静音'
+  cs: 'Zrušit ztlumení'
+  ja: 'ミュート解除'
 player.play:
   en: 'Play'
   de: 'Wiedergabe'

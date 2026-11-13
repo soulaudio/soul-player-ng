@@ -198,6 +198,9 @@ struct State {
     /// the knob and the elapsed-time label follow it, and the real `Seek` fires
     /// only on release. `None` when not scrubbing. Ephemeral.
     scrub_secs: Option<f64>,
+    /// The volume to restore when unmuting, set when the user mutes (`Some` =
+    /// currently muted via the button). Ephemeral.
+    premute_volume: Option<f32>,
 }
 
 impl State {
@@ -260,6 +263,7 @@ impl State {
             open_dropdown: None,
             dragging_slider: None,
             scrub_secs: None,
+            premute_volume: None,
         }
     }
 
@@ -276,9 +280,21 @@ impl State {
             Event::Tick(t) => {
                 self.now_playing_id = t.now_playing_id;
                 self.position_secs = t.position_secs;
+                // Hold a committed seek's preview until playback reaches it (and
+                // keep the live preview while still dragging), so the knob doesn't
+                // flick to this stale position and back.
+                self.scrub_secs = settle_scrub(
+                    self.scrub_secs,
+                    self.dragging_slider.as_deref() == Some("seek"),
+                    t.position_secs,
+                );
                 self.duration_secs = t.duration_secs.unwrap_or(0.0);
                 self.playing = matches!(t.state, PlayState::Playing);
-                self.volume = t.volume;
+                // Don't let a stale tick overwrite the volume mid-drag (the drag
+                // sets it optimistically; the host echo catches up after release).
+                if self.dragging_slider.as_deref() != Some("volume") {
+                    self.volume = t.volume;
+                }
                 self.shuffle = t.shuffle;
                 self.repeat = t.repeat;
             }
@@ -392,6 +408,38 @@ pub(crate) fn set_volume(s: &mut State, v: f32) {
     let v = v.clamp(0.0, 1.0);
     s.volume = v;
     s.host.send(Command::SetVolume(v));
+}
+
+/// Toggle mute (the volume icon). Muting remembers the current volume and drops
+/// to 0; unmuting restores it (falling back to full if there's nothing sensible
+/// to restore — e.g. the volume was already 0). Dragging the volume up clears the
+/// remembered value, so the icon then mutes afresh.
+pub(crate) fn toggle_mute(s: &mut State) {
+    if s.volume > 0.0 {
+        s.premute_volume = Some(s.volume);
+        set_volume(s, 0.0);
+    } else {
+        let restore = s.premute_volume.take().filter(|v| *v > 0.0).unwrap_or(1.0);
+        set_volume(s, restore);
+    }
+}
+
+/// How close playback must get to a committed seek target (seconds) before the
+/// seek bar stops previewing it and follows real playback again.
+const SEEK_SETTLE_SECS: f64 = 0.5;
+
+/// The scrub preview to keep for the next frame, given the committed target
+/// (`scrub`), whether the seek bar is still being dragged, and the latest
+/// playback `position`. While dragging, the preview is the live drag position and
+/// is always kept. Once the user lets go, the target is held until playback lands
+/// within [`SEEK_SETTLE_SECS`] of it — so the knob doesn't flick to the stale
+/// position and back while the seek is in flight. Pure, so it's unit-tested
+/// without a backend.
+fn settle_scrub(scrub: Option<f64>, still_dragging: bool, position: f64) -> Option<f64> {
+    match scrub {
+        Some(target) if !still_dragging && (position - target).abs() < SEEK_SETTLE_SECS => None,
+        other => other,
+    }
 }
 
 fn view(s: &State, cx: &mut Cx<State>) -> El {
@@ -1074,13 +1122,21 @@ mod tests {
             .scrub_secs
             .expect("dragging previews a scrub position");
         assert!(scrub > 10.0, "scrubbed forward from 10s, got {scrub}");
-        // Release ends the scrub (the Seek command goes to the host).
+        // Release commits the seek (sent to the host) and HOLDS that target as the
+        // preview — it is not cleared here, so the knob can't flick back to the
+        // stale position; `State::apply`'s `settle_scrub` clears it once playback
+        // reaches the target (covered by `settle_scrub_holds_the_target...`).
         rt.pointer_up(x + 40.0, y);
         rt.frame(0.0);
-        assert_eq!(
-            rt.state.scrub_secs, None,
-            "releasing ends the scrub preview"
+        let held = rt
+            .state
+            .scrub_secs
+            .expect("the committed target stays previewed until playback arrives");
+        assert!(
+            (held - scrub).abs() < 5.0,
+            "held target ≈ the dropped position ({held} vs {scrub})"
         );
+        assert_eq!(rt.state.dragging_slider, None, "the drag has ended");
     }
 
     /// Scrolling the wheel over the volume row nudges the volume — up (dy < 0)
@@ -1115,6 +1171,45 @@ mod tests {
             "scroll down lowered the volume, got {}",
             rt.state.volume
         );
+    }
+
+    /// Clicking the volume icon mutes (volume → 0) and clicking again restores
+    /// the pre-mute volume.
+    #[test]
+    fn clicking_the_mute_icon_toggles_mute() {
+        config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.volume = 0.8;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "mute");
+        assert_eq!(rt.state.volume, 0.0, "muting drops the volume to zero");
+        click_key(&mut rt, "mute");
+        assert!(
+            (rt.state.volume - 0.8).abs() < 1e-6,
+            "unmuting restores the pre-mute volume, got {}",
+            rt.state.volume
+        );
+    }
+
+    /// After a seek is committed (the user let go), the knob keeps previewing the
+    /// target until playback actually reaches it, so it doesn't flick to the stale
+    /// position and back. While still dragging, the live preview is always kept.
+    #[test]
+    fn settle_scrub_holds_the_target_until_playback_arrives() {
+        // No scrub pending: nothing to hold.
+        assert_eq!(settle_scrub(None, false, 10.0), None);
+        // Released, seek in flight (playback far from target): keep previewing it.
+        assert_eq!(settle_scrub(Some(50.0), false, 10.0), Some(50.0));
+        // Playback has reached the target: stop previewing.
+        assert_eq!(settle_scrub(Some(50.0), false, 50.2), None);
+        // Still dragging: always keep the live preview, even at the target.
+        assert_eq!(settle_scrub(Some(50.0), true, 50.0), Some(50.0));
     }
 
     #[test]
