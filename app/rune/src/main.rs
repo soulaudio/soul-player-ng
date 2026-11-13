@@ -22,8 +22,8 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, TrackView,
-    WatchUpdate,
+    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SourceStatus,
+    TrackView, WatchUpdate,
 };
 
 mod config;
@@ -166,10 +166,10 @@ struct State {
     theme_pref: ThemePref,
     /// Which baked axis the library list is ordered by.
     sort_axis: BrowseAxis,
-    /// The watched-folder set (from the host), rendered by Settings → Sources;
-    /// `unavailable` are configured roots currently unreachable (shown "offline").
-    watched_folders: Vec<PathBuf>,
-    unavailable: Vec<PathBuf>,
+    /// The configured sources with their per-source status (from the host),
+    /// rendered by Settings → Sources: each carries its path, enabled flag,
+    /// current availability (an unreachable root shows "offline"), and track count.
+    sources: Vec<SourceStatus>,
     /// The chosen output device (persisted), rendered by Settings → Output;
     /// `None` = follow the system default. Applies to the next playback session.
     output_device: Option<String>,
@@ -228,15 +228,10 @@ struct State {
 impl State {
     fn new(host: PlayerHandle) -> Self {
         let library = host.views();
-        let watched_folders = host.watched_folders();
-        // At startup the host has no fresh WatchUpdate, so derive the offline set
-        // directly: a restored watched root that isn't a readable directory is
-        // unavailable (and shows the badge). Live edits refresh it via apply_watch.
-        let unavailable = watched_folders
-            .iter()
-            .filter(|p| !p.is_dir())
-            .cloned()
-            .collect();
+        // Seed the per-source status from the host (its configured set, each with
+        // live availability). Counts are 0 until the first rescan's WatchUpdate —
+        // live edits refresh the full status via apply_watch.
+        let sources = host.sources();
         // Enumerate the output devices once (computed before `host` is moved into
         // the struct) for the Settings → Output picker.
         let output_devices = host.output_devices();
@@ -270,8 +265,7 @@ impl State {
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
-            watched_folders,
-            unavailable,
+            sources,
             // Restore the persisted device choice (None = system default); the
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
@@ -350,16 +344,17 @@ impl State {
 /// what's watched is separate from what's playing (the host's own contract).
 pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     s.library = up.views;
-    s.watched_folders = s.host.watched_folders();
-    s.unavailable = up.unavailable;
+    s.sources = up.sources;
 }
 
-/// Apply a `WatchUpdate` and persist the new watched set — used by the Sources
-/// add/remove handlers. Kept separate from the pure `apply_watch` so unit tests
-/// never touch the user's config on disk.
+/// Apply a `WatchUpdate` and persist the new source set (with each source's
+/// enabled flag) — used by the Sources add/remove/enable handlers. Kept separate
+/// from the pure `apply_watch` so unit tests never touch the user's config on disk.
 pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
     apply_watch(s, up);
-    config::save_sources(&s.watched_folders);
+    let entries: Vec<(PathBuf, bool)> =
+        s.sources.iter().map(|x| (x.path.clone(), x.enabled)).collect();
+    config::save_sources_enabled(&entries);
 }
 
 /// Resolve the effective dark/light mode from the user's preference.
@@ -787,9 +782,9 @@ fn main() -> anyhow::Result<()> {
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
         host.autoload_from_env()?;
     } else {
-        let saved = config::load_sources();
+        let saved = config::load_sources_with_enabled();
         if !saved.is_empty() {
-            let _ = host.set_folders(&saved);
+            let _ = host.set_sources(&saved);
         }
     }
 
@@ -921,50 +916,51 @@ mod tests {
     }
 
     #[test]
-    fn new_state_starts_on_library_with_host_watched_folders() {
+    fn new_state_starts_on_library_with_no_sources() {
         let s = State::new(PlayerHandle::offline());
         assert!(matches!(s.route, Route::Library));
-        assert!(s.watched_folders.is_empty());
-        assert!(s.unavailable.is_empty());
+        assert!(s.sources.is_empty());
     }
 
     #[test]
-    fn new_state_derives_offline_badge_for_unavailable_watched_roots() {
+    fn new_state_marks_unavailable_restored_roots_offline() {
         let missing = testdata_dir().join("does-not-exist-at-launch");
         let host = PlayerHandle::offline();
         host.set_folders(std::slice::from_ref(&missing)).unwrap();
         let s = State::new(host);
-        assert_eq!(s.watched_folders, vec![missing.clone()]);
-        assert_eq!(
-            s.unavailable,
-            vec![missing],
+        assert_eq!(s.sources.len(), 1);
+        assert_eq!(s.sources[0].path, missing);
+        assert!(
+            !s.sources[0].available,
             "a restored, currently-unavailable root is offline at launch"
         );
     }
 
     #[test]
-    fn apply_watch_folds_a_watchupdate_into_state() {
-        let host = PlayerHandle::offline();
-        let mut s = State::new(host);
-        assert!(s.watched_folders.is_empty());
+    fn apply_watch_folds_sources_into_state() {
+        let mut s = State::new(PlayerHandle::offline());
+        assert!(s.sources.is_empty());
         // add_folder scans the committed testdata (real audio) and returns the
         // WatchUpdate the UI folds in.
         let up = s.host.add_folder(&testdata_dir()).expect("add_folder");
         apply_watch(&mut s, up);
-        assert_eq!(s.watched_folders, vec![testdata_dir()]);
+        assert_eq!(s.sources.len(), 1);
+        assert_eq!(s.sources[0].path, testdata_dir());
+        assert!(s.sources[0].enabled && s.sources[0].available);
         assert!(!s.library.is_empty(), "testdata scanned into the library");
-        assert!(s.unavailable.is_empty());
     }
 
-    /// A `State` routed to Settings with a given watched set + unavailable list.
-    fn settings_state(folders: &[PathBuf], unavailable: &[PathBuf]) -> State {
+    /// A `State` routed to Settings seeded with a given source set. Each source's
+    /// availability is now derived by the host (a path that isn't a readable dir
+    /// reads as offline), so the second argument is retained only for call-site
+    /// compatibility and no longer drives the offline state.
+    fn settings_state(folders: &[PathBuf], _unavailable: &[PathBuf]) -> State {
         let host = PlayerHandle::offline();
         if !folders.is_empty() {
             let _ = host.set_folders(folders);
         }
         let mut s = State::new(host);
         s.route = Route::Settings;
-        s.unavailable = unavailable.to_vec();
         s
     }
 

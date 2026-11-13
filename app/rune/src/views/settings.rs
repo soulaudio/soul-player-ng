@@ -209,7 +209,12 @@ fn rescan_button(p: &Palette) -> El {
         .cursor(Cursor::Pointer)
         .child(text(t!("settings.rescan").to_string()).color(p.fg))
         .on_press(|s: &mut State| {
-            if let Ok(up) = s.host.set_folders(&s.watched_folders) {
+            // Reconcile the current configured set (set_folders preserves each
+            // source's enabled flag), re-aggregating files/roots that changed on
+            // disk. The set itself is unchanged, so no save (apply_watch).
+            let roots: Vec<std::path::PathBuf> =
+                s.sources.iter().map(|x| x.path.clone()).collect();
+            if let Ok(up) = s.host.set_folders(&roots) {
                 apply_watch(s, up);
             }
         })
@@ -218,9 +223,10 @@ fn rescan_button(p: &Palette) -> El {
 /// One watched folder: name, an "offline" badge if currently unavailable, and a
 /// remove (✕) that drops it from the set and re-aggregates.
 fn source_row(s: &State, p: &Palette, index: usize) -> El {
-    let folder = s.watched_folders[index].clone();
+    let status = &s.sources[index];
+    let folder = status.path.clone();
     let name = basename(&folder);
-    let unavailable = s.unavailable.iter().any(|u| u == &folder);
+    let unavailable = !status.available;
     let remove_for = folder.clone();
     let mut r = row()
         .key(format!("source-{name}"))
@@ -466,10 +472,10 @@ fn music_data_card(s: &State, p: &Palette) -> El {
             .child(rescan_button(p))
             .child(add_source_button(p)),
     );
-    if s.watched_folders.is_empty() {
+    if s.sources.is_empty() {
         c = c.child(text(t!("settings.noSources").to_string()).color(p.text_secondary));
     } else {
-        for i in 0..s.watched_folders.len() {
+        for i in 0..s.sources.len() {
             c = c.child(source_row(s, p, i));
         }
     }

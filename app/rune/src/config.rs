@@ -74,6 +74,9 @@ struct Config {
     /// `tracks`). Empty = all shown. Storing the *hidden* set means a new nav
     /// item added in a later build defaults to visible.
     nav_hidden: Vec<String>,
+    /// Paths (a subset of `sources`) the user has disabled. Absent in old configs
+    /// → everything enabled. Storing the *disabled* subset keeps migration free.
+    sources_disabled: Vec<String>,
 }
 
 impl Default for Config {
@@ -85,6 +88,7 @@ impl Default for Config {
             sidebar_collapsed: false,
             locale: "system".into(),
             nav_hidden: Vec::new(),
+            sources_disabled: Vec::new(),
         }
     }
 }
@@ -150,18 +154,56 @@ fn migrate_legacy() -> Option<Config> {
 
 // --- per-setting API (each save_* load-modify-writes the one file) ---
 
-/// The saved watched folders (empty if none).
+/// The saved watched folders (empty if none). Superseded by
+/// [`load_sources_with_enabled`]; retained for back-compat (and the config tests).
+#[allow(dead_code)]
 pub fn load_sources() -> Vec<PathBuf> {
     load().sources.into_iter().map(PathBuf::from).collect()
 }
 
 /// Persist the watched folders. Only UTF-8-representable paths are saved — the
-/// rare non-UTF-8 path is skipped rather than corrupting the file.
+/// rare non-UTF-8 path is skipped rather than corrupting the file. This plain
+/// source-list save carries no per-source enabled info, so it clears any stored
+/// disabled subset (everything becomes enabled) rather than stranding a stale
+/// flag; `save_sources_enabled` is the enabled-aware counterpart. Retained for
+/// back-compat (and exercised by the config tests).
+#[allow(dead_code)]
 pub fn save_sources(folders: &[PathBuf]) {
     let mut cfg = load();
     cfg.sources = folders
         .iter()
         .filter_map(|p| p.to_str().map(String::from))
+        .collect();
+    cfg.sources_disabled.clear();
+    save(&cfg);
+}
+
+/// The saved sources paired with their enabled flag. A path absent from
+/// `sources_disabled` (which includes every path in an old config written before
+/// the field existed) loads as enabled.
+pub fn load_sources_with_enabled() -> Vec<(PathBuf, bool)> {
+    let cfg = load();
+    let disabled: std::collections::HashSet<&str> =
+        cfg.sources_disabled.iter().map(String::as_str).collect();
+    cfg.sources
+        .iter()
+        .map(|s| (PathBuf::from(s), !disabled.contains(s.as_str())))
+        .collect()
+}
+
+/// Persist the sources together with their enabled flags: the full set goes to
+/// `sources`, and the disabled subset to `sources_disabled`. Only UTF-8 paths are
+/// saved (a non-UTF-8 path is skipped rather than corrupting the file).
+pub fn save_sources_enabled(entries: &[(PathBuf, bool)]) {
+    let mut cfg = load();
+    cfg.sources = entries
+        .iter()
+        .filter_map(|(p, _)| p.to_str().map(String::from))
+        .collect();
+    cfg.sources_disabled = entries
+        .iter()
+        .filter(|(_, en)| !en)
+        .filter_map(|(p, _)| p.to_str().map(String::from))
         .collect();
     save(&cfg);
 }
@@ -474,6 +516,7 @@ mod tests {
             sidebar_collapsed: true,
             locale: "de".into(),
             nav_hidden: vec!["home".into()],
+            sources_disabled: Vec::new(),
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -483,6 +526,23 @@ mod tests {
         assert!(back.sidebar_collapsed);
         assert_eq!(back.locale, "de");
         assert_eq!(back.nav_hidden, vec!["home".to_string()]);
+    }
+
+    #[test]
+    fn sources_disabled_roundtrips_and_old_config_is_all_enabled() {
+        use_test_config_dir();
+        save_sources_enabled(&[(PathBuf::from("/a"), true), (PathBuf::from("/b"), false)]);
+        let back = load_sources_with_enabled();
+        assert_eq!(
+            back,
+            vec![(PathBuf::from("/a"), true), (PathBuf::from("/b"), false)]
+        );
+        // A legacy config (only `sources`, no `sources_disabled`) loads all-enabled.
+        save_sources(&[PathBuf::from("/a"), PathBuf::from("/b")]);
+        assert_eq!(
+            load_sources_with_enabled(),
+            vec![(PathBuf::from("/a"), true), (PathBuf::from("/b"), true)]
+        );
     }
 
     #[test]
