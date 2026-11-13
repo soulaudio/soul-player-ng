@@ -1271,6 +1271,77 @@ mod tests {
         );
     }
 
+    /// Clicking the row of the track that is already playing toggles pause/resume
+    /// (the old app's TrackList current-row control), rather than restarting it.
+    #[test]
+    fn clicking_the_now_playing_track_row_toggles_pause() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.now_playing_id = Some(1);
+        s.playing = true;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "track-1"); // the current track's row
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::TogglePlay],
+            "re-clicking the playing row pauses, not restarts"
+        );
+    }
+
+    /// Clicking a different track's row plays the library from that track.
+    #[test]
+    fn clicking_a_non_playing_track_row_plays_it() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.now_playing_id = Some(1);
+        s.playing = true;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "track-2"); // not the current track
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 1
+            }],
+            "clicking another row plays the library from that track"
+        );
+    }
+
+    /// Clicking the now-playing title/artist opens that track's album detail page
+    /// (the old app's TrackInfo navigates to the album).
+    #[test]
+    fn clicking_the_now_playing_track_opens_its_album() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")]; // album "Alb"
+        s.now_playing_id = Some(1);
+        s.playing = true;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "now-playing-text");
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "the now-playing title opens its album"
+        );
+        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
+    }
+
     #[test]
     fn settings_shows_updates_section_without_install_by_default() {
         let env = Env {

@@ -227,10 +227,12 @@ fn back_button(p: &Palette) -> El {
         .on_press(|st: &mut State| st.route = crate::Route::Albums)
 }
 
-/// One row on the album detail page: track number (or ▶ when playing), title and
-/// duration. Clicking plays the album from that track.
+/// One row on the album detail page: the track number (or a ⏸/▶ state glyph when
+/// it's the current track), title and duration. Clicking plays the album from
+/// that track, or toggles pause/resume when it is already the one playing.
 fn detail_track_row(
     now_playing: Option<u32>,
+    is_playing: bool,
     p: &Palette,
     ids: &[u32],
     i: usize,
@@ -239,7 +241,8 @@ fn detail_track_row(
     let playing = now_playing == Some(t.id);
     let ids = ids.to_vec();
     let start = i as u32;
-    row()
+    let tid = t.id;
+    let mut r = row()
         .key(format!("album-track-{i}"))
         .gap(space::MD)
         .px(space::MD)
@@ -247,40 +250,49 @@ fn detail_track_row(
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(
-            text(if playing {
-                "▶".to_string()
-            } else {
-                format!("{}", i + 1)
-            })
+        .press(p.fg.alpha(fx::PRESS));
+    if playing {
+        // The now-playing row keeps an accent wash (old app's `bg-accent/20`).
+        r = r.fill(p.accent.alpha(0.2));
+    }
+    r.child(
+        text(if playing {
+            (if is_playing { "⏸" } else { "▶" }).to_string()
+        } else {
+            format!("{}", i + 1)
+        })
+        .font(type_::ITEM)
+        .color(if playing { p.accent } else { p.text_secondary })
+        .w(28.0),
+    )
+    .child(
+        text(
+            t.title
+                .clone()
+                .unwrap_or_else(|| t!("library.unknown").to_string()),
+        )
+        .font(type_::ITEM)
+        .color(if playing { p.accent } else { p.fg })
+        .truncate()
+        .grow(1.0),
+    )
+    .child(
+        text(fmt_dur(t.duration_secs))
             .font(type_::ITEM)
-            .color(if playing { p.accent } else { p.text_secondary })
-            .w(28.0),
-        )
-        .child(
-            text(
-                t.title
-                    .clone()
-                    .unwrap_or_else(|| t!("library.unknown").to_string()),
-            )
-            .font(type_::ITEM)
-            .color(if playing { p.accent } else { p.fg })
-            .truncate()
-            .grow(1.0),
-        )
-        .child(
-            text(fmt_dur(t.duration_secs))
-                .font(type_::ITEM)
-                .color(p.text_secondary)
-                .w(56.0),
-        )
-        .on_press(move |st: &mut State| {
-            st.host.send(Command::PlayContext {
+            .color(p.text_secondary)
+            .w(56.0),
+    )
+    .on_press(move |st: &mut State| {
+        let cmd = if st.now_playing_id == Some(tid) {
+            Command::TogglePlay
+        } else {
+            Command::PlayContext {
                 ids: ids.clone(),
                 start,
-            })
-        })
+            }
+        };
+        st.host.send(cmd);
+    })
 }
 
 /// An album's detail page (the old app's AlbumPage): a back link, then a header
@@ -384,7 +396,14 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     let mut list = col().key("album-tracks").gap(space::XXS);
     for (i, &id) in album.ids.iter().enumerate() {
         if let Some(t) = s.library.iter().find(|t| t.id == id) {
-            list = list.child(detail_track_row(s.now_playing_id, p, &album.ids, i, t));
+            list = list.child(detail_track_row(
+                s.now_playing_id,
+                s.playing,
+                p,
+                &album.ids,
+                i,
+                t,
+            ));
         }
     }
 
