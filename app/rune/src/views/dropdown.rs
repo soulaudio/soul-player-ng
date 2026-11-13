@@ -81,8 +81,10 @@ where
         .focus_return(anchor_key.to_string())
         .fill(p.card)
         .radius(radius::MD)
+        // Border + card surface alone separate the panel from the content; a
+        // foreground-tinted drop shadow read as a glow in dark mode (p.fg is
+        // light there), so there's no shadow.
         .border_sides([1.0, 1.0, 1.0, 1.0], p.border)
-        .shadow(4.0, 16.0, p.fg.alpha(0.18))
         .padding(space::XXS)
         .gap(2.0)
         .min_h(0.0)
