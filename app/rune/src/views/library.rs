@@ -99,14 +99,20 @@ fn track_row(
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
+        .press(p.fg.alpha(fx::PRESS));
+    if playing {
+        // The now-playing row keeps a persistent accent wash, as the old app's
+        // TrackList `isCurrentTrack ? bg-accent/20`.
+        r = r.fill(p.accent.alpha(0.2));
+    }
+    r = r
         .child(
+            // The now-playing row shows a play/pause state glyph in the accent
+            // colour (⏸ while playing — click the row to pause; ▶ when paused);
+            // other rows show their track number. The old app's TrackList swaps
+            // the index for a play/pause button on the current/hovered row.
             if playing {
-                // ▶/⏸ are already proven-good glyphs in this font (the
-                // transport's play/pause button uses the same pair), so the
-                // now-playing row swaps its index for one of them instead of
-                // introducing an unverified glyph.
-                text(if s.playing { "▶" } else { "⏸" }).color(p.accent)
+                text(if s.playing { "⏸" } else { "▶" }).color(p.accent)
             } else {
                 text(format!("{}", index + 1)).color(p.text_secondary)
             }
@@ -183,10 +189,18 @@ fn track_row(
         );
     })
     .on_press(move |st: &mut State| {
-        st.host.send(Command::PlayContext {
-            ids: ids.clone(),
-            start,
-        })
+        // Clicking the row plays that track, or toggles pause/resume when it is
+        // already the one playing — so re-clicking the current row pauses rather
+        // than restarting it.
+        let cmd = if st.now_playing_id == Some(tid) {
+            Command::TogglePlay
+        } else {
+            Command::PlayContext {
+                ids: ids.clone(),
+                start,
+            }
+        };
+        st.host.send(cmd);
     })
 }
 
