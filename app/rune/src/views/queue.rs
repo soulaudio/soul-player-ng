@@ -71,7 +71,9 @@ fn band_header(key: &str, label: String, trailing: Option<El>, p: &Palette) -> E
         .key(key.to_string())
         .w_full()
         .center_y()
-        .px(space::XS)
+        // Match the pane inset (the now-playing panel's `p-4`, the nav's `px-4`)
+        // so the eyebrow left-aligns with everything else in the sidebar.
+        .px(space::LG)
         .child(
             text(label)
                 .font(type_::SECTION)
@@ -154,17 +156,20 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         // Keyed by position `i`, not track id: the same track can sit in the
         // queue more than once, which would collide an id key.
         .key(format!("queue-manual-{i}"))
-        .gap(space::XS)
+        // No inter-child gap: the 16 pt grip IS the left gutter, so the cover
+        // lands at the 16 pt pane inset — left-aligned with the now-playing
+        // cover — instead of being pushed out by a grip + gap.
+        .gap(0.0)
         .center_y()
-        .px(space::XS)
+        .pr(space::LG)
         .py(space::XS)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(grip)
-        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale))
-        .child(row_text(s, p, id))
+        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale).key(format!("qcover-m-{i}")))
+        .child(row_text(s, p, id).pl(space::COZY))
         .child(remove)
         .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
             tx.popup_menu(
@@ -192,19 +197,20 @@ fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
         // track can appear more than once in the context (the same recording in
         // several formats), so an id key would collide. `k` is unique per row.
         .key(format!("queue-context-{k}"))
-        .gap(space::XS)
+        .gap(0.0)
         .center_y()
-        .px(space::XS)
+        .pr(space::LG)
         .py(space::XS)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
-        // Align with the manual rows (which lead with a 16 pt grip) so both bands'
-        // covers line up.
-        .child(el().key("ctx-indent").w(16.0))
-        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale))
-        .child(row_text(s, p, id))
+        // A 16 pt leading spacer mirrors the manual rows' grip gutter, so both
+        // bands' covers land at the pane inset, aligned with the now-playing
+        // cover. Keyed by `k` (positional, no id collisions).
+        .child(el().key(format!("ctx-indent-{k}")).w(space::LG))
+        .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale).key(format!("qcover-c-{k}")))
+        .child(row_text(s, p, id).pl(space::COZY))
         .on_press(move |st: &mut State| st.host.send(Command::PlayUpcoming(k)))
 }
 
@@ -265,7 +271,9 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
     let mut content = col()
         .key("queue-content")
         .gap(space::MD)
-        .px(space::MD)
+        // No horizontal padding here: the band headers (`px LG`) and rows (grip/
+        // spacer gutter + `pr LG`) own their own insets so covers line up with
+        // the now-playing cover.
         .pt(space::SM)
         .pb(space::SM);
 
