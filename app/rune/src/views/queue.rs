@@ -111,7 +111,9 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .key(format!("grip-{i}"))
         .role("button")
         .label(t!("queue.reorder").to_string())
-        .size(16.0, QUEUE_ROW_H)
+        // A narrow left-gutter grip (8 pt), so the hover pill can carry a small
+        // left padding while the cover still lands at the 16 pt pane inset.
+        .size(space::SM, QUEUE_ROW_H)
         .center()
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
@@ -120,7 +122,7 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .group_opacity(0.0, 1.0)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
-        .child(icon(&icons::GRIP, 14.0).color(p.text_secondary.alpha(0.6)))
+        .child(icon(&icons::GRIP, 12.0).color(p.text_secondary.alpha(0.6)))
         .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
             Phase::Down => {
                 // The row's own index is the drag origin — a search by track id
@@ -163,14 +165,16 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
 
     // The hover "pill" lives on this inner body (cover + text + remove), not the
     // whole row — so the highlight is an inset rounded pill rather than an odd
-    // edge-to-edge bar. The body starts after the grip gutter, so its cover still
-    // lands at the 16 pt pane inset, left-aligned with the now-playing cover.
+    // edge-to-edge bar. Its own `pl` gives the pill a small left padding so the
+    // highlight has breathing room, while the cover (8 pt grip gutter + this
+    // 8 pt `pl` = 16) still lands at the pane inset, aligned with now-playing.
     let body = row()
         .key(format!("queue-manual-body-{i}"))
         .grow(1.0)
         .min_w(0.0)
         .gap(0.0)
         .center_y()
+        .pl(space::SM)
         .py(space::XS)
         .radius(radius::SM)
         .hover(p.fg.alpha(fx::HOVER))
@@ -214,13 +218,15 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
 /// One context ("Next from") row: cover + title/artist, click to jump there.
 /// Not reorderable/removable — it's the source remainder, not a user list.
 fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
-    // Inset hover pill on the body, matching the manual rows (minus the grip).
+    // Inset hover pill on the body, matching the manual rows (minus the grip):
+    // an 8 pt `pl` for the highlight's left breathing room.
     let body = row()
         .key(format!("queue-context-body-{k}"))
         .grow(1.0)
         .min_w(0.0)
         .gap(0.0)
         .center_y()
+        .pl(space::SM)
         .py(space::XS)
         .radius(radius::SM)
         .hover(p.fg.alpha(fx::HOVER))
@@ -236,10 +242,10 @@ fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
         .center_y()
         .pr(space::SM)
         .cursor(Cursor::Pointer)
-        // A 16 pt leading spacer mirrors the manual rows' grip gutter, so both
-        // bands' covers land at the pane inset, aligned with the now-playing
-        // cover. Keyed by `k` (positional, no id collisions).
-        .child(el().key(format!("ctx-indent-{k}")).w(space::LG))
+        // An 8 pt leading spacer mirrors the manual rows' grip gutter, so both
+        // bands' covers land at the pane inset (8 gutter + 8 body `pl` = 16),
+        // aligned with the now-playing cover. Keyed by `k` (no id collisions).
+        .child(el().key(format!("ctx-indent-{k}")).w(space::SM))
         .child(body)
         .on_press(move |st: &mut State| st.host.send(Command::PlayUpcoming(k)))
 }

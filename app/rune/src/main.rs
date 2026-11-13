@@ -2943,17 +2943,18 @@ mod tests {
             grip_rest < 0.05,
             "the drag grip is hidden at rest, got opacity {grip_rest}"
         );
-        // The hover pill (row body) is inset: it starts at the 16 pt cover inset
-        // (past the grip gutter) and ends inside the sidebar's right edge, rather
-        // than spanning the full width.
+        // The hover pill (row body) is inset on BOTH sides and starts a small
+        // padding (8 pt) to the LEFT of the 16 pt cover — so the highlight has
+        // breathing room — rather than spanning the full width or hugging the
+        // cover's edge.
         let body = rt
             .presented("queue-manual-body-0")
             .expect("row body renders")
             .0;
         let sidebar = rt.presented("sidebar").expect("sidebar renders").0;
         assert!(
-            (body[0] - 16.0).abs() < 0.5,
-            "the pill starts at the 16 pt inset, got {}",
+            (body[0] - 8.0).abs() < 0.5,
+            "the pill starts 8 pt in (left of the 16 pt cover), got {}",
             body[0]
         );
         assert!(
