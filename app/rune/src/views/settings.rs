@@ -10,10 +10,11 @@ use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
+use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
-    State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_output_device,
-    set_replaygain_mode, set_replaygain_preamp, set_theme_pref,
+    State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_nav_visible,
+    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -223,6 +224,74 @@ fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Pal
                 .color(if active { p.bg } else { p.fg }),
         )
         .on_press(move |s: &mut State| set_theme_pref(s, pref))
+}
+
+/// A show/hide toggle for one primary nav item: filled primary when shown,
+/// muted when hidden. Clicking flips it (persisted). The current now-showing
+/// route can be hidden too — the Settings gear is always reachable.
+fn nav_toggle(id: &'static str, visible: bool, p: &Palette) -> El {
+    el().key(format!("nav-toggle-{id}"))
+        .role("button")
+        .label(nav_label(id))
+        .focusable(true)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::MD)
+        .cursor(Cursor::Pointer)
+        .fill(if visible { p.primary } else { p.muted })
+        .hover(if visible {
+            p.bg.alpha(fx::HOVER_FILL)
+        } else {
+            p.fg.alpha(fx::HOVER)
+        })
+        .press(if visible {
+            p.bg.alpha(fx::PRESS_FILL)
+        } else {
+            p.fg.alpha(fx::PRESS)
+        })
+        .child(
+            text(if visible {
+                t!("settings.navShown").to_string()
+            } else {
+                t!("settings.navHidden").to_string()
+            })
+            .font(if visible {
+                type_::ITEM_STRONG
+            } else {
+                type_::ITEM
+            })
+            .color(if visible { p.bg } else { p.fg }),
+        )
+        .on_press(move |s: &mut State| set_nav_visible(s, id, !s.nav_visible(id)))
+}
+
+/// The Navigation section: one show/hide toggle per primary sidebar item, so
+/// the user chooses which pages appear (the original's configurable nav).
+fn navigation_section(s: &State, p: &Palette) -> El {
+    let mut section = col().key("navigation").gap(space::XXS).child(
+        row().padding(space::SM).child(
+            text(t!("settings.navigation").to_string())
+                .font(type_::HEADING)
+                .color(p.fg)
+                .grow(1.0),
+        ),
+    );
+    for def in NAV_DEFS {
+        section = section.child(
+            row()
+                .key(format!("nav-row-{}", def.id))
+                .center_y()
+                .padding(space::SM)
+                .child(
+                    text(nav_label(def.id))
+                        .font(type_::ITEM)
+                        .color(p.fg)
+                        .grow(1.0),
+                )
+                .child(nav_toggle(def.id, s.nav_visible(def.id), p)),
+        );
+    }
+    section
 }
 
 /// The Appearance section: a System / Light / Dark theme override.
@@ -537,6 +606,7 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .key("settings-content")
         .gap(space::SECTION)
         .child(sources_section(s, p))
+        .child(navigation_section(s, p))
         .child(appearance_section(s, p))
         .child(language_section(s, p))
         .child(output_section(s, p))
