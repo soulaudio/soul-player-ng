@@ -125,11 +125,14 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy --all-targets -- -D warnings
       - name: Test (headless)
+        env:
+          RUST_BACKTRACE: "1"
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             xvfb-run -a cargo test
           else
-            cargo test
+            # single-threaded so a hard crash (if any) names the test that caused it
+            cargo test -- --test-threads=1
           fi
 
   ci-success:
