@@ -95,6 +95,9 @@ pub static INFO: Icon = stroke_icon!(
 
 pub static PLUS: Icon = stroke_icon!("plus", r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#);
 
+/// lucide `chevron-down` — the disclosure caret on the language dropdown.
+pub static CHEVRON_DOWN: Icon = stroke_icon!("chevron-down", r#"<path d="m6 9 6 6 6-6"/>"#);
+
 /// lucide `grip-vertical` (six dots) — the drag affordance on a reorderable
 /// queue row. Filled circles so it reads at the 16 pt grip size.
 pub static GRIP: Icon = Icon {

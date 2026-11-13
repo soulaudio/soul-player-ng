@@ -11,7 +11,9 @@
 //! shows while Settings is routed.
 #![forbid(unsafe_code)]
 
-use rune::{Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text};
+use rune::{
+    Cursor, Cx, El, FileDialogOptions, Icon, PopupMenu, ScrollSpec, Tx, col, el, icon, row, text,
+};
 use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
@@ -250,16 +252,58 @@ fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Pal
         .on_press(move |s: &mut State| set_theme_pref(s, pref))
 }
 
-/// One language choice; the active pref is filled with the primary colour. Each
-/// language shows in its own native name; "System" follows the OS locale.
-fn lang_button(label: String, pref: &'static str, active: bool, p: &Palette) -> El {
-    el().key(format!("lang-{pref}"))
-        .padding(space::SM)
+/// The language choices as `(pref id, display title)`: "System" follows the OS
+/// locale (its label localized), each shipped locale in its own native name. The
+/// single source for both the dropdown's current-value label and its menu — keep
+/// the ids in step with `crate::LOCALES`.
+fn language_options() -> Vec<(&'static str, String)> {
+    vec![
+        ("system", t!("settings.langSystem").to_string()),
+        ("en", "English".into()),
+        ("de", "Deutsch".into()),
+        ("es", "Español".into()),
+        ("zh", "中文".into()),
+        ("cs", "Čeština".into()),
+        ("ja", "日本語".into()),
+    ]
+}
+
+/// The language picker as a dropdown (the original's `Select`): a full-width
+/// button showing the current language and a chevron that, on press, opens a
+/// native picker menu with the current value checked. Scales to any number of
+/// locales without the button row wrapping — and can't overflow in a longer
+/// locale since only one value shows at a time.
+fn language_dropdown(s: &State, p: &Palette) -> El {
+    let options = language_options();
+    let current = options
+        .iter()
+        .find(|(id, _)| *id == s.locale_pref)
+        .map(|(_, title)| title.clone())
+        .unwrap_or_else(|| t!("settings.langSystem").to_string());
+    row()
+        .key("lang-picker")
+        .role("button")
+        .label(t!("settings.language").to_string())
+        .focusable(true)
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
         .radius(radius::SM)
+        .fill(p.muted)
         .cursor(Cursor::Pointer)
-        .fill(if active { p.primary } else { p.muted })
-        .child(text(label).color(if active { p.bg } else { p.fg }))
-        .on_press(move |s: &mut State| set_locale_pref(s, pref))
+        .hover(p.fg.alpha(0.06))
+        .child(text(current).color(p.fg).grow(1.0).truncate())
+        .child(icon(&icons::CHEVRON_DOWN, 16.0).color(p.text_secondary))
+        .on_press_tx(move |s: &mut State, tx: &mut Tx| {
+            let menu = PopupMenu::picker(options.clone(), &s.locale_pref);
+            tx.popup_menu(menu, "lang-picker", |s: &mut State, picked, _tx| {
+                if let Some(id) = picked {
+                    set_locale_pref(s, id);
+                }
+            });
+        })
 }
 
 /// One output-device choice; the active device is filled with the primary color.
@@ -336,32 +380,16 @@ fn appearance_card(s: &State, p: &Palette) -> El {
         )
 }
 
-/// Language: System (follow the OS) plus each shipped locale in its native name.
+/// Language: a dropdown of System (follow the OS) plus each shipped locale in its
+/// native name.
 fn language_card(s: &State, p: &Palette) -> El {
-    let cur = s.locale_pref.as_str();
     card("language", p)
         .child(heading(
             t!("settings.language").to_string(),
             t!("settings.languageDesc").to_string(),
             p,
         ))
-        .child(
-            row()
-                .gap(space::SM)
-                .flex_wrap()
-                .child(lang_button(
-                    t!("settings.langSystem").to_string(),
-                    "system",
-                    cur == "system",
-                    p,
-                ))
-                .child(lang_button("English".into(), "en", cur == "en", p))
-                .child(lang_button("Deutsch".into(), "de", cur == "de", p))
-                .child(lang_button("Español".into(), "es", cur == "es", p))
-                .child(lang_button("中文".into(), "zh", cur == "zh", p))
-                .child(lang_button("Čeština".into(), "cs", cur == "cs", p))
-                .child(lang_button("日本語".into(), "ja", cur == "ja", p)),
-        )
+        .child(language_dropdown(s, p))
 }
 
 /// Music Data: the watched-folder set (+ Add Source / Rescan, one row per
