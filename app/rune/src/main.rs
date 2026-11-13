@@ -360,11 +360,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .h_full()
         .fill(p.bg)
         .child(if s.sidebar_collapsed {
-            views::sidebar::collapsed_strip(&p)
+            // Collapsed: a 0-width placeholder keeps the resize handle at a stable
+            // sibling slot, so one drag survives the collapse→expand swap. The
+            // handle itself renders the visible rail.
+            col().key("sidebar-slot").w(0.0).h_full()
         } else {
             views::sidebar::sidebar(s, &p, cx, scale)
         })
-        .child(views::sidebar::resize_handle(&p))
+        .child(views::sidebar::resize_handle(s.sidebar_collapsed, &p))
         .child(col().grow(1.0).min_h(0.0).child(match s.route {
             Route::Library => views::library::track_list(s, &p, cx, scale).grow(1.0),
             Route::Albums => views::albums::albums_page(s, &p, cx, scale).grow(1.0),
@@ -709,12 +712,12 @@ mod tests {
             "the resize handle is present"
         );
         assert!(
-            rt.find("sidebar-collapsed").is_none(),
-            "no collapsed rail while expanded"
+            rt.find("grabber").is_none(),
+            "no collapsed-rail grabber while expanded"
         );
 
-        // Collapsed: the rail replaces the full sidebar; the handle stays so a
-        // drag (or click) can re-open it.
+        // Collapsed: the handle itself becomes the thin rail (same key, so a drag
+        // survives the swap); the full sidebar is gone and the grabber appears.
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = true;
         let mut rt = Runtime::new(
@@ -728,16 +731,16 @@ mod tests {
         );
         rt.frame(0.0);
         assert!(
-            rt.find("sidebar-collapsed").is_some(),
-            "collapsing shows the thin rail"
+            rt.find("sidebar-resize").is_some(),
+            "the handle (now the rail) is present",
+        );
+        assert!(
+            rt.find("grabber").is_some(),
+            "collapsing shows the thin rail with its grabber"
         );
         assert!(
             rt.find("sidebar").is_none(),
             "the full sidebar is gone when collapsed"
-        );
-        assert!(
-            rt.find("sidebar-resize").is_some(),
-            "the handle remains, to re-open"
         );
     }
 
@@ -859,13 +862,13 @@ mod tests {
         );
         rt.frame(0.0);
         assert!(
-            rt.find("sidebar-collapsed").is_some(),
-            "the thin rail replaces the full sidebar"
+            rt.find("grabber").is_some(),
+            "the thin rail (with its grabber) replaces the full sidebar"
         );
         assert!(rt.find("sidebar").is_none(), "the full sidebar is gone");
         assert!(
             rt.find("sidebar-resize").is_some(),
-            "the handle stays, so one gesture can drag back out"
+            "the handle (now the rail) stays, so one gesture drags back out"
         );
     }
 
@@ -893,16 +896,49 @@ mod tests {
         rt.frame(0.0);
         assert!(rt.find("sidebar").is_some(), "the full sidebar is back");
         assert!(
-            rt.find("sidebar-collapsed").is_none(),
-            "the collapsed rail is gone"
+            rt.find("grabber").is_none(),
+            "the collapsed rail (its grabber) is gone"
         );
+    }
+
+    /// Dragging the collapsed rail out LIVE-follows the cursor — the sidebar keeps
+    /// widening as the pointer moves, across the rail→sidebar swap, instead of
+    /// jumping only on release. This is the fix: the rail *is* the resize handle
+    /// (same key), so its drag survives the expand.
+    #[test]
+    fn dragging_out_from_the_collapsed_rail_live_follows_the_cursor() {
+        let mut rt = sidebar_rt(DEFAULT_WIDTH, true);
+        let (hx, hy) = rt.find("sidebar-resize").expect("the collapsed rail");
+        rt.pointer_move(hx, hy);
+        rt.pointer_down(hx, hy); // Down caches STRIP_WIDTH as the drag origin
+        // Past the threshold: expands live during the drag (not on release).
+        rt.pointer_move(hx + 250.0, hy);
+        rt.frame(0.0);
+        assert!(
+            !rt.state.sidebar_collapsed,
+            "expands live mid-drag, not on release"
+        );
+        assert_eq!(rt.state.sidebar_width, STRIP_WIDTH + 250.0);
+        // Keep dragging — the width MUST keep following after the rail became the
+        // full sidebar (the drag persisted because the handle kept its key).
+        rt.pointer_move(hx + 300.0, hy);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.sidebar_width,
+            (STRIP_WIDTH + 300.0).clamp(MIN_WIDTH, MAX_WIDTH),
+            "the sidebar keeps following the cursor after it expands"
+        );
+        rt.pointer_up(hx + 300.0, hy);
+        rt.frame(0.0);
+        assert!(!rt.state.sidebar_collapsed, "stays open on release");
     }
 
     #[test]
     fn collapsed_rail_is_a_thin_strip_with_a_centered_grabber() {
         let mut rt = sidebar_rt(DEFAULT_WIDTH, true);
-        // The rail is the old app's `w-3` (12 px) CollapsedSidebarStrip.
-        let rail = rt.presented("sidebar-collapsed").expect("rail renders").0;
+        // The rail is the old app's `w-3` (12 px) CollapsedSidebarStrip — now the
+        // resize handle itself, so dragging it live-resizes.
+        let rail = rt.presented("sidebar-resize").expect("rail renders").0;
         assert!(
             (rail[2] - STRIP_WIDTH).abs() < 0.5,
             "the collapsed rail is a 12 px strip, got {}",
@@ -921,7 +957,7 @@ mod tests {
             pill[3]
         );
         // Centred within the rail on BOTH axes (horizontal and vertical).
-        let (rail_cx, rail_cy) = rt.find("sidebar-collapsed").unwrap();
+        let (rail_cx, rail_cy) = rt.find("sidebar-resize").unwrap();
         let (pill_cx, pill_cy) = rt.find("grabber").unwrap();
         assert!(
             (pill_cx - rail_cx).abs() < 0.5,
