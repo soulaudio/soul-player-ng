@@ -23,7 +23,7 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 use parley_engine as _;
 use soul_player_host::{
     BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
-    TrackView, WatchUpdate,
+    SourceFormat, TrackView, WatchUpdate,
 };
 
 mod config;
@@ -781,6 +781,30 @@ fn scene_queue(s: &mut State) {
     }
 }
 
+/// Now-playing with a signal path (DSD64 decoded to 44.1 kHz, resampled to a
+/// 48 kHz device, ReplayGain on) so `--snap` can capture the collapsed
+/// signal-path line under the artist.
+fn scene_signal_path(s: &mut State) {
+    scene_queue(s);
+    s.replaygain_mode = ReplayGainMode::Track;
+    s.signal_path = Some(SignalPath {
+        source: SourceFormat::Dsd { rate_hz: 2_822_400 },
+        decoded_rate: 44_100,
+        decoded_bits: 24,
+        channels: 2,
+        replay_gain_db: 2.3,
+        device_rate: 48_000,
+        resampling: true,
+        output_bits: 24,
+    });
+}
+
+/// Same, with the expanded stage-by-stage signal-path panel open.
+fn scene_signal_path_open(s: &mut State) {
+    scene_signal_path(s);
+    s.signal_path_open = true;
+}
+
 fn main() -> anyhow::Result<()> {
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
@@ -841,6 +865,8 @@ fn main() -> anyhow::Result<()> {
             ("collapsed", scene_collapsed),
             ("mobile-content", scene_mobile_content),
             ("queue", scene_queue),
+            ("signal-path", scene_signal_path),
+            ("signal-path-open", scene_signal_path_open),
         ],
         ..AppSpec::new(
             "Soul Player",
