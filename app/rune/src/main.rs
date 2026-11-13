@@ -179,6 +179,10 @@ struct State {
     /// and driven by the drag handle in `views::sidebar`.
     sidebar_width: f32,
     sidebar_collapsed: bool,
+    /// Mobile (narrow window) single-pane state: `false` shows the sidebar
+    /// (nav + queue + player), `true` shows the content page with a back bar —
+    /// the old app's `mobileShowContent`. Ignored on desktop (both panes show).
+    mobile_show_content: bool,
     /// UI language preference ("system"/"en"/"de"/…); drives the global
     /// `rust_i18n` locale via [`apply_locale`]. Changed by Settings → Language.
     locale_pref: String,
@@ -241,6 +245,8 @@ impl State {
             searching: false,
             sidebar_width,
             sidebar_collapsed,
+            // The menu is the mobile home view; a nav tap flips this true.
+            mobile_show_content: false,
             locale_pref,
         }
     }
@@ -353,27 +359,75 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // offset so it reads even on a primary-filled control — in place of Rune's
     // default OS-accent ring.
     cx.focus_ring(2.0, 2.0, p.primary);
-    // The old app's shell: a fixed-width left sidebar (nav label, queue,
-    // player panel) plus the main area's track list filling the rest.
-    row()
-        .w_full()
-        .h_full()
-        .fill(p.bg)
-        .child(if s.sidebar_collapsed {
-            // Collapsed: a 0-width placeholder keeps the resize handle at a stable
-            // sibling slot, so one drag survives the collapse→expand swap. The
-            // handle itself renders the visible rail.
-            col().key("sidebar-slot").w(0.0).h_full()
+
+    // The root's committed width this frame (= the window width). The first
+    // frame has no prior layout to read, so it falls back to a desktop width —
+    // a one-frame settle, invisible in the running app.
+    let window_w = cx
+        .layout_size("app-root")
+        .map(|size| size[0])
+        .filter(|w| *w > 0.0)
+        .unwrap_or(1100.0);
+    let mobile = window_w < views::sidebar::MOBILE_BREAKPOINT;
+
+    if mobile {
+        // Mobile single-pane (the old app's `isMobile`): the sidebar is the
+        // full-width "menu" home view; a nav tap flips to full-screen content
+        // with a back bar. Collapse and the resize handle are desktop-only.
+        let root = col().key("app-root").w_full().h_full().fill(p.bg);
+        if s.mobile_show_content {
+            root.child(views::sidebar::mobile_top_bar(mobile_title(s), &p))
+                .child(content_pane(s, &p, cx, scale))
         } else {
-            views::sidebar::sidebar(s, &p, cx, scale)
+            root.child(views::sidebar::sidebar(s, &p, cx, scale, true))
+        }
+    } else {
+        // The old app's desktop shell: a fixed-width left sidebar (nav label,
+        // queue, player panel) plus the main content filling the rest.
+        row()
+            .key("app-root")
+            .w_full()
+            .h_full()
+            .fill(p.bg)
+            .child(if s.sidebar_collapsed {
+                // Collapsed: a 0-width placeholder keeps the resize handle at a
+                // stable sibling slot, so one drag survives the collapse→expand
+                // swap. The handle itself renders the visible rail.
+                col().key("sidebar-slot").w(0.0).h_full()
+            } else {
+                views::sidebar::sidebar(s, &p, cx, scale, false)
+            })
+            .child(views::sidebar::resize_handle(s.sidebar_collapsed, &p))
+            .child(content_pane(s, &p, cx, scale))
+    }
+}
+
+/// The routed main content area, keyed `"content"`. On desktop it fills the
+/// space beside the sidebar; on mobile it is the whole window.
+fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -> El {
+    col()
+        .key("content")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(match s.route {
+            Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
+            Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
+            Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
+            Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
         })
-        .child(views::sidebar::resize_handle(s.sidebar_collapsed, &p))
-        .child(col().grow(1.0).min_h(0.0).child(match s.route {
-            Route::Library => views::library::track_list(s, &p, cx, scale).grow(1.0),
-            Route::Albums => views::albums::albums_page(s, &p, cx, scale).grow(1.0),
-            Route::Album => views::albums::album_detail(s, &p, scale).grow(1.0),
-            Route::Settings => views::settings::settings_page(s, &p, cx).grow(1.0),
-        }))
+}
+
+/// The current page's title, shown in the mobile back bar.
+fn mobile_title(s: &State) -> String {
+    match s.route {
+        Route::Library => t!("nav.tracks").to_string(),
+        Route::Albums => t!("nav.albums").to_string(),
+        Route::Album => s
+            .open_album
+            .clone()
+            .unwrap_or_else(|| t!("nav.albums").to_string()),
+        Route::Settings => t!("settings.title").to_string(),
+    }
 }
 
 /// `AppSpec::setup`: wires the app's `Waker` into the cover-art cache
@@ -463,6 +517,13 @@ fn scene_no_match(s: &mut State) {
 fn scene_collapsed(s: &mut State) {
     s.sidebar_collapsed = true;
 }
+/// The mobile content view (narrow window + a nav tap taken): the track list
+/// full-width under the back bar. Pair with `--size 460x720` to see it; the
+/// bare narrow window (no scene) shows the mobile menu.
+fn scene_mobile_content(s: &mut State) {
+    s.route = Route::Library;
+    s.mobile_show_content = true;
+}
 /// Seed a populated banded queue from the loaded library so `--snap` can capture
 /// the "Up Next" sidebar (which is empty until playback otherwise).
 fn scene_queue(s: &mut State) {
@@ -523,6 +584,7 @@ fn main() -> anyhow::Result<()> {
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
+            ("mobile-content", scene_mobile_content),
             ("queue", scene_queue),
         ],
         ..AppSpec::new(
@@ -1624,6 +1686,10 @@ mod tests {
             host.open_folder(&testdata_dir()).expect("scan testdata");
             let mut s = State::new(host);
             s.sidebar_collapsed = true; // pane ≈ window width, no sidebar variance
+            // Show the content pane directly: a narrow (< 640) window is mobile
+            // single-pane, where the menu is otherwise home — the reflow we assert
+            // is the content pane's, which on mobile spans the whole window.
+            s.mobile_show_content = true;
             s
         };
         let env = Env {
@@ -1771,6 +1837,115 @@ mod tests {
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(0.0);
+    }
+
+    // ── Mobile (narrow-window) single-pane layout ────────────────────────────
+    // The original's `useCollapsibleSidebar`: under a 640 px window it is
+    // `isMobile` — the sidebar is the full-width "menu" home view, a nav tap
+    // flips to full-screen content (`mobileShowContent`), and a back bar returns.
+    // Collapse and the resize handle are desktop-only. See the original's
+    // `MainLayout` / `LeftSidebar` / `NavBar`.
+
+    /// Boot `view` at a logical window size, settling two frames so the root's
+    /// committed width drives the mobile branch (the first frame reads no prior
+    /// layout and falls back to desktop).
+    fn booted(w: f32, h: f32, mutate: impl FnOnce(&mut State)) -> Runtime<State> {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        mutate(&mut s);
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (w, h),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        rt.frame(0.0);
+        rt
+    }
+
+    #[test]
+    fn a_narrow_window_shows_only_the_sidebar_menu() {
+        let rt = booted(500.0, 720.0, |_| {});
+        assert!(
+            rt.find("sidebar").is_some(),
+            "the menu (sidebar) is the mobile home view"
+        );
+        assert!(
+            rt.find("content").is_none(),
+            "the content pane is hidden until a nav tap"
+        );
+        assert!(
+            rt.find("sidebar-resize").is_none(),
+            "no resize handle on mobile"
+        );
+        assert!(rt.find("grabber").is_none(), "no collapse rail on mobile");
+    }
+
+    #[test]
+    fn a_mobile_nav_tap_switches_to_full_width_content() {
+        let mut rt = booted(500.0, 720.0, |_| {});
+        click(&mut rt, "nav-albums");
+        rt.frame(0.0);
+        assert!(
+            rt.state.mobile_show_content,
+            "a nav tap reveals the content"
+        );
+        assert!(matches!(rt.state.route, Route::Albums), "and routes to it");
+        assert!(
+            rt.find("sidebar").is_none(),
+            "the sidebar yields to the content"
+        );
+        let content = rt.presented("content").expect("content renders").0;
+        assert!(
+            content[2] > 480.0,
+            "content fills the window width, got {}",
+            content[2]
+        );
+    }
+
+    #[test]
+    fn the_mobile_back_bar_returns_to_the_menu() {
+        let mut rt = booted(500.0, 720.0, |s| {
+            s.route = Route::Albums;
+            s.mobile_show_content = true;
+        });
+        assert!(
+            rt.find("mobile-back").is_some(),
+            "the content view offers a back control"
+        );
+        click(&mut rt, "mobile-back");
+        rt.frame(0.0);
+        assert!(!rt.state.mobile_show_content, "back returns to the menu");
+        assert!(
+            rt.find("sidebar").is_some(),
+            "the sidebar menu is shown again"
+        );
+    }
+
+    #[test]
+    fn a_wide_window_shows_both_panes_side_by_side() {
+        let rt = booted(1100.0, 720.0, |_| {});
+        assert!(
+            rt.find("sidebar").is_some(),
+            "desktop keeps the fixed sidebar"
+        );
+        assert!(
+            rt.find("content").is_some(),
+            "and the content pane beside it"
+        );
+        assert!(
+            rt.find("sidebar-resize").is_some(),
+            "with the resize handle"
+        );
+        assert!(
+            rt.find("mobile-top-bar").is_none(),
+            "and no mobile back bar on desktop"
+        );
     }
 
     #[test]

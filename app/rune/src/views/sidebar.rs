@@ -24,6 +24,10 @@ pub const MAX_WIDTH: f32 = 480.0;
 pub const COLLAPSE_THRESHOLD: f32 = 200.0;
 /// Width of the collapsed rail (the old app's `CollapsedSidebarStrip`, `w-3`).
 pub const STRIP_WIDTH: f32 = 12.0;
+/// Below this logical window width the shell goes single-pane "mobile": the
+/// sidebar is the full-width menu and a nav tap flips to full-screen content.
+/// Matches the original's `MOBILE_BREAKPOINT` (Tailwind `sm`, 640 px).
+pub const MOBILE_BREAKPOINT: f32 = 640.0;
 /// Width of the invisible drag strip straddling the sidebar's right edge.
 const HANDLE_WIDTH: f32 = 6.0;
 
@@ -64,16 +68,57 @@ fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -
                 )
                 .child(dot),
         )
-        .on_press(move |s: &mut State| s.route = route)
+        // Switch pages and, on mobile, flip to the content pane (the old app's
+        // NavBar: `navigate(path); if (isMobile) setMobileShowContent(true)`).
+        // Harmless on desktop, where `mobile_show_content` is ignored.
+        .on_press(move |s: &mut State| {
+            s.route = route;
+            s.mobile_show_content = true;
+        })
 }
 
-pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
-    col()
-        .key("sidebar")
-        .w(s.sidebar_width)
-        .h_full()
-        .fill(p.card)
-        .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
+/// The mobile content view's top bar: a back arrow that returns to the sidebar
+/// "menu" (the old app's title-bar back → `setMobileShowContent(false)`), next
+/// to the current page's title. Desktop never renders this.
+pub fn mobile_top_bar(title: String, p: &Palette) -> El {
+    row()
+        .key("mobile-top-bar")
+        .w_full()
+        .center_y()
+        .gap(space::XS)
+        .px(space::SM)
+        .py(space::SNUG)
+        .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
+        .child(
+            el().key("mobile-back")
+                .role("button")
+                .label(t!("common.back").to_string())
+                .focusable(true)
+                .size(32.0, 32.0)
+                .center()
+                .radius(radius::MD)
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
+                .child(text("←").font(type_::NAV).color(p.fg))
+                .on_press(|s: &mut State| s.mobile_show_content = false),
+        )
+        .child(text(title).font(type_::TITLE).color(p.fg))
+}
+
+/// The left sidebar. On desktop it is a fixed, resizable `s.sidebar_width`
+/// column with a right border; on mobile (`full_width`) it spans the whole
+/// window with no border — the old app's `w-full border-r-0` menu view.
+pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32, full_width: bool) -> El {
+    let shell = col().key("sidebar").h_full().fill(p.card);
+    let shell = if full_width {
+        shell.w_full()
+    } else {
+        shell
+            .w(s.sidebar_width)
+            .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
+    };
+    shell
         // Nav (old app's `p-4 pt-6`): just the page link — Settings lives in the
         // footer gear below, as the original.
         .child(
@@ -122,7 +167,10 @@ fn settings_footer(s: &State, p: &Palette) -> El {
                 .padding(space::SNUG)
                 .radius(radius::MD)
                 .cursor(Cursor::Pointer)
-                .on_press(move |s: &mut State| s.route = Route::Settings)
+                .on_press(move |s: &mut State| {
+                    s.route = Route::Settings;
+                    s.mobile_show_content = true;
+                })
                 .child(icon(&icons::SETTINGS, 16.0).color(if active {
                     p.primary
                 } else {
@@ -164,12 +212,12 @@ fn resize_to(width_at_press: f32, dx: f32) -> Option<f32> {
 ///
 /// - **Expanded:** a thin invisible strip on the right edge, primary-tinted under
 ///   the pointer (the old app's `group-hover:bg-primary/30` handle).
-/// - **Collapsed:** it IS the rail (the old app's `CollapsedSidebarStrip`) — the
-///   card background, a right border, and a centred grabber pill — so dragging
-///   the *visible* rail **live-resizes** (the sidebar follows the cursor, as the
-///   old app's "Drag right: live resize"), and a click re-opens to the saved
-///   width. Because this element is the drag target, re-opening follows the
-///   pointer instead of waiting for release.
+/// - **Collapsed:** a `STRIP_WIDTH`-wide *invisible* drag column (full-height so
+///   it stays easy to grab) carrying a short **floating grabber pill** centred
+///   vertically — not a full-height card rail. Dragging it **live-resizes** (the
+///   sidebar follows the cursor, as the old app's "Drag right: live resize") and
+///   a click re-opens to the saved width. Because this element is the drag
+///   target, re-opening follows the pointer instead of waiting for release.
 pub fn resize_handle(collapsed: bool, p: &Palette) -> El {
     let base = el()
         .key("sidebar-resize")
@@ -203,23 +251,23 @@ pub fn resize_handle(collapsed: bool, p: &Palette) -> El {
             }
         });
     if collapsed {
+        // A transparent full-height drag column with only a short pill showing —
+        // the collapsed sidebar reads as a floating handle, not a full-height bar.
         base.w(STRIP_WIDTH)
-            .fill(p.card)
-            .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
-            // `center()` centres the pill on BOTH axes. Only the PILL brightens on
-            // hover (old app's `group-hover:bg-foreground/35`), not the whole rail.
+            // `center()` centres the pill on BOTH axes. The pill brightens on hover
+            // (old app's `group-hover:bg-foreground/35`).
             .center()
             .hover_group()
             .child(
-                // The grabber pill: `foreground/15%` at rest, `/35%` on hover. The
-                // fill carries the hover (0.35) level and `group_opacity` dims it
-                // to ~0.15 when the rail isn't hovered.
+                // The grabber pill: brighter at rest than the old full-card rail's
+                // (there's no card behind it now), lifting to full strength on
+                // hover via `group_opacity`.
                 el().key("grabber")
                     .w(4.0)
                     .h(56.0)
-                    .radius(radius::XXS)
-                    .fill(p.fg.alpha(0.35))
-                    .group_opacity(0.43, 1.0),
+                    .radius(radius::FULL)
+                    .fill(p.fg.alpha(0.5))
+                    .group_opacity(0.4, 1.0),
             )
     } else {
         base.w(HANDLE_WIDTH).hover(p.primary.alpha(0.3))
