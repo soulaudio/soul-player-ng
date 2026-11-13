@@ -18,19 +18,48 @@ pub use soul_player_backend::{
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
 
-/// The result of changing the watched-folder set: the aggregated track views
-/// across every *reachable* folder, plus the folders that were configured but
-/// currently **unavailable** (missing / unmounted / unreadable). Unavailable
-/// folders stay in the watched set and re-aggregate automatically once they come
-/// back — the waist never drops a folder just because it is momentarily offline
-/// (the "don't wipe the library when a drive is unplugged" rule that every mature
-/// player follows).
+/// The per-source status of one configured folder, as of the last scan.
+///
+/// A source is kept in the configured set regardless of its state — disabling it
+/// or losing its root to a transient outage never drops it (the "don't wipe the
+/// library when a drive is unplugged" rule that every mature player follows). The
+/// flags describe what that source contributed on the most recent aggregation:
+/// a disabled or [`unavailable`](Self::available) source lists with a
+/// [`track_count`](Self::track_count) of 0, and re-contributes automatically once
+/// it is re-enabled or its root returns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceStatus {
+    /// The configured root path (as given by the caller, deduped in order).
+    pub path: PathBuf,
+    /// Whether the user has this source enabled (disabled sources are skipped).
+    pub enabled: bool,
+    /// Whether the root was a readable directory on the last scan (missing /
+    /// unmounted / unreadable roots are `false`, but stay in the set).
+    pub available: bool,
+    /// Tracks this source contributed to the aggregated library — 0 when the
+    /// source is disabled or unavailable.
+    pub track_count: usize,
+}
+
+/// The result of changing the configured-source set: the aggregated track views
+/// across every *enabled and reachable* source, plus a [`SourceStatus`] for every
+/// configured source (including disabled or currently-unavailable ones, which
+/// list with 0 tracks and re-aggregate once re-enabled or back online).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct WatchUpdate {
-    /// Aggregated views across the reachable folders, in the library's order.
+    /// Aggregated views across the enabled, reachable sources, in library order.
     pub views: Vec<TrackView>,
-    /// Configured folders that were unreachable on this scan (kept in the set).
-    pub unavailable: Vec<PathBuf>,
+    /// Per-source status for the full configured set, in configured order.
+    pub sources: Vec<SourceStatus>,
+}
+
+/// One configured source: a root path plus whether the user has it enabled.
+/// Stored (deduped, in order) so an enabled flag — like an unavailable root —
+/// survives re-scans and reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FolderConfig {
+    path: PathBuf,
+    enabled: bool,
 }
 
 struct Inner {
@@ -38,9 +67,10 @@ struct Inner {
     player: Mutex<Option<AudioPlayer>>,
     library: Mutex<Option<Arc<Library>>>,
     subscribers: Mutex<Vec<Subscriber>>,
-    /// The configured watched folders (deduped, in order), including any that are
-    /// currently unavailable — so a folder is never lost to a transient outage.
-    folders: Mutex<Vec<PathBuf>>,
+    /// The configured sources (deduped, in order) with their enabled flags,
+    /// including any that are currently disabled or unavailable — so a source is
+    /// never lost to a transient outage or a toggle.
+    folders: Mutex<Vec<FolderConfig>>,
     /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
     /// or `None` for the system default. Read when the actor is (re)spawned and
     /// passed to the sink factory; a change applies to the NEXT spawn, not the
@@ -146,42 +176,112 @@ impl PlayerHandle {
         Ok(views)
     }
 
-    /// Replace the watched-folder set: re-scan every **reachable** folder,
-    /// aggregate them into one library (compound `(source, local)` ids), and swap
-    /// it in so [`views`](Self::views) / [`art`](Self::art) reflect the union.
+    /// Re-scan every **enabled and reachable** source, aggregate them into one
+    /// library (compound `(source, local)` ids), swap it in so
+    /// [`views`](Self::views) / [`art`](Self::art) reflect the union, and build a
+    /// [`WatchUpdate`] whose [`sources`](WatchUpdate::sources) carries a
+    /// [`SourceStatus`] for the *full* configured set — the single source of truth
+    /// every public mutator funnels through.
     ///
     /// Robustness follows what mature players do with an offline location
     /// (foobar2000 "Error!", MusicBee ignore-removable, Roon "storage offline",
-    /// Navidrome keep-missing): a watched root that is not a readable directory is
+    /// Navidrome keep-missing): a root that is not a readable directory is
     /// **skipped** (checked at the ROOT, never by purging individual files), kept
-    /// in the set so it re-aggregates when it returns, and reported in
-    /// [`WatchUpdate::unavailable`]. An empty or all-unavailable set yields an
-    /// empty library, not an error.
-    ///
-    /// Does **not** change playback — managing what is watched is separate from
-    /// what is playing; re-scanning re-bakes, so compound ids can shift and the
-    /// caller should re-queue from the returned views if it wants.
-    pub fn set_folders(&self, roots: &[PathBuf]) -> anyhow::Result<WatchUpdate> {
-        // Dedup, preserving order.
-        let mut set: Vec<PathBuf> = Vec::with_capacity(roots.len());
-        for r in roots {
-            if !set.contains(r) {
-                set.push(r.clone());
-            }
-        }
-        // Partition on ROOT availability — a watched root that isn't a readable
-        // directory is treated as temporarily gone, not purged.
-        let (available, unavailable): (Vec<PathBuf>, Vec<PathBuf>) =
-            set.iter().cloned().partition(|r| r.is_dir());
-
-        let lib = Arc::new(Library::scan_many(&available)?);
+    /// in the set so it re-aggregates when it returns, and flagged
+    /// [`available == false`](SourceStatus::available). A disabled source is
+    /// skipped the same way but flagged [`enabled == false`](SourceStatus::enabled).
+    /// Either way it lists with a 0 `track_count`. An empty / all-disabled /
+    /// all-unavailable set yields an empty library, not an error.
+    fn rescan(&self) -> anyhow::Result<WatchUpdate> {
+        let cfg = self.inner.folders.lock().expect("folders mutex").clone();
+        // Only enabled, reachable roots are scanned — checked at the ROOT so a
+        // transient outage is skipped, never purged file-by-file.
+        let to_scan: Vec<PathBuf> = cfg
+            .iter()
+            .filter(|f| f.enabled && f.path.is_dir())
+            .map(|f| f.path.clone())
+            .collect();
+        let lib = Arc::new(Library::scan_many(&to_scan)?);
         let views = lib.views();
+        let counts = lib.source_counts(); // (root, n) for the scanned roots only
         self.set_library(lib);
-        *self.inner.folders.lock().expect("folders mutex") = set;
-        Ok(WatchUpdate { views, unavailable })
+        // Status for the FULL configured set — disabled / unavailable sources are
+        // listed too, with 0 tracks, so the caller can render and re-enable them.
+        let sources = cfg
+            .iter()
+            .map(|f| {
+                let available = f.path.is_dir();
+                let track_count = if f.enabled && available {
+                    counts
+                        .iter()
+                        .find(|(r, _)| *r == f.path)
+                        .map(|(_, n)| *n)
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                SourceStatus {
+                    path: f.path.clone(),
+                    enabled: f.enabled,
+                    available,
+                    track_count,
+                }
+            })
+            .collect();
+        Ok(WatchUpdate { views, sources })
     }
 
-    /// Add `dir` to the watched set (no-op if already watched) and re-aggregate.
+    /// Seed the configured-source set from `(path, enabled)` pairs, replacing any
+    /// current set, then [`rescan`](Self::rescan). Pairs are deduped preserving
+    /// order (the first occurrence of a path wins). Use this at startup to restore
+    /// the persisted set with each source's saved enabled flag.
+    ///
+    /// Does **not** change playback — managing what is configured is separate from
+    /// what is playing; re-scanning re-bakes, so compound ids can shift and the
+    /// caller should re-queue from the returned views if it wants.
+    pub fn set_sources(&self, entries: &[(PathBuf, bool)]) -> anyhow::Result<WatchUpdate> {
+        let mut set: Vec<FolderConfig> = Vec::with_capacity(entries.len());
+        for (p, en) in entries {
+            if !set.iter().any(|f| &f.path == p) {
+                set.push(FolderConfig {
+                    path: p.clone(),
+                    enabled: *en,
+                });
+            }
+        }
+        *self.inner.folders.lock().expect("folders mutex") = set;
+        self.rescan()
+    }
+
+    /// Reconcile the configured-source set to exactly `roots` (deduped, preserving
+    /// order), then [`rescan`](Self::rescan). The **enabled flag** of any path
+    /// already configured is **preserved**; a newly-introduced path defaults to
+    /// enabled. Paths absent from `roots` are dropped.
+    ///
+    /// Does **not** change playback — see [`set_sources`](Self::set_sources) for
+    /// the re-bake caveat.
+    pub fn set_folders(&self, roots: &[PathBuf]) -> anyhow::Result<WatchUpdate> {
+        let prev = self.inner.folders.lock().expect("folders mutex").clone();
+        let mut set: Vec<FolderConfig> = Vec::with_capacity(roots.len());
+        for r in roots {
+            if !set.iter().any(|f| &f.path == r) {
+                let enabled = prev
+                    .iter()
+                    .find(|f| &f.path == r)
+                    .map(|f| f.enabled)
+                    .unwrap_or(true);
+                set.push(FolderConfig {
+                    path: r.clone(),
+                    enabled,
+                });
+            }
+        }
+        *self.inner.folders.lock().expect("folders mutex") = set;
+        self.rescan()
+    }
+
+    /// Add `dir` to the configured set (no-op if already configured, preserving
+    /// its flag) and re-aggregate. A freshly-added source is enabled by default.
     pub fn add_folder(&self, dir: &Path) -> anyhow::Result<WatchUpdate> {
         let mut set = self.watched_folders();
         let dir = dir.to_path_buf();
@@ -191,17 +291,59 @@ impl PlayerHandle {
         self.set_folders(&set)
     }
 
-    /// Remove `dir` from the watched set (no-op if not watched) and re-aggregate.
+    /// Remove `dir` from the configured set (no-op if not configured) and
+    /// re-aggregate.
     pub fn remove_folder(&self, dir: &Path) -> anyhow::Result<WatchUpdate> {
         let mut set = self.watched_folders();
         set.retain(|p| p != dir);
         self.set_folders(&set)
     }
 
-    /// The configured watched folders, in order, including any currently
-    /// unavailable (so a folder is never lost to a transient outage).
+    /// Flip the enabled flag of the configured source at `dir` (no-op if `dir`
+    /// isn't configured) and [`rescan`](Self::rescan). Disabling a source drops
+    /// its tracks from the library but keeps the source listed, so it can be
+    /// re-enabled without re-adding it.
+    pub fn set_folder_enabled(&self, dir: &Path, enabled: bool) -> anyhow::Result<WatchUpdate> {
+        {
+            let mut g = self.inner.folders.lock().expect("folders mutex");
+            if let Some(f) = g.iter_mut().find(|f| f.path == dir) {
+                f.enabled = enabled;
+            }
+        }
+        self.rescan()
+    }
+
+    /// The configured sources as [`SourceStatus`], in order — a cheap listing that
+    /// does **not** re-scan. [`available`](SourceStatus::available) reflects the
+    /// root's current `is_dir`, but [`track_count`](SourceStatus::track_count) is
+    /// always 0 here: real counts come from a [`WatchUpdate`] (prefer reading
+    /// [`WatchUpdate::sources`] when you have one). Useful for seeding UI state
+    /// before the first scan completes.
+    pub fn sources(&self) -> Vec<SourceStatus> {
+        self.inner
+            .folders
+            .lock()
+            .expect("folders mutex")
+            .iter()
+            .map(|f| SourceStatus {
+                path: f.path.clone(),
+                enabled: f.enabled,
+                available: f.path.is_dir(),
+                track_count: 0,
+            })
+            .collect()
+    }
+
+    /// The configured source paths, in order, including any currently disabled or
+    /// unavailable (so a source is never lost to a toggle or a transient outage).
     pub fn watched_folders(&self) -> Vec<PathBuf> {
-        self.inner.folders.lock().expect("folders mutex").clone()
+        self.inner
+            .folders
+            .lock()
+            .expect("folders mutex")
+            .iter()
+            .map(|f| f.path.clone())
+            .collect()
     }
 
     /// Choose the output device the next playback session opens, by name (one of
@@ -646,6 +788,16 @@ mod tests {
         d
     }
 
+    /// The configured-but-unreachable roots of a `WatchUpdate`, in order — the
+    /// new-shape equivalent of the removed `WatchUpdate::unavailable` field.
+    fn unavailable_of(up: &WatchUpdate) -> Vec<PathBuf> {
+        up.sources
+            .iter()
+            .filter(|s| !s.available)
+            .map(|s| s.path.clone())
+            .collect()
+    }
+
     #[test]
     fn set_folders_aggregates_multiple_sources() {
         let a = folder_with("src_a", &["a1.wav"]);
@@ -656,7 +808,10 @@ mod tests {
             .set_folders(&[a.path().to_path_buf(), b.path().to_path_buf()])
             .unwrap();
         assert_eq!(up.views.len(), 3, "1 from a + 2 from b aggregate");
-        assert!(up.unavailable.is_empty());
+        assert!(
+            unavailable_of(&up).is_empty(),
+            "both roots are reachable"
+        );
         assert_eq!(
             h.watched_folders(),
             vec![a.path().to_path_buf(), b.path().to_path_buf()]
@@ -675,7 +830,7 @@ mod tests {
             .unwrap();
         assert_eq!(up.views.len(), 1, "only the reachable folder scanned");
         assert_eq!(
-            up.unavailable,
+            unavailable_of(&up),
             vec![missing.clone()],
             "the missing root is reported"
         );
@@ -691,7 +846,7 @@ mod tests {
         let h = PlayerHandle::offline();
         let up = h.set_folders(&[m1.clone(), m2.clone()]).unwrap();
         assert!(up.views.is_empty());
-        assert_eq!(up.unavailable, vec![m1.clone(), m2.clone()]);
+        assert_eq!(unavailable_of(&up), vec![m1.clone(), m2.clone()]);
         assert_eq!(h.watched_folders(), vec![m1, m2]);
     }
 
@@ -767,6 +922,97 @@ mod tests {
         assert!(
             saw,
             "never observed the second-source track play (cross-source locate+decode)"
+        );
+    }
+
+    // --- per-source status (enabled / available / track_count) ---
+
+    #[test]
+    fn source_status_reports_counts_available_and_enabled() {
+        // A real root with two tracks + a missing path, seeded together as enabled
+        // sources: the real one is available with its exact count, the missing one
+        // is still listed (enabled) but unavailable with zero tracks.
+        let a = folder_with("stat_real", &["a1.wav", "a2.wav"]);
+        let real = a.path().to_path_buf();
+        let missing = a.path().join("does-not-exist");
+
+        let h = PlayerHandle::offline();
+        let up = h
+            .set_sources(&[(real.clone(), true), (missing.clone(), true)])
+            .unwrap();
+        assert_eq!(up.sources.len(), 2, "both sources are listed");
+
+        let sa = up
+            .sources
+            .iter()
+            .find(|s| s.path == real)
+            .expect("real source listed");
+        assert!(sa.enabled, "real source is enabled");
+        assert!(sa.available, "real source is a readable dir");
+        assert_eq!(sa.track_count, 2, "real source contributed its two tracks");
+
+        let sm = up
+            .sources
+            .iter()
+            .find(|s| s.path == missing)
+            .expect("missing source listed");
+        assert!(sm.enabled, "missing source stays enabled");
+        assert!(!sm.available, "missing source is unavailable");
+        assert_eq!(sm.track_count, 0, "an unavailable source contributes nothing");
+    }
+
+    #[test]
+    fn disabled_source_contributes_no_tracks_but_stays_listed() {
+        // Seed one enabled source, then disable it: the library empties, but the
+        // source is never dropped — it stays listed as disabled with zero tracks.
+        let a = folder_with("stat_disable", &["a1.wav", "a2.wav"]);
+        let real = a.path().to_path_buf();
+
+        let h = PlayerHandle::offline();
+        h.set_sources(&[(real.clone(), true)]).unwrap();
+
+        let up = h.set_folder_enabled(&real, false).unwrap();
+        assert!(up.views.is_empty(), "a disabled source yields no views");
+
+        let sa = up
+            .sources
+            .iter()
+            .find(|s| s.path == real)
+            .expect("source still listed");
+        assert!(!sa.enabled, "the source is now disabled");
+        assert_eq!(sa.track_count, 0, "a disabled source contributes no tracks");
+        assert_eq!(h.sources().len(), 1, "the source is kept in the set");
+    }
+
+    #[test]
+    fn set_folders_preserves_enabled_flags() {
+        // Disable `a`, then reconcile to `[a, b]` via the flag-agnostic
+        // `set_folders`: `a` keeps its disabled flag; the new `b` defaults enabled.
+        let a = folder_with("pres_a", &["a.wav"]);
+        let b = folder_with("pres_b", &["b.wav"]);
+
+        let h = PlayerHandle::offline();
+        h.set_sources(&[(a.path().to_path_buf(), true)]).unwrap();
+        h.set_folder_enabled(a.path(), false).unwrap();
+
+        let up = h
+            .set_folders(&[a.path().to_path_buf(), b.path().to_path_buf()])
+            .unwrap();
+        assert!(
+            !up.sources
+                .iter()
+                .find(|s| s.path == a.path())
+                .expect("a listed")
+                .enabled,
+            "a keeps its disabled flag across set_folders"
+        );
+        assert!(
+            up.sources
+                .iter()
+                .find(|s| s.path == b.path())
+                .expect("b listed")
+                .enabled,
+            "a newly-added source defaults to enabled"
         );
     }
 }
