@@ -265,6 +265,13 @@ library.unknown:
   zh: '未知'
   cs: 'Neznámý'
   ja: '不明'
+common.back:
+  en: 'Back'
+  de: 'Zurück'
+  es: 'Atrás'
+  zh: '返回'
+  cs: 'Zpět'
+  ja: '戻る'
 
 settings.title:
   en: 'Settings'
