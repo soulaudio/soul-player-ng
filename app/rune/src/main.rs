@@ -1135,7 +1135,7 @@ mod tests {
         for _ in 0..10 {
             rt.frame(0.05);
         }
-        let (_, rest) = rt.presented("knob").expect("the slider thumb renders");
+        let (_, rest) = rt.presented("solo-knob").expect("the slider thumb renders");
         assert!(rest < 0.2, "thumb is hidden at rest (opacity {rest})");
 
         let (cx_pt, cy_pt) = rt.find("solo").expect("the slider is present");
@@ -1143,7 +1143,7 @@ mod tests {
         for _ in 0..16 {
             rt.frame(0.05);
         }
-        let (_, hov) = rt.presented("knob").expect("the slider thumb renders");
+        let (_, hov) = rt.presented("solo-knob").expect("the slider thumb renders");
         assert!(hov > 0.8, "thumb fades in on hover (opacity {hov})");
     }
 
@@ -1313,6 +1313,31 @@ mod tests {
         );
     }
 
+    /// The album detail page's "Play All" pill plays the album from the top.
+    #[test]
+    fn the_album_detail_play_all_plays_from_the_top() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.route = Route::Album;
+        s.open_album = Some("Alb".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "album-play-all");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 0
+            }],
+            "Play All plays the album from the top"
+        );
+    }
+
     /// Clicking the row of the track that is already playing toggles pause/resume
     /// (the old app's TrackList current-row control), rather than restarting it.
     #[test]
@@ -1379,6 +1404,40 @@ mod tests {
             rt.state.host.recorded_commands(),
             vec![Command::ToggleMute],
             "the speaker icon toggles mute via the backend"
+        );
+    }
+
+    /// While muted the volume bar reads 0 (the old app's `displayVolume`), even
+    /// though the backend preserves the real level. Measured off the volume
+    /// slider's own thumb position (now uniquely keyed `volume-knob`).
+    #[test]
+    fn a_muted_volume_bar_reads_zero_while_an_unmuted_one_reads_the_level() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let knob_fraction = |muted: bool| -> f32 {
+            let mut s = State::new(PlayerHandle::recording());
+            s.sidebar_collapsed = false;
+            s.volume = 0.8;
+            s.muted = muted;
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            for _ in 0..3 {
+                rt.frame(0.0); // let the slider read back its own laid-out width
+            }
+            let ([kx, _, _, _], _) = rt.presented("volume-knob").expect("volume knob");
+            let ([tx, _, tw, _], _) = rt.presented("volume-track").expect("volume track");
+            (kx - tx) / tw
+        };
+        assert!(
+            knob_fraction(true) < 0.15,
+            "a muted volume bar reads ~0 (got {:.2})",
+            knob_fraction(true)
+        );
+        assert!(
+            knob_fraction(false) > 0.6,
+            "an unmuted 0.8 bar reads high (got {:.2})",
+            knob_fraction(false)
         );
     }
 
