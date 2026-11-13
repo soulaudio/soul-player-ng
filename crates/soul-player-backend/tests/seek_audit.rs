@@ -499,7 +499,7 @@ fn audit_one(fix: &Fixture, clips_dir: Option<&Path>) -> Result<(), String> {
     // (3) Duration — end-to-end, as the UI would see it. Every seekable stream
     // must report a real length so the seek bar works (incl. ADTS .aac / MP1 /
     // MP2, which now header-walk for an exact frame count).
-    let dur = project_tick(&player, 1.0).duration_secs;
+    let dur = project_tick(&player, 1.0, false).duration_secs;
     let d = dur
         .ok_or_else(|| "deck reported no duration; a seekable stream must have one".to_string())?;
     require!(

@@ -69,6 +69,10 @@ pub fn apply_command<K: Sink, D: SeekableDecoder>(
             player.set_volume(v);
             Ok(())
         }
+        // Mute is resolved to an effective gain (`VolumeState::gain`) and applied
+        // as `SetVolume` by the actor before this call; it carries no transport
+        // action of its own, so here it is a no-op.
+        Command::ToggleMute => Ok(()),
         Command::PlayNext(id) => {
             let _ = player.play_next(id);
             Ok(())
@@ -176,6 +180,7 @@ fn frames_to_secs(frames: u64, rate: u32) -> f64 {
 pub fn project_tick<K: Sink, D: SeekableDecoder>(
     player: &ServicePlayer<K, D>,
     volume: f32,
+    muted: bool,
 ) -> Tick {
     let rate = player.sample_rate();
     Tick {
@@ -186,6 +191,63 @@ pub fn project_tick<K: Sink, D: SeekableDecoder>(
         shuffle: player.is_shuffled(),
         repeat: player.repeat().into(),
         volume,
+        muted,
+    }
+}
+
+/// The session's volume + mute — the source of truth for the gain the deck runs
+/// at, and for `Tick.{volume, muted}`. The core player has no mute, so muting is
+/// modelled here and applied as a 0 effective [`gain`](VolumeState::gain). Kept
+/// a small, pure value type so the mute rules are unit-tested without a deck.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VolumeState {
+    volume: f32,
+    muted: bool,
+}
+
+impl VolumeState {
+    /// Full volume, un-muted — the session default.
+    pub fn new() -> Self {
+        Self {
+            volume: 1.0,
+            muted: false,
+        }
+    }
+
+    /// Set the user volume (clamped to 0.0..=1.0). A positive volume clears mute,
+    /// so dragging the slider un-mutes (the old app's VolumeControl). Setting it
+    /// to exactly 0 is *not* a mute — it leaves the mute flag untouched.
+    pub fn set_volume(&mut self, v: f32) {
+        self.volume = v.clamp(0.0, 1.0);
+        if self.volume > 0.0 {
+            self.muted = false;
+        }
+    }
+
+    /// Flip mute on/off, preserving the volume to restore.
+    pub fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+    }
+
+    /// The user's volume level (what the slider shows), independent of mute.
+    pub fn volume(&self) -> f32 {
+        self.volume
+    }
+
+    /// Whether the output is currently muted.
+    pub fn muted(&self) -> bool {
+        self.muted
+    }
+
+    /// The gain actually applied to the deck: silent while muted, else `volume`.
+    pub fn gain(&self) -> f32 {
+        if self.muted { 0.0 } else { self.volume }
+    }
+}
+
+impl Default for VolumeState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -266,8 +328,8 @@ mod tests {
         )
         .unwrap();
         drive(&mut p, 3);
-        assert_eq!(project_tick(&p, 1.0).now_playing_id, Some(0));
-        assert_eq!(project_tick(&p, 1.0).state, PlayState::Playing);
+        assert_eq!(project_tick(&p, 1.0, false).now_playing_id, Some(0));
+        assert_eq!(project_tick(&p, 1.0, false).state, PlayState::Playing);
     }
 
     #[test]
@@ -284,9 +346,9 @@ mod tests {
         .unwrap();
         drive(&mut p, 3);
         apply_command(&mut p, Command::Pause, 0).unwrap();
-        assert_eq!(project_tick(&p, 1.0).state, PlayState::Paused);
+        assert_eq!(project_tick(&p, 1.0, false).state, PlayState::Paused);
         apply_command(&mut p, Command::TogglePlay, 0).unwrap();
-        assert_eq!(project_tick(&p, 1.0).state, PlayState::Playing);
+        assert_eq!(project_tick(&p, 1.0, false).state, PlayState::Playing);
     }
 
     #[test]
@@ -337,7 +399,7 @@ mod tests {
         // Click the first upcoming row (the queued 11): jump straight to it.
         apply_command(&mut p, Command::PlayUpcoming(1), 0).unwrap();
         drive(&mut p, 3);
-        assert_eq!(project_tick(&p, 1.0).now_playing_id, Some(11));
+        assert_eq!(project_tick(&p, 1.0, false).now_playing_id, Some(11));
     }
 
     #[test]
@@ -354,11 +416,11 @@ mod tests {
         .unwrap();
         drive(&mut p, 3);
         apply_command(&mut p, Command::SetShuffle(true), 12345).unwrap();
-        assert!(project_tick(&p, 1.0).shuffle);
+        assert!(project_tick(&p, 1.0, false).shuffle);
         apply_command(&mut p, Command::SetRepeat(RepeatMode::All), 0).unwrap();
-        assert_eq!(project_tick(&p, 1.0).repeat, RepeatMode::All);
+        assert_eq!(project_tick(&p, 1.0, false).repeat, RepeatMode::All);
         apply_command(&mut p, Command::SetShuffle(false), 0).unwrap();
-        assert!(!project_tick(&p, 1.0).shuffle);
+        assert!(!project_tick(&p, 1.0, false).shuffle);
     }
 
     #[test]
@@ -471,7 +533,7 @@ mod tests {
             before,
             "no samples are written to the sink while paused"
         );
-        assert_eq!(project_tick(&p, 1.0).state, PlayState::Paused);
+        assert_eq!(project_tick(&p, 1.0, false).state, PlayState::Paused);
     }
 
     #[test]
@@ -497,7 +559,7 @@ mod tests {
             before,
             "no samples are written to the sink after stop"
         );
-        assert_eq!(project_tick(&p, 1.0).state, PlayState::Stopped);
+        assert_eq!(project_tick(&p, 1.0, false).state, PlayState::Stopped);
     }
 
     #[test]
@@ -530,6 +592,147 @@ mod tests {
         assert!(
             (ratio - 0.25).abs() < 0.03,
             "volume 0.25 should attenuate output to ~0.25× (got {ratio:.3})"
+        );
+    }
+
+    // ── VolumeState: the mute/volume source of truth ──────────────────────────
+
+    #[test]
+    fn volume_state_defaults_to_full_and_unmuted() {
+        let v = VolumeState::new();
+        assert_eq!(v.volume(), 1.0);
+        assert!(!v.muted());
+        assert_eq!(v.gain(), 1.0);
+        assert_eq!(v, VolumeState::default());
+    }
+
+    #[test]
+    fn set_volume_sets_and_clamps_the_level() {
+        let mut v = VolumeState::new();
+        v.set_volume(0.3);
+        assert_eq!(v.volume(), 0.3);
+        assert_eq!(v.gain(), 0.3);
+        v.set_volume(1.5);
+        assert_eq!(v.volume(), 1.0, "clamped to 1.0");
+        v.set_volume(-0.2);
+        assert_eq!(v.volume(), 0.0, "clamped to 0.0");
+        assert_eq!(v.gain(), 0.0);
+    }
+
+    #[test]
+    fn toggle_mute_silences_the_gain_but_preserves_the_level() {
+        let mut v = VolumeState::new();
+        v.set_volume(0.6);
+        v.toggle_mute();
+        assert!(v.muted());
+        assert_eq!(v.gain(), 0.0, "muted → silent gain");
+        assert_eq!(v.volume(), 0.6, "the volume level is preserved across mute");
+        v.toggle_mute();
+        assert!(!v.muted());
+        assert_eq!(v.gain(), 0.6, "un-mute restores the exact pre-mute gain");
+    }
+
+    #[test]
+    fn a_positive_set_volume_clears_mute() {
+        let mut v = VolumeState::new();
+        v.toggle_mute();
+        assert!(v.muted());
+        v.set_volume(0.4); // dragging the slider up
+        assert!(
+            !v.muted(),
+            "a positive volume un-mutes (the VolumeControl behaviour)"
+        );
+        assert_eq!(v.gain(), 0.4);
+    }
+
+    #[test]
+    fn setting_volume_to_zero_is_a_level_not_a_mute() {
+        let mut v = VolumeState::new();
+        v.set_volume(0.0);
+        assert!(
+            !v.muted(),
+            "volume 0 is a level, distinct from the mute flag"
+        );
+        assert_eq!(v.gain(), 0.0);
+        // Mute then un-mute from a 0 level still yields 0 — no spurious restore.
+        v.toggle_mute();
+        assert_eq!(v.gain(), 0.0);
+        v.toggle_mute();
+        assert_eq!(v.gain(), 0.0);
+        assert_eq!(v.volume(), 0.0);
+    }
+
+    #[test]
+    fn mute_is_idempotent_per_toggle_and_round_trips() {
+        let mut v = VolumeState::new();
+        v.set_volume(0.75);
+        for _ in 0..3 {
+            v.toggle_mute();
+            assert!(v.muted());
+            assert_eq!(v.gain(), 0.0);
+            v.toggle_mute();
+            assert!(!v.muted());
+            assert_eq!(
+                v.gain(),
+                0.75,
+                "each round trip returns to the pre-mute level"
+            );
+        }
+    }
+
+    #[test]
+    fn muting_silences_the_sink_and_unmuting_restores_it() {
+        const V: i32 = 4_000_000;
+        let mut p = cap_player();
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        // Half volume via the state's effective gain; settle the ramp.
+        let mut vol = VolumeState::new();
+        vol.set_volume(0.5);
+        apply_command(&mut p, Command::SetVolume(vol.gain()), 0).unwrap();
+        drive_cap(&mut p, 40, |_| (400_000, V));
+        let playing = *p.deck().sink().written.last().unwrap();
+        assert!(playing.abs() > 0, "audible before mute");
+
+        // Mute → effective gain 0 → the sink ramps to silence.
+        vol.toggle_mute();
+        apply_command(&mut p, Command::SetVolume(vol.gain()), 0).unwrap();
+        drive_cap(&mut p, 60, |_| (400_000, V));
+        let muted = *p.deck().sink().written.last().unwrap();
+        let muted_ratio = f64::from(muted.abs()) / f64::from(playing.abs());
+        assert!(
+            muted_ratio < 0.02,
+            "muted output is effectively silent (got {muted_ratio:.4})"
+        );
+
+        // Un-mute → restores the pre-mute level.
+        vol.toggle_mute();
+        apply_command(&mut p, Command::SetVolume(vol.gain()), 0).unwrap();
+        drive_cap(&mut p, 60, |_| (400_000, V));
+        let restored = *p.deck().sink().written.last().unwrap();
+        let restored_ratio = f64::from(restored) / f64::from(playing);
+        assert!(
+            (restored_ratio - 1.0).abs() < 0.05,
+            "un-mute returns to the pre-mute level (got {restored_ratio:.3})"
+        );
+    }
+
+    #[test]
+    fn project_tick_reports_the_mute_flag() {
+        let p = player(); // any player; `muted` is passed in, not read off it
+        assert!(!project_tick(&p, 0.8, false).muted);
+        let t = project_tick(&p, 0.8, true);
+        assert!(t.muted, "Tick carries the mute flag");
+        assert_eq!(
+            t.volume, 0.8,
+            "and the preserved volume, independent of mute"
         );
     }
 
