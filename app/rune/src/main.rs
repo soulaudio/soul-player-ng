@@ -510,6 +510,17 @@ fn scene_settings_lang_open(s: &mut State) {
     s.settings_tab = SettingsTab::Appearance;
     s.open_dropdown = Some("lang-picker".to_string());
 }
+/// Same, forced to the light (Day) palette, for a theme-robustness snapshot.
+fn scene_settings_lang_open_light(s: &mut State) {
+    s.theme_pref = ThemePref::Light;
+    scene_settings_lang_open(s);
+}
+/// Same, in German — confirms the panel's localized "System" + native names.
+fn scene_settings_lang_open_de(s: &mut State) {
+    apply_locale("de");
+    s.theme_pref = ThemePref::Dark;
+    scene_settings_lang_open(s);
+}
 fn scene_albums(s: &mut State) {
     s.route = Route::Albums;
 }
@@ -584,6 +595,8 @@ fn main() -> anyhow::Result<()> {
             ("settings-audio-de", scene_settings_audio_de),
             ("settings-appearance-de", scene_settings_appearance_de),
             ("settings-lang-open", scene_settings_lang_open),
+            ("settings-lang-open-light", scene_settings_lang_open_light),
+            ("settings-lang-open-de", scene_settings_lang_open_de),
             ("albums", scene_albums),
             ("search", scene_search),
             ("no-match", scene_no_match),
