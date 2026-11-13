@@ -32,6 +32,13 @@ album.trackCount:
   zh: '%{count} 首'
   cs: '%{count} skladeb'
   ja: '%{count} 曲'
+album.playAll:
+  en: 'Play All'
+  de: 'Alle abspielen'
+  es: 'Reproducir todo'
+  zh: '全部播放'
+  cs: 'Přehrát vše'
+  ja: 'すべて再生'
 
 player.nowPlaying:
   en: 'NOW PLAYING'

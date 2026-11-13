@@ -122,9 +122,9 @@ pub mod type_ {
     pub const TITLE: TextStyle = TextStyle::new(14.0, 600.0);
     /// 20 / 600 — a page / section heading (the old app's settings `h2`).
     pub const HEADING: TextStyle = TextStyle::new(20.0, 600.0);
-    /// 28 / 700 — a detail-page display title (the old app's AlbumPage `text-4xl
-    /// font-bold`, scaled to our narrower pane).
-    pub const DISPLAY: TextStyle = TextStyle::new(28.0, 700.0);
+    /// 32 / 700 — a detail-page display title (the old app's AlbumPage `text-4xl
+    /// font-bold` = 36, trimmed a touch for our narrower pane).
+    pub const DISPLAY: TextStyle = TextStyle::new(32.0, 700.0);
     /// 20 / 600 — the sidebar nav labels.
     pub const NAV: TextStyle = TextStyle::new(20.0, 600.0);
 }

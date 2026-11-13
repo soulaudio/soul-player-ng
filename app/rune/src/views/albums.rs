@@ -99,6 +99,11 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             // button = play, body = navigate.
             el().key("cover-area")
                 .size(card_w, card_w)
+                // The old app's MediaCard cover carries a `shadow` (Rune has no
+                // group-driven shadow/scale, so the hover `shadow-md`/`scale-105`
+                // lift isn't reproduced — the base shadow is).
+                .radius(radius::MD)
+                .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
                 .child(cover(s, Some(a.cover_id), card_w, radius::MD, p, scale))
                 .child(
                     el().key("play-overlay")
@@ -140,10 +145,13 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                 .gap(space::XXS)
                 .min_w(0.0)
                 .child(
+                    // Title dims to 0.8 on card hover (old app's
+                    // `group-hover:opacity-[var(--hover-text-opacity)]`).
                     text(a.name.clone())
                         .font(type_::CARD_TITLE)
                         .color(p.fg)
-                        .truncate(),
+                        .truncate()
+                        .group_opacity(1.0, 0.8),
                 )
                 .child(
                     text(a.artist.clone())
@@ -296,7 +304,6 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     };
 
     let play_ids = album.ids.clone();
-    let active = s.now_playing_id.is_some_and(|id| album.ids.contains(&id));
     // Header stacks (cover over info) when the pane is too narrow for them side
     // by side (the old app's `flex-col sm:flex-row`).
     let header = row()
@@ -304,14 +311,20 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         .flex_wrap()
         .gap(space::XL)
         .pb(space::SECTION)
-        .child(cover(
-            s,
-            Some(album.cover_id),
-            DETAIL_COVER,
-            radius::MD,
-            p,
-            scale,
-        ))
+        .child(
+            // Large cover with a `shadow-lg`, as the old app's AlbumPage.
+            el().key("album-cover")
+                .radius(radius::MD)
+                .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
+                .child(cover(
+                    s,
+                    Some(album.cover_id),
+                    DETAIL_COVER,
+                    radius::MD,
+                    p,
+                    scale,
+                )),
+        )
         .child(
             col()
                 .key("album-meta")
@@ -342,41 +355,28 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                         .color(p.text_secondary),
                 )
                 .child(
+                    // The old app's "Play All" pill (`rounded-full px-6 py-3`,
+                    // filled Play icon) — plays the whole album from the top.
                     el().key("album-play-all")
-                        .px(space::LG)
-                        .py(space::SM)
-                        .radius(radius::MD)
+                        .px(space::XL)
+                        .py(space::MD)
+                        .radius(radius::FULL)
                         .fill(p.primary)
                         .cursor(Cursor::Pointer)
                         .hover(p.bg.alpha(fx::HOVER_FILL))
                         .press(p.bg.alpha(fx::PRESS_FILL))
                         .on_press(move |st: &mut State| {
-                            st.host
-                                .send(album_play_command(st.now_playing_id, &play_ids))
+                            st.host.send(Command::PlayContext {
+                                ids: play_ids.clone(),
+                                start: 0,
+                            })
                         })
                         .child(
                             row()
-                                .gap(space::XS)
+                                .gap(space::SM)
                                 .center_y()
-                                .child(
-                                    icon(
-                                        if active && s.playing {
-                                            &icons::PAUSE
-                                        } else {
-                                            &icons::PLAY
-                                        },
-                                        16.0,
-                                    )
-                                    .color(p.bg),
-                                )
-                                .child(
-                                    text(if active && s.playing {
-                                        t!("player.pause").to_string()
-                                    } else {
-                                        t!("player.play").to_string()
-                                    })
-                                    .color(p.bg),
-                                ),
+                                .child(icon(&icons::PLAY, 20.0).color(p.bg))
+                                .child(text(t!("album.playAll").to_string()).color(p.bg)),
                         ),
                 ),
         );
