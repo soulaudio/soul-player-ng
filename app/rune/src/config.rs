@@ -16,33 +16,35 @@ use soul_player_host::ReplayGainMode;
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
 
+/// Test-only override for the config directory, so `cargo test` never reads or
+/// writes the user's real settings. `None` (and compiled out) in production.
 #[cfg(test)]
-thread_local! {
-    /// Per-test-thread config directory override, so tests that persist settings
-    /// never read or write the real user config.
-    static TEST_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
-        const { std::cell::RefCell::new(None) };
+static TEST_CONFIG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Point config persistence at a throwaway temp directory for the rest of this
+/// test process (idempotent — first call wins). Call it at the start of any test
+/// that writes a setting, so tests never clobber the user's real `config.toml`.
+#[cfg(test)]
+pub(crate) fn use_test_config_dir() {
+    TEST_CONFIG_DIR.get_or_init(|| {
+        std::env::temp_dir().join(format!("soul-player-test-{}", std::process::id()))
+    });
 }
 
-/// Redirect config reads/writes to `dir` for the current test thread. Call at
-/// the start of any test that toggles a persisted setting.
-#[cfg(test)]
-pub(crate) fn use_test_config_dir(dir: PathBuf) {
-    TEST_CONFIG_DIR.with(|d| *d.borrow_mut() = Some(dir));
-}
-
-/// The config directory — the test override when set, else the OS config dir.
-fn config_dir() -> Option<PathBuf> {
+/// The app's config directory — `<os-config>/soul-player`, or the test override
+/// when one is active (see [`use_test_config_dir`]). All persisted files hang off
+/// this, so pointing it elsewhere isolates every `load_*`/`save_*`.
+fn soul_player_dir() -> Option<PathBuf> {
     #[cfg(test)]
-    if let Some(d) = TEST_CONFIG_DIR.with(|d| d.borrow().clone()) {
-        return Some(d);
+    if let Some(dir) = TEST_CONFIG_DIR.get() {
+        return Some(dir.clone());
     }
     Some(dirs::config_dir()?.join("soul-player"))
 }
 
 /// `<config>/soul-player/config.toml` — the one settings file.
 fn config_path() -> Option<PathBuf> {
-    Some(config_dir()?.join("config.toml"))
+    Some(soul_player_dir()?.join("config.toml"))
 }
 
 /// The on-disk settings. `#[serde(default)]` fills any field a config written by
@@ -106,7 +108,7 @@ fn save(cfg: &Config) {
 /// Build a `Config` from the legacy plain-text files if any are present, and
 /// persist it as `config.toml` so the migration happens exactly once.
 fn migrate_legacy() -> Option<Config> {
-    let dir = config_dir()?;
+    let dir = soul_player_dir()?;
     let mut cfg = Config::default();
     let mut found = false;
     if let Ok(s) = std::fs::read_to_string(dir.join("sources.txt")) {
@@ -217,11 +219,7 @@ pub fn save_locale(locale: &str) {
 /// `<config>/soul-player/output_device.txt` — the persisted output-device choice.
 /// A blank / missing file means "system default".
 pub fn output_device_path() -> Option<PathBuf> {
-    Some(
-        dirs::config_dir()?
-            .join("soul-player")
-            .join("output_device.txt"),
-    )
+    Some(soul_player_dir()?.join("output_device.txt"))
 }
 
 /// The saved output-device name, or `None` for the system default (also `None` if
@@ -269,11 +267,7 @@ fn save_device_to(path: &Path, name: Option<&str>) -> std::io::Result<()> {
 /// `"track\n3"`). A missing / unreadable / partial file falls back to the
 /// defaults (`Off`, `0.0`).
 pub fn replaygain_path() -> Option<PathBuf> {
-    Some(
-        dirs::config_dir()?
-            .join("soul-player")
-            .join("replaygain.txt"),
-    )
+    Some(soul_player_dir()?.join("replaygain.txt"))
 }
 
 /// The saved `(mode, preamp_db)`, defaulting to `(Off, 0.0)`.
@@ -345,11 +339,7 @@ fn save_rg_to(path: &Path, mode: ReplayGainMode, preamp_db: f32) -> std::io::Res
 /// freshness stamp: an entry whose file no longer matches (edited / replaced /
 /// moved) is dropped on load so a stale gain is never seeded.
 pub fn loudness_cache_path() -> Option<PathBuf> {
-    Some(
-        dirs::config_dir()?
-            .join("soul-player")
-            .join("loudness_cache.txt"),
-    )
+    Some(soul_player_dir()?.join("loudness_cache.txt"))
 }
 
 /// The saved, still-valid `(path, gain_db)` entries (empty if the file is missing

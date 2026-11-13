@@ -3,6 +3,7 @@
 
 pub mod albums;
 pub mod artists;
+pub mod dropdown;
 pub mod home;
 pub mod icons;
 pub mod library;
