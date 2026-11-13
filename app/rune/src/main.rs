@@ -1927,6 +1927,62 @@ mod tests {
         );
     }
 
+    /// The sidebar "Up Next" queue rows must left-align their covers with the
+    /// now-playing panel's cover (both at the 16pt pane inset), not the old
+    /// grip-pushed ~36pt. Mirrors the original's `QueueSection` (`px-4` list) +
+    /// `NowPlayingPanel` (`p-4`) sharing one left edge.
+    #[test]
+    fn queue_row_covers_left_align_with_the_now_playing_cover() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            album_track(1, "A"),
+            album_track(2, "B"),
+            album_track(3, "C"),
+            album_track(4, "D"),
+        ];
+        s.now_playing_id = Some(1);
+        s.playing = true;
+        s.up_next = vec![2];
+        s.context_ids = vec![3, 4];
+        s.context_len = 4;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        let np = rt
+            .presented("np-cover")
+            .expect("now-playing cover renders")
+            .0;
+        let man = rt
+            .presented("qcover-m-0")
+            .expect("manual queue cover renders")
+            .0;
+        // First context row: k = manual_len(1) + 0 + 1 = 2.
+        let ctx = rt
+            .presented("qcover-c-2")
+            .expect("context queue cover renders")
+            .0;
+        assert!(
+            (np[0] - man[0]).abs() < 0.5,
+            "manual queue cover (x={}) left-aligns with the now-playing cover (x={})",
+            man[0],
+            np[0]
+        );
+        assert!(
+            (np[0] - ctx[0]).abs() < 0.5,
+            "context queue cover (x={}) left-aligns with the now-playing cover (x={})",
+            ctx[0],
+            np[0]
+        );
+    }
+
     #[test]
     fn a_wide_window_shows_both_panes_side_by_side() {
         let rt = booted(1100.0, 720.0, |_| {});
