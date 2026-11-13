@@ -132,7 +132,7 @@ pub fn slider(
         .child(
             // Percent width: always exactly this element's own width, with
             // no dependency on the `w` read above settling.
-            el().key("track")
+            el().key(format!("{key}-track"))
                 .w_full()
                 .h(bar)
                 .absolute(0.0, (h - bar) / 2.0)
@@ -142,7 +142,7 @@ pub fn slider(
         )
         .child(
             // Filled portion is `bg-primary`, as the old app's ProgressBar.
-            el().key("fill")
+            el().key(format!("{key}-fill"))
                 .size(k / 2.0 + v * travel, bar)
                 .absolute(0.0, (h - bar) / 2.0)
                 .radius(bar / 2.0)
@@ -152,7 +152,7 @@ pub fn slider(
         .child(
             // The thumb (`bg-primary`), hidden at rest and faded in on hover/drag
             // via `group_opacity` (old app's `opacity: isHovering ? 1 : 0`).
-            el().key("knob")
+            el().key(format!("{key}-knob"))
                 .size(k, k)
                 .absolute(v * travel, (h - k) / 2.0)
                 .radius(k / 2.0)
