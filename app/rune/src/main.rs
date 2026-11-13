@@ -457,6 +457,24 @@ fn scene_settings_about(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::About;
 }
+/// German settings scenes: the longest-label locale we ship, for catching text
+/// overflow in `--snap`. `apply_locale` (not `set_locale_pref`) so the snapshot
+/// never writes the user's persisted language.
+fn scene_settings_music_de(s: &mut State) {
+    apply_locale("de");
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+}
+fn scene_settings_audio_de(s: &mut State) {
+    apply_locale("de");
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Audio;
+}
+fn scene_settings_appearance_de(s: &mut State) {
+    apply_locale("de");
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Appearance;
+}
 fn scene_albums(s: &mut State) {
     s.route = Route::Albums;
 }
@@ -527,6 +545,9 @@ fn main() -> anyhow::Result<()> {
             ("settings-music", scene_settings_music),
             ("settings-audio", scene_settings_audio),
             ("settings-about", scene_settings_about),
+            ("settings-music-de", scene_settings_music_de),
+            ("settings-audio-de", scene_settings_audio_de),
+            ("settings-appearance-de", scene_settings_appearance_de),
             ("albums", scene_albums),
             ("search", scene_search),
             ("no-match", scene_no_match),
@@ -693,6 +714,93 @@ mod tests {
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(0.0);
+    }
+
+    /// Walk every laid-out node and return human-readable offenders: a visible
+    /// node whose box leaves the window horizontally, or a text node an ancestor
+    /// clips horizontally. Both are the signature of a label or action row a
+    /// longer locale overflowed because it didn't wrap or shrink. We judge the
+    /// horizontal axis only — vertical overflow is legitimate (the settings pane
+    /// and the queue scroll), so comparing `rect` against `visible`/the window on
+    /// x alone keeps scrolled content from reading as a failure.
+    fn horizontal_overflows(rt: &Runtime<State>, viewport_w: f32) -> Vec<String> {
+        const TOL: f32 = 1.0;
+        let mut bad = Vec::new();
+        for e in rt.elements() {
+            // A node mid-exit or faded out is allowed off-stage.
+            if e.exiting || e.opacity <= 0.01 {
+                continue;
+            }
+            let [x, _y, w, _h] = e.rect;
+            let id = e.key.clone().unwrap_or_else(|| e.path.clone());
+            let shows = e.text.as_deref().unwrap_or("");
+            // (a) the drawn box must stay inside the window horizontally.
+            if x < -TOL || x + w > viewport_w + TOL {
+                bad.push(format!(
+                    "off-window [{id}] text={shows:?} x={x:.0} w={w:.0} (window {viewport_w:.0})"
+                ));
+                continue;
+            }
+            // (b) text must not be horizontally clipped by an ancestor: `visible`
+            // (what ancestors' clips leave) must still span the drawn width.
+            if !shows.is_empty() {
+                let [vx, _vy, vw, _vh] = e.visible;
+                if vx > x + TOL || vw + TOL < w {
+                    bad.push(format!(
+                        "clipped text [{id}] {shows:?} rect_w={w:.0} visible_w={vw:.0}"
+                    ));
+                }
+            }
+        }
+        bad
+    }
+
+    /// Settings must survive every shipped locale without a label or action row
+    /// overflowing the window or being clipped — German and Spanish run far
+    /// longer than the English the layout was first sized against. Renders each
+    /// category in each locale through the real `view` and asserts the layout
+    /// contains itself. This is the regression net for i18n text robustness.
+    #[test]
+    fn settings_layout_contains_itself_in_every_locale() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let tabs = [
+            ("Appearance", SettingsTab::Appearance),
+            ("MusicData", SettingsTab::MusicData),
+            ("Audio", SettingsTab::Audio),
+            ("About", SettingsTab::About),
+        ];
+        // A roomy window and a cramped one: the narrow pass is where button rows
+        // (theme / language / ReplayGain) must wrap rather than overflow.
+        let viewports = [(1100.0_f32, 720.0_f32), (900.0, 640.0)];
+        // One watched folder so the Music Data source row (name + remove ✕) is
+        // exercised too, not just the empty state.
+        let folder = testdata_dir().join("a-reasonably-long-source-folder-name");
+        let mut failures = Vec::new();
+        for &viewport in &viewports {
+            for &loc in LOCALES {
+                for (tab_name, tab) in tabs {
+                    let mut s = settings_state(std::slice::from_ref(&folder), &[]);
+                    s.settings_tab = tab;
+                    // AFTER State::new, which re-applies the persisted locale over ours.
+                    apply_locale(loc);
+                    let mut rt = Runtime::new(s, view, viewport, env);
+                    rt.frame(0.0);
+                    for bad in horizontal_overflows(&rt, viewport.0) {
+                        failures.push(format!("[{loc}/{tab_name}@{}] {bad}", viewport.0));
+                    }
+                }
+            }
+        }
+        apply_locale("en"); // don't leak the locale into sibling tests
+        assert!(
+            failures.is_empty(),
+            "{} settings layout overflow(s) across locales:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
     #[test]

@@ -11,9 +11,7 @@
 //! shows while Settings is routed.
 #![forbid(unsafe_code)]
 
-use rune::{
-    Align, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text,
-};
+use rune::{Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text};
 use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
@@ -59,11 +57,20 @@ fn card(key: &str, p: &Palette) -> El {
 }
 
 /// A card's heading: a bold title over a secondary-colour description line.
+/// Both `wrap` so a longer-locale description reflows onto more lines instead of
+/// forcing the card (or, in the Music Data header, its action buttons) to
+/// overflow — the heading's intrinsic width then falls to its widest word, so a
+/// `shrink`-ing parent can give the row's trailing controls their space.
 fn heading(title: String, desc: String, p: &Palette) -> El {
     col()
         .gap(space::XXS)
-        .child(text(title).font(type_::TITLE).color(p.fg))
-        .child(text(desc).font(type_::CAPTION).color(p.text_secondary))
+        .child(text(title).font(type_::TITLE).color(p.fg).wrap())
+        .child(
+            text(desc)
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .wrap(),
+        )
 }
 
 // ── Category rail ────────────────────────────────────────────────────────────
@@ -208,7 +215,9 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
         .gap(space::MD)
         .center_y()
         .padding(space::SM)
-        .child(text(name.clone()).color(p.fg).grow(1.0));
+        // `truncate` (ellipsis + shrink-to-0) so a long folder name can't shove
+        // the offline badge and remove ✕ off the card.
+        .child(text(name.clone()).color(p.fg).grow(1.0).truncate());
     if unavailable {
         r = r.child(
             el().key(format!("offline-{name}"))
@@ -302,6 +311,7 @@ fn appearance_card(s: &State, p: &Palette) -> El {
         .child(
             row()
                 .gap(space::SM)
+                .flex_wrap()
                 .child(theme_button(
                     t!("settings.themeSystem").to_string(),
                     "theme-system",
@@ -338,6 +348,7 @@ fn language_card(s: &State, p: &Palette) -> El {
         .child(
             row()
                 .gap(space::SM)
+                .flex_wrap()
                 .child(lang_button(
                     t!("settings.langSystem").to_string(),
                     "system",
@@ -360,14 +371,18 @@ fn music_data_card(s: &State, p: &Palette) -> El {
     let mut c = card("sources", p).child(
         row()
             .gap(space::MD)
-            .center_y()
+            // Wrap so the Rescan / Add Source buttons drop to their own line
+            // rather than off the card when a longer locale's heading needs the
+            // width; `shrink` lets the (wrapping) heading yield that width first.
+            .flex_wrap()
             .child(
                 heading(
                     t!("settings.musicData").to_string(),
                     t!("settings.musicDataDesc").to_string(),
                     p,
                 )
-                .grow(1.0),
+                .grow(1.0)
+                .shrink(),
             )
             .child(rescan_button(p))
             .child(add_source_button(p)),
@@ -431,6 +446,7 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let value01 = ((preamp - RG_PREAMP_MIN) / (RG_PREAMP_MAX - RG_PREAMP_MIN)).clamp(0.0, 1.0);
     let modes = row()
         .gap(space::SM)
+        .flex_wrap()
         .child(rg_mode_button(
             t!("settings.rgOff").to_string(),
             "rg-off",
@@ -452,16 +468,27 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             s.replaygain_mode == ReplayGainMode::Album,
             p,
         ));
-    let preamp_row = row()
+    // Label + current dB on their own row above a full-width slider, rather than
+    // label | slider | value in one row with fixed-width text cells: a longer
+    // locale's label (e.g. German "Vorverstärkung") then has the whole width and
+    // can't overrun a fixed cell into the slider.
+    let preamp_row = col()
         .key("rg-preamp-row")
-        .gap(space::MD)
-        .center_y()
+        .w_full()
+        .gap(space::XS)
         .child(
-            text(t!("settings.preamp").to_string())
-                .color(p.text_secondary)
-                .w(56.0),
+            row()
+                .w_full()
+                .center_y()
+                .child(
+                    text(t!("settings.preamp").to_string())
+                        .color(p.text_secondary)
+                        .grow(1.0)
+                        .shrink(),
+                )
+                .child(text(format!("{preamp:+.1} dB")).color(p.text_secondary)),
         )
-        .child(slider(
+        .child(row().w_full().child(slider(
             "rg-preamp",
             value01,
             cx,
@@ -473,13 +500,7 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 let db = RG_PREAMP_MIN + v * (RG_PREAMP_MAX - RG_PREAMP_MIN);
                 set_replaygain_preamp(st, (db * 10.0).round() / 10.0);
             },
-        ))
-        .child(
-            text(format!("{preamp:+.1} dB"))
-                .color(p.text_secondary)
-                .w(64.0)
-                .align(Align::End),
-        );
+        )));
     card("replaygain", p)
         .child(heading(
             t!("settings.replayGain").to_string(),
