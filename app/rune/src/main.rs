@@ -1124,6 +1124,39 @@ mod tests {
         assert!(on > 0.9, "enabled transport is full opacity (opacity {on})");
     }
 
+    /// Clicking an album card whose track is already the one playing toggles
+    /// pause/resume (the old app's MediaCard), instead of restarting it from the
+    /// top — end-to-end through the real card press, not just the decision fn.
+    #[test]
+    fn clicking_the_playing_album_card_toggles_instead_of_restarting() {
+        use soul_player_host::TrackView;
+        let track = |id: u32| TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some("A".into()),
+            album: Some("Alb".into()),
+            duration_secs: 1.0,
+        };
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![track(1), track(2)]; // one album "Alb" with ids 1,2
+        s.route = Route::Albums;
+        s.now_playing_id = Some(1); // a track of this album is the current one
+        s.playing = true;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "album-0");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::TogglePlay],
+            "an already-playing album toggles rather than restarting"
+        );
+    }
+
     #[test]
     fn settings_shows_updates_section_without_install_by_default() {
         let env = Env {
