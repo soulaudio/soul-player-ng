@@ -399,6 +399,10 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .key("volume-row")
         .gap(ROW_GAP)
         .center_y()
+        // A grab cursor marks the whole row as a draggable / scrollable control
+        // (the app reserves `Pointer` for buttons), so it reads as interactive
+        // rather than inert text.
+        .cursor(Cursor::Grab)
         // Scrolling anywhere over the whole volume row (icon + slider + %) nudges
         // the volume — a bigger, more forgiving target than the thin slider.
         // Returns true to take the gesture so the sidebar never scrolls under it.

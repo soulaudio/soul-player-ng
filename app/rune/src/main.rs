@@ -1005,6 +1005,28 @@ mod tests {
     /// louder, down quieter — the end-to-end path through `on_wheel` →
     /// `wheel_volume_delta` → `set_volume`. Starts mid-range so both directions
     /// move (the default 1.0 is already at the ceiling).
+    /// Hovering the volume row shows a grab cursor, marking it as an interactive
+    /// (draggable / scrollable) control rather than inert text.
+    #[test]
+    fn volume_row_shows_a_grab_cursor() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("volume-row").expect("the volume row renders");
+        rt.pointer_move(x, y);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.cursor(),
+            Cursor::Grab,
+            "the volume row shows a grab cursor"
+        );
+    }
+
     #[test]
     fn scrolling_over_the_volume_row_changes_the_volume() {
         let env = Env {
