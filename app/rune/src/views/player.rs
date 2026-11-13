@@ -187,7 +187,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .key("now-playing")
         .gap(space::COZY)
         .center_y()
-        .child(cover(s, Some(track.id), COVER_SIZE, radius::MD, p, scale))
+        .child(cover(s, Some(track.id), COVER_SIZE, radius::MD, p, scale).key("np-cover"))
         .child(text_col)
         // A muted heart on the right (old app's `Heart` button); decorative
         // here — favourites aren't a feature of this focused build.
