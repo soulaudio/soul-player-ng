@@ -642,6 +642,16 @@ mod tests {
     /// within a short virtual-clock window, which is why the player-panel
     /// snapshots fall back to the placeholder for it — this test proves the
     /// cache itself, not the unrelated playback race.
+    ///
+    /// `ImageCache` is wgpu-backed, so this needs a GPU adapter: Linux CI has
+    /// software Vulkan (Lavapipe) and macOS has Metal, but the headless Windows
+    /// CI runner has neither and the wgpu init aborts — so skip it on Windows
+    /// (the decode path is identical across platforms and stays covered on the
+    /// other two).
+    #[cfg_attr(
+        windows,
+        ignore = "wgpu ImageCache needs a GPU; Windows CI runner has none"
+    )]
     #[test]
     fn image_for_decodes_a_known_embedded_cover() {
         let host = PlayerHandle::offline();
