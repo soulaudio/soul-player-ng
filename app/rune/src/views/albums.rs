@@ -83,6 +83,9 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
     let show_pause = s.now_playing_id.is_some_and(|id| a.ids.contains(&id)) && s.playing;
     col()
         .key(format!("album-{slot}"))
+        .role("button")
+        .label(a.name.clone())
+        .focusable(true)
         .w(card_w)
         // No wrapper background or inset — the old app's MediaCard is `pb-2` with a
         // `mb-2` cover; the cover + the hover play-overlay are the affordance, not a
@@ -116,6 +119,9 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                             // darkening to ~black/70 on direct hover (its
                             // `hover:bg-black/70`). Carries the play/pause press.
                             el().key("play-btn")
+                                .role("button")
+                                .label(t!("player.play").to_string())
+                                .focusable(true)
                                 .size(PLAY_BTN, PLAY_BTN)
                                 .radius(radius::LG)
                                 .fill(Color::BLACK.alpha(0.5))
@@ -191,6 +197,7 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
 
     let mut grid = row()
         .key("albums-grid")
+        .role("grid")
         .flex_wrap()
         .gap(space::GUTTER)
         .padding(space::PANE);
@@ -244,6 +251,13 @@ pub(crate) fn detail_track_row(
     let tid = t.id;
     let mut r = row()
         .key(format!("album-track-{i}"))
+        .role("button")
+        .label(
+            t.title
+                .clone()
+                .unwrap_or_else(|| t!("library.unknown").to_string()),
+        )
+        .focusable(true)
         .gap(space::MD)
         .px(space::MD)
         .py(space::SM)
@@ -370,6 +384,9 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                     // The old app's "Play All" pill (`rounded-full px-6 py-3`,
                     // filled Play icon) — plays the whole album from the top.
                     el().key("album-play-all")
+                        .role("button")
+                        .label(t!("album.playAll").to_string())
+                        .focusable(true)
                         .px(space::XL)
                         .py(space::MD)
                         .radius(radius::FULL)
@@ -393,7 +410,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                 ),
         );
 
-    let mut list = col().key("album-tracks").gap(space::XXS);
+    let mut list = col().key("album-tracks").role("list").gap(space::XXS);
     for (i, &id) in album.ids.iter().enumerate() {
         if let Some(t) = s.library.iter().find(|t| t.id == id) {
             list = list.child(detail_track_row(

@@ -58,6 +58,9 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
     let name = a.name.clone();
     col()
         .key(format!("artist-{slot}"))
+        .role("button")
+        .label(a.name.clone())
+        .focusable(true)
         .w(card_w)
         .gap(space::SM)
         .pb(space::SM)
@@ -106,6 +109,7 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
 
     let mut grid = row()
         .key("artists-grid")
+        .role("grid")
         .flex_wrap()
         .gap(space::GUTTER)
         .padding(space::PANE);
@@ -203,6 +207,9 @@ pub fn artist_detail(s: &State, p: &Palette, scale: f32) -> El {
                     // The same "Play All" pill as the album page — plays the
                     // artist's tracks from the top.
                     el().key("artist-play-all")
+                        .role("button")
+                        .label(t!("album.playAll").to_string())
+                        .focusable(true)
                         .px(space::XL)
                         .py(space::MD)
                         .radius(radius::FULL)
@@ -226,7 +233,7 @@ pub fn artist_detail(s: &State, p: &Palette, scale: f32) -> El {
                 ),
         );
 
-    let mut list = col().key("artist-tracks").gap(space::XXS);
+    let mut list = col().key("artist-tracks").role("list").gap(space::XXS);
     for (i, &id) in artist.ids.iter().enumerate() {
         if let Some(t) = s.library.iter().find(|t| t.id == id) {
             list = list.child(detail_track_row(

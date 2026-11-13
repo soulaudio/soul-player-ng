@@ -183,10 +183,17 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
         .child(row_text(s, p, id).pl(space::COZY).grow(1.0))
         .child(remove);
 
+    let row_name = s
+        .track(id)
+        .and_then(|t| t.title.clone())
+        .unwrap_or_else(|| t!("library.unknown").to_string());
     let r = row()
         // Keyed by position `i`, not track id: the same track can sit in the
         // queue more than once, which would collide an id key.
         .key(format!("queue-manual-{i}"))
+        .role("button")
+        .label(row_name)
+        .focusable(true)
         // No inter-child gap: the 16 pt grip IS the left gutter, so the body's
         // cover lands at the 16 pt pane inset. `pr` insets the pill from the
         // right edge; `hover_group` reveals the grip + remove on hover.
@@ -233,11 +240,18 @@ fn context_row(s: &State, p: &Palette, scale: f32, id: u32, k: u32) -> El {
         .press(p.fg.alpha(fx::PRESS))
         .child(cover(s, Some(id), QUEUE_COVER, radius::XS, p, scale).key(format!("qcover-c-{k}")))
         .child(row_text(s, p, id).pl(space::COZY).grow(1.0));
+    let row_name = s
+        .track(id)
+        .and_then(|t| t.title.clone())
+        .unwrap_or_else(|| t!("library.unknown").to_string());
     row()
         // Keyed by the upcoming-slot position `k`, not the track id: the same
         // track can appear more than once in the context (the same recording in
         // several formats), so an id key would collide. `k` is unique per row.
         .key(format!("queue-context-{k}"))
+        .role("button")
+        .label(row_name)
+        .focusable(true)
         .gap(0.0)
         .center_y()
         .pr(space::SM)

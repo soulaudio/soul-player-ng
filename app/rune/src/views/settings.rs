@@ -93,6 +93,9 @@ fn category_item(
     let fg = if active { p.bg } else { p.text_secondary };
     let item = el()
         .key(key.to_string())
+        .role("tab")
+        .label(label.clone())
+        .focusable(true)
         .w_full()
         .px(space::MD)
         .py(space::SM)
@@ -165,6 +168,9 @@ fn category_nav(s: &State, p: &Palette) -> El {
 /// `apply_watch`. Mirrors `views::open_folder`'s dialog pattern.
 fn add_source_button(p: &Palette) -> El {
     el().key("add-source")
+        .role("button")
+        .label(t!("settings.addSource").to_string())
+        .focusable(true)
         .padding(space::MD)
         .radius(radius::MD)
         .fill(p.primary)
@@ -193,6 +199,9 @@ fn add_source_button(p: &Palette) -> El {
 /// not apply_and_save).
 fn rescan_button(p: &Palette) -> El {
     el().key("rescan-sources")
+        .role("button")
+        .label(t!("settings.rescan").to_string())
+        .focusable(true)
         .padding(space::MD)
         .radius(radius::MD)
         .fill(p.muted)
@@ -229,6 +238,9 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
     }
     r.child(
         el().key(format!("remove-{name}"))
+            .role("button")
+            .label(t!("queue.remove").to_string())
+            .focusable(true)
             .padding(space::SNUG)
             .radius(radius::SM)
             .fill(p.muted)
@@ -245,6 +257,9 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
 /// One theme choice; the active preference is filled with the primary color.
 fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
         .padding(space::SM)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
@@ -299,6 +314,9 @@ fn device_button(
     p: &Palette,
 ) -> El {
     el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
         .padding(space::SM)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
@@ -315,6 +333,9 @@ fn device_button(
 /// (mirrors `theme_button` / `device_button`).
 fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
         .padding(space::SM)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
@@ -600,6 +621,9 @@ fn about_card(s: &State, p: &Palette) -> El {
                 )
                 .child(
                     el().key("install-update")
+                        .role("button")
+                        .label(t!("settings.installRestart").to_string())
+                        .focusable(true)
                         .padding(space::MD)
                         .radius(radius::MD)
                         .fill(p.primary)

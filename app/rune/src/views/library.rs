@@ -44,6 +44,18 @@ fn track_row(
     let tid = t.id; // Copy out of the borrow so the button/menu closures can own it.
     let menu_ids = ids.clone(); // the context menu's "Play" needs its own copy.
     let artist = t.artist.clone().unwrap_or_default();
+    // Accessible name for the whole row (keyboard focus / screen readers).
+    let row_label = {
+        let ti = t
+            .title
+            .clone()
+            .unwrap_or_else(|| t!("library.unknown").to_string());
+        if artist.is_empty() {
+            ti
+        } else {
+            format!("{ti} — {artist}")
+        }
+    };
 
     let title = text(
         t.title
@@ -93,6 +105,9 @@ fn track_row(
 
     let mut r = row()
         .key(format!("track-{}", t.id))
+        .role("button")
+        .label(row_label)
+        .focusable(true)
         .gap(space::MD)
         .px(space::MD)
         .py(space::SM)
@@ -151,6 +166,9 @@ fn track_row(
     // without also starting playback.
     .child(
         el().key(format!("enqueue-{}", t.id))
+            .role("button")
+            .label(t!("library.addToQueue").to_string())
+            .focusable(true)
             .padding(space::SNUG)
             .radius(radius::SM)
             .fill(p.muted)
@@ -223,6 +241,9 @@ fn search_bar(s: &State, p: &Palette) -> El {
         .child(icon(&icons::SEARCH, 16.0).color(p.text_secondary))
         .child(
             el().key("search-field")
+                .role("button")
+                .label(t!("library.searchPlaceholder").to_string())
+                .focusable(true)
                 .grow(1.0)
                 .padding(space::SNUG)
                 .radius(radius::SM)
@@ -236,6 +257,9 @@ fn search_bar(s: &State, p: &Palette) -> El {
     if !s.search.is_empty() {
         bar = bar.child(
             el().key("search-clear")
+                .role("button")
+                .label(t!("queue.clear").to_string())
+                .focusable(true)
                 .padding(space::SNUG)
                 .radius(radius::SM)
                 .fill(p.muted)
@@ -287,6 +311,9 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             .child(text(t!("library.noMusicHint").to_string()).color(p.text_secondary))
             .child(
                 el().key("go-to-sources")
+                    .role("button")
+                    .label(t!("library.addSource").to_string())
+                    .focusable(true)
                     .padding(space::MD)
                     .radius(radius::MD)
                     .fill(p.primary)
@@ -310,7 +337,10 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         )
     } else {
         let ids: Vec<u32> = visible.iter().map(|t| t.id).collect();
-        let mut list = col().key("tracks").gap(space::XXS);
+        // `role("list")` announces the rows as a list to assistive tech; each row
+        // is a focusable button Tab reaches and Space plays. (Arrow keys stay the
+        // app's global volume/seek shortcuts; per-list arrow roving is a follow-up.)
+        let mut list = col().key("tracks").role("list").gap(space::XXS);
         for (i, t) in visible.iter().enumerate() {
             list = list.child(track_row(s, p, t, &ids, i, compact, scale));
         }
@@ -332,6 +362,9 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
 /// One sort-order choice; the active axis is filled with the primary color.
 fn sort_button(label: String, key: &str, axis: BrowseAxis, active: bool, p: &Palette) -> El {
     el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
         .padding(space::SNUG)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
