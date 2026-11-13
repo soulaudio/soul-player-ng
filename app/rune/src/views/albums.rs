@@ -172,7 +172,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
 /// pane, dropping a column below [`MIN_CARD`]. Fed the pane width (window minus the
 /// sidebar), the column count tracks the old app's `grid-cols-2..8` viewport
 /// breakpoints. Pure, so the grid and its test share exactly one rule.
-fn grid_layout(pane_w: f32) -> (usize, f32) {
+pub(crate) fn grid_layout(pane_w: f32) -> (usize, f32) {
     let avail = (pane_w - 2.0 * space::PANE).max(MIN_CARD);
     let cols = (((avail + space::GUTTER) / (MIN_CARD + space::GUTTER)).floor() as usize).max(1);
     let card_w = ((avail - (cols as f32 - 1.0) * space::GUTTER) / cols as f32).floor();
@@ -230,7 +230,7 @@ fn back_button(p: &Palette) -> El {
 /// One row on the album detail page: the track number (or a ⏸/▶ state glyph when
 /// it's the current track), title and duration. Clicking plays the album from
 /// that track, or toggles pause/resume when it is already the one playing.
-fn detail_track_row(
+pub(crate) fn detail_track_row(
     now_playing: Option<u32>,
     is_playing: bool,
     p: &Palette,

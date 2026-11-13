@@ -138,7 +138,14 @@ pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32, full_width: b
                     "nav-albums",
                     t!("nav.albums").to_string(),
                     Route::Albums,
-                    s.route == Route::Albums,
+                    matches!(s.route, Route::Albums | Route::Album),
+                    p,
+                ))
+                .child(nav_item(
+                    "nav-artists",
+                    t!("nav.artists").to_string(),
+                    Route::Artists,
+                    matches!(s.route, Route::Artists | Route::Artist),
                     p,
                 )),
         )
