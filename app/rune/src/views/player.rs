@@ -401,15 +401,18 @@ fn transport_row(s: &State, p: &Palette) -> El {
 /// `seek_row`'s doc comment for why the row's own key (`"volume-row"`)
 /// stays distinct from the slider's (`"volume"`).
 fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
-    let muted = s.volume <= 0.0;
+    let muted = s.muted;
+    // While muted the slider and % read 0 (the old app's `displayVolume`); the
+    // real level is preserved in the backend and restored on un-mute.
+    let display_vol = if muted { 0.0 } else { s.volume };
     row()
         .key("volume-row")
         .gap(ROW_GAP)
         .center_y()
         .child(
-            // The speaker icon mutes / un-muting restores the pre-mute level (the
-            // old app's VolumeControl mute toggle). No backend `Mute`, so it drives
-            // `SetVolume`.
+            // The speaker icon is a mute toggle (the old app's VolumeControl); the
+            // backend owns the mute state (and the pre-mute level), so the UI just
+            // sends `ToggleMute` and reflects `Tick.muted`.
             el().key("volume-mute")
                 .role("button")
                 .label(
@@ -426,21 +429,7 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 .cursor(Cursor::Pointer)
                 .hover(p.fg.alpha(fx::HOVER))
                 .press(p.fg.alpha(fx::PRESS))
-                .on_press(|st: &mut State| {
-                    if st.volume > 0.0 {
-                        st.pre_mute_volume = st.volume;
-                        st.volume = 0.0;
-                        st.host.send(Command::SetVolume(0.0));
-                    } else {
-                        let v = if st.pre_mute_volume > 0.0 {
-                            st.pre_mute_volume
-                        } else {
-                            1.0
-                        };
-                        st.volume = v;
-                        st.host.send(Command::SetVolume(v));
-                    }
-                })
+                .on_press(|st: &mut State| st.host.send(Command::ToggleMute))
                 .child(
                     icon(
                         if muted {
@@ -455,14 +444,14 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         )
         .child(slider(
             "volume",
-            s.volume,
+            display_vol,
             cx,
             true,
             p,
             |st: &mut State, v: f32| st.host.send(Command::SetVolume(v)),
         ))
         .child(
-            text(format!("{:.0}", s.volume * 100.0))
+            text(format!("{:.0}", display_vol * 100.0))
                 .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(VOL_PCT_W)

@@ -115,10 +115,10 @@ struct State {
     duration_secs: f64,
     playing: bool,
     volume: f32,
-    /// The volume to restore when un-muting (the level before the last mute).
-    /// There is no backend `Mute`, so the speaker toggle drives `SetVolume(0)` /
-    /// `SetVolume(pre_mute_volume)`.
-    pre_mute_volume: f32,
+    /// Whether the output is muted — mirrored from `Tick.muted`. The backend owns
+    /// the mute state and the pre-mute level; the UI just sends `ToggleMute` and
+    /// reflects this flag.
+    muted: bool,
     shuffle: bool,
     repeat: RepeatMode,
     /// The manual queue ("Next in queue"): tracks the user queued via
@@ -213,7 +213,7 @@ impl State {
             duration_secs: 0.0,
             playing: false,
             volume: 1.0,
-            pre_mute_volume: 1.0,
+            muted: false,
             shuffle: false,
             repeat: RepeatMode::Off,
             up_next: Vec::new(),
@@ -261,6 +261,7 @@ impl State {
                 self.duration_secs = t.duration_secs.unwrap_or(0.0);
                 self.playing = matches!(t.state, PlayState::Playing);
                 self.volume = t.volume;
+                self.muted = t.muted;
                 self.shuffle = t.shuffle;
                 self.repeat = t.repeat;
             }
@@ -1324,13 +1325,13 @@ mod tests {
         );
     }
 
-    /// The speaker icon mutes (SetVolume(0), remembering the level) and un-mutes
-    /// back to that level — the old app's VolumeControl mute toggle.
+    /// The speaker icon sends `ToggleMute`; the backend owns the mute state and
+    /// the pre-mute level (the mute *rules* are unit-tested in the backend's
+    /// `VolumeState`). The UI just dispatches the command and reflects `Tick.muted`.
     #[test]
-    fn the_speaker_icon_mutes_then_restores_the_volume() {
+    fn the_speaker_icon_sends_toggle_mute() {
         let mut s = State::new(PlayerHandle::recording());
         s.sidebar_collapsed = false;
-        s.volume = 0.7;
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1340,17 +1341,8 @@ mod tests {
         click(&mut rt, "volume-mute");
         assert_eq!(
             rt.state.host.recorded_commands(),
-            vec![Command::SetVolume(0.0)],
-            "clicking the speaker mutes"
-        );
-        assert!((rt.state.pre_mute_volume - 0.7).abs() < 1e-6);
-        // Now muted → clicking again restores the pre-mute level.
-        rt.frame(0.0);
-        click(&mut rt, "volume-mute");
-        assert_eq!(
-            rt.state.host.recorded_commands(),
-            vec![Command::SetVolume(0.0), Command::SetVolume(0.7)],
-            "clicking again restores the pre-mute volume"
+            vec![Command::ToggleMute],
+            "the speaker icon toggles mute via the backend"
         );
     }
 

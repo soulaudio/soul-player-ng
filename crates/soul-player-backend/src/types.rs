@@ -27,8 +27,12 @@ pub enum Command {
     Seek {
         secs: f64,
     },
-    /// Set output volume, 0.0..=1.0.
+    /// Set output volume, 0.0..=1.0. A positive volume also clears mute.
     SetVolume(f32),
+    /// Toggle mute: silence the output while preserving the volume to restore on
+    /// un-mute. The player has no separate mute, so this is applied as a 0 gain;
+    /// `Tick.muted` reports the state.
+    ToggleMute,
     PlayNext(u32),
     Enqueue(u32),
     ClearQueue,
@@ -155,7 +159,11 @@ pub struct Tick {
     pub state: PlayState,
     pub shuffle: bool,
     pub repeat: RepeatMode,
+    /// The user's volume level, 0.0..=1.0 — preserved across mute (so un-muting
+    /// restores it). The actual output gain is 0 while [`Tick::muted`].
     pub volume: f32,
+    /// Whether the output is muted (silenced) while keeping `volume`.
+    pub muted: bool,
 }
 
 /// Up-Next + context position, emitted on queue mutation.

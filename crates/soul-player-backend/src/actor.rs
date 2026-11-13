@@ -20,7 +20,8 @@ use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_engine::{Engine, Provided};
 
 use crate::driver::{
-    RgInfo, ServicePlayer, apply_command, apply_replay_gain, project_queue, project_tick, queue_for,
+    RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain, project_queue,
+    project_tick, queue_for,
 };
 use crate::library::Library;
 use crate::loudness::LoudnessCache;
@@ -187,7 +188,7 @@ fn pump_thread<K, Mk, Ev>(
     let (loud_res_tx, loud_res_rx) = mpsc::channel::<(PathBuf, f32)>();
     let (loudness, analyzer) = LoudnessCache::spawn(loud_res_tx);
 
-    let mut volume: f32 = 1.0;
+    let mut vol = VolumeState::new();
     let mut seed: u64 = SEED_STEP;
     let mut last_tick = Instant::now();
     let tick_every = Duration::from_millis(125); // ~8 Hz
@@ -214,27 +215,35 @@ fn pump_thread<K, Mk, Ev>(
         loop {
             match cmd_rx.try_recv() {
                 Ok(cmd) => {
-                    if let Command::SetVolume(v) = cmd {
-                        // Clamp at intake so projected `Tick.volume` matches what
-                        // `Deck::set_volume` actually applies (0.0..=1.0).
-                        volume = v.clamp(0.0, 1.0);
-                    }
-                    if let Command::SetReplayGain { mode, preamp_db } = cmd {
-                        // Track the config here (the deck call happens below, keyed
-                        // to the current track); `rg_dirty` forces a re-apply even
-                        // when the track id hasn't changed.
-                        rg_mode = mode;
-                        rg_preamp = preamp_db;
-                        rg_dirty = true;
-                    }
-                    if let Command::SeedLoudness(entries) = &cmd {
-                        // Seed the in-memory loudness cache from the app's persisted
-                        // gains before any analysis runs (startup). Pump state, so
-                        // it's handled here, not in `apply_command` (a no-op there).
-                        loudness.seed(entries);
+                    match &cmd {
+                        // Clamp/track volume at intake so `Tick.volume` matches what
+                        // the deck applies, and a positive volume clears mute.
+                        Command::SetVolume(v) => vol.set_volume(*v),
+                        // Mute is modelled here — the core player has no mute — and
+                        // resolves to a 0 effective gain below.
+                        Command::ToggleMute => vol.toggle_mute(),
+                        // Track the RG config here (the deck call happens below,
+                        // keyed to the current track); `rg_dirty` forces a re-apply
+                        // even when the track id hasn't changed.
+                        Command::SetReplayGain { mode, preamp_db } => {
+                            rg_mode = *mode;
+                            rg_preamp = *preamp_db;
+                            rg_dirty = true;
+                        }
+                        // Seed the in-memory loudness cache (pump state, lives here),
+                        // not a transport call — a no-op in `apply_command`.
+                        Command::SeedLoudness(entries) => loudness.seed(entries),
+                        _ => {}
                     }
                     seed = seed.wrapping_add(SEED_STEP);
-                    if let Err(e) = apply_command(&mut player, cmd, seed) {
+                    // Volume and mute both resolve to the effective gain on the deck
+                    // (`VolumeState::gain`); every other command applies unchanged.
+                    let applied = if matches!(cmd, Command::SetVolume(_) | Command::ToggleMute) {
+                        Command::SetVolume(vol.gain())
+                    } else {
+                        cmd
+                    };
+                    if let Err(e) = apply_command(&mut player, applied, seed) {
                         eprintln!("player: command error: {e:?}");
                     }
                     changed = true;
@@ -312,7 +321,7 @@ fn pump_thread<K, Mk, Ev>(
 
         // 4. Emit throttled state (immediately on change, else ~8 Hz).
         if changed || last_tick.elapsed() >= tick_every {
-            let mut tick = project_tick(&player, volume);
+            let mut tick = project_tick(&player, vol.volume(), vol.muted());
             // The deck's duration comes from the decoder; some containers
             // (Matroska, CAF-ALAC) can't report a length, so fall back to the
             // library's tag-derived duration — keeping the progress bar
