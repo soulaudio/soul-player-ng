@@ -191,6 +191,13 @@ struct State {
     /// state — the themed `views::dropdown` component reads it to show its panel,
     /// and a full-window backdrop closes it on an outside click.
     open_dropdown: Option<String>,
+    /// The key of the slider being dragged right now (`None` = none), so it alone
+    /// shows the horizontal-drag cursor. Ephemeral.
+    dragging_slider: Option<String>,
+    /// While the seek bar is being scrubbed, the previewed position in seconds —
+    /// the knob and the elapsed-time label follow it, and the real `Seek` fires
+    /// only on release. `None` when not scrubbing. Ephemeral.
+    scrub_secs: Option<f64>,
 }
 
 impl State {
@@ -251,6 +258,8 @@ impl State {
             sidebar_collapsed,
             locale_pref,
             open_dropdown: None,
+            dragging_slider: None,
+            scrub_secs: None,
         }
     }
 
@@ -1001,32 +1010,83 @@ mod tests {
         );
     }
 
-    /// Scrolling the wheel over the volume row nudges the volume — up (dy < 0)
-    /// louder, down quieter — the end-to-end path through `on_wheel` →
-    /// `wheel_volume_delta` → `set_volume`. Starts mid-range so both directions
-    /// move (the default 1.0 is already at the ceiling).
-    /// Hovering the volume row shows a grab cursor, marking it as an interactive
-    /// (draggable / scrollable) control rather than inert text.
+    /// A slider shows the horizontal-drag cursor only while it is actually being
+    /// dragged — hovering keeps the plain cursor, so the change reads as "you are
+    /// dragging" rather than a persistent hint.
     #[test]
-    fn volume_row_shows_a_grab_cursor() {
+    fn slider_shows_a_drag_cursor_only_while_dragging() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
+        s.volume = 0.5;
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        let (x, y) = rt.find("volume-row").expect("the volume row renders");
+        let (x, y) = rt.find("volume").expect("the volume slider renders");
+        // Hover: plain cursor.
         rt.pointer_move(x, y);
         rt.frame(0.0);
         assert_eq!(
             rt.cursor(),
-            Cursor::Grab,
-            "the volume row shows a grab cursor"
+            Cursor::Default,
+            "hovering the slider keeps the default cursor"
+        );
+        // Press + move = a drag: the horizontal-resize cursor appears.
+        rt.pointer_down(x, y);
+        rt.pointer_move(x + 12.0, y);
+        rt.frame(0.0);
+        assert_eq!(rt.state.dragging_slider.as_deref(), Some("volume"));
+        assert_eq!(
+            rt.cursor(),
+            Cursor::ResizeColumn,
+            "dragging the slider shows the horizontal-drag cursor"
+        );
+        // Release clears the drag state.
+        rt.pointer_up(x + 12.0, y);
+        rt.frame(0.0);
+        assert_eq!(rt.state.dragging_slider, None);
+    }
+
+    /// Dragging the seek bar scrubs a live preview (knob + elapsed time follow the
+    /// pointer) without seeking on every move, then commits one Seek on release.
+    #[test]
+    fn dragging_the_seek_bar_scrubs_then_commits_on_release() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.duration_secs = 100.0;
+        s.position_secs = 10.0;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("seek").expect("the seek slider renders");
+        // Drag toward the right: a scrub preview appears and moves forward, with
+        // no seek committed mid-drag.
+        rt.pointer_down(x, y);
+        rt.pointer_move(x + 40.0, y);
+        rt.frame(0.0);
+        let scrub = rt
+            .state
+            .scrub_secs
+            .expect("dragging previews a scrub position");
+        assert!(scrub > 10.0, "scrubbed forward from 10s, got {scrub}");
+        // Release ends the scrub (the Seek command goes to the host).
+        rt.pointer_up(x + 40.0, y);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.scrub_secs, None,
+            "releasing ends the scrub preview"
         );
     }
 
+    /// Scrolling the wheel over the volume row nudges the volume — up (dy < 0)
+    /// louder, down quieter — the end-to-end path through `on_wheel` →
+    /// `wheel_volume_delta` → `set_volume`. Starts mid-range so both directions
+    /// move (the default 1.0 is already at the ceiling).
     #[test]
     fn scrolling_over_the_volume_row_changes_the_volume() {
         let env = Env {

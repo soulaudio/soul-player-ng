@@ -225,17 +225,21 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
 /// unambiguously reads the slider's own laid-out width, not this row's.
 fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let duration = s.duration_secs;
+    // While scrubbing, the knob and elapsed-time label follow the previewed
+    // position (`scrub_secs`); otherwise they track real playback.
+    let shown_secs = s.scrub_secs.unwrap_or(s.position_secs);
     let value01 = if duration > 0.0 {
-        (s.position_secs / duration).clamp(0.0, 1.0) as f32
+        (shown_secs / duration).clamp(0.0, 1.0) as f32
     } else {
         0.0
     };
+    let dragging = s.dragging_slider.as_deref() == Some("seek");
     row()
         .key("seek-row")
         .gap(ROW_GAP)
         .center_y()
         .child(
-            text(fmt_dur(s.position_secs))
+            text(fmt_dur(shown_secs))
                 .font(type_::LABEL.mono())
                 .color(p.text_secondary)
                 .w(TIME_LABEL_W),
@@ -243,13 +247,21 @@ fn seek_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(slider(
             "seek",
             value01,
+            dragging,
             cx,
-            false,
             p,
+            // Scrub: preview the dragged position (no seek yet), so the knob and
+            // time track the pointer without decoding a seek on every move.
+            move |st: &mut State, v: f32| {
+                st.scrub_secs = Some(f64::from(v) * duration);
+            },
+            // Commit on release: seek once to the dropped position, then stop
+            // previewing so the bar follows real playback again.
             move |st: &mut State, v: f32| {
                 st.host.send(Command::Seek {
                     secs: f64::from(v) * duration,
                 });
+                st.scrub_secs = None;
             },
         ))
         .child(
@@ -395,14 +407,11 @@ fn transport_row(s: &State, p: &Palette) -> El {
 /// `seek_row`'s doc comment for why the row's own key (`"volume-row"`)
 /// stays distinct from the slider's (`"volume"`).
 fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let dragging = s.dragging_slider.as_deref() == Some("volume");
     row()
         .key("volume-row")
         .gap(ROW_GAP)
         .center_y()
-        // A grab cursor marks the whole row as a draggable / scrollable control
-        // (the app reserves `Pointer` for buttons), so it reads as interactive
-        // rather than inert text.
-        .cursor(Cursor::Grab)
         // Scrolling anywhere over the whole volume row (icon + slider + %) nudges
         // the volume — a bigger, more forgiving target than the thin slider.
         // Returns true to take the gesture so the sidebar never scrolls under it.
@@ -424,7 +433,11 @@ fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             )
             .color(p.text_secondary),
         )
-        .child(slider("volume", s.volume, cx, true, p, set_volume))
+        // Volume commits live: scrubbing and the final release both set the
+        // volume, so the knob tracks the pointer and the host hears every move.
+        .child(slider(
+            "volume", s.volume, dragging, cx, p, set_volume, set_volume,
+        ))
         .child(
             text(format!("{:.0}", s.volume * 100.0))
                 .font(type_::LABEL.mono())

@@ -475,6 +475,13 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             s.replaygain_mode == ReplayGainMode::Album,
             p,
         ));
+    // Map the 0..1 slider position back onto the dB range, rounded to 0.1 dB so
+    // the persisted value stays clean. Used for both scrub and release (preamp
+    // commits live), hence a reusable closure.
+    let apply_preamp = |st: &mut State, v: f32| {
+        let db = RG_PREAMP_MIN + v * (RG_PREAMP_MAX - RG_PREAMP_MIN);
+        set_replaygain_preamp(st, (db * 10.0).round() / 10.0);
+    };
     // Label + current dB on their own row above a full-width slider, rather than
     // label | slider | value in one row with fixed-width text cells: a longer
     // locale's label (e.g. German "Vorverstärkung") then has the whole width and
@@ -498,15 +505,13 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(row().w_full().child(slider(
             "rg-preamp",
             value01,
+            s.dragging_slider.as_deref() == Some("rg-preamp"),
             cx,
-            false,
             p,
-            |st: &mut State, v: f32| {
-                // Map the 0..1 slider position back onto the dB range, rounded to
-                // 0.1 dB so the persisted value stays clean.
-                let db = RG_PREAMP_MIN + v * (RG_PREAMP_MAX - RG_PREAMP_MIN);
-                set_replaygain_preamp(st, (db * 10.0).round() / 10.0);
-            },
+            // Preamp commits live — scrub and release both apply the dB, so the
+            // knob tracks the pointer and the gain updates as you drag.
+            apply_preamp,
+            apply_preamp,
         )));
     card("replaygain", p)
         .child(heading(
