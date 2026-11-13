@@ -11,4 +11,5 @@ pub mod player;
 pub mod queue;
 pub mod settings;
 pub mod sidebar;
+pub mod signal_path;
 pub mod slider;

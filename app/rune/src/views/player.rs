@@ -253,14 +253,19 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         );
     // Signal path: the real decode→output chain (source format, rate, resample,
     // ReplayGain), so the DSD/RG/resample work is visible — what foobar/Audirvana
-    // call the "signal path". A tertiary line below the artist.
+    // call the "signal path". A tertiary line below the artist; pressing it opens
+    // the stage-by-stage panel (`views::signal_path`).
     if let Some(sp) = &s.signal_path {
         text_col = text_col.child(
             text(signal_path_summary(sp))
                 .key("signal-path")
+                .role("button")
+                .focusable(true)
+                .cursor(Cursor::Pointer)
                 .font(type_::LABEL)
                 .color(p.text_secondary)
-                .truncate(),
+                .truncate()
+                .on_press(crate::toggle_signal_path),
         );
     }
     if album.is_some() {
