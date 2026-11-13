@@ -35,7 +35,9 @@ use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_engine::Engine;
 
 use soul_player_backend::driver::queue_for;
-use soul_player_backend::{Command, ServicePlayer, apply_command, project_tick};
+use soul_player_backend::{
+    Command, ServicePlayer, SourceFormat, apply_command, project_signal_path, project_tick,
+};
 
 /// tone.dsf is DSD64 → 44.1 kHz, stereo, 22050 frames = 0.5 s.
 const NATIVE_RATE: u32 = 44_100;
@@ -271,8 +273,29 @@ fn audit_dsd_at(sink_rate: u32) -> Result<(), String> {
         "sink@{sink_rate}Hz: channels swapped (L/R tones crossed)"
     );
 
+    // Signal path reports the real chain: native DSD64 (2.8224 MHz) decoded to the
+    // 44.1 kHz PCM the deck plays, resampling only when the device isn't 44.1 kHz.
+    let sp = project_signal_path(&player).ok_or("no signal path while DSD is live")?;
+    require!(
+        sp.source == SourceFormat::Dsd { rate_hz: 2_822_400 },
+        "sink@{sink_rate}Hz: signal-path source {:?} is not native DSD64",
+        sp.source
+    );
+    require!(
+        sp.decoded_rate == NATIVE_RATE && sp.device_rate == sink_rate,
+        "sink@{sink_rate}Hz: signal-path rates decoded={} device={} (want {NATIVE_RATE}/{sink_rate})",
+        sp.decoded_rate,
+        sp.device_rate
+    );
+    require!(
+        sp.resampling == (sink_rate != NATIVE_RATE),
+        "sink@{sink_rate}Hz: signal-path resampling={} wrong for this device",
+        sp.resampling
+    );
+
     println!(
-        "  sink@{sink_rate}Hz: peak={peak} rms={rms:.0} — L=440Hz R=659.25Hz at correct speed OK"
+        "  sink@{sink_rate}Hz: peak={peak} rms={rms:.0} — DSD64→44.1k, resample={} — L=440Hz R=659.25Hz OK",
+        sp.resampling
     );
     Ok(())
 }

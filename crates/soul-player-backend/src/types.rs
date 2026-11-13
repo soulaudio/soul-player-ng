@@ -191,6 +191,38 @@ pub struct TrackView {
     pub duration_secs: f64,
 }
 
+/// The current track's ORIGINAL source format, for the signal-path display.
+/// Distinguishes native DSD (which decodes to PCM but should read as "DSD64")
+/// from plain PCM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceFormat {
+    /// Multi-bit PCM at this bit depth; its rate is [`SignalPath::decoded_rate`].
+    Pcm { bits: u8 },
+    /// Native 1-bit DSD at this stream rate in Hz (2_822_400 = DSD64, …).
+    Dsd { rate_hz: u32 },
+}
+
+/// The current track's real decode → DSP → output chain — what the engine
+/// actually does to the samples, for a "signal path" display. A `device_rate`
+/// equal to `decoded_rate` with `!resampling` is a sample-rate-exact path.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SignalPath {
+    /// The ORIGINAL source (DSD stays DSD even though it decodes to PCM).
+    pub source: SourceFormat,
+    /// The PCM the decoder hands the engine.
+    pub decoded_rate: u32,
+    pub decoded_bits: u8,
+    pub channels: u8,
+    /// Applied ReplayGain, in dB (`0.0` = unity/off). The mode lives in [`Tick`].
+    pub replay_gain_db: f32,
+    /// Device (sink) sample rate.
+    pub device_rate: u32,
+    /// Whether the engine resamples `decoded_rate` → `device_rate`.
+    pub resampling: bool,
+    /// Output bit depth fed to the device (canonical 24-bit today).
+    pub output_bits: u8,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
