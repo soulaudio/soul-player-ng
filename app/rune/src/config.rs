@@ -16,29 +16,37 @@ use soul_player_host::ReplayGainMode;
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
 
-/// Test-only override for the config directory, so `cargo test` never reads or
-/// writes the user's real settings. `None` (and compiled out) in production.
+/// The throwaway per-process config directory used in test builds, so `cargo
+/// test` can NEVER read or write the user's real settings — regardless of
+/// whether a test opts in. Compiled out of production.
 #[cfg(test)]
 static TEST_CONFIG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// Point config persistence at a throwaway temp directory for the rest of this
-/// test process (idempotent — first call wins). Call it at the start of any test
-/// that writes a setting, so tests never clobber the user's real `config.toml`.
+/// No-op kept for tests that call it to document intent; the test build always
+/// isolates (see [`soul_player_dir`]), so this is not required.
 #[cfg(test)]
 pub(crate) fn use_test_config_dir() {
-    TEST_CONFIG_DIR.get_or_init(|| {
-        std::env::temp_dir().join(format!("soul-player-test-{}", std::process::id()))
-    });
+    let _ = soul_player_dir();
 }
 
-/// The app's config directory — `<os-config>/soul-player`, or the test override
-/// when one is active (see [`use_test_config_dir`]). All persisted files hang off
-/// this, so pointing it elsewhere isolates every `load_*`/`save_*`.
+/// The app's config directory. In a **test build this is ALWAYS a throwaway
+/// temp directory** (never the user's real config) — tests share it, so a test
+/// that persists a setting must not let another's write leak into its
+/// assertions (set the relevant `State` field explicitly instead of trusting a
+/// loaded value). In production it is `<os-config>/soul-player`.
+#[cfg(test)]
 fn soul_player_dir() -> Option<PathBuf> {
-    #[cfg(test)]
-    if let Some(dir) = TEST_CONFIG_DIR.get() {
-        return Some(dir.clone());
-    }
+    Some(
+        TEST_CONFIG_DIR
+            .get_or_init(|| {
+                std::env::temp_dir().join(format!("soul-player-test-{}", std::process::id()))
+            })
+            .clone(),
+    )
+}
+
+#[cfg(not(test))]
+fn soul_player_dir() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("soul-player"))
 }
 
