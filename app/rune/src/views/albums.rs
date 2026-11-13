@@ -1,7 +1,8 @@
-//! Albums grid: the library grouped by album into cover cards, mirroring the old
-//! app's AlbumsPage/MediaCard. Each card is a square cover + title + artist and
-//! plays the whole album on click. `TrackView` carries no year, so (unlike the
-//! original's "artist • year") the card shows the artist alone.
+//! Albums grid + an album's detail page, mirroring the old app's
+//! AlbumsPage/MediaCard and AlbumPage. Each card is a square cover + title +
+//! artist; the hover play button plays/pauses the album, the card body opens its
+//! detail page. `TrackView` carries no year, so (unlike the original's "artist •
+//! year") the card shows the artist alone.
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
@@ -11,8 +12,9 @@ use soul_player_host::{Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
-use crate::ui::{radius, space, type_};
+use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
+use crate::views::library::fmt_dur;
 use crate::views::player::cover;
 
 /// The hover play-overlay button — the old app's `w-14 h-14 rounded-xl` (56 px).
@@ -75,6 +77,7 @@ fn album_play_command(now_playing: Option<u32>, ids: &[u32]) -> Command {
 /// album, or toggles pause/resume if it is already the playing context.
 fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
     let ids = a.ids.clone();
+    let name = a.name.clone();
     // When this album is the active, playing context the overlay shows a pause
     // glyph and its press toggles — the old app's MediaCard behaviour.
     let show_pause = s.now_playing_id.is_some_and(|id| a.ids.contains(&id)) && s.playing;
@@ -90,9 +93,10 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
         .hover_group()
         .child(
             // Cover + a play button that fades in on card hover (old app's
-            // `opacity-0 group-hover:opacity-100` MediaCard overlay). The overlay
-            // spans the whole cover and carries the play press, so a click anywhere
-            // on it plays — not only the button.
+            // `opacity-0 group-hover:opacity-100` MediaCard overlay). ONLY the
+            // button plays/pauses; clicking the cover elsewhere (or the title)
+            // opens the album's detail page — the old app's MediaCard split of
+            // button = play, body = navigate.
             el().key("cover-area")
                 .size(card_w, card_w)
                 .child(cover(s, Some(a.cover_id), card_w, radius::MD, p, scale))
@@ -102,23 +106,20 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                         .absolute(0.0, 0.0)
                         .center()
                         .group_opacity(0.0, 1.0)
-                        .cursor(Cursor::Pointer)
-                        .on_press({
-                            let ids = ids.clone();
-                            move |st: &mut State| {
-                                st.host.send(album_play_command(st.now_playing_id, &ids))
-                            }
-                        })
                         .child(
                             // Old app's `w-14 h-14 rounded-xl bg-black/50` button,
                             // darkening to ~black/70 on direct hover (its
-                            // `hover:bg-black/70`).
+                            // `hover:bg-black/70`). Carries the play/pause press.
                             el().key("play-btn")
                                 .size(PLAY_BTN, PLAY_BTN)
                                 .radius(radius::LG)
                                 .fill(Color::BLACK.alpha(0.5))
                                 .hover(Color::BLACK.alpha(0.3))
+                                .cursor(Cursor::Pointer)
                                 .center()
+                                .on_press(move |st: &mut State| {
+                                    st.host.send(album_play_command(st.now_playing_id, &ids))
+                                })
                                 .child(
                                     icon(
                                         if show_pause {
@@ -151,7 +152,12 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                         .truncate(),
                 ),
         )
-        .on_press(move |st: &mut State| st.host.send(album_play_command(st.now_playing_id, &ids)))
+        // The card body opens the album's detail page (the play button above owns
+        // play/pause). The old app's MediaCard navigates on body click.
+        .on_press(move |st: &mut State| {
+            st.route = crate::Route::Album;
+            st.open_album = Some(name.clone());
+        })
 }
 
 /// Columns and per-card width for a content pane `pane_w` points wide: fill the
@@ -191,6 +197,221 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .grow(1.0)
         .min_h(0.0),
     )
+}
+
+/// Large cover on the album detail page (the old app's `w-44`).
+const DETAIL_COVER: f32 = 176.0;
+
+/// A back link to the Albums grid — a `←` glyph. Our focused shell keeps no page
+/// history, so it simply returns to the grid.
+fn back_button(p: &Palette) -> El {
+    el().key("album-back")
+        .role("button")
+        .label(t!("nav.albums").to_string())
+        .focusable(true)
+        .px(space::SM)
+        .py(space::XS)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(text("←").font(type_::NAV).color(p.fg))
+        .on_press(|st: &mut State| st.route = crate::Route::Albums)
+}
+
+/// One row on the album detail page: track number (or ▶ when playing), title and
+/// duration. Clicking plays the album from that track.
+fn detail_track_row(
+    now_playing: Option<u32>,
+    p: &Palette,
+    ids: &[u32],
+    i: usize,
+    t: &TrackView,
+) -> El {
+    let playing = now_playing == Some(t.id);
+    let ids = ids.to_vec();
+    let start = i as u32;
+    row()
+        .key(format!("album-track-{i}"))
+        .gap(space::MD)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(
+            text(if playing {
+                "▶".to_string()
+            } else {
+                format!("{}", i + 1)
+            })
+            .font(type_::ITEM)
+            .color(if playing { p.accent } else { p.text_secondary })
+            .w(28.0),
+        )
+        .child(
+            text(
+                t.title
+                    .clone()
+                    .unwrap_or_else(|| t!("library.unknown").to_string()),
+            )
+            .font(type_::ITEM)
+            .color(if playing { p.accent } else { p.fg })
+            .truncate()
+            .grow(1.0),
+        )
+        .child(
+            text(fmt_dur(t.duration_secs))
+                .font(type_::ITEM)
+                .color(p.text_secondary)
+                .w(56.0),
+        )
+        .on_press(move |st: &mut State| {
+            st.host.send(Command::PlayContext {
+                ids: ids.clone(),
+                start,
+            })
+        })
+}
+
+/// An album's detail page (the old app's AlbumPage): a back link, then a header
+/// — large cover, an "ALBUM" eyebrow, title, artist, track count and a Play
+/// button — over the album's track list. The album is `State::open_album`,
+/// re-derived from the current library; if it has vanished we just offer the
+/// way back.
+pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
+    let albums = group_albums(&s.library);
+    let Some(album) = s
+        .open_album
+        .as_deref()
+        .and_then(|name| albums.into_iter().find(|a| a.name == name))
+    else {
+        return col()
+            .key("album-detail")
+            .grow(1.0)
+            .min_h(0.0)
+            .padding(space::PANE)
+            .child(back_button(p));
+    };
+
+    let play_ids = album.ids.clone();
+    let active = s.now_playing_id.is_some_and(|id| album.ids.contains(&id));
+    // Header stacks (cover over info) when the pane is too narrow for them side
+    // by side (the old app's `flex-col sm:flex-row`).
+    let header = row()
+        .key("album-header")
+        .flex_wrap()
+        .gap(space::XL)
+        .pb(space::SECTION)
+        .child(cover(
+            s,
+            Some(album.cover_id),
+            DETAIL_COVER,
+            radius::MD,
+            p,
+            scale,
+        ))
+        .child(
+            col()
+                .key("album-meta")
+                .gap(space::XS)
+                .grow(1.0)
+                .min_w(0.0)
+                .center_y()
+                .child(
+                    text(t!("album.eyebrow").to_uppercase())
+                        .font(type_::SECTION)
+                        .color(p.text_secondary),
+                )
+                .child(
+                    text(album.name.clone())
+                        .font(type_::DISPLAY)
+                        .color(p.fg)
+                        .truncate(),
+                )
+                .child(
+                    text(album.artist.clone())
+                        .font(type_::CARD_TITLE)
+                        .color(p.text_secondary)
+                        .truncate(),
+                )
+                .child(
+                    text(t!("album.trackCount", count => album.ids.len()).to_string())
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary),
+                )
+                .child(
+                    el().key("album-play-all")
+                        .px(space::LG)
+                        .py(space::SM)
+                        .radius(radius::MD)
+                        .fill(p.primary)
+                        .cursor(Cursor::Pointer)
+                        .hover(p.bg.alpha(fx::HOVER_FILL))
+                        .press(p.bg.alpha(fx::PRESS_FILL))
+                        .on_press(move |st: &mut State| {
+                            st.host
+                                .send(album_play_command(st.now_playing_id, &play_ids))
+                        })
+                        .child(
+                            row()
+                                .gap(space::XS)
+                                .center_y()
+                                .child(
+                                    icon(
+                                        if active && s.playing {
+                                            &icons::PAUSE
+                                        } else {
+                                            &icons::PLAY
+                                        },
+                                        16.0,
+                                    )
+                                    .color(p.bg),
+                                )
+                                .child(
+                                    text(if active && s.playing {
+                                        t!("player.pause").to_string()
+                                    } else {
+                                        t!("player.play").to_string()
+                                    })
+                                    .color(p.bg),
+                                ),
+                        ),
+                ),
+        );
+
+    let mut list = col().key("album-tracks").gap(space::XXS);
+    for (i, &id) in album.ids.iter().enumerate() {
+        if let Some(t) = s.library.iter().find(|t| t.id == id) {
+            list = list.child(detail_track_row(s.now_playing_id, p, &album.ids, i, t));
+        }
+    }
+
+    col()
+        .key("album-detail")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(
+            row()
+                .key("album-detail-top")
+                .px(space::PANE)
+                .pt(space::SM)
+                .child(back_button(p)),
+        )
+        .child(
+            col()
+                .key("album-detail-content")
+                .padding(space::PANE)
+                .child(header)
+                .child(list)
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_edge_fade(24.0)
+                .grow(1.0)
+                .min_h(0.0),
+        )
 }
 
 #[cfg(test)]
