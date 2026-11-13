@@ -138,6 +138,10 @@ impl From<DeckState> for PlayState {
 pub enum Event {
     Tick(Tick),
     Queue(QueueState),
+    /// The current track's decode→output chain (`None` = nothing playing), for the
+    /// signal-path display. Emitted alongside `Tick`/`Queue` so it tracks rate /
+    /// ReplayGain / device changes.
+    SignalPath(Option<SignalPath>),
     /// A previously-untagged track finished background loudness analysis: `path`
     /// identifies the file and `gain_db` is the computed ReplayGain track gain (to
     /// the −18 LUFS RG2 target), emitted once when the analysis completes. The app

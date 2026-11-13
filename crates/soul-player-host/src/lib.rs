@@ -12,8 +12,8 @@ use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
 pub use sink::SinkMode;
 pub use soul_player_backend::{
-    BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode, Tick,
-    TrackView,
+    BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
+    SignalPath, SourceFormat, Tick, TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
