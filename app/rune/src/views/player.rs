@@ -154,26 +154,38 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .clone()
         .unwrap_or_else(|| t!("library.unknown").to_string());
     let artist = track.artist.clone().unwrap_or_default();
+    let album = track.album.clone();
+    // Title/artist open the track's album detail page (the old app's TrackInfo
+    // navigates to the album on click) — only when the track has an album.
+    let mut text_col = col()
+        .key("now-playing-text")
+        .gap(space::XXS)
+        .align(Align::Start)
+        .grow(1.0)
+        .min_w(0.0)
+        .child(text(title).font(type_::TITLE).color(p.fg).truncate())
+        .child(
+            text(artist)
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .truncate(),
+        );
+    if album.is_some() {
+        text_col = text_col
+            .cursor(Cursor::Pointer)
+            .on_press(move |st: &mut State| {
+                if let Some(a) = &album {
+                    st.route = crate::Route::Album;
+                    st.open_album = Some(a.clone());
+                }
+            });
+    }
     row()
         .key("now-playing")
         .gap(space::COZY)
         .center_y()
         .child(cover(s, Some(track.id), COVER_SIZE, radius::MD, p, scale))
-        .child(
-            col()
-                .key("now-playing-text")
-                .gap(space::XXS)
-                .align(Align::Start)
-                .grow(1.0)
-                .min_w(0.0)
-                .child(text(title).font(type_::TITLE).color(p.fg).truncate())
-                .child(
-                    text(artist)
-                        .font(type_::CAPTION)
-                        .color(p.text_secondary)
-                        .truncate(),
-                ),
-        )
+        .child(text_col)
         // A muted heart on the right (old app's `Heart` button); decorative
         // here — favourites aren't a feature of this focused build.
         .child(icon(&icons::HEART, 16.0).color(p.text_secondary))
