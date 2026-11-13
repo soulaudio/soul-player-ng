@@ -1,8 +1,8 @@
 //! Artists grid + an artist's detail page, mirroring Albums (the original's
-//! Artists tab). Groups the flat library by artist; each card is a square cover
-//! + the artist name + a track count, and clicking one opens the artist's
-//! tracks with a Play All. Reuses albums' responsive `grid_layout` and
-//! `detail_track_row` so the two library pages stay consistent.
+//! Artists tab). Groups the flat library by artist; each card is a square
+//! cover with the artist name and a track count, and clicking one opens the
+//! artist's tracks with a Play All. Reuses albums' responsive `grid_layout`
+//! and `detail_track_row` so the two library pages stay consistent.
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
