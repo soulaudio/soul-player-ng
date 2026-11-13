@@ -15,13 +15,24 @@ concurrency:
 
 jobs:
   rust:
-    name: rust (fmt · clippy · test — service + host)
-    runs-on: ubuntu-latest
+    name: rust (service + host)
+    # Run the whole suite on Linux, Windows, and macOS so platform regressions
+    # (paths, audio backend, toolchain) are caught. fmt + clippy are
+    # platform-independent and run once (Linux); every OS still compiles
+    # everything via `cargo test`.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       # soul-audio-core is a private git dependency during the pre-public phase.
       CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
+    defaults:
+      run:
+        shell: bash # available on all three runners; keeps one syntax everywhere
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -29,13 +40,16 @@ jobs:
         if: ${{ env.CORE_REPO_TOKEN != '' }}
         run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      # soul-player-host links cpal → ALSA on Linux.
-      - name: Audio build deps (cpal/ALSA)
+      # soul-player-host links cpal → ALSA on Linux. Windows uses WASAPI and macOS
+      # CoreAudio, which need no extra packages.
+      - name: Audio build deps (cpal/ALSA — Linux only)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev pkg-config
 
-      - name: Set up Rust
+      - name: Set up Rust components (Linux — for fmt/clippy)
+        if: runner.os == 'Linux'
         run: rustup component add rustfmt clippy
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
@@ -45,11 +59,13 @@ jobs:
             crates/soul-player-host
 
       - name: Format (service + host)
+        if: runner.os == 'Linux'
         run: |
           cargo fmt --all -- --check
           cargo fmt --manifest-path crates/soul-player-host/Cargo.toml --all -- --check
 
       - name: Clippy (service + host)
+        if: runner.os == 'Linux'
         run: |
           cargo clippy --all-targets -- -D warnings
           cargo clippy --manifest-path crates/soul-player-host/Cargo.toml --all-targets -- -D warnings
@@ -60,14 +76,19 @@ jobs:
           cargo test --manifest-path crates/soul-player-host/Cargo.toml
 
   rune:
-    name: rune (fmt · clippy · test — native UI head)
-    runs-on: ubuntu-latest
+    name: rune (native UI head)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
     defaults:
       run:
+        shell: bash
         working-directory: app/rune
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -77,10 +98,13 @@ jobs:
         working-directory: .
         run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
 
-      # Rune = wgpu + winit; needs GPU/windowing libs + a software Vulkan adapter
-      # (Lavapipe via mesa-vulkan-drivers) to render headlessly under Xvfb. Plus
-      # ALSA for the host's cpal.
-      - name: GPU/windowing deps + software Vulkan
+      # Rune = wgpu + winit. The headless tests don't open a window, but on Linux
+      # the test binary still needs GPU/windowing libs + a software Vulkan adapter
+      # (Lavapipe via mesa-vulkan-drivers) under Xvfb to link/initialize. Windows
+      # and macOS link their native windowing/graphics and run `cargo test`
+      # directly. Plus ALSA for the host's cpal on Linux.
+      - name: GPU/windowing deps + software Vulkan (Linux only)
+        if: runner.os == 'Linux'
         working-directory: .
         run: |
           sudo apt-get update
@@ -92,13 +116,21 @@ jobs:
           workspaces: app/rune
 
       # app/rune/rust-toolchain.toml pins the nightly (rune uses unstable compiler
-      # features); the first cargo invocation auto-installs it + clippy/rustfmt.
+      # features); the first cargo invocation auto-installs it. fmt + clippy are
+      # platform-independent, so they run once (Linux).
       - name: Format
+        if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
       - name: Clippy
+        if: runner.os == 'Linux'
         run: cargo clippy --all-targets -- -D warnings
-      - name: Test (headless, software Vulkan under Xvfb)
-        run: xvfb-run -a cargo test
+      - name: Test (headless)
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a cargo test
+          else
+            cargo test
+          fi
 
   ci-success:
     name: CI success
@@ -107,6 +139,8 @@ jobs:
     if: always()
     steps:
       - name: Require all checks to pass
+        # For a matrix job, `needs.<job>.result` is success only when EVERY matrix
+        # leg (ubuntu/windows/macos) succeeded — so this gate covers all platforms.
         run: |
           if [ "${{ needs.rust.result }}" != "success" ] || [ "${{ needs.rune.result }}" != "success" ]; then
             echo "::error::a required CI job failed"
