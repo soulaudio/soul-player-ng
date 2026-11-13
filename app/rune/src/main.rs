@@ -115,6 +115,10 @@ struct State {
     duration_secs: f64,
     playing: bool,
     volume: f32,
+    /// The volume to restore when un-muting (the level before the last mute).
+    /// There is no backend `Mute`, so the speaker toggle drives `SetVolume(0)` /
+    /// `SetVolume(pre_mute_volume)`.
+    pre_mute_volume: f32,
     shuffle: bool,
     repeat: RepeatMode,
     /// The manual queue ("Next in queue"): tracks the user queued via
@@ -209,6 +213,7 @@ impl State {
             duration_secs: 0.0,
             playing: false,
             volume: 1.0,
+            pre_mute_volume: 1.0,
             shuffle: false,
             repeat: RepeatMode::Off,
             up_next: Vec::new(),
@@ -1316,6 +1321,36 @@ mod tests {
                 start: 1
             }],
             "clicking another row plays the library from that track"
+        );
+    }
+
+    /// The speaker icon mutes (SetVolume(0), remembering the level) and un-mutes
+    /// back to that level — the old app's VolumeControl mute toggle.
+    #[test]
+    fn the_speaker_icon_mutes_then_restores_the_volume() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.volume = 0.7;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "volume-mute");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::SetVolume(0.0)],
+            "clicking the speaker mutes"
+        );
+        assert!((rt.state.pre_mute_volume - 0.7).abs() < 1e-6);
+        // Now muted → clicking again restores the pre-mute level.
+        rt.frame(0.0);
+        click(&mut rt, "volume-mute");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::SetVolume(0.0), Command::SetVolume(0.7)],
+            "clicking again restores the pre-mute volume"
         );
     }
 

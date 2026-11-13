@@ -401,20 +401,57 @@ fn transport_row(s: &State, p: &Palette) -> El {
 /// `seek_row`'s doc comment for why the row's own key (`"volume-row"`)
 /// stays distinct from the slider's (`"volume"`).
 fn volume_row(s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let muted = s.volume <= 0.0;
     row()
         .key("volume-row")
         .gap(ROW_GAP)
         .center_y()
         .child(
-            icon(
-                if s.volume <= 0.0 {
-                    &icons::VOLUME_X
-                } else {
-                    &icons::VOLUME
-                },
-                16.0,
-            )
-            .color(p.text_secondary),
+            // The speaker icon mutes / un-muting restores the pre-mute level (the
+            // old app's VolumeControl mute toggle). No backend `Mute`, so it drives
+            // `SetVolume`.
+            el().key("volume-mute")
+                .role("button")
+                .label(
+                    if muted {
+                        t!("player.unmute")
+                    } else {
+                        t!("player.mute")
+                    }
+                    .to_string(),
+                )
+                .focusable(true)
+                .padding(space::XXS)
+                .radius(radius::SM)
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
+                .on_press(|st: &mut State| {
+                    if st.volume > 0.0 {
+                        st.pre_mute_volume = st.volume;
+                        st.volume = 0.0;
+                        st.host.send(Command::SetVolume(0.0));
+                    } else {
+                        let v = if st.pre_mute_volume > 0.0 {
+                            st.pre_mute_volume
+                        } else {
+                            1.0
+                        };
+                        st.volume = v;
+                        st.host.send(Command::SetVolume(v));
+                    }
+                })
+                .child(
+                    icon(
+                        if muted {
+                            &icons::VOLUME_X
+                        } else {
+                            &icons::VOLUME
+                        },
+                        16.0,
+                    )
+                    .color(p.text_secondary),
+                ),
         )
         .child(slider(
             "volume",

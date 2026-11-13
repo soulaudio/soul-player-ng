@@ -68,6 +68,20 @@ player.pause:
   zh: '暂停'
   cs: 'Pozastavit'
   ja: '一時停止'
+player.mute:
+  en: 'Mute'
+  de: 'Stumm'
+  es: 'Silenciar'
+  zh: '静音'
+  cs: 'Ztlumit'
+  ja: 'ミュート'
+player.unmute:
+  en: 'Unmute'
+  de: 'Ton an'
+  es: 'Activar sonido'
+  zh: '取消静音'
+  cs: 'Zrušit ztlumení'
+  ja: 'ミュート解除'
 player.previous:
   en: 'Previous'
   de: 'Zurück'
