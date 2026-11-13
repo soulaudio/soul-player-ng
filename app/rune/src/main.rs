@@ -17,7 +17,7 @@ i18n!("locales", fallback = "en");
 
 use std::path::PathBuf;
 
-use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, row};
+use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Linked only to union parley_engine's `complex-scripts` feature on (see
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
@@ -187,6 +187,10 @@ struct State {
     /// UI language preference ("system"/"en"/"de"/…); drives the global
     /// `rust_i18n` locale via [`apply_locale`]. Changed by Settings → Language.
     locale_pref: String,
+    /// Which in-app dropdown is open, by its key (`None` = none). Ephemeral UI
+    /// state — the themed `views::dropdown` component reads it to show its panel,
+    /// and a full-window backdrop closes it on an outside click.
+    open_dropdown: Option<String>,
 }
 
 impl State {
@@ -246,6 +250,7 @@ impl State {
             sidebar_width,
             sidebar_collapsed,
             locale_pref,
+            open_dropdown: None,
         }
     }
 
@@ -319,6 +324,21 @@ pub(crate) fn set_settings_tab(s: &mut State, tab: SettingsTab) {
     s.settings_tab = tab;
 }
 
+/// Open the dropdown with this key, or close it if it is already open (clicking
+/// the trigger again). Only one dropdown is open at a time.
+pub(crate) fn toggle_dropdown(s: &mut State, key: &str) {
+    s.open_dropdown = if s.open_dropdown.as_deref() == Some(key) {
+        None
+    } else {
+        Some(key.to_string())
+    };
+}
+
+/// Close any open dropdown (an outside click, or after a choice is made).
+pub(crate) fn close_dropdown(s: &mut State) {
+    s.open_dropdown = None;
+}
+
 /// Choose + persist the output device (used by the Output settings buttons).
 /// `None` means the system default. Updates the UI selection, writes the config,
 /// and tells the host — which applies it to the NEXT playback session (a live
@@ -359,7 +379,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let scale = cx.env().scale;
     // The old app's shell: a fixed-width left sidebar (nav label, queue,
     // player panel) plus the main area's track list filling the rest.
-    row()
+    let shell = row()
         .w_full()
         .h_full()
         .fill(p.bg)
@@ -373,7 +393,16 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             Route::Library => views::library::track_list(s, &p).grow(1.0),
             Route::Albums => views::albums::albums_page(s, &p, cx, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, &p, cx).grow(1.0),
-        }))
+        }));
+    // Overlay layer: mounted at the window root AFTER the shell so an open
+    // dropdown's panel draws above everything and escapes the content scroll
+    // viewport's clip (see `views::dropdown`). Empty when nothing is open.
+    let overlays = views::settings::settings_overlays(s, &p, cx);
+    el().key("app-root")
+        .w_full()
+        .h_full()
+        .child(shell)
+        .children(overlays)
 }
 
 /// `AppSpec::setup`: wires the app's `Waker` into the cover-art cache
@@ -475,6 +504,12 @@ fn scene_settings_appearance_de(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::Appearance;
 }
+/// Appearance with the language dropdown open, for snapshotting the themed panel.
+fn scene_settings_lang_open(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Appearance;
+    s.open_dropdown = Some("lang-picker".to_string());
+}
 fn scene_albums(s: &mut State) {
     s.route = Route::Albums;
 }
@@ -548,6 +583,7 @@ fn main() -> anyhow::Result<()> {
             ("settings-music-de", scene_settings_music_de),
             ("settings-audio-de", scene_settings_audio_de),
             ("settings-appearance-de", scene_settings_appearance_de),
+            ("settings-lang-open", scene_settings_lang_open),
             ("albums", scene_albums),
             ("search", scene_search),
             ("no-match", scene_no_match),
@@ -859,6 +895,88 @@ mod tests {
             "{} app layout overflow(s) across locales:\n{}",
             failures.len(),
             failures.join("\n")
+        );
+    }
+
+    /// The language picker is the themed `views::dropdown`: pressing the trigger
+    /// opens a floating panel (mounted at the root, escaping the settings scroll
+    /// clip), the choices render, and picking one commits the locale + closes.
+    /// Restores the persisted locale afterwards — a click flows through
+    /// `set_locale_pref`, which writes `config.toml`, and a test must not clobber
+    /// the user's real setting.
+    #[test]
+    fn language_dropdown_opens_renders_and_picks() {
+        let saved_locale = config::load_locale();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Appearance;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Closed: the trigger renders, no panel.
+        assert!(
+            rt.find("lang-picker").is_some(),
+            "the language dropdown trigger renders"
+        );
+        assert!(
+            rt.find("lang-picker-menu").is_none(),
+            "the panel is closed initially"
+        );
+        // Open it, then settle the panel's enter transition (it fades/scales in
+        // from opacity 0, so it isn't hit-testable until the animation finishes).
+        click_key(&mut rt, "lang-picker");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(rt.state.open_dropdown.as_deref(), Some("lang-picker"));
+        assert!(
+            rt.find("lang-picker-menu").is_some(),
+            "pressing the trigger opens the panel"
+        );
+        assert!(
+            rt.find("lang-picker-opt-de").is_some(),
+            "the panel lists the language choices"
+        );
+        // Pick German: commits the locale and closes.
+        click_key(&mut rt, "lang-picker-opt-de");
+        assert_eq!(rt.state.locale_pref, "de", "picking commits the locale");
+        assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
+
+        config::save_locale(&saved_locale);
+        apply_locale("en");
+    }
+
+    /// Architecture: `views::dropdown` is the ONE way to build a dropdown. No view
+    /// may fall back to rune's native picker (`PopupMenu::picker`), which draws an
+    /// OS-styled menu that clashes with the app's look. Native `popup_menu`
+    /// CONTEXT menus (library/queue right-click) are a different control and stay
+    /// allowed — this bans only the picker/select constructor. New pickers go
+    /// through `dropdown::trigger` + `dropdown::panel`.
+    #[test]
+    fn dropdowns_only_use_the_shared_component() {
+        let views_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/views");
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(&views_dir).expect("read views dir") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            let src = std::fs::read_to_string(&path).expect("read view source");
+            for (i, line) in src.lines().enumerate() {
+                // Only code, not doc/comments that may name the banned API.
+                let code = line.split("//").next().unwrap_or("");
+                if code.contains("PopupMenu::picker") || code.contains(".picker(") {
+                    offenders.push(format!("{name}:{} {}", i + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "dropdowns must use views::dropdown, not rune's native PopupMenu::picker:\n{}",
+            offenders.join("\n")
         );
     }
 

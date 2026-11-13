@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 pub mod albums;
+pub mod dropdown;
 pub mod icons;
 pub mod library;
 pub mod player;
