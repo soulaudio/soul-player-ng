@@ -901,12 +901,10 @@ mod tests {
     /// The language picker is the themed `views::dropdown`: pressing the trigger
     /// opens a floating panel (mounted at the root, escaping the settings scroll
     /// clip), the choices render, and picking one commits the locale + closes.
-    /// Restores the persisted locale afterwards — a click flows through
-    /// `set_locale_pref`, which writes `config.toml`, and a test must not clobber
-    /// the user's real setting.
     #[test]
     fn language_dropdown_opens_renders_and_picks() {
-        let saved_locale = config::load_locale();
+        // Picking flows through `set_locale_pref`, which writes config — isolate it.
+        config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -944,8 +942,7 @@ mod tests {
         assert_eq!(rt.state.locale_pref, "de", "picking commits the locale");
         assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
 
-        config::save_locale(&saved_locale);
-        apply_locale("en");
+        apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
     }
 
     /// Architecture: `views::dropdown` is the ONE way to build a dropdown. No view
@@ -1461,6 +1458,9 @@ mod tests {
 
     #[test]
     fn settings_controls_apply_their_effect_on_click() {
+        // These clicks persist (theme/ReplayGain `save_*`) — isolate config to a
+        // temp dir so the test never clobbers the user's real settings.
+        config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
