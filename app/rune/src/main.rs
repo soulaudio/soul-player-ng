@@ -335,6 +335,11 @@ pub(crate) fn set_sort(s: &mut State, axis: BrowseAxis) {
 fn view(s: &State, cx: &mut Cx<State>) -> El {
     let p = theme::palette(is_dark(s.theme_pref, cx.system_dark()));
     let scale = cx.env().scale;
+    // Keyboard focus ring in the theme's own colour (the old app's
+    // `focus-visible:ring-1 ring-ring`, where `ring` == `primary`), with a small
+    // offset so it reads even on a primary-filled control — in place of Rune's
+    // default OS-accent ring.
+    cx.focus_ring(2.0, 2.0, p.primary);
     // The old app's shell: a fixed-width left sidebar (nav label, queue,
     // player panel) plus the main area's track list filling the rest.
     row()
