@@ -77,10 +77,19 @@ jobs:
 
   rune:
     name: rune (native UI head)
+    # The UI head's interaction tests click focusable controls, which routes
+    # through rune's window/GPU/accessibility stack. Linux provides it headlessly
+    # (Xvfb + software Vulkan + accesskit-unix) and macOS has Metal + a login
+    # session; the headless Windows runner has no window session, so a focus
+    # change on click aborts the process (STATUS_ACCESS_VIOLATION). The rune head
+    # still builds + bundles on Windows (release.yml) and runs on a real Windows
+    # desktop — only this headless UI test run skips it. The Windows-sensitive
+    # logic (paths, audio backend, config) is covered by the `rust` job on all
+    # three OSes.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
       CARGO_TERM_COLOR: always
@@ -125,14 +134,11 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy --all-targets -- -D warnings
       - name: Test (headless)
-        env:
-          RUST_BACKTRACE: "1"
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
             xvfb-run -a cargo test
           else
-            # single-threaded so a hard crash (if any) names the test that caused it
-            cargo test -- --test-threads=1
+            cargo test
           fi
 
   ci-success:
