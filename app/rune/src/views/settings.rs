@@ -11,7 +11,9 @@
 //! shows while Settings is routed.
 #![forbid(unsafe_code)]
 
-use rune::{Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text};
+use rune::{
+    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text,
+};
 use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
@@ -506,28 +508,175 @@ fn output_card(s: &State, p: &Palette) -> El {
             ));
         }
     }
-    card("output", p)
-        .child(heading(
+    card("sp-stage-output", p)
+        .child(stage_header(
+            p.primary,
+            &icons::VOLUME,
             t!("settings.output").to_string(),
-            t!("settings.outputDesc").to_string(),
+            Some(t!("settings.outputDesc").to_string()),
+            None,
+            false,
             p,
         ))
         .child(choices)
 }
 
-/// The audio **signal path**: a live readout of the current decode→output chain
-/// (Source → Decode → ReplayGain → Resample → Output), plus the not-yet-built
-/// Exclusive output & DSP/EQ stages shown as "soon". Mirrors the now-playing
-/// signal-path line; the ReplayGain/output *controls* are the cards below. Shares
-/// [`crate::views::signal_path::pipeline_rows`] so the two stay in lock-step.
-fn signal_path_card(s: &State, p: &Palette) -> El {
-    card("signal-path-settings", p)
-        .child(heading(
-            t!("settings.signalPath").to_string(),
-            t!("settings.signalPathDesc").to_string(),
+// ── Signal-path pipeline (Settings → Audio is laid out AS the pipeline) ───────
+//
+// The whole Audio page is the signal path: one card per stage — Source →
+// ReplayGain → Resample → DSP/EQ → Output → Exclusive — connected by flow arrows,
+// each with a Roon-style quality dot (primary = clean/lossless pass, accent = a
+// stage that processes the signal). foobar2000's chain order: Decoder →
+// ReplayGain → DSP (resample/EQ) → Output.
+
+/// Stage-card header: quality dot + stage icon + title (+ optional description and
+/// trailing control). `dim` greys a not-yet-built stage. Shared by every stage
+/// card so the pipeline reads consistently.
+fn stage_header(
+    dot: Color,
+    glyph: &'static Icon,
+    title: String,
+    desc: Option<String>,
+    trailing: Option<El>,
+    dim: bool,
+    p: &Palette,
+) -> El {
+    let dot_c = if dim { p.border } else { dot };
+    let icon_c = if dim { p.text_secondary } else { dot };
+    let title_c = if dim { p.text_secondary } else { p.fg };
+    let mut titles = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(space::XXS)
+        .child(text(title).font(type_::TITLE).color(title_c).wrap());
+    if let Some(d) = desc {
+        titles = titles.child(text(d).font(type_::CAPTION).color(p.text_secondary).wrap());
+    }
+    let mut h = row()
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .child(el().w(8.0).h(8.0).radius(4.0).fill(dot_c))
+        .child(icon(glyph, 18.0).color(icon_c))
+        .child(titles);
+    if let Some(t) = trailing {
+        h = h.child(t);
+    }
+    h
+}
+
+/// A flow arrow between two stage cards — a centered down-chevron showing the
+/// signal moving from one card into the next.
+fn pipeline_arrow(p: &Palette) -> El {
+    col()
+        .w_full()
+        .align(Align::Center)
+        .child(icon(&icons::CHEVRON_DOWN, 20.0).color(p.primary.alpha(0.8)))
+}
+
+/// A "soon" chip for a not-yet-built stage.
+fn soon_chip(p: &Palette) -> El {
+    text(t!("player.signalPath.soon").to_string())
+        .font(type_::LABEL)
+        .color(p.text_secondary)
+        .px(space::SM)
+        .py(space::XXS)
+        .radius(radius::SM)
+        .fill(p.muted)
+}
+
+/// A read-only stage card (Source, Resample): header + its current value.
+fn readout_card(
+    key: &str,
+    glyph: &'static Icon,
+    title: String,
+    value: String,
+    dot: Color,
+    p: &Palette,
+) -> El {
+    card(key, p)
+        .child(stage_header(dot, glyph, title, None, None, false, p))
+        .child(
+            // Indent the value under the dot+icon so it lines up with the title.
+            row()
+                .w_full()
+                .pl(8.0 + space::SM + 18.0 + space::SM)
+                .child(text(value).font(type_::BODY).color(p.fg).grow(1.0).wrap()),
+        )
+}
+
+/// A not-yet-built stage card (DSP/EQ, Exclusive output): a dim header + "soon".
+fn soon_card(key: &str, glyph: &'static Icon, title: String, desc: String, p: &Palette) -> El {
+    card(key, p).child(stage_header(
+        p.border,
+        glyph,
+        title,
+        Some(desc),
+        Some(soon_chip(p)),
+        true,
+        p,
+    ))
+}
+
+/// The Settings → Audio page, laid out as the signal-path pipeline: a stage card
+/// per step, connected by flow arrows, from the source to the output device.
+fn audio_pipeline(s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    use crate::views::signal_path::{decode_value, resample_value, source_value};
+    let nothing = || t!("player.nothingPlaying").to_string();
+    let source_v = s
+        .signal_path
+        .map(|x| format!("{}  →  {}", source_value(&x), decode_value(&x)))
+        .unwrap_or_else(nothing);
+    let resample_v = s
+        .signal_path
+        .map(|x| resample_value(&x))
+        .unwrap_or_else(nothing);
+    let rs_accent = if s.signal_path.map(|x| x.resampling).unwrap_or(false) {
+        p.accent
+    } else {
+        p.primary
+    };
+    col()
+        .key("settings-content")
+        .gap(space::SM)
+        .w_full()
+        .child(readout_card(
+            "sp-stage-source",
+            &icons::MUSIC,
+            t!("player.signalPath.source").to_string(),
+            source_v,
+            p.primary,
             p,
         ))
-        .child(crate::views::signal_path::pipeline_rows(s, p))
+        .child(pipeline_arrow(p))
+        .child(replaygain_card(s, p, cx))
+        .child(pipeline_arrow(p))
+        .child(readout_card(
+            "sp-stage-resample",
+            &icons::REPEAT,
+            t!("player.signalPath.resample").to_string(),
+            resample_v,
+            rs_accent,
+            p,
+        ))
+        .child(pipeline_arrow(p))
+        .child(soon_card(
+            "sp-stage-dsp",
+            &icons::SETTINGS,
+            t!("player.signalPath.dsp").to_string(),
+            t!("settings.comingSoon").to_string(),
+            p,
+        ))
+        .child(pipeline_arrow(p))
+        .child(output_card(s, p))
+        .child(pipeline_arrow(p))
+        .child(soon_card(
+            "sp-stage-exclusive",
+            &icons::SETTINGS,
+            t!("player.signalPath.exclusive").to_string(),
+            t!("settings.comingSoon").to_string(),
+            p,
+        ))
 }
 
 /// ReplayGain: an Off / Track / Album mode row plus a preamp slider (−15..+15
@@ -600,10 +749,21 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             apply_preamp,
             apply_preamp,
         )));
-    card("replaygain", p)
-        .child(heading(
+    // Accent dot when ReplayGain is applying gain (a processing stage), else a
+    // clean primary dot — the same Roon-style semantic as the signal-path flow.
+    let rg_dot = if s.replaygain_mode == ReplayGainMode::Off {
+        p.primary
+    } else {
+        p.accent
+    };
+    card("sp-stage-replaygain", p)
+        .child(stage_header(
+            rg_dot,
+            &icons::VOLUME,
             t!("settings.replayGain").to_string(),
-            t!("settings.replayGainDesc").to_string(),
+            Some(t!("settings.replayGainDesc").to_string()),
+            None,
+            false,
             p,
         ))
         .child(modes)
@@ -675,12 +835,7 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .key("settings-content")
             .gap(space::LG)
             .child(music_data_card(s, p)),
-        SettingsTab::Audio => col()
-            .key("settings-content")
-            .gap(space::LG)
-            .child(signal_path_card(s, p))
-            .child(output_card(s, p))
-            .child(replaygain_card(s, p, cx)),
+        SettingsTab::Audio => audio_pipeline(s, p, cx),
         SettingsTab::About => col()
             .key("settings-content")
             .gap(space::LG)

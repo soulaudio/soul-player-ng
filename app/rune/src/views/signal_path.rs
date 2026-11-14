@@ -31,7 +31,7 @@ fn khz(hz: u32) -> String {
 }
 
 /// Source stage: native DSD (family + 1-bit MHz rate) or PCM bit depth.
-fn source_value(sp: &SignalPath) -> String {
+pub(crate) fn source_value(sp: &SignalPath) -> String {
     match sp.source {
         SourceFormat::Dsd { rate_hz } => format!(
             "DSD{} · {:.2} MHz",
@@ -43,7 +43,7 @@ fn source_value(sp: &SignalPath) -> String {
 }
 
 /// Decode stage: the PCM the decoder hands the engine.
-fn decode_value(sp: &SignalPath) -> String {
+pub(crate) fn decode_value(sp: &SignalPath) -> String {
     format!(
         "{} kHz · {}-bit · {} ch",
         khz(sp.decoded_rate),
@@ -53,7 +53,7 @@ fn decode_value(sp: &SignalPath) -> String {
 }
 
 /// Resample stage: `a → b kHz` when resampling, else a rate-exact note.
-fn resample_value(sp: &SignalPath) -> String {
+pub(crate) fn resample_value(sp: &SignalPath) -> String {
     if sp.resampling {
         format!("{} → {} kHz", khz(sp.decoded_rate), khz(sp.device_rate))
     } else {

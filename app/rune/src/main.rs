@@ -1251,22 +1251,18 @@ mod tests {
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        assert!(
-            rt.find("signal-path-settings").is_some(),
-            "the Signal path card renders in Settings → Audio"
-        );
+        // Settings → Audio is laid out AS the pipeline: one card per stage.
         for k in [
-            "sp-row-source",
-            "sp-row-decode",
-            "sp-row-replaygain",
-            "sp-row-resample",
-            "sp-row-output",
-            "sp-row-exclusive",
-            "sp-row-dsp",
+            "sp-stage-source",
+            "sp-stage-replaygain",
+            "sp-stage-resample",
+            "sp-stage-dsp",
+            "sp-stage-output",
+            "sp-stage-exclusive",
         ] {
             assert!(
                 rt.find(k).is_some(),
-                "stage row {k} renders in the settings card"
+                "stage card {k} renders in the Settings → Audio pipeline"
             );
         }
     }
@@ -1950,8 +1946,8 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
-            rt.find("replaygain").is_some(),
-            "Settings has a ReplayGain section"
+            rt.find("sp-stage-replaygain").is_some(),
+            "Settings → Audio has a ReplayGain stage card"
         );
         for key in ["rg-off", "rg-track", "rg-album", "rg-preamp"] {
             assert!(rt.find(key).is_some(), "ReplayGain control {key} present");
@@ -2617,7 +2613,7 @@ mod tests {
             "Appearance also hosts the Language card"
         );
         assert!(
-            rt.find("replaygain").is_none(),
+            rt.find("sp-stage-replaygain").is_none(),
             "ReplayGain lives under the Audio category, not the default view"
         );
     }
@@ -2632,12 +2628,15 @@ mod tests {
         rt.frame(0.0);
         // Default category is Appearance.
         assert!(rt.find("appearance").is_some());
-        assert!(rt.find("replaygain").is_none());
+        assert!(rt.find("sp-stage-replaygain").is_none());
         // Click Audio → the Output + ReplayGain cards appear, Appearance hides.
         click_key(&mut rt, "cat-audio");
-        assert!(rt.find("output").is_some(), "Audio shows the Output card");
         assert!(
-            rt.find("replaygain").is_some(),
+            rt.find("sp-stage-output").is_some(),
+            "Audio shows the Output card"
+        );
+        assert!(
+            rt.find("sp-stage-replaygain").is_some(),
             "Audio shows the ReplayGain card"
         );
         assert!(
@@ -2650,7 +2649,7 @@ mod tests {
             rt.find("sources").is_some(),
             "Music Data shows the sources card"
         );
-        assert!(rt.find("replaygain").is_none());
+        assert!(rt.find("sp-stage-replaygain").is_none());
         // Click About → the version / updater card (keyed "updates").
         click_key(&mut rt, "cat-about");
         assert!(rt.find("updates").is_some(), "About shows the version card");

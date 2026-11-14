@@ -700,3 +700,11 @@ settings.signalPathDesc:
   zh: '当前曲目的解码到输出链路。独占输出和 DSP 即将推出。'
   cs: 'Retezec od dekodovani po vystup pro aktualni skladbu. Exkluzivni vystup a DSP brzy.'
   ja: '現在のトラックのデコードから出力までの経路。排他出力とDSPは近日対応。'
+
+settings.comingSoon:
+  en: 'Coming soon'
+  de: 'Demnaechst'
+  es: 'Proximamente'
+  zh: '即将推出'
+  cs: 'Jiz brzy'
+  ja: '近日対応'
