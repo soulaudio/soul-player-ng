@@ -44,5 +44,31 @@ rescan, sortable by artist / album / title / folder, persisted across launches),
 gapless playback, seek, volume, cover art, light/dark themes, and every codec the
 engine decodes. Mobile is out of scope — this is a desktop target.
 
+## License
+
+Licensed under the **[Apache License 2.0](LICENSE)** — fully open source, free to
+use, modify, and redistribute, including in commercial and closed-source
+products. Copyright © 2026 datadir s. r. o. (Sebastián Stupák). See
+[LICENSE](LICENSE) and [NOTICE](NOTICE).
+
+### Why open source
+
+We ship this in the open because we can get things wrong, and we'd rather you
+could read it, fix it, and build on it than take our word for it. The whole point
+is to let the community build on this effort instead of reinventing it. Fork it,
+learn from it, make something better.
+
+### Credit — a request, not a requirement
+
+If you build something on Soul Audio, we'd genuinely love a visible mention —
+drop this anywhere users can see it (an About / Credits screen, your docs, a
+footer):
+
+> Powered by **[Soul Audio](https://github.com/soulaudio)**
+
+It's a courtesy we appreciate, not a license condition. The name "Soul Audio" and
+the logo are trademarks of datadir s. r. o. — please use them to credit us, not
+in a way that implies we endorse your product.
+
 [Rune]: https://github.com/anomalyco/rune
 [core]: https://github.com/soulaudio/soul-audio-core
