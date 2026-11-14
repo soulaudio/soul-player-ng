@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use soul_player_host::ReplayGainMode;
+use soul_player_host::{BANDS, ReplayGainMode};
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
 
@@ -100,6 +100,13 @@ struct Config {
     managed_library_template: String,
     /// Managed-library file strategy: `"copy"` (keep the source) or `"move"`.
     managed_library_strategy: String,
+    /// Graphic-EQ master enable.
+    eq_enabled: bool,
+    /// Graphic-EQ preamp in dB.
+    eq_preamp: f32,
+    /// Graphic-EQ per-band gains in dB (one per `soul_player_host::BAND_FREQS`
+    /// octave band). A short or absent list loads flat; extra entries are ignored.
+    eq_gains: Vec<f32>,
 }
 
 impl Default for Config {
@@ -115,6 +122,9 @@ impl Default for Config {
             managed_library_path: String::new(),
             managed_library_template: "artist-album".into(),
             managed_library_strategy: "copy".into(),
+            eq_enabled: false,
+            eq_preamp: 0.0,
+            eq_gains: Vec::new(),
         }
     }
 }
@@ -406,6 +416,27 @@ pub fn save_replaygain(mode: ReplayGainMode, preamp_db: f32) {
     }
 }
 
+/// The saved graphic-EQ `(enabled, per-band gains dB, preamp dB)`, defaulting to
+/// off / flat / 0 dB. A persisted gain list shorter than [`BANDS`] fills the rest
+/// flat; a longer one is truncated (so changing the band count never corrupts).
+pub fn load_eq() -> (bool, [f32; BANDS], f32) {
+    let cfg = load();
+    let mut gains = [0.0f32; BANDS];
+    for (slot, g) in gains.iter_mut().zip(cfg.eq_gains.iter()) {
+        *slot = *g;
+    }
+    (cfg.eq_enabled, gains, cfg.eq_preamp)
+}
+
+/// Persist the graphic-EQ settings (load-modify-write the one config file).
+pub fn save_eq(enabled: bool, gains: &[f32; BANDS], preamp_db: f32) {
+    let mut cfg = load();
+    cfg.eq_enabled = enabled;
+    cfg.eq_preamp = preamp_db;
+    cfg.eq_gains = gains.to_vec();
+    save(&cfg);
+}
+
 /// Map a persisted mode string to the enum; anything unknown is `Off`.
 fn mode_from_str(s: &str) -> ReplayGainMode {
     match s.trim() {
@@ -592,6 +623,9 @@ mod tests {
             managed_library_path: "/music/managed".into(),
             managed_library_template: "flat".into(),
             managed_library_strategy: "move".into(),
+            eq_enabled: true,
+            eq_preamp: -3.0,
+            eq_gains: vec![1.0, -2.0, 0.0],
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -600,6 +634,9 @@ mod tests {
         assert_eq!(back.sidebar_width, 300.0);
         assert!(back.sidebar_collapsed);
         assert_eq!(back.locale, "de");
+        assert!(back.eq_enabled);
+        assert_eq!(back.eq_preamp, -3.0);
+        assert_eq!(back.eq_gains, vec![1.0, -2.0, 0.0]);
         assert_eq!(back.nav_hidden, vec!["home".to_string()]);
         assert_eq!(back.managed_library_path, "/music/managed");
         assert_eq!(back.managed_library_template, "flat");
