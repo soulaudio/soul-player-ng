@@ -226,6 +226,9 @@ struct State {
     eq_gains: [f32; BANDS],
     /// EQ preamp in dB (persisted) — headroom so band boosts don't clip.
     eq_preamp: f32,
+    /// In-flight EQ-graph node drag: `(band index, gain in dB at press)`, so the
+    /// drag applies absolutely from the press point. `None` when not dragging.
+    eq_drag: Option<(usize, f32)>,
     /// Managed-library destination folder (persisted; `None` = unset), where the
     /// write-path organizer will copy / move added music. Set in Settings → Music
     /// Data. Configuring only — the "Add music…" apply flow is separate.
@@ -353,6 +356,7 @@ impl State {
             eq_enabled,
             eq_gains,
             eq_preamp,
+            eq_drag: None,
             managed_dest,
             managed_template,
             managed_strategy,
@@ -948,6 +952,15 @@ fn scene_settings_audio(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::Audio;
 }
+/// Settings → Audio with the EQ enabled and a "smile" curve, so `--snap` shows the
+/// response-curve graph with its bands moved (not a flat line).
+fn scene_settings_audio_eq(s: &mut State) {
+    scene_settings_audio(s);
+    s.eq_enabled = true;
+    // A gentle smiley: lift the lows and highs, dip the mids.
+    s.eq_gains = [6.0, 4.5, 2.0, -1.0, -3.5, -3.0, -0.5, 2.5, 5.0, 4.0];
+    s.eq_preamp = -2.0;
+}
 fn scene_settings_about(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::About;
@@ -1140,6 +1153,7 @@ fn main() -> anyhow::Result<()> {
             ("home", scene_home),
             ("settings-music", scene_settings_music),
             ("settings-audio", scene_settings_audio),
+            ("settings-audio-eq", scene_settings_audio_eq),
             ("settings-about", scene_settings_about),
             ("settings-music-de", scene_settings_music_de),
             ("settings-audio-de", scene_settings_audio_de),
@@ -1592,9 +1606,9 @@ mod tests {
             "sp-stage-dsp",
             "eq-enable",
             "eq-preamp",
-            "eq-bands",
-            "eq-band-0",
-            "eq-band-9",
+            "eq-graph",
+            "eq-node-0",
+            "eq-node-9",
         ] {
             assert!(rt.find(key).is_some(), "the EQ card renders {key}");
         }
