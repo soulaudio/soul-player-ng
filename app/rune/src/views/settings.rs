@@ -27,13 +27,13 @@ use crate::views::scrollbar;
 use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
-    OrganizePhase, SettingsTab, State, ThemePref, add_eq_band, apply_and_save, apply_watch,
-    bump_eq_band_gain, bump_eq_band_q, close_dropdown, cycle_eq_band_kind, export_eq, import_eq,
-    organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_eq_band,
-    set_eq_band_enabled, set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref,
-    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
-    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
-    set_theme_pref, toggle_eq_editor,
+    OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band, apply_and_save,
+    apply_watch, bump_eq_band_gain, bump_eq_band_q, close_dropdown, cycle_eq_band_kind, export_eq,
+    import_eq, organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
+    remove_eq_band, reorder_dsp_units, select_dsp_unit, set_dsp_unit_enabled, set_eq_band_enabled,
+    set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest,
+    set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor,
 };
 use soul_player_host::IndexingMode;
 
@@ -1315,17 +1315,143 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(crate::views::eq_graph::eq_graph(s, p, cx))
         .child(eq_band_editor(s, p));
     let body = if on { body } else { body.opacity(fx::DISABLED) };
-    card("sp-stage-dsp", p)
+    // The reorderable list of EQ units (the DSP chain) sits above the active unit's
+    // editor. The header toggle + editor operate on the active (open) unit.
+    let has_units = !s.dsp_units.is_empty();
+    let card = card("sp-stage-dsp", p)
         .child(stage_header(
             if shaping { p.accent } else { p.primary },
             &icons::SETTINGS,
             t!("player.signalPath.dsp").to_string(),
             None,
-            Some(toggle),
+            has_units.then_some(toggle),
             false,
             p,
         ))
-        .child(body)
+        .child(dsp_unit_list(s, p));
+    if has_units { card.child(body) } else { card }
+}
+
+/// Approximate height of one unit row (points) — maps a reorder drag's vertical
+/// travel to a target slot, à la the queue.
+const DSP_ROW_H: f32 = 34.0;
+
+/// Where a dragged unit lands: its index plus one slot per [`DSP_ROW_H`] of travel.
+fn dsp_drop_index(from: usize, dy: f32, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let steps = (dy / DSP_ROW_H).round() as i64;
+    (from as i64 + steps).clamp(0, len as i64 - 1) as usize
+}
+
+/// The DSP chain as a reorderable list of EQ-unit rows + an "Add EQ" button.
+fn dsp_unit_list(s: &State, p: &Palette) -> El {
+    let n = s.dsp_units.len();
+    let target = s.dsp_drag.map(|(_, to)| to);
+    let dragging_from = s.dsp_drag.map(|(from, _)| from);
+    let mut list = col().key("dsp-units").w_full().gap(space::XXS);
+    for i in 0..n {
+        // A drop line marks where a dragged unit will land.
+        if target == Some(i) && dragging_from != Some(i) {
+            list = list.child(
+                el().key("dsp-drop")
+                    .w_full()
+                    .h(2.0)
+                    .radius(1.0)
+                    .fill(p.accent),
+            );
+        }
+        list = list.child(dsp_unit_row(i, s, p, dragging_from == Some(i)));
+    }
+    let add = chip_btn(
+        "dsp-add-unit".into(),
+        "+ Add EQ".into(),
+        p.primary.alpha(0.16),
+        p.primary,
+        add_dsp_unit,
+    );
+    list.child(row().w_full().child(add))
+}
+
+/// One unit row: grip (drag-reorder) · "EQ n" · enable · remove. Clicking the row
+/// makes it the active (open) unit.
+fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
+    let unit = &s.dsp_units[i];
+    let active = i == s.dsp_active;
+    let on = unit.enabled;
+    let grip = el()
+        .key(format!("dsp-grip-{i}"))
+        .role("button")
+        .size(space::MD, DSP_ROW_H)
+        .center()
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .child(icon(&icons::GRIP, 12.0).color(p.text_secondary.alpha(0.6)))
+        .on_drag(
+            move |st: &mut State, d: &mut rune::Drag, _tx| match d.phase {
+                rune::Phase::Down => st.dsp_drag = Some((i, i)),
+                rune::Phase::Move => {
+                    if let Some((from, _)) = st.dsp_drag {
+                        let to = dsp_drop_index(from, d.dy, st.dsp_units.len());
+                        st.dsp_drag = Some((from, to));
+                    }
+                }
+                rune::Phase::Up => {
+                    if let Some((from, to)) = st.dsp_drag.take() {
+                        reorder_dsp_units(st, from, to);
+                    }
+                }
+            },
+        );
+    let (en_fill, en_fg) = if on {
+        (p.primary.alpha(0.16), p.primary)
+    } else {
+        (p.muted, p.text_secondary)
+    };
+    let enable = chip_btn(
+        format!("dsp-en-{i}"),
+        if on { "On" } else { "Off" }.into(),
+        en_fill,
+        en_fg,
+        move |st| set_dsp_unit_enabled(st, i, !on),
+    );
+    let remove = chip_btn(
+        format!("dsp-rm-{i}"),
+        "✕".into(),
+        p.muted,
+        p.text_secondary,
+        move |st| remove_dsp_unit(st, i),
+    );
+    // The clickable "select" label (content-width, a sibling of grip/enable/remove
+    // — a row-wide or grow button would shadow the child chips' hit areas).
+    let select = text(format!("EQ {}", i + 1))
+        .font(type_::ITEM_STRONG)
+        .py(space::XS)
+        .color(if active { p.fg } else { p.text_secondary })
+        .key(format!("dsp-unit-{i}"))
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .on_press(move |st: &mut State| select_dsp_unit(st, i));
+    let r = row()
+        .key(format!("dsp-unit-row-{i}"))
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .pr(space::SM)
+        .radius(radius::SM)
+        .fill(if active {
+            p.primary.alpha(0.12)
+        } else {
+            p.card
+        })
+        .child(grip)
+        .child(select)
+        .child(el().grow(1.0))
+        .child(enable)
+        .child(remove);
+    if dragged { r.opacity(0.4) } else { r }
 }
 
 /// A compact label for a band's shape (editor type chip).
