@@ -16,6 +16,7 @@ use rune::{
     icon, row, text,
 };
 use soul_player_host::ReplayGainMode;
+use soul_player_host::organize;
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
@@ -26,8 +27,9 @@ use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
     SettingsTab, State, ThemePref, apply_and_save, apply_watch, close_dropdown, set_locale_pref,
-    set_nav_visible, set_output_device, set_replaygain_mode, set_replaygain_preamp,
-    set_settings_tab, set_theme_pref,
+    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
+    set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -647,6 +649,211 @@ fn music_data_card(s: &State, p: &Palette) -> El {
     c
 }
 
+// ── Managed Library (the write-path organizer: configure half) ───────────────
+
+/// The key identifying the managed-library template picker (its open state +
+/// panel anchor).
+const MANAGED_TEMPLATE: &str = "managed-template";
+
+/// The human label for a template preset id (ids come from `organize::presets()`).
+/// Shown in the picker trigger + its panel.
+fn preset_label(id: &str) -> String {
+    match id {
+        "artist-year-album" => t!("settings.preset.artist-year-album").to_string(),
+        "genre-artist-album" => t!("settings.preset.genre-artist-album").to_string(),
+        "flat" => t!("settings.preset.flat").to_string(),
+        // "artist-album" is the default preset.
+        _ => t!("settings.preset.artist-album").to_string(),
+    }
+}
+
+/// A static illustrative destination path for a preset, so the user previews the
+/// folder layout without any real file. Keyed to `organize::presets()`'s ids.
+fn preset_example(id: &str) -> &'static str {
+    match id {
+        "artist-year-album" => "Daft Punk/2001 - Discovery/01 - One More Time.flac",
+        "genre-artist-album" => "Electronic/Daft Punk/Discovery/01 - One More Time.flac",
+        "flat" => "Daft Punk - One More Time.flac",
+        _ => "Daft Punk/Discovery/01 - One More Time.flac",
+    }
+}
+
+/// The template presets as `(id, human label)` for the dropdown panel — the ids
+/// come from the organizer so the picker always matches the write path.
+fn preset_options() -> Vec<(String, String)> {
+    organize::presets()
+        .iter()
+        .map(|(id, _)| (id.to_string(), preset_label(id)))
+        .collect()
+}
+
+/// The destination Browse button: opens the native folder dialog and persists the
+/// pick. Folder dialog (not text entry) because Rune's IME is pre-release — same
+/// as Add Source.
+fn managed_browse_button(p: &Palette) -> El {
+    el().key("managed-dest-browse")
+        .role("button")
+        .label(t!("settings.browse").to_string())
+        .focusable(true)
+        .padding(space::MD)
+        .radius(radius::MD)
+        .fill(p.muted)
+        .center()
+        .cursor(Cursor::Pointer)
+        .child(text(t!("settings.browse").to_string()).color(p.fg))
+        .on_press_tx(|_s: &mut State, tx: &mut Tx| {
+            tx.open_folder(
+                FileDialogOptions {
+                    title: t!("settings.managedDestDialog").to_string(),
+                    ..Default::default()
+                },
+                |s: &mut State, result, _tx| {
+                    if let Ok(Some(path)) = result {
+                        set_managed_dest(s, Some(path));
+                    }
+                },
+            );
+        })
+}
+
+/// The destination row: a label over the current path (or "Not set"), with the
+/// Browse button trailing. The path column grows + shrinks to zero so a long path
+/// truncates instead of shoving the button off the card.
+fn managed_dest_row(s: &State, p: &Palette) -> El {
+    let path_line = match &s.managed_dest {
+        Some(dest) => text(dest.to_string_lossy().into_owned())
+            .font(type_::BODY)
+            .color(p.fg)
+            .truncate(),
+        None => text(t!("settings.notSet").to_string())
+            .font(type_::BODY)
+            .color(p.text_secondary),
+    };
+    row()
+        .w_full()
+        .gap(space::MD)
+        .center_y()
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(space::NONE)
+                .child(
+                    text(t!("settings.destination").to_string())
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary),
+                )
+                .child(path_line),
+        )
+        .child(managed_browse_button(p))
+}
+
+/// The template section: a label, the preset picker (the shared `dropdown`), and
+/// an example destination line for the selected preset (keyed `managed-example`).
+fn managed_template_section(s: &State, p: &Palette) -> El {
+    col()
+        .w_full()
+        .gap(space::XS)
+        .child(
+            text(t!("settings.template").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .child(dropdown::trigger(
+            MANAGED_TEMPLATE,
+            preset_label(&s.managed_template),
+            p,
+        ))
+        .child(
+            // A static preview of where a file would land (no real file). `wrap`
+            // keeps a long path inside the card instead of overflowing.
+            col()
+                .key("managed-example")
+                .w_full()
+                .gap(space::XXS)
+                .child(
+                    text(t!("settings.example").to_string())
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary)
+                        .wrap(),
+                )
+                .child(
+                    text(preset_example(&s.managed_template).to_string())
+                        .font(type_::BODY)
+                        .color(p.fg)
+                        .wrap(),
+                ),
+        )
+}
+
+/// One strategy choice (Copy / Move); the active one is filled with the primary
+/// colour (mirrors `theme_button`).
+fn strategy_button(
+    label: String,
+    key: &str,
+    strategy: organize::Strategy,
+    active: bool,
+    p: &Palette,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_managed_strategy(s, strategy))
+}
+
+/// The strategy section: a label over the Copy / Move toggle (wraps on a narrow
+/// card).
+fn managed_strategy_section(s: &State, p: &Palette) -> El {
+    col()
+        .w_full()
+        .gap(space::XS)
+        .child(
+            text(t!("settings.strategy").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .child(
+            row()
+                .gap(space::SM)
+                .flex_wrap()
+                .child(strategy_button(
+                    t!("settings.copyFiles").to_string(),
+                    "managed-copy",
+                    organize::Strategy::Copy,
+                    s.managed_strategy == organize::Strategy::Copy,
+                    p,
+                ))
+                .child(strategy_button(
+                    t!("settings.moveFiles").to_string(),
+                    "managed-move",
+                    organize::Strategy::Move,
+                    s.managed_strategy == organize::Strategy::Move,
+                    p,
+                )),
+        )
+}
+
+/// Managed Library: the write-path destination + template preset + Copy/Move
+/// strategy, persisted to config. Configuring only — the "Add music…" apply flow
+/// that runs the copy/move is a separate task. Rendered under the Sources card on
+/// the Music Data tab.
+fn managed_library_card(s: &State, p: &Palette) -> El {
+    card("managed-library", p)
+        .child(heading(
+            t!("settings.managedLibrary").to_string(),
+            t!("settings.managedLibraryDesc").to_string(),
+            p,
+        ))
+        .child(managed_dest_row(s, p))
+        .child(managed_template_section(s, p))
+        .child(managed_strategy_section(s, p))
+}
+
 /// Output: a "System default" choice plus one button per enumerated output
 /// device, stacked vertically (device names can be long, and a host may expose
 /// many). The active choice (matching `State.output_device`, `None` = system
@@ -1011,7 +1218,8 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         SettingsTab::MusicData => col()
             .key("settings-content")
             .gap(space::LG)
-            .child(music_data_card(s, p)),
+            .child(music_data_card(s, p))
+            .child(managed_library_card(s, p)),
         SettingsTab::Audio => audio_pipeline(s, p, cx),
         SettingsTab::About => col()
             .key("settings-content")
@@ -1078,6 +1286,18 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
     }
     if dropdown::is_open(s, ADD_SOURCE_MENU) {
         overlays.push(add_source_menu(s, p));
+    }
+    if dropdown::is_open(s, MANAGED_TEMPLATE) {
+        // Match the panel width to the trigger (once it has a committed layout).
+        let width = cx.layout_size(MANAGED_TEMPLATE).map(|wh| wh[0]);
+        overlays.push(dropdown::panel(
+            MANAGED_TEMPLATE,
+            &preset_options(),
+            &s.managed_template,
+            width,
+            |s: &mut State, id: &str| set_managed_template(s, id),
+            p,
+        ));
     }
     overlays
 }

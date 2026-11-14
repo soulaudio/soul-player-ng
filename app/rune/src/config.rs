@@ -29,6 +29,16 @@ pub(crate) fn use_test_config_dir() {
     let _ = soul_player_dir();
 }
 
+/// A process-wide lock serialising the tests that write **managed-library** config
+/// (both here and in `main.rs`). The test config dir is shared per-process, so two
+/// tests doing a concurrent load-modify-write of `config.toml` on the SAME fields
+/// can lose each other's update; holding this across a write→read makes the
+/// managed-library roundtrips deterministic. Poisoning is ignored (a failing test
+/// shouldn't cascade). Scoped to just these tests — the broad settings suite
+/// already tolerates the tiny shared-file window.
+#[cfg(test)]
+pub(crate) static MANAGED_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The app's config directory. In a **test build this is ALWAYS a throwaway
 /// temp directory** (never the user's real config) — tests share it, so a test
 /// that persists a setting must not let another's write leak into its
@@ -77,6 +87,15 @@ struct Config {
     /// Paths (a subset of `sources`) the user has disabled. Absent in old configs
     /// → everything enabled. Storing the *disabled* subset keeps migration free.
     sources_disabled: Vec<String>,
+    /// Managed-library destination folder (empty = unset). The write-path
+    /// organizer copies / moves added files here.
+    managed_library_path: String,
+    /// Managed-library template PRESET id (e.g. `"artist-album"`) — the folder
+    /// layout the organizer arranges files into. Stored as the preset id, not the
+    /// raw template string, so a later build can tweak a preset's template freely.
+    managed_library_template: String,
+    /// Managed-library file strategy: `"copy"` (keep the source) or `"move"`.
+    managed_library_strategy: String,
 }
 
 impl Default for Config {
@@ -89,6 +108,9 @@ impl Default for Config {
             locale: "system".into(),
             nav_hidden: Vec::new(),
             sources_disabled: Vec::new(),
+            managed_library_path: String::new(),
+            managed_library_template: "artist-album".into(),
+            managed_library_strategy: "copy".into(),
         }
     }
 }
@@ -259,6 +281,52 @@ pub fn load_locale() -> String {
 pub fn save_locale(locale: &str) {
     let mut cfg = load();
     cfg.locale = locale.to_string();
+    save(&cfg);
+}
+
+// --- managed-library (write-path organizer) preference ---
+
+/// Extract the managed-library tuple `(destination, template-preset-id, strategy)`
+/// from a `Config` — an empty stored path maps to `None` (unset). The read core of
+/// [`load_managed_library`], split out so the roundtrip test can exercise it on an
+/// isolated `Config` (never the shared per-process test config file).
+fn managed_from(cfg: &Config) -> (Option<PathBuf>, String, String) {
+    let dest = if cfg.managed_library_path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&cfg.managed_library_path))
+    };
+    (
+        dest,
+        cfg.managed_library_template.clone(),
+        cfg.managed_library_strategy.clone(),
+    )
+}
+
+/// Apply a managed-library choice onto a `Config` (a `None` or non-UTF-8 dest
+/// stores an empty path = unset, rather than corrupting the file). The write core
+/// of [`save_managed_library`].
+fn apply_managed(cfg: &mut Config, dest: Option<&Path>, template_id: &str, strategy: &str) {
+    cfg.managed_library_path = dest
+        .and_then(|p| p.to_str())
+        .map(String::from)
+        .unwrap_or_default();
+    cfg.managed_library_template = template_id.to_string();
+    cfg.managed_library_strategy = strategy.to_string();
+}
+
+/// The managed-library config: `(destination, template-preset-id, strategy)`. An
+/// empty stored path is `None` (unset); the template id and strategy fall back to
+/// `"artist-album"` / `"copy"` in a config written before the feature existed.
+pub fn load_managed_library() -> (Option<PathBuf>, String, String) {
+    managed_from(&load())
+}
+
+/// Persist the managed-library config. `None` (or a non-UTF-8 path) stores an
+/// empty destination (= unset) rather than corrupting the file.
+pub fn save_managed_library(dest: Option<&Path>, template_id: &str, strategy: &str) {
+    let mut cfg = load();
+    apply_managed(&mut cfg, dest, template_id, strategy);
     save(&cfg);
 }
 
@@ -517,6 +585,9 @@ mod tests {
             locale: "de".into(),
             nav_hidden: vec!["home".into()],
             sources_disabled: Vec::new(),
+            managed_library_path: "/music/managed".into(),
+            managed_library_template: "flat".into(),
+            managed_library_strategy: "move".into(),
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -526,6 +597,46 @@ mod tests {
         assert!(back.sidebar_collapsed);
         assert_eq!(back.locale, "de");
         assert_eq!(back.nav_hidden, vec!["home".to_string()]);
+        assert_eq!(back.managed_library_path, "/music/managed");
+        assert_eq!(back.managed_library_template, "flat");
+        assert_eq!(back.managed_library_strategy, "move");
+    }
+
+    #[test]
+    fn managed_library_roundtrips_and_empty_path_is_unset() {
+        // Round-trip the real write (`apply_managed`) + read (`managed_from`) cores
+        // through serde on an ISOLATED temp file — like the output-device /
+        // replaygain tests — so this never contends with the many other tests that
+        // write the shared per-process test config.toml (a concurrent lost-update
+        // would otherwise reset these fields to default).
+        let dir = std::env::temp_dir().join(format!("soul_rune_managed_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let roundtrip = |dest: Option<&Path>, template: &str, strategy: &str| {
+            let mut cfg = Config::default();
+            apply_managed(&mut cfg, dest, template, strategy);
+            std::fs::write(&path, toml::to_string_pretty(&cfg).unwrap()).unwrap();
+            let back: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            managed_from(&back)
+        };
+
+        let (dest, template, strategy) = roundtrip(
+            Some(Path::new("/music/managed")),
+            "genre-artist-album",
+            "move",
+        );
+        assert_eq!(dest, Some(PathBuf::from("/music/managed")));
+        assert_eq!(template, "genre-artist-album");
+        assert_eq!(strategy, "move");
+
+        // A None destination stores an empty path (= unset) and reloads as None.
+        let (dest, template, strategy) = roundtrip(None, "flat", "copy");
+        assert_eq!(dest, None, "a None destination reloads as unset");
+        assert_eq!(template, "flat");
+        assert_eq!(strategy, "copy");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

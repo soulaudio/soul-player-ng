@@ -23,7 +23,7 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 use parley_engine as _;
 use soul_player_host::{
     BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
-    SourceFormat, SourceStatus, TrackView, WatchUpdate,
+    SourceFormat, SourceStatus, TrackView, WatchUpdate, organize::Strategy,
 };
 
 mod config;
@@ -189,6 +189,17 @@ struct State {
     /// ReplayGain preamp in dB (persisted), a constant offset on top of the mode's
     /// gain. Rendered as a slider in Settings → ReplayGain.
     replaygain_preamp: f32,
+    /// Managed-library destination folder (persisted; `None` = unset), where the
+    /// write-path organizer will copy / move added music. Set in Settings → Music
+    /// Data. Configuring only — the "Add music…" apply flow is separate.
+    managed_dest: Option<PathBuf>,
+    /// Managed-library template preset id (persisted) — the folder layout the
+    /// organizer arranges into. Chosen from presets (Rune's IME is pre-release, so
+    /// there's no free-text template entry).
+    managed_template: String,
+    /// Managed-library file strategy (persisted): `Copy` keeps the source file,
+    /// `Move` removes it.
+    managed_strategy: Strategy,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -248,6 +259,14 @@ impl State {
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
         let locale_pref = config::load_locale();
         apply_locale(&locale_pref);
+        // Restore the managed-library choice (defaults: unset dest, "artist-album"
+        // template, Copy); the stored strategy id maps to the organizer enum.
+        let (managed_dest, managed_template, managed_strategy_id) = config::load_managed_library();
+        let managed_strategy = if managed_strategy_id == "move" {
+            Strategy::Move
+        } else {
+            Strategy::Copy
+        };
         Self {
             host,
             library,
@@ -281,6 +300,9 @@ impl State {
             output_devices,
             replaygain_mode,
             replaygain_preamp,
+            managed_dest,
+            managed_template,
+            managed_strategy,
             art: ArtCache::new(),
             update_available: None,
             search: String::new(),
@@ -443,6 +465,47 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
     s.replaygain_preamp = preamp_db;
     config::save_replaygain(s.replaygain_mode, preamp_db);
     s.host.set_replay_gain(s.replaygain_mode, preamp_db);
+}
+
+/// The on-disk token for a managed-library strategy (inverse of the `"move"`
+/// mapping in [`State::new`]).
+fn strategy_as_config(strategy: Strategy) -> &'static str {
+    match strategy {
+        Strategy::Copy => "copy",
+        Strategy::Move => "move",
+    }
+}
+
+/// Set + persist the managed-library destination folder (Settings → Music Data).
+/// `None` clears it (unset). Save-only — the actual copy/move "Add music…" flow is
+/// separate, so this never touches the host.
+pub(crate) fn set_managed_dest(s: &mut State, dest: Option<PathBuf>) {
+    s.managed_dest = dest;
+    config::save_managed_library(
+        s.managed_dest.as_deref(),
+        &s.managed_template,
+        strategy_as_config(s.managed_strategy),
+    );
+}
+
+/// Set + persist the managed-library template preset (by id).
+pub(crate) fn set_managed_template(s: &mut State, template_id: &str) {
+    s.managed_template = template_id.to_string();
+    config::save_managed_library(
+        s.managed_dest.as_deref(),
+        &s.managed_template,
+        strategy_as_config(s.managed_strategy),
+    );
+}
+
+/// Set + persist the managed-library file strategy (Copy / Move).
+pub(crate) fn set_managed_strategy(s: &mut State, strategy: Strategy) {
+    s.managed_strategy = strategy;
+    config::save_managed_library(
+        s.managed_dest.as_deref(),
+        &s.managed_template,
+        strategy_as_config(s.managed_strategy),
+    );
 }
 
 /// Switch the library's sort order — re-fetches the current library's views in
@@ -1488,6 +1551,101 @@ mod tests {
         assert!(
             !remote.focusable,
             "the Remote server item is coming soon → not focusable"
+        );
+    }
+
+    /// The Managed Library card renders on the Music Data tab with its destination
+    /// Browse button, template picker, example line, and Copy/Move strategy buttons.
+    #[test]
+    fn managed_library_card_renders() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        for k in [
+            "managed-dest-browse",
+            "managed-template",
+            "managed-copy",
+            "managed-move",
+            "managed-example",
+        ] {
+            assert!(rt.find(k).is_some(), "the Managed Library card shows {k}");
+        }
+    }
+
+    /// Picking a template preset from the dropdown commits its id to state and
+    /// persists it to config.
+    #[test]
+    fn selecting_a_template_preset_persists() {
+        // Picking flows through `set_managed_template`, which writes config —
+        // isolate it from the user's real settings, and serialise with the other
+        // managed-library config writers (shared per-process test config dir).
+        config::use_test_config_dir();
+        let _guard = config::MANAGED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Open the template dropdown, then settle its enter transition (it fades in
+        // from opacity 0, so the option isn't hit-testable until it finishes).
+        click_key(&mut rt, "managed-template");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(rt.state.open_dropdown.as_deref(), Some("managed-template"));
+        // Pick the genre/artist/album preset.
+        click_key(&mut rt, "managed-template-opt-genre-artist-album");
+        assert_eq!(
+            rt.state.managed_template, "genre-artist-album",
+            "picking commits the preset id to state"
+        );
+        assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
+        assert_eq!(
+            config::load_managed_library().1,
+            "genre-artist-album",
+            "and persists the preset id to config"
+        );
+        apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
+    }
+
+    /// Toggling the strategy to Move commits it to state and persists `"move"`.
+    #[test]
+    fn toggling_strategy_persists() {
+        // The toggle writes config — isolate it from the user's real settings, and
+        // serialise with the other managed-library config writers (shared
+        // per-process test config dir).
+        config::use_test_config_dir();
+        let _guard = config::MANAGED_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-move");
+        assert_eq!(
+            rt.state.managed_strategy,
+            Strategy::Move,
+            "clicking Move selects the move strategy"
+        );
+        assert_eq!(
+            config::load_managed_library().2,
+            "move",
+            "and persists the strategy to config"
         );
     }
 
