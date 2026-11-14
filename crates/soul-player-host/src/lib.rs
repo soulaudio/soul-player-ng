@@ -6,10 +6,11 @@
 pub mod eq;
 mod sink;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use soul_player_backend::{AudioPlayer, Library, cover_bytes};
+use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
 
 pub use eq::{
     BANDS, Band, BandKind, EqConfig, EqShared, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, Q_MAX, Q_MIN,
@@ -22,7 +23,7 @@ pub use sink::SinkMode;
 pub use soul_audio_organize as organize;
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
-    SignalPath, SourceCodec, SourceFormat, Tick, TrackView,
+    SCAN_CACHE_VERSION, ScanCache, SignalPath, SourceCodec, SourceFormat, Tick, TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -86,6 +87,13 @@ struct Inner {
     /// reports the true counts from the last aggregation instead of a 0
     /// placeholder, keeping the Sources list in step with the loaded library.
     last_sources: Mutex<Vec<SourceStatus>>,
+    /// The per-source incremental scan caches, keyed by root path. A rescan reuses
+    /// each root's cache (re-reading only new/changed files) and refreshes it; the
+    /// app persists this map at exit and seeds it at startup
+    /// ([`seed_caches`](PlayerHandle::seed_caches)) so a launch is a warm diff, not
+    /// a cold full read. A configured-but-unscanned root (disabled / offline) keeps
+    /// its cache for when it returns; a de-configured root's cache is pruned.
+    caches: Mutex<HashMap<PathBuf, ScanCache>>,
     /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
     /// or `None` for the system default. Read when the actor is (re)spawned and
     /// passed to the sink factory; a change applies to the NEXT spawn, not the
@@ -175,6 +183,7 @@ impl PlayerHandle {
                 subscribers: Mutex::new(Vec::new()),
                 folders: Mutex::new(Vec::new()),
                 last_sources: Mutex::new(Vec::new()),
+                caches: Mutex::new(HashMap::new()),
                 output_device: Mutex::new(None),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
@@ -223,7 +232,33 @@ impl PlayerHandle {
             .filter(|f| f.enabled && f.path.is_dir())
             .map(|f| f.path.clone())
             .collect();
-        let lib = Arc::new(Library::scan_many(&to_scan)?);
+        // Warm priors: each root's cached scan state (empty = a cold scan), so only
+        // new/changed files are re-read. Clone out of the lock before scanning.
+        let priors: Vec<ScanCache> = {
+            let caches = self.inner.caches.lock().expect("caches mutex");
+            to_scan
+                .iter()
+                .map(|r| caches.get(r).cloned().unwrap_or_default())
+                .collect()
+        };
+        let IncrementalBuild {
+            library,
+            caches: fresh,
+            removed: _removed,
+        } = Library::scan_many_incremental(&to_scan, &priors)?;
+        // Refresh the scanned roots' caches; keep configured-but-unscanned roots
+        // warm (a disabled / offline source re-aggregates from its cache when it
+        // returns); prune caches for roots no longer configured.
+        {
+            let mut caches = self.inner.caches.lock().expect("caches mutex");
+            for (root, cache) in to_scan.iter().zip(fresh) {
+                caches.insert(root.clone(), cache);
+            }
+            let configured: std::collections::HashSet<&PathBuf> =
+                cfg.iter().map(|f| &f.path).collect();
+            caches.retain(|p, _| configured.contains(p));
+        }
+        let lib = Arc::new(library);
         let views = lib.views();
         let counts = lib.source_counts(); // (root, n) for the scanned roots only
         self.set_library(lib);
@@ -276,6 +311,26 @@ impl PlayerHandle {
         }
         *self.inner.folders.lock().expect("folders mutex") = set;
         self.rescan()
+    }
+
+    /// Seed the per-source scan caches (as persisted by a previous run), keyed by
+    /// root path, **before** [`set_sources`](Self::set_sources) — so the first scan
+    /// at startup is a warm diff (only new/changed files re-read) instead of a cold
+    /// full read of the whole library. The caller restores this from disk and must
+    /// drop any caches written by an incompatible importer build (compare the
+    /// stored version against [`SCAN_CACHE_VERSION`]) before seeding. Replaces any
+    /// current cache map.
+    pub fn seed_caches(&self, caches: HashMap<PathBuf, ScanCache>) {
+        *self.inner.caches.lock().expect("caches mutex") = caches;
+    }
+
+    /// The current per-source scan caches, keyed by root path — persist this (with
+    /// [`SCAN_CACHE_VERSION`]) after scans so the next startup is warm (see
+    /// [`seed_caches`](Self::seed_caches)). Holds one warm cache per configured
+    /// root that has been scanned; de-configured roots are already pruned.
+    #[must_use]
+    pub fn caches_snapshot(&self) -> HashMap<PathBuf, ScanCache> {
+        self.inner.caches.lock().expect("caches mutex").clone()
     }
 
     /// Reconcile the configured-source set to exactly `roots` (deduped, preserving
@@ -893,6 +948,59 @@ mod tests {
         assert!(up.views.is_empty());
         assert_eq!(unavailable_of(&up), vec![m1.clone(), m2.clone()]);
         assert_eq!(h.watched_folders(), vec![m1, m2]);
+    }
+
+    #[test]
+    fn caches_snapshot_and_seed_round_trip_for_warm_startup() {
+        let a = folder_with("warm_a", &["a1.wav", "a2.wav"]);
+        let aroot = a.path().to_path_buf();
+
+        // A cold scan populates the per-source cache; the snapshot holds it.
+        let h = PlayerHandle::offline();
+        let up = h.set_sources(&[(aroot.clone(), true)]).unwrap();
+        assert_eq!(up.views.len(), 2);
+        let snap = h.caches_snapshot();
+        assert_eq!(
+            snap.get(&aroot).map(super::ScanCache::len),
+            Some(2),
+            "snapshot carries the scanned root's warm cache (both files)"
+        );
+
+        // A fresh handle SEEDED with that snapshot scans the same tree → identical
+        // views (the persistence → warm-startup round trip), and keeps the cache.
+        let h2 = PlayerHandle::offline();
+        h2.seed_caches(snap);
+        let up2 = h2.set_sources(&[(aroot.clone(), true)]).unwrap();
+        assert_eq!(
+            up2.views.iter().map(|v| v.id).collect::<Vec<_>>(),
+            up.views.iter().map(|v| v.id).collect::<Vec<_>>(),
+            "warm rescan from a seeded cache lists the same tracks"
+        );
+        assert_eq!(
+            h2.caches_snapshot().get(&aroot).map(super::ScanCache::len),
+            Some(2),
+            "seeded cache survives the rescan and stays warm"
+        );
+    }
+
+    #[test]
+    fn dropping_a_source_drops_its_cache() {
+        let a = folder_with("drop_a", &["a.wav"]);
+        let b = folder_with("drop_b", &["b.wav"]);
+        let (aroot, broot) = (a.path().to_path_buf(), b.path().to_path_buf());
+
+        let h = PlayerHandle::offline();
+        h.set_folders(&[aroot.clone(), broot.clone()]).unwrap();
+        assert_eq!(h.caches_snapshot().len(), 2, "both sources cached");
+
+        // Remove b from the configured set → its cache is pruned; a stays warm.
+        h.set_folders(std::slice::from_ref(&aroot)).unwrap();
+        let snap = h.caches_snapshot();
+        assert!(snap.contains_key(&aroot), "kept source stays cached");
+        assert!(
+            !snap.contains_key(&broot),
+            "dropped source's cache is pruned"
+        );
     }
 
     #[test]

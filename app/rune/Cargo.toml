@@ -54,6 +54,10 @@ dirs = "6"
 # dir, (de)serialised via serde — replaces the earlier scattered plain-text files.
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+# Compact binary (de)serialisation for the per-source scan cache (warm startup).
+# TOML can't carry the cache's path-keyed map + u128 stamps; postcard is a lean,
+# pure-Rust, no-FFI format whose MIT/Apache-2.0 licence clears the policy gate.
+postcard = { version = "1", features = ["use-std"] }
 # Internationalisation: compile-time-embedded translations (locales/app.yml) with
 # a global `t!()` macro; `sys-locale` detects the OS language for the default.
 rust-i18n = "3"

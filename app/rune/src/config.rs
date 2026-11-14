@@ -9,10 +9,13 @@
 //! load-modify-write of the one file (it's tiny, and the UI is single-threaded).
 #![forbid(unsafe_code)]
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use soul_player_host::{BANDS, Band, BandKind, ReplayGainMode, default_bands};
+use soul_player_host::{
+    BANDS, Band, BandKind, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, default_bands,
+};
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
 
@@ -667,6 +670,74 @@ fn record_loudness_to(cache_path: &Path, audio_path: &Path, gain_db: f32) -> std
     std::fs::write(cache_path, body)
 }
 
+// --- per-source scan cache (warm startup) ---
+
+/// The on-disk scan cache: the host's per-source [`ScanCache`] map plus the
+/// importer's [`SCAN_CACHE_VERSION`] it was written with. A load whose stored
+/// version doesn't match the running importer discards the whole cache (a cold
+/// re-scan) so no stale, differently-extracted field is ever reused.
+#[derive(Serialize, Deserialize)]
+struct PersistedCaches {
+    version: u32,
+    caches: HashMap<PathBuf, ScanCache>,
+}
+
+/// `<config>/soul-player/scan_caches.bin` — the per-source scan caches, stored in
+/// postcard (binary): the map is path-keyed and the stamps are `u128`, neither of
+/// which TOML carries cleanly, and the cache is large enough that a compact format
+/// matters.
+pub fn scan_caches_path() -> Option<PathBuf> {
+    Some(soul_player_dir()?.join("scan_caches.bin"))
+}
+
+/// The persisted per-source scan caches (empty if the file is missing / unreadable
+/// / corrupt / written by an incompatible importer version). Seed the host with
+/// this at startup — **before** `set_sources` — so the first scan is a warm diff.
+pub fn load_scan_caches() -> HashMap<PathBuf, ScanCache> {
+    scan_caches_path()
+        .map(|p| load_scan_caches_from(&p))
+        .unwrap_or_default()
+}
+
+/// Persist the host's current per-source scan caches (best-effort — a failed write
+/// never breaks the UI). Call after a scan so the next launch is warm.
+pub fn save_scan_caches(caches: &HashMap<PathBuf, ScanCache>) {
+    if let Some(p) = scan_caches_path() {
+        let _ = save_scan_caches_to(&p, caches);
+    }
+}
+
+/// Read + version-check the cache from `path` (the testable core). A missing /
+/// unreadable / malformed file, or one whose stored version != the running
+/// [`SCAN_CACHE_VERSION`], yields an empty map (a cold start).
+fn load_scan_caches_from(path: &Path) -> HashMap<PathBuf, ScanCache> {
+    let Ok(bytes) = std::fs::read(path) else {
+        return HashMap::new();
+    };
+    match postcard::from_bytes::<PersistedCaches>(&bytes) {
+        Ok(p) if p.version == SCAN_CACHE_VERSION => p.caches,
+        _ => HashMap::new(),
+    }
+}
+
+/// Serialize `caches` (stamped with the current [`SCAN_CACHE_VERSION`]) to `path`
+/// in postcard (the testable core of [`save_scan_caches`]), creating the parent
+/// dir as needed.
+fn save_scan_caches_to(path: &Path, caches: &HashMap<PathBuf, ScanCache>) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let payload = PersistedCaches {
+        version: SCAN_CACHE_VERSION,
+        // Clone is unavoidable here (we borrow the host's live map); the cache is
+        // written once per scan, so the cost is immaterial.
+        caches: caches.clone(),
+    };
+    let bytes = postcard::to_allocvec(&payload)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -904,6 +975,95 @@ mod tests {
     fn load_missing_loudness_cache_is_empty() {
         assert!(
             load_loudness_from(Path::new("/no/such/soul-player/loudness_cache.txt")).is_empty()
+        );
+    }
+
+    // --- scan cache (warm startup) ---
+
+    /// A minimal valid stereo PCM WAV (silence) — enough for the importer to scan
+    /// it into one cached track.
+    fn tiny_wav() -> Vec<u8> {
+        let (rate, frames, channels, bits): (u32, u32, u16, u16) = (48_000, 4_800, 2, 16);
+        let block_align = channels * bits / 8;
+        let data_len = frames * u32::from(block_align);
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data_len).to_le_bytes());
+        v.extend_from_slice(b"WAVE");
+        v.extend_from_slice(b"fmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&channels.to_le_bytes());
+        v.extend_from_slice(&rate.to_le_bytes());
+        v.extend_from_slice(&(rate * u32::from(block_align)).to_le_bytes());
+        v.extend_from_slice(&block_align.to_le_bytes());
+        v.extend_from_slice(&bits.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&data_len.to_le_bytes());
+        v.resize(v.len() + data_len as usize, 0);
+        v
+    }
+
+    #[test]
+    fn scan_caches_roundtrip_a_populated_cache() {
+        use soul_player_host::PlayerHandle;
+        let dir = std::env::temp_dir().join(format!("soul_rune_scancache_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.wav"), tiny_wav()).unwrap();
+
+        // Produce a *populated* cache via a real host scan, then persist + reload it
+        // — proving a non-empty ScanCache survives the on-disk binary format
+        // (entry fidelity, not just the map shell).
+        let h = PlayerHandle::offline();
+        h.set_sources(&[(dir.clone(), true)]).unwrap();
+        let snap = h.caches_snapshot();
+        assert_eq!(
+            snap.get(&dir).map(ScanCache::len),
+            Some(1),
+            "the host cached the scanned file"
+        );
+
+        let file = dir.join("scan_caches.bin");
+        save_scan_caches_to(&file, &snap).unwrap();
+        let loaded = load_scan_caches_from(&file);
+        assert_eq!(
+            loaded.get(&dir).map(ScanCache::len),
+            Some(1),
+            "a populated cache round-trips through the on-disk binary format"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_scan_caches_discards_a_stale_version() {
+        let dir =
+            std::env::temp_dir().join(format!("soul_rune_scancache_stale_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("scan_caches.bin");
+
+        // A file stamped with an incompatible importer version must be discarded
+        // (treated as a cold start) rather than reused with stale fields.
+        let stale = PersistedCaches {
+            version: SCAN_CACHE_VERSION.wrapping_add(1),
+            caches: HashMap::new(),
+        };
+        std::fs::write(&file, postcard::to_allocvec(&stale).unwrap()).unwrap();
+        assert!(
+            load_scan_caches_from(&file).is_empty(),
+            "a mismatched-version cache is discarded"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_missing_scan_caches_is_empty() {
+        assert!(
+            load_scan_caches_from(Path::new("/no/such/soul-player/scan_caches.bin")).is_empty(),
+            "a missing cache file loads as an empty (cold) cache"
         );
     }
 }
