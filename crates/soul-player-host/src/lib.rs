@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
-pub use eq::{BAND_FREQS, BANDS, EqConfig, EqShared, GAIN_LIMIT_DB};
+pub use eq::{BAND_FREQS, BANDS, EqConfig, EqShared, GAIN_LIMIT_DB, eq_magnitude_db};
 pub use sink::SinkMode;
 /// The write-path "managed library" organizer (stateless `plan`/`apply` into a
 /// path-template tree), re-exported so a UI head calls it through the one host

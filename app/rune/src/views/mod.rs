@@ -4,6 +4,7 @@
 pub mod albums;
 pub mod artists;
 pub mod dropdown;
+pub mod eq_graph;
 pub mod genres;
 pub mod home;
 pub mod icons;

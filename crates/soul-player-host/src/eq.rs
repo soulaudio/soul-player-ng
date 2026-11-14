@@ -74,26 +74,70 @@ impl EqConfig {
 /// [`EqSink`] (on the pump thread) reads it and redesigns when `generation` moves.
 pub type EqShared = Arc<Mutex<EqConfig>>;
 
-/// RBJ "Audio EQ Cookbook" peaking-filter coefficients (already `a0`-normalised) —
-/// the transcendental design the `no_std` core delegates to the std host. A
-/// zero (sub-millidB) gain, or a band at/above Nyquist, is a flat [`Biquad::bypass`].
-#[must_use]
-pub fn design_peaking(f0: f32, q: f32, gain_db: f32, fs: f32) -> Biquad {
+/// RBJ "Audio EQ Cookbook" peaking coefficients (already `a0`-normalised) as
+/// `[b0, b1, b2, a1, a2]`, or `None` (a flat passthrough) at zero gain, at/above
+/// Nyquist, or a non-positive Q. Shared by [`design_peaking`] (which applies them)
+/// and [`eq_magnitude_db`] (which evaluates the response).
+fn peaking_coeffs(f0: f32, q: f32, gain_db: f32, fs: f32) -> Option<[f32; 5]> {
     if gain_db.abs() < 1e-3 || f0 <= 0.0 || f0 >= fs / 2.0 || q <= 0.0 {
-        return Biquad::bypass();
+        return None;
     }
     let a = 10f32.powf(gain_db / 40.0);
     let w0 = 2.0 * PI * f0 / fs;
     let (sin_w0, cos_w0) = (w0.sin(), w0.cos());
     let alpha = sin_w0 / (2.0 * q);
     let a0 = 1.0 + alpha / a;
-    Biquad::new(
+    Some([
         (1.0 + alpha * a) / a0,
         (-2.0 * cos_w0) / a0,
         (1.0 - alpha * a) / a0,
         (-2.0 * cos_w0) / a0,
         (1.0 - alpha / a) / a0,
-    )
+    ])
+}
+
+/// The RBJ peaking biquad for a band — the transcendental design the `no_std`
+/// core delegates to the std host. Flat ([`Biquad::bypass`]) at zero gain / above
+/// Nyquist.
+#[must_use]
+pub fn design_peaking(f0: f32, q: f32, gain_db: f32, fs: f32) -> Biquad {
+    match peaking_coeffs(f0, q, gain_db, fs) {
+        Some([b0, b1, b2, a1, a2]) => Biquad::new(b0, b1, b2, a1, a2),
+        None => Biquad::bypass(),
+    }
+}
+
+/// Magnitude response (dB) of a biquad `[b0, b1, b2, a1, a2]` at normalised
+/// angular frequency `w` (0..π): `20·log₁₀(|H(e^jw)|)`.
+fn biquad_mag_db(c: [f32; 5], w: f32) -> f32 {
+    let (cw, sw) = (w.cos(), w.sin());
+    let (c2, s2) = ((2.0 * w).cos(), (2.0 * w).sin());
+    let num_re = c[0] + c[1] * cw + c[2] * c2;
+    let num_im = -(c[1] * sw + c[2] * s2);
+    let den_re = 1.0 + c[3] * cw + c[4] * c2;
+    let den_im = -(c[3] * sw + c[4] * s2);
+    let num = (num_re * num_re + num_im * num_im).sqrt();
+    let den = (den_re * den_re + den_im * den_im).sqrt();
+    if den <= 0.0 {
+        0.0
+    } else {
+        20.0 * (num / den).max(1e-9).log10()
+    }
+}
+
+/// The **combined graphic-EQ magnitude response** (dB) at `freq` Hz for a device
+/// rate `fs`: the preamp plus each band's peaking response (cascaded filters
+/// multiply in magnitude = add in dB). This is the curve the UI draws.
+#[must_use]
+pub fn eq_magnitude_db(gains_db: &[f32; BANDS], preamp_db: f32, freq: f32, fs: f32) -> f32 {
+    let w = 2.0 * PI * freq / fs;
+    let mut db = preamp_db;
+    for (i, &g) in gains_db.iter().enumerate() {
+        if let Some(c) = peaking_coeffs(BAND_FREQS[i], BAND_Q, g, fs) {
+            db += biquad_mag_db(c, w);
+        }
+    }
+    db
 }
 
 fn db_to_lin(db: f32) -> f32 {
@@ -266,6 +310,23 @@ mod tests {
             Biquad::bypass(),
             "a real boost is not a bypass"
         );
+    }
+
+    #[test]
+    fn magnitude_response_tracks_the_bands_and_preamp() {
+        let fs = 48_000.0;
+        let mut gains = [0.0f32; BANDS];
+        // Flat + no preamp → 0 dB everywhere.
+        assert!(eq_magnitude_db(&gains, 0.0, 1000.0, fs).abs() < 0.01);
+        // A pure preamp is a flat offset at every frequency.
+        assert!((eq_magnitude_db(&gains, -3.0, 500.0, fs) + 3.0).abs() < 0.01);
+        // +6 dB at the 1 kHz band (index 5): ~+6 dB there, ~flat an octave away.
+        gains[5] = 6.0;
+        assert!((eq_magnitude_db(&gains, 0.0, 1000.0, fs) - 6.0).abs() < 0.3);
+        assert!(eq_magnitude_db(&gains, 0.0, 125.0, fs).abs() < 1.0);
+        assert!(eq_magnitude_db(&gains, 0.0, 8000.0, fs).abs() < 1.0);
+        // A preamp adds on top of the band boost.
+        assert!((eq_magnitude_db(&gains, 2.0, 1000.0, fs) - 8.0).abs() < 0.3);
     }
 
     #[test]
