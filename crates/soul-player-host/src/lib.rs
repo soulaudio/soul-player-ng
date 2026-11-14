@@ -3,6 +3,7 @@
 //! `PlayerHandle` the Rune UI head binds to.
 #![forbid(unsafe_code)]
 
+pub mod eq;
 mod sink;
 
 use std::path::{Path, PathBuf};
@@ -10,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
+pub use eq::{BAND_FREQS, BANDS, EqConfig, EqShared, GAIN_LIMIT_DB};
 pub use sink::SinkMode;
 /// The write-path "managed library" organizer (stateless `plan`/`apply` into a
 /// path-template tree), re-exported so a UI head calls it through the one host
@@ -102,6 +104,11 @@ struct Inner {
     /// here instead of driving the actor, so a head's command wiring can be
     /// asserted headlessly. `None` (the default) in every real handle.
     recorder: Mutex<Option<Vec<Command>>>,
+    /// The live graphic-EQ settings. Shared with the device sink's [`eq::EqSink`]
+    /// (created per spawn) so a change applies to the LIVE stream at its next block
+    /// — like ReplayGain, not the output device. Persists across actor respawns
+    /// (device changes) because the same `Arc` is handed to each new sink.
+    eq: EqShared,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -169,6 +176,7 @@ impl PlayerHandle {
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
                 recorder: Mutex::new(None),
+                eq: Arc::new(Mutex::new(EqConfig::default())),
             }),
         }
     }
@@ -415,6 +423,20 @@ impl PlayerHandle {
         }
     }
 
+    /// Set the graphic-EQ bands (dB per [`eq::BAND_FREQS`] band), the preamp, and
+    /// the master enable. Like [`set_replay_gain`](Self::set_replay_gain), it
+    /// applies to the LIVE stream at its next block — the device sink reads the
+    /// shared settings each block — and is remembered for the next spawn, without
+    /// ever spawning an actor just to set it. A disabled or all-0 dB EQ is a
+    /// bit-exact passthrough.
+    pub fn set_eq(&self, gains_db: [f32; eq::BANDS], preamp_db: f32, enabled: bool) {
+        let mut cfg = self.inner.eq.lock().expect("eq mutex");
+        cfg.gains_db = gains_db;
+        cfg.preamp_db = preamp_db;
+        cfg.enabled = enabled;
+        cfg.generation = cfg.generation.wrapping_add(1);
+    }
+
     /// Seed the backend's in-memory loudness cache from the app's persisted cache
     /// — `(path, computed track_gain_db)` pairs for previously-untagged tracks the
     /// hybrid-ReplayGain path analyzed in a past session. Call once at startup
@@ -560,7 +582,7 @@ impl PlayerHandle {
             .lock()
             .expect("loudness seed mutex")
             .clone();
-        let actor = sink::build_actor(self.inner.mode, device, lib, forward);
+        let actor = sink::build_actor(self.inner.mode, device, self.inner.eq.clone(), lib, forward);
         actor.send(Command::SetReplayGain {
             mode: rg_mode,
             preamp_db: rg_preamp,
