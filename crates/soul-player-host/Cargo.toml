@@ -24,6 +24,9 @@ soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", bra
 # re-exported so a UI head can plan/apply without a direct core git dep.
 soul-audio-organize = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 anyhow = "1"
+# Real-input FFT for the EQ spectrum analyzer (std host only — the no_std core
+# never sees it). Wraps rustfft with an r2c API and reused buffers.
+realfft = "3"
 
 [dev-dependencies]
 tempfile = "3"

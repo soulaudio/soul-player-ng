@@ -9,6 +9,7 @@ use soul_audio_core::{SampleFormat, Sink, SinkError, StreamInfo};
 use soul_audio_desktop::sink::CpalSink;
 use soul_player_backend::{AudioPlayer, Event, Library};
 
+use crate::analyzer::SpectrumShared;
 use crate::eq::{EqShared, EqSink};
 
 /// Which sink the actor plays through.
@@ -42,15 +43,18 @@ pub(crate) fn build_actor(
     mode: SinkMode,
     output_device: Option<String>,
     eq: EqShared,
+    spectrum: SpectrumShared,
     lib: Arc<Library>,
     on_event: impl Fn(Event) + Send + 'static,
 ) -> AudioPlayer {
     match mode {
-        // Offline/headless has no audible output, so the EQ is irrelevant there.
+        // Offline/headless has no audible output, so the EQ/analyzer are moot there.
         SinkMode::Offline => AudioPlayer::spawn(|| Ok(NullSink::new(48_000, 2)), lib, on_event),
-        SinkMode::Device => {
-            AudioPlayer::spawn(device_sink_factory(output_device, eq), lib, on_event)
-        }
+        SinkMode::Device => AudioPlayer::spawn(
+            device_sink_factory(output_device, eq, spectrum),
+            lib,
+            on_event,
+        ),
     }
 }
 
@@ -63,13 +67,14 @@ pub(crate) fn build_actor(
 fn device_sink_factory(
     output_device: Option<String>,
     eq: EqShared,
+    spectrum: SpectrumShared,
 ) -> impl FnOnce() -> anyhow::Result<EqSink<CpalSink>> + Send + 'static {
     move || {
         let device = match output_device {
             Some(name) => CpalSink::new_on_device(&name).or_else(|_| CpalSink::new()),
             None => CpalSink::new(),
         }?;
-        Ok(EqSink::new(device, eq))
+        Ok(EqSink::new(device, eq, spectrum))
     }
 }
 
