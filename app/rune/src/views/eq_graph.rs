@@ -16,13 +16,13 @@ use rune::{
     Color, Cursor, Cx, Drag, El, LineCap, Phase, Shape, WheelEvent, canvas, col, el, row, text,
 };
 use soul_player_host::{
-    BANDS, Band, BandKind, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, Q_MAX, Q_MIN, band_magnitude_db,
+    Band, BandKind, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, Q_MAX, Q_MIN, band_magnitude_db,
     eq_magnitude_db,
 };
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
-use crate::{State, cycle_eq_band_kind, set_eq_band, set_eq_band_enabled, set_eq_band_q};
+use crate::{State, add_eq_band, remove_eq_band, set_eq_band, set_eq_band_enabled, set_eq_band_q};
 
 /// Graph height, in points.
 const GRAPH_H: f32 = 190.0;
@@ -86,9 +86,10 @@ fn node_yf(band: &Band) -> f32 {
     }
 }
 
-/// The index of the band whose node is nearest fractional x.
-fn nearest_band(bands: &[Band; BANDS], xf: f32) -> usize {
-    (0..BANDS)
+/// The index of the band whose node is nearest fractional x (0 when empty — callers
+/// guard the empty case before indexing).
+fn nearest_band(bands: &[Band], xf: f32) -> usize {
+    (0..bands.len())
         .min_by(|&a, &b| {
             (x_frac(bands[a].freq) - xf)
                 .abs()
@@ -143,7 +144,7 @@ fn spec_yf(db: f32) -> f32 {
 fn draw_spectrum(
     mut sh: Shape,
     spectrum: &[f32],
-    bands: &[Band; BANDS],
+    bands: &[Band],
     preamp: f32,
     p: &Palette,
 ) -> Shape {
@@ -194,7 +195,7 @@ fn curve_points(mag_db: impl Fn(f32) -> f32) -> Vec<[f32; 2]> {
 /// The grid + live spectrum + 0 dB baseline + filled area + (selected band +
 /// overall) response curves, in fractional [0,1]² coordinates.
 fn graph_shape(
-    bands: &[Band; BANDS],
+    bands: &[Band],
     preamp: f32,
     selected: Option<usize>,
     spectrum: &[f32],
@@ -327,27 +328,38 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .h_full(),
         )
         // Drag a handle: x = frequency, y = gain (or Q for a gain-less shape).
-        // Double-click a handle cycles its filter shape. The nearest band to the
-        // press point is the one grabbed.
+        // Double-click a handle removes its band; double-click an empty spot adds a
+        // bell there. The nearest band to the press point is the one grabbed.
         .on_drag(move |st: &mut State, d: &mut Drag, _tx| {
             let xf = (d.x / gw.max(1.0)).clamp(0.0, 1.0);
             let yf = (d.y / gh.max(1.0)).clamp(0.0, 1.0);
             match d.phase {
                 Phase::Down => {
-                    let i = nearest_band(&st.eq_bands, xf);
-                    st.eq_selected = Some(i);
-                    // Grab only if the press is near the handle; a double-click on
-                    // it cycles the shape instead of starting a drag.
-                    let band = st.eq_bands[i];
-                    let near = {
+                    // Is the press on an existing handle?
+                    let grabbed = (!st.eq_bands.is_empty()).then(|| {
+                        let i = nearest_band(&st.eq_bands, xf);
+                        let band = st.eq_bands[i];
                         let dx = x_frac(band.freq) * gw - d.x;
                         let dy = node_yf(&band) * gh - d.y;
-                        (dx * dx + dy * dy).sqrt() <= GRAB_PX
-                    };
-                    if d.clicks >= 2 && near {
-                        cycle_eq_band_kind(st, i);
-                        st.eq_drag = None;
-                    } else {
+                        let near = (dx * dx + dy * dy).sqrt() <= GRAB_PX;
+                        (i, band, near)
+                    });
+                    if d.clicks >= 2 {
+                        // Double-click: remove the handle under the pointer, else add
+                        // a bell at the cursor and start dragging it.
+                        match grabbed {
+                            Some((i, _, true)) => {
+                                remove_eq_band(st, i);
+                                st.eq_drag = None;
+                            }
+                            _ => {
+                                if let Some(i) = add_eq_band(st, freq_at(xf), db_at(yf)) {
+                                    st.eq_drag = Some((i, st.eq_bands[i]));
+                                }
+                            }
+                        }
+                    } else if let Some((i, band, _)) = grabbed {
+                        st.eq_selected = Some(i);
                         st.eq_drag = Some((i, band));
                     }
                 }
@@ -369,6 +381,9 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         // Wheel over the graph adjusts the nearest band's Q (curvature); Shift fines
         // the step. Consume it so the settings page doesn't scroll.
         .on_wheel(move |st: &mut State, e: WheelEvent, _tx| {
+            if st.eq_bands.is_empty() {
+                return false;
+            }
             let xf = (e.x / gw.max(1.0)).clamp(0.0, 1.0);
             let i = nearest_band(&st.eq_bands, xf);
             st.eq_selected = Some(i);
@@ -392,7 +407,7 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         );
     }
     // Band handles (visual only — the container owns the gestures).
-    for i in 0..BANDS {
+    for i in 0..s.eq_bands.len() {
         let band = s.eq_bands[i];
         let selected = s.eq_selected == Some(i);
         let node_x = x_frac(band.freq).clamp(0.0, 1.0) * gw - NODE_D / 2.0;
