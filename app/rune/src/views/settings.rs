@@ -169,13 +169,28 @@ fn category_nav(s: &State, p: &Palette) -> El {
 /// The key identifying the add-source menu (its open state + panel anchor).
 const ADD_SOURCE_MENU: &str = "add-source";
 
-/// `+ Add Source` — now a themed `dropdown` trigger opening the [`add_source_menu`]
-/// (Local folder, and Remote server as a "coming soon" item), instead of jumping
-/// straight to the folder dialog. The trigger carries an explicit accessible label
-/// (the visible text is in a child, which does not supply the a11y name).
+/// `+ Add Source` — a compact primary button (the original add-button metrics,
+/// plus a chevron that marks it as a menu) that toggles the [`add_source_menu`]
+/// (Local folder, and Remote server as a "coming soon" item) open, instead of
+/// jumping straight to the folder dialog. A select-style full-width trigger reads
+/// wrong for an action button, so this is a bespoke compact trigger rather than
+/// `dropdown::trigger`; it still anchors the shared menu via its `ADD_SOURCE_MENU`
+/// key. The visible text is a child, so the control carries an explicit a11y label.
 fn add_source_trigger(p: &Palette) -> El {
-    dropdown::trigger(ADD_SOURCE_MENU, t!("settings.addSource").to_string(), p)
+    row()
+        .key(ADD_SOURCE_MENU)
+        .role("button")
         .label(t!("settings.addSource").to_string())
+        .focusable(true)
+        .center_y()
+        .gap(space::XS)
+        .padding(space::MD)
+        .radius(radius::MD)
+        .fill(p.primary)
+        .cursor(Cursor::Pointer)
+        .child(text(t!("settings.addSource").to_string()).color(p.bg))
+        .child(icon(&icons::CHEVRON_DOWN, 16.0).color(p.bg))
+        .on_press(move |s: &mut State| crate::toggle_dropdown(s, ADD_SOURCE_MENU))
 }
 
 /// The add-source menu's floating panel — **mount at the window root** via
@@ -271,8 +286,8 @@ fn add_source_menu(_s: &State, p: &Palette) -> El {
         .child(remote)
 }
 
-/// Minimum width of the add-source menu panel, so the two rows have room even
-/// though the (full-width) trigger doesn't constrain it.
+/// Minimum width of the add-source menu panel, so the two rows have room — the
+/// compact trigger is narrower than the menu, so it doesn't constrain it.
 const MENU_MIN_W: f32 = 220.0;
 
 /// Re-aggregate the current watched set — picks up files added/removed on disk
@@ -293,8 +308,7 @@ fn rescan_button(p: &Palette) -> El {
             // Reconcile the current configured set (set_folders preserves each
             // source's enabled flag), re-aggregating files/roots that changed on
             // disk. The set itself is unchanged, so no save (apply_watch).
-            let roots: Vec<std::path::PathBuf> =
-                s.sources.iter().map(|x| x.path.clone()).collect();
+            let roots: Vec<std::path::PathBuf> = s.sources.iter().map(|x| x.path.clone()).collect();
             if let Ok(up) = s.host.set_folders(&roots) {
                 apply_watch(s, up);
             }

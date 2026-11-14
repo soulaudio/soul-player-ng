@@ -352,8 +352,11 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
 /// from the pure `apply_watch` so unit tests never touch the user's config on disk.
 pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
     apply_watch(s, up);
-    let entries: Vec<(PathBuf, bool)> =
-        s.sources.iter().map(|x| (x.path.clone(), x.enabled)).collect();
+    let entries: Vec<(PathBuf, bool)> = s
+        .sources
+        .iter()
+        .map(|x| (x.path.clone(), x.enabled))
+        .collect();
     config::save_sources_enabled(&entries);
 }
 
