@@ -15,6 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use soul_audio_core::{Biquad, Equalizer, Sink, SinkError, StreamInfo};
 
+use crate::analyzer::{Analyzer, SpectrumShared};
+
 /// Number of parametric EQ bands.
 pub const BANDS: usize = 8;
 
@@ -304,23 +306,27 @@ pub struct EqSink<K: Sink> {
     channels: usize,
     buf_f32: Vec<f32>,
     buf_i32: Vec<i32>,
+    analyzer: Analyzer,
 }
 
 impl<K: Sink> EqSink<K> {
-    /// Wrap `inner`, reading settings from `shared`. The band filters are designed
-    /// for `inner`'s sample rate.
-    pub fn new(inner: K, shared: EqShared) -> Self {
+    /// Wrap `inner`, reading settings from `shared` and publishing the analyzer
+    /// spectrum to `spectrum`. The band filters and the analyzer are set up for
+    /// `inner`'s sample rate.
+    pub fn new(inner: K, shared: EqShared, spectrum: SpectrumShared) -> Self {
         let info = inner.stream_info();
+        let rate = info.sample_rate;
         Self {
             inner,
             eq: Equalizer::new(),
             shared,
             applied_gen: None,
             preamp_lin: 1.0,
-            rate: info.sample_rate,
+            rate,
             channels: usize::from(info.channels.max(1)),
             buf_f32: Vec::new(),
             buf_i32: Vec::new(),
+            analyzer: Analyzer::new(rate as f32, spectrum),
         }
     }
 
@@ -346,6 +352,9 @@ impl<K: Sink> Sink for EqSink<K> {
     }
 
     fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
+        // Feed the analyzer the pre-EQ signal (the track's own content) whether or
+        // not the EQ is engaged — the UI overlays the EQ response to show the effect.
+        self.analyzer.feed(frames, self.channels);
         if !self.sync() {
             // Flat/off → bit-exact passthrough (no i32↔f32 round-trip).
             return self.inner.write(frames);
@@ -382,6 +391,7 @@ impl<K: Sink> Sink for EqSink<K> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analyzer::SpectrumFrame;
     use soul_audio_core::SampleFormat;
 
     const FS: f32 = 48_000.0;
@@ -436,6 +446,16 @@ mod tests {
             .map(|&x| x.unsigned_abs())
             .max()
             .unwrap_or(0) as f32
+    }
+
+    /// Build an [`EqSink`] over `inner` with a throwaway analyzer buffer (the tests
+    /// assert on the audio path, not the spectrum).
+    fn eq_sink(inner: Capture, shared: EqShared) -> EqSink<Capture> {
+        EqSink::new(
+            inner,
+            shared,
+            Arc::new(Mutex::new(SpectrumFrame::default())),
+        )
     }
 
     fn shared_with(edit: impl FnOnce(&mut EqConfig)) -> EqShared {
@@ -602,7 +622,7 @@ mod tests {
         let input = sine(1000.0, FS, 4096, 3_000_000.0);
         // Disabled.
         let off = Arc::new(Mutex::new(EqConfig::default()));
-        let mut sink = EqSink::new(
+        let mut sink = eq_sink(
             Capture {
                 info: info(48_000, 1),
                 out: Vec::new(),
@@ -613,7 +633,7 @@ mod tests {
         assert_eq!(sink.inner.out, input, "a disabled EQ is bit-exact");
         // Enabled but all-flat (default bands, 0 dB everywhere).
         let flat = shared_with(|_| {});
-        let mut sink = EqSink::new(
+        let mut sink = eq_sink(
             Capture {
                 info: info(48_000, 1),
                 out: Vec::new(),
@@ -632,7 +652,7 @@ mod tests {
         let shared = shared_with(|c| {
             c.bands[3] = bell(1000.0, 6.0, 1.0);
         });
-        let mut sink = EqSink::new(
+        let mut sink = eq_sink(
             Capture {
                 info: info(48_000, 1),
                 out: Vec::new(),
@@ -657,7 +677,7 @@ mod tests {
         let amp = 3_000_000.0;
         // +10 dB narrow bell at 1 kHz, but drive a 100 Hz tone.
         let shared = shared_with(|c| c.bands[3] = bell(1000.0, 10.0, 2.0));
-        let mut sink = EqSink::new(
+        let mut sink = eq_sink(
             Capture {
                 info: info(48_000, 1),
                 out: Vec::new(),
@@ -686,7 +706,7 @@ mod tests {
             interleaved.push(0); // right silent
         }
         let shared = shared_with(|c| c.bands[3] = bell(1000.0, 6.0, 1.0));
-        let mut sink = EqSink::new(
+        let mut sink = eq_sink(
             Capture {
                 info: info(48_000, 2),
                 out: Vec::new(),
@@ -710,7 +730,7 @@ mod tests {
     fn a_generation_bump_is_picked_up_live() {
         let input = sine(1000.0, FS, 24_000, 3_000_000.0);
         let shared = Arc::new(Mutex::new(EqConfig::default())); // starts off
-        let mut sink = EqSink::new(
+        let mut sink = eq_sink(
             Capture {
                 info: info(48_000, 1),
                 out: Vec::new(),

@@ -39,6 +39,9 @@ const NODE_D: f32 = 15.0;
 const GRAB_PX: f32 = 20.0;
 /// Curve resolution (polyline points across the frequency range).
 const CURVE_N: usize = 160;
+/// Spectrum-analyzer display range (dBFS): the top and bottom of the plot.
+const SPEC_TOP_DB: f32 = -8.0;
+const SPEC_BOT_DB: f32 = -72.0;
 /// Geometric Q step per wheel notch (Shift = fine).
 const Q_STEP: f32 = 1.15;
 const Q_STEP_FINE: f32 = 1.05;
@@ -127,6 +130,55 @@ fn fill_run_to_base(sh: Shape, run: &[[f32; 2]], base: f32, color: Color) -> Sha
     sh.fill(poly, color)
 }
 
+/// Fractional y (top-down) of a spectrum dBFS level, mapped onto the plot's own
+/// dBFS range (independent of the ±dB gain axis).
+fn spec_yf(db: f32) -> f32 {
+    ((SPEC_TOP_DB - db) / (SPEC_TOP_DB - SPEC_BOT_DB)).clamp(0.0, 1.0)
+}
+
+/// Draw the live spectrum behind the curve: the input (track) spectrum as a filled
+/// area, and the output (input + EQ response) as an outline — so you see the
+/// playing content *and* how the EQ reshapes it. Columns are log-spaced to match
+/// the x-axis, so `col/(n-1)` is the fractional x directly.
+fn draw_spectrum(
+    mut sh: Shape,
+    spectrum: &[f32],
+    bands: &[Band; BANDS],
+    preamp: f32,
+    p: &Palette,
+) -> Shape {
+    if spectrum.len() < 2 {
+        return sh;
+    }
+    let span = (spectrum.len() - 1) as f32;
+    let input: Vec<[f32; 2]> = spectrum
+        .iter()
+        .enumerate()
+        .map(|(i, &db)| [i as f32 / span, spec_yf(db)])
+        .collect();
+    // Input spectrum: filled grey mountains (the track's own content) down to the
+    // baseline, with a defining outline.
+    let mut area = input.clone();
+    area.push([1.0, 1.0]);
+    area.push([0.0, 1.0]);
+    sh = sh.fill(area, p.text_secondary.alpha(0.42));
+    sh = sh.stroke(input, 1.2, p.text_secondary.alpha(0.85));
+    // Output spectrum (input + EQ response) as a brighter outline — the gap between
+    // it and the input fill is the EQ's effect.
+    let output: Vec<[f32; 2]> = spectrum
+        .iter()
+        .enumerate()
+        .map(|(i, &db)| {
+            let f = freq_at(i as f32 / span);
+            [
+                i as f32 / span,
+                spec_yf(db + eq_magnitude_db(bands, preamp, f, VIZ_FS)),
+            ]
+        })
+        .collect();
+    sh.stroke(output, 1.5, p.fg.alpha(0.5))
+}
+
 /// A response curve as fractional points, log-spaced across the range, from a
 /// `freq -> dB` function.
 fn curve_points(mag_db: impl Fn(f32) -> f32) -> Vec<[f32; 2]> {
@@ -139,9 +191,15 @@ fn curve_points(mag_db: impl Fn(f32) -> f32) -> Vec<[f32; 2]> {
         .collect()
 }
 
-/// The grid + 0 dB baseline + filled area + (selected band + overall) response
-/// curves, in fractional [0,1]² coordinates.
-fn graph_shape(bands: &[Band; BANDS], preamp: f32, selected: Option<usize>, p: &Palette) -> Shape {
+/// The grid + live spectrum + 0 dB baseline + filled area + (selected band +
+/// overall) response curves, in fractional [0,1]² coordinates.
+fn graph_shape(
+    bands: &[Band; BANDS],
+    preamp: f32,
+    selected: Option<usize>,
+    spectrum: &[f32],
+    p: &Palette,
+) -> Shape {
     let grid = p.border.alpha(0.5);
     let base = y_frac(0.0);
     let mut sh = Shape::new().view_box(1.0, 1.0);
@@ -155,29 +213,34 @@ fn graph_shape(bands: &[Band; BANDS], preamp: f32, selected: Option<usize>, p: &
         let x = x_frac(f);
         sh = sh.line([x, 0.0], [x, 1.0], 1.0, LineCap::Butt, grid);
     }
+    // The live spectrum, behind the EQ curve.
+    sh = draw_spectrum(sh, spectrum, bands, preamp, p);
     let curve = curve_points(|f| eq_magnitude_db(bands, preamp, f, VIZ_FS));
     // Fill the band between the curve and the 0 dB baseline, split into contiguous
     // runs at each baseline crossing so boosts *and* cuts shade without the
-    // self-intersection a single polygon would produce.
-    let fill = p.primary.alpha(0.14);
-    let mut run: Vec<[f32; 2]> = Vec::new();
-    for w in curve.windows(2) {
-        let (a, b) = (w[0], w[1]);
-        if run.is_empty() {
-            run.push(a);
+    // self-intersection a single polygon would produce. Skipped when the spectrum
+    // is showing, so the curve reads as a clean line over the mountains.
+    if spectrum.len() < 2 {
+        let fill = p.primary.alpha(0.14);
+        let mut run: Vec<[f32; 2]> = Vec::new();
+        for w in curve.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if run.is_empty() {
+                run.push(a);
+            }
+            let (sa, sb) = (a[1] - base, b[1] - base);
+            if (sa < 0.0 && sb > 0.0) || (sa > 0.0 && sb < 0.0) {
+                let t = sa.abs() / (sa.abs() + sb.abs());
+                let xc = a[0] + (b[0] - a[0]) * t;
+                run.push([xc, base]);
+                sh = fill_run_to_base(sh, &run, base, fill);
+                run = vec![[xc, base], b];
+            } else {
+                run.push(b);
+            }
         }
-        let (sa, sb) = (a[1] - base, b[1] - base);
-        if (sa < 0.0 && sb > 0.0) || (sa > 0.0 && sb < 0.0) {
-            let t = sa.abs() / (sa.abs() + sb.abs());
-            let xc = a[0] + (b[0] - a[0]) * t;
-            run.push([xc, base]);
-            sh = fill_run_to_base(sh, &run, base, fill);
-            run = vec![[xc, base], b];
-        } else {
-            run.push(b);
-        }
+        sh = fill_run_to_base(sh, &run, base, fill);
     }
-    sh = fill_run_to_base(sh, &run, base, fill);
     // 0 dB baseline a touch brighter.
     sh = sh.line([0.0, base], [1.0, base], 1.0, LineCap::Butt, p.border);
     // The selected band's own (thin) response, so you see its shape in isolation.
@@ -253,9 +316,15 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .w_full()
         .h(GRAPH_H)
         .child(
-            canvas(graph_shape(&s.eq_bands, s.eq_preamp, s.eq_selected, p))
-                .w_full()
-                .h_full(),
+            canvas(graph_shape(
+                &s.eq_bands,
+                s.eq_preamp,
+                s.eq_selected,
+                &s.spectrum,
+                p,
+            ))
+            .w_full()
+            .h_full(),
         )
         // Drag a handle: x = frequency, y = gain (or Q for a gain-less shape).
         // Double-click a handle cycles its filter shape. The nearest band to the
