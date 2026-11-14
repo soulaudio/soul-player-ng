@@ -22,7 +22,7 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    BANDS, Band, BandKind, BrowseAxis, Command, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
+    Band, BandKind, BrowseAxis, Command, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS,
     PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode, SPECTRUM_COLS, SignalPath,
     SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
@@ -222,9 +222,10 @@ struct State {
     /// Parametric-EQ master enable (persisted). When off, the signal path is a
     /// bit-exact passthrough. Rendered as the Settings → Audio DSP/EQ card.
     eq_enabled: bool,
-    /// The parametric EQ bands (persisted): each has its own shape, frequency,
-    /// gain and Q. Drawn + dragged in the DSP/EQ response-curve graph.
-    eq_bands: [Band; BANDS],
+    /// The parametric EQ bands (persisted, 0..=`MAX_BANDS`): each has its own
+    /// shape, frequency, gain and Q. Drawn + dragged in the DSP/EQ graph; bands can
+    /// be added/removed from the editor.
+    eq_bands: Vec<Band>,
     /// EQ preamp in dB (persisted) — headroom so band boosts don't clip.
     eq_preamp: f32,
     /// In-flight EQ-graph node drag: `(band index, band state at press)`, so the
@@ -240,6 +241,8 @@ struct State {
     /// The sequence of the last spectrum frame copied into `spectrum`, so the poll
     /// only re-renders on a genuinely new FFT.
     spectrum_seq: u64,
+    /// Whether the per-band editor list under the EQ graph is expanded.
+    eq_editor_open: bool,
     /// Managed-library destination folder (persisted; `None` = unset), where the
     /// write-path organizer will copy / move added music. Set in Settings → Music
     /// Data. Configuring only — the "Add music…" apply flow is separate.
@@ -371,6 +374,7 @@ impl State {
             eq_selected: None,
             spectrum: Vec::new(),
             spectrum_seq: 0,
+            eq_editor_open: false,
             managed_dest,
             managed_template,
             managed_strategy,
@@ -549,7 +553,7 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
 /// block). Shared by the enable toggle, the band handles, and the preamp.
 fn apply_eq(s: &State) {
     config::save_eq(s.eq_enabled, &s.eq_bands, s.eq_preamp);
-    s.host.set_eq(s.eq_bands, s.eq_preamp, s.eq_enabled);
+    s.host.set_eq(s.eq_bands.clone(), s.eq_preamp, s.eq_enabled);
 }
 
 /// Toggle the EQ master enable.
@@ -605,6 +609,61 @@ pub(crate) fn set_eq_band_enabled(s: &mut State, i: usize, on: bool) {
         slot.enabled = on;
     }
     apply_eq(s);
+}
+
+/// Add a new bell band at `freq` Hz / `gain_db` dB (from a double-click on the
+/// graph, or the editor's Add button). Returns the new band's index, or `None` if
+/// the cap is reached. Selects the new band.
+pub(crate) fn add_eq_band(s: &mut State, freq: f32, gain_db: f32) -> Option<usize> {
+    if s.eq_bands.len() >= MAX_BANDS {
+        return None;
+    }
+    let band = clamp_band(Band {
+        kind: BandKind::Peaking,
+        freq,
+        gain_db,
+        q: 1.0,
+        enabled: true,
+    });
+    let i = s.eq_bands.len();
+    s.eq_bands.push(band);
+    s.eq_selected = Some(i);
+    apply_eq(s);
+    Some(i)
+}
+
+/// Remove band `i` (a double-click on its handle, or the editor's remove button).
+pub(crate) fn remove_eq_band(s: &mut State, i: usize) {
+    if i >= s.eq_bands.len() {
+        return;
+    }
+    s.eq_bands.remove(i);
+    // Keep the selection/drag valid after the shift.
+    s.eq_selected = None;
+    s.eq_drag = None;
+    apply_eq(s);
+}
+
+/// Nudge band `i`'s gain by `delta` dB (an editor stepper).
+pub(crate) fn bump_eq_band_gain(s: &mut State, i: usize, delta: f32) {
+    if let Some(band) = s.eq_bands.get(i).copied() {
+        let mut b = band;
+        b.gain_db += delta;
+        set_eq_band(s, i, b);
+    }
+}
+
+/// Nudge band `i`'s Q up/down one geometric step (an editor stepper).
+pub(crate) fn bump_eq_band_q(s: &mut State, i: usize, up: bool) {
+    if let Some(band) = s.eq_bands.get(i).copied() {
+        let step = 1.15f32;
+        set_eq_band_q(s, i, band.q * if up { step } else { 1.0 / step });
+    }
+}
+
+/// Toggle the per-band editor list under the EQ graph.
+pub(crate) fn toggle_eq_editor(s: &mut State) {
+    s.eq_editor_open = !s.eq_editor_open;
 }
 
 /// Set the EQ preamp in dB.
@@ -1051,6 +1110,7 @@ fn scene_settings_audio_eq(s: &mut State) {
     s.eq_preamp = -2.0;
     // Select a mid band so its per-band curve shows.
     s.eq_selected = Some(4);
+    s.eq_editor_open = true;
     // A synthetic spectrum (pink-ish decline + a few bumps) so `--snap` shows the
     // analyzer behind the curve — there is no live audio in a headless snapshot.
     s.spectrum = (0..SPECTRUM_COLS)
@@ -1837,6 +1897,53 @@ mod tests {
             "scroll down widened it again ({} < {q_up})",
             rt.state.eq_bands[i].q
         );
+    }
+
+    /// The expandable editor adds and removes bands, and its steppers nudge a
+    /// band's gain, Q and shape.
+    #[test]
+    fn the_band_editor_adds_removes_and_edits_bands() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        s.eq_bands = soul_player_host::default_bands();
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let n0 = rt.state.eq_bands.len();
+        // Add a band.
+        click_key(&mut rt, "eq-add-band");
+        rt.frame(0.0);
+        assert_eq!(rt.state.eq_bands.len(), n0 + 1, "Add band appends a band");
+        // Nudge band 1's gain up and its Q up.
+        let (g0, q0) = (rt.state.eq_bands[1].gain_db, rt.state.eq_bands[1].q);
+        click_key(&mut rt, "eq-band-gup-1");
+        click_key(&mut rt, "eq-band-qup-1");
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_bands[1].gain_db > g0,
+            "the gain + stepper raises gain"
+        );
+        assert!(rt.state.eq_bands[1].q > q0, "the Q + stepper widens Q");
+        // Cycle band 1's shape.
+        let k0 = rt.state.eq_bands[1].kind;
+        click_key(&mut rt, "eq-band-type-1");
+        rt.frame(0.0);
+        assert_ne!(
+            rt.state.eq_bands[1].kind, k0,
+            "the type chip cycles the shape"
+        );
+        // Remove band 0.
+        click_key(&mut rt, "eq-band-rm-0");
+        rt.frame(0.0);
+        assert_eq!(rt.state.eq_bands.len(), n0, "remove drops a band");
     }
 
     /// Build Settings → Audio in a short window so its stage cards overflow the

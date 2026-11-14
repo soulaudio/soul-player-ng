@@ -17,8 +17,10 @@ use soul_audio_core::{Biquad, Equalizer, Sink, SinkError, StreamInfo};
 
 use crate::analyzer::{Analyzer, SpectrumShared};
 
-/// Number of parametric EQ bands.
-pub const BANDS: usize = 8;
+/// Maximum number of parametric EQ bands (the fixed size of the core filter
+/// cascade; unused slots run as bypass). Bands can be added up to this, and an
+/// import past it is truncated.
+pub const MAX_BANDS: usize = 16;
 
 /// Gain limit (± dB) for each band and the preamp — the UI clamps to this.
 pub const GAIN_LIMIT_DB: f32 = 12.0;
@@ -89,8 +91,8 @@ impl Band {
 /// The default 8-band layout: a low shelf, six bells spread over the spectrum, and
 /// a high shelf — all flat (0 dB), so the default EQ is a passthrough.
 #[must_use]
-pub fn default_bands() -> [Band; BANDS] {
-    const LAYOUT: [(BandKind, f32, f32); BANDS] = [
+pub fn default_bands() -> Vec<Band> {
+    const LAYOUT: [(BandKind, f32, f32); 8] = [
         (BandKind::LowShelf, 80.0, 0.7),
         (BandKind::Peaking, 150.0, 1.0),
         (BandKind::Peaking, 350.0, 1.0),
@@ -100,13 +102,16 @@ pub fn default_bands() -> [Band; BANDS] {
         (BandKind::Peaking, 9000.0, 1.0),
         (BandKind::HighShelf, 15_000.0, 0.7),
     ];
-    LAYOUT.map(|(kind, freq, q)| Band {
-        kind,
-        freq,
-        gain_db: 0.0,
-        q,
-        enabled: true,
-    })
+    LAYOUT
+        .iter()
+        .map(|&(kind, freq, q)| Band {
+            kind,
+            freq,
+            gain_db: 0.0,
+            q,
+            enabled: true,
+        })
+        .collect()
 }
 
 /// The live EQ settings the UI writes and the [`EqSink`] reads: the parametric
@@ -114,8 +119,8 @@ pub fn default_bands() -> [Band; BANDS] {
 /// counter the sink watches to know when to redesign its filters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct EqConfig {
-    /// The parametric bands, applied as a series cascade.
-    pub bands: [Band; BANDS],
+    /// The parametric bands (0..=[`MAX_BANDS`]), applied as a series cascade.
+    pub bands: Vec<Band>,
     /// A global pre-gain in dB applied before the bands (negative to leave
     /// headroom so boosts don't clip).
     pub preamp_db: f32,
@@ -280,7 +285,7 @@ pub fn band_magnitude_db(band: &Band, freq: f32, fs: f32) -> f32 {
 /// rate `fs`: the preamp plus each band's response (cascaded filters multiply in
 /// magnitude = add in dB). This is the thick overall curve the UI draws.
 #[must_use]
-pub fn eq_magnitude_db(bands: &[Band; BANDS], preamp_db: f32, freq: f32, fs: f32) -> f32 {
+pub fn eq_magnitude_db(bands: &[Band], preamp_db: f32, freq: f32, fs: f32) -> f32 {
     let mut db = preamp_db;
     for band in bands {
         db += band_magnitude_db(band, freq, fs);
@@ -298,7 +303,7 @@ fn db_to_lin(db: f32) -> f32 {
 /// changes; a flat/off config is a bit-exact passthrough.
 pub struct EqSink<K: Sink> {
     inner: K,
-    eq: Equalizer<BANDS>,
+    eq: Equalizer<MAX_BANDS>,
     shared: EqShared,
     applied_gen: Option<u64>,
     preamp_lin: f32,
@@ -336,8 +341,13 @@ impl<K: Sink> EqSink<K> {
         let cfg = self.shared.lock().expect("eq config mutex").clone();
         if self.applied_gen != Some(cfg.generation) {
             self.applied_gen = Some(cfg.generation);
-            for (i, band) in cfg.bands.iter().enumerate() {
-                self.eq.set_band(i, design(band, self.rate as f32));
+            // Design each active band; bypass the remaining fixed slots.
+            for i in 0..MAX_BANDS {
+                let filter = match cfg.bands.get(i) {
+                    Some(band) => design(band, self.rate as f32),
+                    None => Biquad::bypass(),
+                };
+                self.eq.set_band(i, filter);
             }
             self.preamp_lin = db_to_lin(cfg.preamp_db);
             self.eq.set_enabled(cfg.enabled);
