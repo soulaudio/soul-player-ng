@@ -20,6 +20,9 @@ all = { level = "deny", priority = -1 }
 soul-player-backend = { path = "../soul-player-backend" }
 soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["playback"] }
+# Write-path "managed library" organizer (copy/move into a path-template tree),
+# re-exported so a UI head can plan/apply without a direct core git dep.
+soul-audio-organize = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 anyhow = "1"
 
 [dev-dependencies]
