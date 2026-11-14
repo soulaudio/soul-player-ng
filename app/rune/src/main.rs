@@ -1590,7 +1590,7 @@ mod tests {
     fn signal_path_panel_opens_with_stages_and_rg_toggle() {
         use soul_player_host::{SignalPath, SourceFormat};
         // The RG toggle persists config — isolate it from the real settings dir.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1654,7 +1654,7 @@ mod tests {
     #[test]
     fn language_dropdown_opens_renders_and_picks() {
         // Picking flows through `set_locale_pref`, which writes config — isolate it.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1763,12 +1763,9 @@ mod tests {
     #[test]
     fn selecting_a_template_preset_persists() {
         // Picking flows through `set_managed_template`, which writes config —
-        // isolate it from the user's real settings, and serialise with the other
-        // managed-library config writers (shared per-process test config dir).
-        config::use_test_config_dir();
-        let _guard = config::MANAGED_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // isolate it from the user's real settings, and serialise with every other
+        // config writer (shared per-process test config dir).
+        let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1803,12 +1800,9 @@ mod tests {
     #[test]
     fn toggling_strategy_persists() {
         // The toggle writes config — isolate it from the user's real settings, and
-        // serialise with the other managed-library config writers (shared
-        // per-process test config dir).
-        config::use_test_config_dir();
-        let _guard = config::MANAGED_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // serialise with every other config writer (shared per-process test
+        // config dir).
+        let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -2512,7 +2506,7 @@ mod tests {
     #[test]
     fn toggling_a_source_disables_it() {
         // The toggle persists via apply_and_save — isolate config to a temp dir.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
         let dir = testdata_dir();
         let env = Env {
             system_dark: true,
@@ -2892,7 +2886,7 @@ mod tests {
     #[test]
     fn toggling_navigation_in_settings_hides_the_item_and_persists() {
         // Redirect config to a scratch dir so the real user config is untouched.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
 
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
@@ -3316,7 +3310,7 @@ mod tests {
     fn settings_controls_apply_their_effect_on_click() {
         // These clicks persist (theme/ReplayGain `save_*`) — isolate config to a
         // temp dir so the test never clobbers the user's real settings.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,

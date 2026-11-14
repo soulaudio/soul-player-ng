@@ -22,22 +22,26 @@ use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
 #[cfg(test)]
 static TEST_CONFIG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
-/// No-op kept for tests that call it to document intent; the test build always
-/// isolates (see [`soul_player_dir`]), so this is not required.
+/// A process-wide lock serialising EVERY test that persists config. The test
+/// config dir is shared per-process, and `save_*` does a load-modify-write of the
+/// whole `config.toml`, so two config-writing tests running concurrently clobber
+/// each other's fields. Any test that mutates+reads config must hold this for its
+/// duration — which is exactly what [`use_test_config_dir`] now returns.
 #[cfg(test)]
-pub(crate) fn use_test_config_dir() {
-    let _ = soul_player_dir();
-}
+static CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A process-wide lock serialising the tests that write **managed-library** config
-/// (both here and in `main.rs`). The test config dir is shared per-process, so two
-/// tests doing a concurrent load-modify-write of `config.toml` on the SAME fields
-/// can lose each other's update; holding this across a write→read makes the
-/// managed-library roundtrips deterministic. Poisoning is ignored (a failing test
-/// shouldn't cascade). Scoped to just these tests — the broad settings suite
-/// already tolerates the tiny shared-file window.
+/// Isolate a test from the shared config file: returns a guard on the process-wide
+/// [`CONFIG_TEST_LOCK`], so config-mutating tests run one at a time (no concurrent
+/// load-modify-write clobbering). Bind it for the test's duration
+/// (`let _g = config::use_test_config_dir();`). Poisoning is ignored (one failing
+/// test must not cascade into the rest). The temp dir itself is always isolated
+/// (see [`soul_player_dir`]); this adds the serialization.
 #[cfg(test)]
-pub(crate) static MANAGED_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) fn use_test_config_dir() -> std::sync::MutexGuard<'static, ()> {
+    let guard = CONFIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = soul_player_dir();
+    guard
+}
 
 /// The app's config directory. In a **test build this is ALWAYS a throwaway
 /// temp directory** (never the user's real config) — tests share it, so a test
@@ -641,7 +645,7 @@ mod tests {
 
     #[test]
     fn sources_disabled_roundtrips_and_old_config_is_all_enabled() {
-        use_test_config_dir();
+        let _config_guard = use_test_config_dir();
         save_sources_enabled(&[(PathBuf::from("/a"), true), (PathBuf::from("/b"), false)]);
         let back = load_sources_with_enabled();
         assert_eq!(
