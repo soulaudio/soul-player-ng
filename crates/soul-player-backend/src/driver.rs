@@ -7,10 +7,12 @@
 use std::collections::VecDeque;
 
 use soul_audio_control::Player;
-use soul_audio_core::{DeckError, SeekableDecoder, Sink};
+use soul_audio_core::{DeckError, SampleFormat, SeekableDecoder, Sink};
 use soul_audio_queue::{Repeat, SliceContext, TwoLevelQueue};
 
-use crate::types::{Command, PlayState, QueueState, ReplayGainMode, Tick};
+use crate::types::{
+    Command, PlayState, QueueState, ReplayGainMode, SignalPath, SourceFormat, Tick,
+};
 
 /// The desktop player: unbounded (`VecDeque`) Up-Next/history, `SliceContext`
 /// over `u32` track ids, `PRELOAD = 2`. Generic over the sink `K` and decoder
@@ -283,6 +285,34 @@ pub fn project_queue<K: Sink, D: SeekableDecoder>(player: &ServicePlayer<K, D>) 
     }
 }
 
+/// Project the current track's **signal path** — source → decode → ReplayGain →
+/// resample → output — straight from the deck's real decode chain, so the display
+/// matches what the engine actually does (DSD reads as DSD; a rate match reads as
+/// no-resample / sample-rate-exact). `None` when nothing is loaded.
+#[must_use]
+pub fn project_signal_path<K: Sink, D: SeekableDecoder>(
+    player: &ServicePlayer<K, D>,
+) -> Option<SignalPath> {
+    let deck = player.deck();
+    let di = deck.decode_info()?;
+    let source = match di.source {
+        SampleFormat::Dsd { rate } => SourceFormat::Dsd { rate_hz: rate.hz() },
+        other => SourceFormat::Pcm {
+            bits: other.bits_per_sample(),
+        },
+    };
+    Some(SignalPath {
+        source,
+        decoded_rate: di.decoded.sample_rate,
+        decoded_bits: di.decoded.format.bits_per_sample(),
+        channels: di.decoded.channels as u8,
+        replay_gain_db: deck.replay_gain_db(),
+        device_rate: di.device_rate,
+        resampling: di.resampling,
+        output_bits: 24,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -482,6 +512,64 @@ mod tests {
         assert!(
             project_queue(&p).context_ids.is_empty(),
             "Repeat::One has no upcoming context band"
+        );
+    }
+
+    #[test]
+    fn signal_path_pcm_resample_path() {
+        let mut p = player(); // NullSink @ 48_000
+        assert!(project_signal_path(&p).is_none(), "nothing loaded → None");
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        // Provide a 44.1 kHz / 24-bit PCM decoder; pump so it becomes current.
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(44_100, 2, FRAMES, 7))
+                .unwrap();
+        }
+        p.pump().unwrap();
+        let sp = project_signal_path(&p).expect("loaded");
+        assert_eq!(sp.source, SourceFormat::Pcm { bits: 24 });
+        assert_eq!(sp.decoded_rate, 44_100);
+        assert_eq!(sp.decoded_bits, 24);
+        assert_eq!(sp.channels, 2);
+        assert_eq!(sp.device_rate, 48_000);
+        assert!(
+            sp.resampling,
+            "44.1 kHz decoder into a 48 kHz device resamples"
+        );
+        assert_eq!(sp.output_bits, 24);
+        assert_eq!(sp.replay_gain_db, 0.0, "no ReplayGain applied");
+    }
+
+    #[test]
+    fn signal_path_matched_rate_is_not_resampling() {
+        let mut p = player(); // NullSink @ 48_000
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        p.pump().unwrap();
+        let sp = project_signal_path(&p).unwrap();
+        assert_eq!(sp.decoded_rate, 48_000);
+        assert!(
+            !sp.resampling,
+            "48 kHz into a 48 kHz device: sample-rate-exact, no resample"
         );
     }
 

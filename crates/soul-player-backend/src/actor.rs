@@ -21,7 +21,7 @@ use soul_audio_engine::{Engine, Provided};
 
 use crate::driver::{
     RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain, project_queue,
-    project_tick, queue_for,
+    project_signal_path, project_tick, queue_for,
 };
 use crate::library::Library;
 use crate::loudness::LoudnessCache;
@@ -334,6 +334,7 @@ fn pump_thread<K, Mk, Ev>(
             }
             on_event(Event::Tick(tick));
             on_event(Event::Queue(project_queue(&player)));
+            on_event(Event::SignalPath(project_signal_path(&player)));
             last_tick = Instant::now();
         }
 

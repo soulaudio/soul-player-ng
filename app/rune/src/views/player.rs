@@ -13,7 +13,7 @@ use rune::{
     Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, Waker, WheelEvent, col, el, icon,
     row, text,
 };
-use soul_player_host::{Command, PlayerHandle, RepeatMode, TrackView};
+use soul_player_host::{Command, PlayerHandle, RepeatMode, SignalPath, SourceFormat, TrackView};
 
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
@@ -57,6 +57,48 @@ fn wheel_volume_delta(e: &WheelEvent) -> f32 {
         };
         if e.dy < 0.0 { step } else { -step }
     }
+}
+
+/// A compact one-line summary of the current track's decode→output chain for
+/// the now-playing panel — e.g. `DSD64 · 44.1→48 kHz · RG +2.3 dB` (DSD stays
+/// DSD), `16-bit · 44.1 kHz` (a matched-rate, sample-rate-exact PCM path), or
+/// `24-bit · 96 kHz`. `a→b kHz` means the engine resamples; a single rate means
+/// no resample. Pure, so it's unit-tested without a Runtime.
+fn signal_path_summary(sp: &SignalPath) -> String {
+    use std::fmt::Write;
+    // kHz label: whole kHz stays integer (48, 96), fractional keeps one place
+    // (44.1, 88.2, 176.4).
+    fn khz(hz: u32) -> String {
+        if hz % 1000 == 0 {
+            format!("{}", hz / 1000)
+        } else {
+            format!("{:.1}", f64::from(hz) / 1000.0)
+        }
+    }
+    let mut out = String::new();
+    match sp.source {
+        // rate_hz / (44100 base × 64) → 1/2/4/8 → DSD64/128/256/512.
+        SourceFormat::Dsd { rate_hz } => {
+            let _ = write!(out, "DSD{}", (rate_hz / 44_100 / 64).max(1) * 64);
+        }
+        SourceFormat::Pcm { bits } => {
+            let _ = write!(out, "{bits}-bit");
+        }
+    }
+    if sp.resampling {
+        let _ = write!(
+            out,
+            " · {}→{} kHz",
+            khz(sp.decoded_rate),
+            khz(sp.device_rate)
+        );
+    } else {
+        let _ = write!(out, " · {} kHz", khz(sp.decoded_rate));
+    }
+    if sp.replay_gain_db.abs() >= 0.05 {
+        let _ = write!(out, " · RG {:+.1} dB", sp.replay_gain_db);
+    }
+    out
 }
 
 /// Now-playing cover side, in points — the old app's `w-10` (40 px).
@@ -209,6 +251,23 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
                 .color(p.text_secondary)
                 .truncate(),
         );
+    // Signal path: the real decode→output chain (source format, rate, resample,
+    // ReplayGain), so the DSD/RG/resample work is visible — what foobar/Audirvana
+    // call the "signal path". A tertiary line below the artist; pressing it opens
+    // the stage-by-stage panel (`views::signal_path`).
+    if let Some(sp) = &s.signal_path {
+        text_col = text_col.child(
+            text(signal_path_summary(sp))
+                .key("signal-path")
+                .role("button")
+                .focusable(true)
+                .cursor(Cursor::Pointer)
+                .font(type_::LABEL)
+                .color(p.text_secondary)
+                .truncate()
+                .on_press(crate::toggle_signal_path),
+        );
+    }
     if album.is_some() {
         let a11y_label = album.clone().unwrap_or_default();
         text_col = text_col
@@ -606,6 +665,71 @@ mod tests {
             ..Default::default()
         });
         assert!((wheel_volume_delta(&fine) - 0.01).abs() < 1e-6);
+    }
+
+    /// The signal-path line reads the real chain: DSD stays DSD, `a→b kHz` means
+    /// a resample (a single rate = sample-rate-exact), and ReplayGain shows when
+    /// non-trivial.
+    #[test]
+    fn signal_path_summary_formats_the_chain() {
+        use super::signal_path_summary;
+        use soul_player_host::{SignalPath, SourceFormat};
+        let sp = |source, decoded_rate, replay_gain_db, device_rate, resampling| SignalPath {
+            source,
+            decoded_rate,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db,
+            device_rate,
+            resampling,
+            output_bits: 24,
+        };
+        // DSD64 on a 44.1k device: native DSD, no resample.
+        assert_eq!(
+            signal_path_summary(&sp(
+                SourceFormat::Dsd { rate_hz: 2_822_400 },
+                44_100,
+                0.0,
+                44_100,
+                false
+            )),
+            "DSD64 · 44.1 kHz"
+        );
+        // DSD256 resampled to 48k with positive ReplayGain.
+        assert_eq!(
+            signal_path_summary(&sp(
+                SourceFormat::Dsd {
+                    rate_hz: 11_289_600
+                },
+                44_100,
+                2.34,
+                48_000,
+                true
+            )),
+            "DSD256 · 44.1→48 kHz · RG +2.3 dB"
+        );
+        // 16-bit/44.1 PCM, matched rate (sample-rate-exact), negative gain.
+        assert_eq!(
+            signal_path_summary(&sp(
+                SourceFormat::Pcm { bits: 16 },
+                44_100,
+                -3.0,
+                44_100,
+                false
+            )),
+            "16-bit · 44.1 kHz · RG -3.0 dB"
+        );
+        // 24/96 PCM, no gain.
+        assert_eq!(
+            signal_path_summary(&sp(
+                SourceFormat::Pcm { bits: 24 },
+                96_000,
+                0.0,
+                96_000,
+                false
+            )),
+            "24-bit · 96 kHz"
+        );
     }
 
     /// A trackpad's precise deltas move proportionally to travel, but a fling is

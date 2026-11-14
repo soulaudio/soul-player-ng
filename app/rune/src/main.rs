@@ -22,8 +22,8 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SourceStatus,
-    TrackView, WatchUpdate,
+    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
+    SourceFormat, SourceStatus, TrackView, WatchUpdate,
 };
 
 mod config;
@@ -151,6 +151,13 @@ struct State {
     queue_drag: Option<(usize, usize)>,
     context_pos: u32,
     context_len: u32,
+    /// The current track's decode→output chain (source/rate/bits/ReplayGain/
+    /// resample), from the backend's `Event::SignalPath`. `None` when nothing
+    /// plays. Rendered as the now-playing signal-path line.
+    signal_path: Option<SignalPath>,
+    /// Whether the expanded signal-path panel (the stage-by-stage view) is open —
+    /// toggled by pressing the now-playing signal-path line.
+    signal_path_open: bool,
     /// Current page (Library vs Settings).
     route: Route,
     /// The album whose detail page is open (by album name, the `group_albums`
@@ -257,6 +264,8 @@ impl State {
             queue_drag: None,
             context_pos: 0,
             context_len: 0,
+            signal_path: None,
+            signal_path_open: false,
             route: Route::Library,
             open_album: None,
             open_artist: None,
@@ -332,6 +341,9 @@ impl State {
                 self.context_pos = q.context_pos;
                 self.context_len = q.context_len;
             }
+            Event::SignalPath(sp) => {
+                self.signal_path = *sp;
+            }
             // Persisted off-thread in the subscribe closure (see `main`); the
             // hybrid-ReplayGain cache is silent — no UI state to fold in here.
             Event::TrackLoudnessAnalyzed { .. } => {}
@@ -394,6 +406,16 @@ pub(crate) fn toggle_dropdown(s: &mut State, key: &str) {
 /// Close any open dropdown (an outside click, or after a choice is made).
 pub(crate) fn close_dropdown(s: &mut State) {
     s.open_dropdown = None;
+}
+
+/// Open/close the expanded signal-path panel (pressing the now-playing chain line).
+pub(crate) fn toggle_signal_path(s: &mut State) {
+    s.signal_path_open = !s.signal_path_open;
+}
+
+/// Close the signal-path panel (an outside press / Escape via `El::modal`).
+pub(crate) fn close_signal_path(s: &mut State) {
+    s.signal_path_open = false;
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
@@ -525,10 +547,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     };
 
     // Overlay layer: the shell, plus any open dropdown's panel (Settings →
-    // Language) mounted on top so it draws over everything and escapes the
-    // content scroll viewport's clip (see `views::dropdown`). Empty when nothing
-    // is open — then this is just the shell.
-    let overlays = views::settings::settings_overlays(s, &p, cx);
+    // Language) and the expanded signal-path panel, mounted on top so they draw
+    // over everything and escape the content scroll viewport's clip (see
+    // `views::dropdown`). Empty when nothing is open — then this is just the shell.
+    let mut overlays = views::settings::settings_overlays(s, &p, cx);
+    overlays.extend(views::signal_path::overlay(s, &p));
     if overlays.is_empty() {
         shell
     } else {
@@ -666,6 +689,8 @@ fn scene_settings_music(s: &mut State) {
     s.settings_tab = SettingsTab::MusicData;
 }
 fn scene_settings_audio(s: &mut State) {
+    // Populate a live chain so the Signal-path card reads out (not "nothing playing").
+    scene_signal_path(s);
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::Audio;
 }
@@ -756,6 +781,30 @@ fn scene_queue(s: &mut State) {
     }
 }
 
+/// Now-playing with a signal path (DSD64 decoded to 44.1 kHz, resampled to a
+/// 48 kHz device, ReplayGain on) so `--snap` can capture the collapsed
+/// signal-path line under the artist.
+fn scene_signal_path(s: &mut State) {
+    scene_queue(s);
+    s.replaygain_mode = ReplayGainMode::Track;
+    s.signal_path = Some(SignalPath {
+        source: SourceFormat::Dsd { rate_hz: 2_822_400 },
+        decoded_rate: 44_100,
+        decoded_bits: 24,
+        channels: 2,
+        replay_gain_db: 2.3,
+        device_rate: 48_000,
+        resampling: true,
+        output_bits: 24,
+    });
+}
+
+/// Same, with the expanded stage-by-stage signal-path panel open.
+fn scene_signal_path_open(s: &mut State) {
+    scene_signal_path(s);
+    s.signal_path_open = true;
+}
+
 fn main() -> anyhow::Result<()> {
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
@@ -816,6 +865,8 @@ fn main() -> anyhow::Result<()> {
             ("collapsed", scene_collapsed),
             ("mobile-content", scene_mobile_content),
             ("queue", scene_queue),
+            ("signal-path", scene_signal_path),
+            ("signal-path-open", scene_signal_path_open),
         ],
         ..AppSpec::new(
             "Soul Player",
@@ -1123,6 +1174,163 @@ mod tests {
             "{} app layout overflow(s) across locales:\n{}",
             failures.len(),
             failures.join("\n")
+        );
+    }
+
+    /// The now-playing signal-path line renders the formatted chain when a
+    /// `SignalPath` is present, and is absent when it isn't.
+    #[test]
+    fn signal_path_line_renders_in_now_playing() {
+        use soul_player_host::{SignalPath, SourceFormat};
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        scene_queue(&mut s); // populates now-playing
+        s.signal_path = Some(SignalPath {
+            source: SourceFormat::Dsd { rate_hz: 2_822_400 },
+            decoded_rate: 44_100,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db: 0.0,
+            device_rate: 48_000,
+            resampling: true,
+            output_bits: 24,
+        });
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("signal-path").is_some(),
+            "the signal-path line renders when a chain is present"
+        );
+        assert!(
+            rt.elements()
+                .into_iter()
+                .any(|e| e.text.as_deref() == Some("DSD64 · 44.1→48 kHz")),
+            "it shows the formatted DSD→resample chain"
+        );
+
+        // Absent when there is no signal path.
+        let mut s2 = populated_state();
+        scene_queue(&mut s2);
+        s2.signal_path = None;
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("signal-path").is_none(),
+            "no signal-path line when there is no chain"
+        );
+    }
+
+    /// Settings → Audio shows the signal-path card with the same stage rows
+    /// (shared `pipeline_rows`), including the not-yet-built "soon" stages.
+    #[test]
+    fn signal_path_card_renders_in_settings_audio() {
+        use soul_player_host::{SignalPath, SourceFormat};
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        scene_queue(&mut s); // a live chain to read out
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.signal_path = Some(SignalPath {
+            source: SourceFormat::Pcm { bits: 24 },
+            decoded_rate: 96_000,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db: 0.0,
+            device_rate: 96_000,
+            resampling: false,
+            output_bits: 24,
+        });
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("signal-path-settings").is_some(),
+            "the Signal path card renders in Settings → Audio"
+        );
+        for k in [
+            "sp-row-source",
+            "sp-row-decode",
+            "sp-row-replaygain",
+            "sp-row-resample",
+            "sp-row-output",
+            "sp-row-exclusive",
+            "sp-row-dsp",
+        ] {
+            assert!(
+                rt.find(k).is_some(),
+                "stage row {k} renders in the settings card"
+            );
+        }
+    }
+
+    /// Pressing the signal-path line opens the stage-by-stage panel: every stage
+    /// row renders, the not-yet-built stages are present (as "soon"), and the
+    /// ReplayGain toggle flips the mode.
+    #[test]
+    fn signal_path_panel_opens_with_stages_and_rg_toggle() {
+        use soul_player_host::{SignalPath, SourceFormat};
+        // The RG toggle persists config — isolate it from the real settings dir.
+        config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        scene_queue(&mut s);
+        s.signal_path = Some(SignalPath {
+            source: SourceFormat::Dsd { rate_hz: 2_822_400 },
+            decoded_rate: 44_100,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db: 0.0,
+            device_rate: 48_000,
+            resampling: true,
+            output_bits: 24,
+        });
+        s.replaygain_mode = ReplayGainMode::Off;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("signal-path-panel").is_none(),
+            "the panel is closed initially"
+        );
+
+        // Press the line → the panel opens (settle its enter transition).
+        click_key(&mut rt, "signal-path");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.state.signal_path_open,
+            "pressing the line opens the panel"
+        );
+        assert!(rt.find("signal-path-panel").is_some(), "the panel renders");
+        for k in [
+            "sp-row-source",
+            "sp-row-decode",
+            "sp-row-replaygain",
+            "sp-row-resample",
+            "sp-row-output",
+            "sp-row-exclusive", // "soon"
+            "sp-row-dsp",       // "soon"
+        ] {
+            assert!(rt.find(k).is_some(), "stage row {k} renders");
+        }
+
+        // The ReplayGain toggle is the one real pipeline toggle: Off → Track.
+        click_key(&mut rt, "sp-rg-toggle");
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.replaygain_mode,
+            ReplayGainMode::Track,
+            "the ReplayGain toggle turns it on"
         );
     }
 

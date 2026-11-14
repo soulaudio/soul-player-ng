@@ -681,6 +681,21 @@ fn output_card(s: &State, p: &Palette) -> El {
         .child(choices)
 }
 
+/// The audio **signal path**: a live readout of the current decode→output chain
+/// (Source → Decode → ReplayGain → Resample → Output), plus the not-yet-built
+/// Exclusive output & DSP/EQ stages shown as "soon". Mirrors the now-playing
+/// signal-path line; the ReplayGain/output *controls* are the cards below. Shares
+/// [`crate::views::signal_path::pipeline_rows`] so the two stay in lock-step.
+fn signal_path_card(s: &State, p: &Palette) -> El {
+    card("signal-path-settings", p)
+        .child(heading(
+            t!("settings.signalPath").to_string(),
+            t!("settings.signalPathDesc").to_string(),
+            p,
+        ))
+        .child(crate::views::signal_path::pipeline_rows(s, p))
+}
+
 /// ReplayGain: an Off / Track / Album mode row plus a preamp slider (−15..+15
 /// dB). Selecting a mode or moving the preamp updates the live actor immediately
 /// and persists the choice. The slider commits on release (its value maps the
@@ -829,6 +844,7 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         SettingsTab::Audio => col()
             .key("settings-content")
             .gap(space::LG)
+            .child(signal_path_card(s, p))
             .child(output_card(s, p))
             .child(replaygain_card(s, p, cx)),
         SettingsTab::About => col()
