@@ -192,6 +192,11 @@ pub struct TrackView {
     pub title: Option<String>,
     pub artist: Option<String>,
     pub album: Option<String>,
+    /// The track's genre bucket, interned from file tags. Unlike `artist` /
+    /// `album`, the importer's `"Unknown Genre"` sentinel is **kept** (not mapped
+    /// back to `None`): every track has a genre bucket, and the blank/absent case
+    /// is a real, browse-able "Unknown Genre" group that keys the Genre axis.
+    pub genre: Option<String>,
     pub duration_secs: f64,
 }
 

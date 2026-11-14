@@ -157,6 +157,9 @@ impl Library {
                     title: resolve(&cat, t.title),
                     artist: real_name(artist_name(&cat, t.artist)),
                     album: real_name(album_title(&cat, t.album)),
+                    // Genre keeps its raw value — "Unknown Genre" is a real bucket,
+                    // NOT filtered through `real_name` like artist/album sentinels.
+                    genre: genre_name(&cat, t.genre),
                     duration_secs: f64::from(t.duration_ms) / 1000.0,
                 })
             })
@@ -177,6 +180,16 @@ fn resolve(cat: &MultiCatalog, s: StrRef) -> Option<String> {
 fn artist_name(cat: &MultiCatalog, id: u32) -> Option<String> {
     let mut buf = [0u8; 512];
     let n = cat.artist_name(id, &mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
+}
+
+/// Resolve a genre's display name (length not known up front) into an owned
+/// `String`, mirroring [`artist_name`]. The raw value is kept by the caller —
+/// the importer's `"Unknown Genre"` is a real browse bucket, so (unlike
+/// artist/album) it is NOT routed through [`real_name`].
+fn genre_name(cat: &MultiCatalog, id: u32) -> Option<String> {
+    let mut buf = [0u8; 512];
+    let n = cat.genre_name(id, &mut buf).ok()?;
     Some(String::from_utf8_lossy(&buf[..n]).into_owned())
 }
 
@@ -431,6 +444,85 @@ mod tests {
         v.extend_from_slice(&(pic.len() as u32).to_be_bytes()[1..]);
         v.extend_from_slice(&pic);
         v
+    }
+
+    /// A minimal FLAC carrying a VORBIS_COMMENT with the given `comments`
+    /// (`"KEY=value"`) and no audio frames — enough for the scan/bake tag path
+    /// (title/genre/…). Reuses the STREAMINFO shape of [`flac_with_art`] but makes
+    /// VORBIS_COMMENT the last metadata block and omits the PICTURE.
+    fn flac_with_comments(comments: &[&str]) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend_from_slice(b"fLaC");
+        v.push(0x00); // STREAMINFO (type 0), not last
+        v.extend_from_slice(&[0, 0, 34]);
+        let mut si = [0u8; 34];
+        let (sr, ch, bps, total): (u32, u32, u32, u64) = (44_100, 2, 16, 44_100);
+        si[10] = (sr >> 12) as u8;
+        si[11] = (sr >> 4) as u8;
+        si[12] =
+            (((sr & 0xF) as u8) << 4) | ((((ch - 1) & 0x7) as u8) << 1) | (((bps - 1) >> 4) as u8);
+        si[13] = ((((bps - 1) & 0xF) as u8) << 4) | (((total >> 32) & 0xF) as u8);
+        si[14] = (total >> 24) as u8;
+        si[15] = (total >> 16) as u8;
+        si[16] = (total >> 8) as u8;
+        si[17] = total as u8;
+        v.extend_from_slice(&si);
+        let mut vc = Vec::new();
+        vc.extend_from_slice(&6u32.to_le_bytes());
+        vc.extend_from_slice(b"vendor");
+        vc.extend_from_slice(&(comments.len() as u32).to_le_bytes());
+        for c in comments {
+            vc.extend_from_slice(&(c.len() as u32).to_le_bytes());
+            vc.extend_from_slice(c.as_bytes());
+        }
+        v.push(0x84); // last block, type 4 (VORBIS_COMMENT)
+        v.extend_from_slice(&(vc.len() as u32).to_be_bytes()[1..]);
+        v.extend_from_slice(&vc);
+        v
+    }
+
+    /// `views_by(Genre)` projects each track's genre and the Genre axis clusters
+    /// tracks by genre bucket. An untagged file keeps the real "Unknown Genre"
+    /// bucket rather than being dropped to `None` (the artist/album sentinels are).
+    #[test]
+    fn views_by_genre_carries_genre_and_groups_by_genre_bucket() {
+        let root = tmpdir("genre");
+        // Tagged genres across tracks; sorted filenames give ids a=0,b=1,c=2.
+        std::fs::write(
+            root.join("a.flac"),
+            flac_with_comments(&["TITLE=A", "GENRE=Rock"]),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("b.flac"),
+            flac_with_comments(&["TITLE=B", "GENRE=Ambient"]),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("c.flac"),
+            flac_with_comments(&["TITLE=C", "GENRE=Rock"]),
+        )
+        .unwrap();
+        // An untagged file → the kept "Unknown Genre" bucket.
+        std::fs::write(root.join("d.wav"), wav(48_000, 48_000)).unwrap();
+
+        let lib = Library::scan(&root).unwrap();
+        let v = lib.views_by(BrowseAxis::Genre);
+        assert_eq!(v.len(), 4);
+        // Every track carries a genre bucket — none are `None`.
+        assert!(
+            v.iter().all(|t| t.genre.is_some()),
+            "every track carries a genre bucket"
+        );
+        assert!(
+            v.iter()
+                .any(|t| t.genre.as_deref() == Some("Unknown Genre")),
+            "an untagged file keeps the real Unknown Genre bucket, not None"
+        );
+        // The Genre axis orders by genre name and keeps each genre's tracks
+        // contiguous: Ambient, then both Rock tracks, then Unknown Genre.
+        let genres: Vec<&str> = v.iter().map(|t| t.genre.as_deref().unwrap()).collect();
+        assert_eq!(genres, vec!["Ambient", "Rock", "Rock", "Unknown Genre"]);
     }
 
     #[test]

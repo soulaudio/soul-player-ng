@@ -25,6 +25,13 @@ nav.artists:
   zh: '艺术家'
   cs: 'Interpreti'
   ja: 'アーティスト'
+nav.genres:
+  en: 'Genres'
+  de: 'Genres'
+  es: 'Géneros'
+  zh: '流派'
+  cs: 'Žánry'
+  ja: 'ジャンル'
 nav.home:
   en: 'Home'
   de: 'Start'
@@ -75,6 +82,20 @@ artist.eyebrow:
   cs: 'Interpret'
   ja: 'アーティスト'
 artist.trackCount:
+  en: '%{count} tracks'
+  de: '%{count} Titel'
+  es: '%{count} pistas'
+  zh: '%{count} 首'
+  cs: '%{count} skladeb'
+  ja: '%{count} 曲'
+genre.eyebrow:
+  en: 'Genre'
+  de: 'Genre'
+  es: 'Género'
+  zh: '流派'
+  cs: 'Žánr'
+  ja: 'ジャンル'
+genre.trackCount:
   en: '%{count} tracks'
   de: '%{count} Titel'
   es: '%{count} pistas'
