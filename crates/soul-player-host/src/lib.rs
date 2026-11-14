@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex};
 
 use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
-pub use eq::{BAND_FREQS, BANDS, EqConfig, EqShared, GAIN_LIMIT_DB, eq_magnitude_db};
+pub use eq::{
+    BANDS, Band, BandKind, EqConfig, EqShared, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, Q_MAX, Q_MIN,
+    band_magnitude_db, default_bands, eq_magnitude_db,
+};
 pub use sink::SinkMode;
 /// The write-path "managed library" organizer (stateless `plan`/`apply` into a
 /// path-template tree), re-exported so a UI head calls it through the one host
@@ -423,15 +426,14 @@ impl PlayerHandle {
         }
     }
 
-    /// Set the graphic-EQ bands (dB per [`eq::BAND_FREQS`] band), the preamp, and
-    /// the master enable. Like [`set_replay_gain`](Self::set_replay_gain), it
-    /// applies to the LIVE stream at its next block — the device sink reads the
-    /// shared settings each block — and is remembered for the next spawn, without
-    /// ever spawning an actor just to set it. A disabled or all-0 dB EQ is a
-    /// bit-exact passthrough.
-    pub fn set_eq(&self, gains_db: [f32; eq::BANDS], preamp_db: f32, enabled: bool) {
+    /// Set the parametric-EQ bands, the preamp, and the master enable. Like
+    /// [`set_replay_gain`](Self::set_replay_gain), it applies to the LIVE stream at
+    /// its next block — the device sink reads the shared settings each block — and
+    /// is remembered for the next spawn, without ever spawning an actor just to set
+    /// it. A disabled or all-flat EQ is a bit-exact passthrough.
+    pub fn set_eq(&self, bands: [eq::Band; eq::BANDS], preamp_db: f32, enabled: bool) {
         let mut cfg = self.inner.eq.lock().expect("eq mutex");
-        cfg.gains_db = gains_db;
+        cfg.bands = bands;
         cfg.preamp_db = preamp_db;
         cfg.enabled = enabled;
         cfg.generation = cfg.generation.wrapping_add(1);

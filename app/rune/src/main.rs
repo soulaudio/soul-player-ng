@@ -22,8 +22,9 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    BANDS, BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode,
-    SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate,
+    BANDS, Band, BandKind, BrowseAxis, Command, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
+    PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode, SignalPath, SourceCodec,
+    SourceFormat, SourceStatus, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
 };
 
@@ -218,17 +219,20 @@ struct State {
     /// ReplayGain preamp in dB (persisted), a constant offset on top of the mode's
     /// gain. Rendered as a slider in Settings → ReplayGain.
     replaygain_preamp: f32,
-    /// Graphic-EQ master enable (persisted). When off, the signal path is a
+    /// Parametric-EQ master enable (persisted). When off, the signal path is a
     /// bit-exact passthrough. Rendered as the Settings → Audio DSP/EQ card.
     eq_enabled: bool,
-    /// Per-band EQ gains in dB (persisted), one per `soul_player_host::BAND_FREQS`
-    /// octave band. Each a slider in the DSP/EQ card.
-    eq_gains: [f32; BANDS],
+    /// The parametric EQ bands (persisted): each has its own shape, frequency,
+    /// gain and Q. Drawn + dragged in the DSP/EQ response-curve graph.
+    eq_bands: [Band; BANDS],
     /// EQ preamp in dB (persisted) — headroom so band boosts don't clip.
     eq_preamp: f32,
-    /// In-flight EQ-graph node drag: `(band index, gain in dB at press)`, so the
+    /// In-flight EQ-graph node drag: `(band index, band state at press)`, so the
     /// drag applies absolutely from the press point. `None` when not dragging.
-    eq_drag: Option<(usize, f32)>,
+    eq_drag: Option<(usize, Band)>,
+    /// The band whose handle is selected/focused (shows its per-band curve + a
+    /// readout). `None` when nothing is selected.
+    eq_selected: Option<usize>,
     /// Managed-library destination folder (persisted; `None` = unset), where the
     /// write-path organizer will copy / move added music. Set in Settings → Music
     /// Data. Configuring only — the "Add music…" apply flow is separate.
@@ -307,7 +311,7 @@ impl State {
         let (replaygain_mode, replaygain_preamp) = config::load_replaygain();
         // Restore the persisted EQ (defaults: off, flat, 0 dB preamp); main() has
         // already pushed the same settings to the host before the first spawn.
-        let (eq_enabled, eq_gains, eq_preamp) = config::load_eq();
+        let (eq_enabled, eq_bands, eq_preamp) = config::load_eq();
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
         let locale_pref = config::load_locale();
         apply_locale(&locale_pref);
@@ -354,9 +358,10 @@ impl State {
             replaygain_mode,
             replaygain_preamp,
             eq_enabled,
-            eq_gains,
+            eq_bands,
             eq_preamp,
             eq_drag: None,
+            eq_selected: None,
             managed_dest,
             managed_template,
             managed_strategy,
@@ -528,10 +533,10 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
 }
 
 /// Persist the EQ and push it to the live stream (the device sink reads it each
-/// block). Shared by the enable toggle, the band sliders, and the preamp.
+/// block). Shared by the enable toggle, the band handles, and the preamp.
 fn apply_eq(s: &State) {
-    config::save_eq(s.eq_enabled, &s.eq_gains, s.eq_preamp);
-    s.host.set_eq(s.eq_gains, s.eq_preamp, s.eq_enabled);
+    config::save_eq(s.eq_enabled, &s.eq_bands, s.eq_preamp);
+    s.host.set_eq(s.eq_bands, s.eq_preamp, s.eq_enabled);
 }
 
 /// Toggle the EQ master enable.
@@ -540,10 +545,51 @@ pub(crate) fn set_eq_enabled(s: &mut State, on: bool) {
     apply_eq(s);
 }
 
-/// Set band `i`'s gain in dB (one graphic-EQ slider).
-pub(crate) fn set_eq_band(s: &mut State, i: usize, gain_db: f32) {
-    if let Some(g) = s.eq_gains.get_mut(i) {
-        *g = gain_db;
+/// Clamp a band's parameters into the UI's legal ranges (freq/gain/Q), rounding
+/// gain to 0.1 dB so the readout and the drag agree.
+fn clamp_band(mut b: Band) -> Band {
+    b.freq = b.freq.clamp(FREQ_MIN, FREQ_MAX);
+    b.gain_db = (b.gain_db.clamp(-GAIN_LIMIT_DB, GAIN_LIMIT_DB) * 10.0).round() / 10.0;
+    b.q = b.q.clamp(Q_MIN, Q_MAX);
+    b
+}
+
+/// Replace band `i` wholesale (the graph drag computes frequency + gain together),
+/// clamped to the legal ranges.
+pub(crate) fn set_eq_band(s: &mut State, i: usize, band: Band) {
+    if let Some(slot) = s.eq_bands.get_mut(i) {
+        *slot = clamp_band(band);
+    }
+    apply_eq(s);
+}
+
+/// Set band `i`'s Q (the scroll-wheel / curvature gesture).
+pub(crate) fn set_eq_band_q(s: &mut State, i: usize, q: f32) {
+    if let Some(slot) = s.eq_bands.get_mut(i) {
+        slot.q = q.clamp(Q_MIN, Q_MAX);
+    }
+    apply_eq(s);
+}
+
+/// Cycle band `i` to the next filter shape (click the handle's type chip).
+pub(crate) fn cycle_eq_band_kind(s: &mut State, i: usize) {
+    if let Some(slot) = s.eq_bands.get_mut(i) {
+        slot.kind = match slot.kind {
+            BandKind::LowShelf => BandKind::Peaking,
+            BandKind::Peaking => BandKind::HighShelf,
+            BandKind::HighShelf => BandKind::LowCut,
+            BandKind::LowCut => BandKind::HighCut,
+            BandKind::HighCut => BandKind::Notch,
+            BandKind::Notch => BandKind::LowShelf,
+        };
+    }
+    apply_eq(s);
+}
+
+/// Enable/disable a single band (its handle's bypass toggle).
+pub(crate) fn set_eq_band_enabled(s: &mut State, i: usize, on: bool) {
+    if let Some(slot) = s.eq_bands.get_mut(i) {
+        slot.enabled = on;
     }
     apply_eq(s);
 }
@@ -952,14 +998,27 @@ fn scene_settings_audio(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::Audio;
 }
-/// Settings → Audio with the EQ enabled and a "smile" curve, so `--snap` shows the
+/// Settings → Audio with the EQ enabled and a shaped curve, so `--snap` shows the
 /// response-curve graph with its bands moved (not a flat line).
 fn scene_settings_audio_eq(s: &mut State) {
     scene_settings_audio(s);
     s.eq_enabled = true;
-    // A gentle smiley: lift the lows and highs, dip the mids.
-    s.eq_gains = [6.0, 4.5, 2.0, -1.0, -3.5, -3.0, -0.5, 2.5, 5.0, 4.0];
+    // A gentle smiley: lift the lows (shelf) and highs (shelf), dip the mids.
+    s.eq_bands = default_bands();
+    let gains = [6.0, 3.0, -2.0, -3.5, -2.5, 1.5, 4.0, 5.0];
+    for (band, g) in s.eq_bands.iter_mut().zip(gains) {
+        band.gain_db = g;
+    }
     s.eq_preamp = -2.0;
+    // Select a mid band so its per-band curve shows.
+    s.eq_selected = Some(4);
+}
+/// Like [`scene_settings_audio_eq`] but with the master enable OFF, so `--snap`
+/// shows the dimmed-when-off card (only the On/Off toggle stays lit).
+fn scene_settings_audio_eq_off(s: &mut State) {
+    scene_settings_audio_eq(s);
+    s.eq_enabled = false;
+    s.eq_selected = None;
 }
 fn scene_settings_about(s: &mut State) {
     s.route = Route::Settings;
@@ -1127,8 +1186,8 @@ fn main() -> anyhow::Result<()> {
     host.set_replay_gain(rg_mode, rg_preamp);
     // Restore the persisted EQ before any spawn too, so the first stream opens with
     // the user's bands already applied.
-    let (eq_on, eq_gains, eq_preamp) = config::load_eq();
-    host.set_eq(eq_gains, eq_preamp, eq_on);
+    let (eq_on, eq_bands, eq_preamp) = config::load_eq();
+    host.set_eq(eq_bands, eq_preamp, eq_on);
     // Seed the hybrid-ReplayGain loudness cache from the persisted file (stale
     // entries already dropped on load) BEFORE any spawn, so a previously-analyzed
     // untagged track is normalized this session with no re-scan.
@@ -1154,6 +1213,7 @@ fn main() -> anyhow::Result<()> {
             ("settings-music", scene_settings_music),
             ("settings-audio", scene_settings_audio),
             ("settings-audio-eq", scene_settings_audio_eq),
+            ("settings-audio-eq-off", scene_settings_audio_eq_off),
             ("settings-about", scene_settings_about),
             ("settings-music-de", scene_settings_music_de),
             ("settings-audio-de", scene_settings_audio_de),
@@ -1608,7 +1668,7 @@ mod tests {
             "eq-preamp",
             "eq-graph",
             "eq-node-0",
-            "eq-node-9",
+            "eq-node-7",
         ] {
             assert!(rt.find(key).is_some(), "the EQ card renders {key}");
         }
@@ -1625,12 +1685,95 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
+        // Start from a known-off state (the shared test config dir may carry an
+        // `enabled` flag from another test's persisted EQ).
+        s.eq_enabled = false;
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
-        assert!(!rt.state.eq_enabled, "the EQ starts disabled");
+        assert!(!rt.state.eq_enabled, "the EQ starts off for this test");
         click_key(&mut rt, "eq-enable");
         assert!(rt.state.eq_enabled, "clicking the toggle enables the EQ");
+    }
+
+    /// Dragging a band's handle on the graph moves its frequency (x) and gain (y) —
+    /// the end-to-end path through the graph's `on_drag` → `set_eq_band`.
+    #[test]
+    fn dragging_a_band_moves_its_frequency_and_gain() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("eq-graph").expect("the EQ graph renders");
+        // Press near the centre: grabs the band nearest that frequency.
+        rt.pointer_down(x, y);
+        rt.frame(0.0);
+        let i = rt.state.eq_selected.expect("pressing selects a band");
+        let before = rt.state.eq_bands[i];
+        // Drag right (higher frequency) and up (more gain).
+        rt.pointer_move(x + 60.0, y - 50.0);
+        rt.frame(0.0);
+        let after = rt.state.eq_bands[i];
+        assert!(
+            after.freq > before.freq,
+            "drag right raised the frequency ({} -> {})",
+            before.freq,
+            after.freq
+        );
+        assert!(
+            after.gain_db > before.gain_db,
+            "drag up raised the gain ({} -> {})",
+            before.gain_db,
+            after.gain_db
+        );
+        rt.pointer_up(x + 60.0, y - 50.0);
+        rt.frame(0.0);
+        assert_eq!(rt.state.eq_drag, None, "the drag ended");
+    }
+
+    /// Scrolling the wheel over the graph narrows/widens the nearest band's Q — the
+    /// path through the graph's `on_wheel` → `set_eq_band_q`.
+    #[test]
+    fn scrolling_over_the_graph_changes_a_bands_q() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("eq-graph").expect("the EQ graph renders");
+        // Scroll up → narrower (higher Q) on the nearest band (default Q 1.0).
+        rt.wheel_event(WheelEvent::new(0.0, -10.0).at(x, y));
+        rt.frame(0.0);
+        let i = rt
+            .state
+            .eq_selected
+            .expect("the wheel selects the nearest band");
+        let q_up = rt.state.eq_bands[i].q;
+        assert!(q_up > 1.0, "scroll up narrowed the band (Q {q_up} > 1.0)");
+        // Two notches down → wider again.
+        rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
+        rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_bands[i].q < q_up,
+            "scroll down widened it again ({} < {q_up})",
+            rt.state.eq_bands[i].q
+        );
     }
 
     /// Build Settings → Audio in a short window so its stage cards overflow the
