@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use soul_player_host::{
-    BANDS, Band, BandKind, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, default_bands,
+    Band, BandKind, MAX_BANDS, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, default_bands,
 };
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
@@ -480,20 +480,32 @@ pub fn save_replaygain(mode: ReplayGainMode, preamp_db: f32) {
 }
 
 /// The saved parametric-EQ `(enabled, bands, preamp dB)`, defaulting to off / the
-/// default layout / 0 dB. A persisted band list shorter than [`BANDS`] fills the
-/// remaining slots from [`default_bands`]; a longer one is truncated (so changing
-/// the band count never corrupts a saved file).
-pub fn load_eq() -> (bool, [Band; BANDS], f32) {
+/// default layout / 0 dB. An absent band list loads the default layout; a saved
+/// one is used as-is (capped at [`MAX_BANDS`]).
+pub fn load_eq() -> (bool, Vec<Band>, f32) {
     let cfg = load();
-    let mut bands = default_bands();
-    for (slot, saved) in bands.iter_mut().zip(cfg.eq_bands.iter()) {
-        *slot = saved.to_band(slot);
-    }
+    let bands = if cfg.eq_bands.is_empty() {
+        default_bands()
+    } else {
+        // Fall back to a plain bell for an unknown persisted kind token.
+        let fallback = Band {
+            kind: BandKind::Peaking,
+            freq: 1000.0,
+            gain_db: 0.0,
+            q: 1.0,
+            enabled: true,
+        };
+        cfg.eq_bands
+            .iter()
+            .take(MAX_BANDS)
+            .map(|b| b.to_band(&fallback))
+            .collect()
+    };
     (cfg.eq_enabled, bands, cfg.eq_preamp)
 }
 
 /// Persist the parametric-EQ settings (load-modify-write the one config file).
-pub fn save_eq(enabled: bool, bands: &[Band; BANDS], preamp_db: f32) {
+pub fn save_eq(enabled: bool, bands: &[Band], preamp_db: f32) {
     let mut cfg = load();
     cfg.eq_enabled = enabled;
     cfg.eq_preamp = preamp_db;

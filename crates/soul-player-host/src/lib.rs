@@ -15,7 +15,7 @@ use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
-    BANDS, Band, BandKind, EqConfig, EqShared, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, Q_MAX, Q_MIN,
+    Band, BandKind, EqConfig, EqShared, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN,
     band_magnitude_db, default_bands, eq_magnitude_db,
 };
 pub use sink::SinkMode;
@@ -492,7 +492,8 @@ impl PlayerHandle {
     /// its next block — the device sink reads the shared settings each block — and
     /// is remembered for the next spawn, without ever spawning an actor just to set
     /// it. A disabled or all-flat EQ is a bit-exact passthrough.
-    pub fn set_eq(&self, bands: [eq::Band; eq::BANDS], preamp_db: f32, enabled: bool) {
+    pub fn set_eq(&self, mut bands: Vec<eq::Band>, preamp_db: f32, enabled: bool) {
+        bands.truncate(eq::MAX_BANDS);
         let mut cfg = self.inner.eq.lock().expect("eq mutex");
         cfg.bands = bands;
         cfg.preamp_db = preamp_db;
