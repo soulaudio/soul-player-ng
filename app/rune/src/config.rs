@@ -485,7 +485,7 @@ pub fn save_replaygain(mode: ReplayGainMode, preamp_db: f32) {
 pub fn load_eq() -> (bool, Vec<Band>, f32) {
     let cfg = load();
     let bands = if cfg.eq_bands.is_empty() {
-        default_bands()
+        default_bands().to_vec()
     } else {
         // Fall back to a plain bell for an unknown persisted kind token.
         let fallback = Band {

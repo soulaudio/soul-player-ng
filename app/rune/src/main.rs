@@ -1117,7 +1117,7 @@ fn scene_settings_audio_eq(s: &mut State) {
     scene_settings_audio(s);
     s.eq_enabled = true;
     // A gentle smiley: lift the lows (shelf) and highs (shelf), dip the mids.
-    s.eq_bands = default_bands();
+    s.eq_bands = default_bands().to_vec();
     let gains = [6.0, 3.0, -2.0, -3.5, -2.5, 1.5, 4.0, 5.0];
     for (band, g) in s.eq_bands.iter_mut().zip(gains) {
         band.gain_db = g;
@@ -1979,7 +1979,7 @@ mod tests {
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
         s.eq_enabled = true;
-        s.eq_bands = soul_player_host::default_bands();
+        s.eq_bands = soul_player_host::default_bands().to_vec();
         s.eq_editor_open = true;
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
