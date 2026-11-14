@@ -28,11 +28,11 @@ use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
     OrganizePhase, SettingsTab, State, ThemePref, add_eq_band, apply_and_save, apply_watch,
-    bump_eq_band_gain, bump_eq_band_q, close_dropdown, cycle_eq_band_kind, organize_begin,
-    organize_confirm, organize_dismiss, organize_ready, remove_eq_band, set_eq_band_enabled,
-    set_eq_enabled, set_eq_preamp, set_locale_pref, set_managed_dest, set_managed_strategy,
-    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor,
+    bump_eq_band_gain, bump_eq_band_q, close_dropdown, cycle_eq_band_kind, export_eq, import_eq,
+    organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_eq_band,
+    set_eq_band_enabled, set_eq_enabled, set_eq_preamp, set_locale_pref, set_managed_dest,
+    set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -1299,6 +1299,27 @@ fn chip_btn(
         .on_press(move |st: &mut State| on(st))
 }
 
+/// A chip-style button that needs the transaction (e.g. to open a file dialog).
+fn chip_btn_tx(
+    key: String,
+    label: String,
+    p: &Palette,
+    on: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
+    text(label)
+        .font(type_::LABEL)
+        .px(space::SNUG)
+        .py(space::XXS)
+        .radius(radius::SM)
+        .key(key)
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .fill(p.muted)
+        .color(p.text_secondary)
+        .on_press_tx(move |st: &mut State, tx: &mut Tx| on(st, tx))
+}
+
 /// The expandable per-band editor under the graph: a header with the band count,
 /// an Add button, and (when open) a row per band to retype / nudge gain & Q /
 /// bypass / remove it.
@@ -1331,11 +1352,45 @@ fn eq_band_editor(s: &State, p: &Palette) -> El {
             add_eq_band(st, 1000.0, 0.0);
         },
     );
+    // Import / export AutoEQ (Equalizer-APO ParametricEQ) profiles via a native
+    // file dialog — load headphone-correction profiles or share presets.
+    let import = chip_btn_tx("eq-import".into(), "Import".into(), p, |_s, tx| {
+        tx.open_file(
+            FileDialogOptions {
+                title: "Import EQ profile".into(),
+                ..Default::default()
+            }
+            .filter("ParametricEQ (*.txt)", &["txt"]),
+            |s: &mut State, result, _tx| {
+                if let Ok(Some(path)) = result {
+                    import_eq(s, &path);
+                }
+            },
+        );
+    });
+    let export = chip_btn_tx("eq-export".into(), "Export".into(), p, |_s, tx| {
+        tx.save_file(
+            FileDialogOptions {
+                title: "Export EQ profile".into(),
+                file_name: Some("ParametricEQ.txt".into()),
+                ..Default::default()
+            }
+            .filter("ParametricEQ (*.txt)", &["txt"]),
+            |s: &mut State, result, _tx| {
+                if let Ok(Some(path)) = result {
+                    export_eq(s, &path);
+                }
+            },
+        );
+    });
     let header = row()
         .w_full()
         .center_y()
+        .gap(space::XS)
         .child(toggle)
         .child(el().grow(1.0))
+        .child(import)
+        .child(export)
         .child(add);
     let mut panel = col().key("eq-editor").w_full().gap(space::SM).child(header);
     if open {
