@@ -8,7 +8,7 @@
 //! outside press / Escape), the same mechanism as [`crate::views::dropdown`].
 #![forbid(unsafe_code)]
 
-use rune::{Align, Cursor, El, Side, col, row, text};
+use rune::{Align, Cursor, El, Side, col, el, row, text};
 use soul_player_host::{ReplayGainMode, SignalPath, SourceFormat};
 
 use crate::theme::Palette;
@@ -17,8 +17,9 @@ use crate::{State, close_signal_path, set_replaygain_mode};
 
 /// Gap between the anchor line and the panel.
 const GAP: f32 = 6.0;
-/// Fixed width of the stage-name column, so the values line up.
-const LABEL_W: f32 = 76.0;
+/// Connector column width + the stage dot size (the vertical "signal rail").
+const RAIL_W: f32 = 18.0;
+const DOT: f32 = 9.0;
 
 /// kHz label: whole kHz stays integer (48, 96), fractional keeps one place.
 fn khz(hz: u32) -> String {
@@ -86,32 +87,66 @@ fn soon_chip(p: &Palette) -> El {
         .fill(p.muted)
 }
 
-/// One stage row: a fixed-width name, the value, and an optional trailing control
-/// (the ReplayGain toggle, or a "soon" chip). `key` is stable for tests.
-fn stage_row(key: &str, name: String, value: String, trailing: Option<El>, p: &Palette) -> El {
-    let mut r = row()
-        .key(key.to_string())
-        .w_full()
-        .center_y()
-        .gap(space::SM)
-        .py(space::XXS)
-        .child(
-            text(name)
-                .font(type_::LABEL)
-                .color(p.text_secondary)
-                .w(LABEL_W),
-        )
-        .child(
+/// One **flow node** in the signal-path pipeline: a dot on the vertical "signal
+/// rail" (lit for a stage the signal flows through, dim for a not-yet-built one),
+/// then the stage name over its value, with an optional trailing control (the
+/// ReplayGain toggle, or a "soon" chip). `is_last` drops the rail below the dot so
+/// the chain ends. `key` is stable for tests. The dots + connecting rail read as
+/// the signal flowing top → bottom through each stage.
+fn node(
+    key: &str,
+    name: String,
+    value: String,
+    trailing: Option<El>,
+    active: bool,
+    is_last: bool,
+    p: &Palette,
+) -> El {
+    let dot = if active { p.primary } else { p.border };
+    let rail = if active {
+        p.primary.alpha(0.45)
+    } else {
+        p.border
+    };
+    // Connector: the dot, then (unless this is the last stage) a rail filling the
+    // row height down to the next dot — a continuous vertical line.
+    let mut connector = col()
+        .align(Align::Center)
+        .w(RAIL_W)
+        .child(el().w(DOT).h(DOT).radius(DOT / 2.0).fill(dot));
+    if !is_last {
+        connector = connector.child(el().w(2.0).grow(1.0).min_h(14.0).fill(rail));
+    }
+    // Stage name (+ trailing control) over the value.
+    let mut head = row().w_full().center_y().gap(space::SM).child(
+        text(name)
+            .font(type_::LABEL)
+            .color(p.text_secondary)
+            .grow(1.0),
+    );
+    if let Some(t) = trailing {
+        head = head.child(t);
+    }
+    let mut content = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(space::XXS)
+        .pb(space::MD)
+        .child(head);
+    if !value.is_empty() {
+        content = content.child(
             text(value)
                 .font(type_::BODY)
-                .color(p.fg)
-                .grow(1.0)
+                .color(if active { p.fg } else { p.text_secondary })
                 .truncate(),
         );
-    if let Some(t) = trailing {
-        r = r.child(t);
     }
-    r
+    row()
+        .key(key.to_string())
+        .w_full()
+        .gap(space::SM)
+        .child(connector)
+        .child(content)
 }
 
 /// The ReplayGain on/off toggle chip — the one real pipeline toggle today. Off ↔
@@ -151,64 +186,81 @@ fn rg_toggle(mode: ReplayGainMode, p: &Palette) -> El {
 /// and the Settings → Audio card): the live chain when a track is playing, then
 /// the not-yet-built Exclusive output & DSP/EQ stages surfaced as "soon".
 pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
-    let mut rows = col().key("signal-path-stages").w_full().gap(space::XXS);
+    // gap(0): the per-node connector rails abut into one continuous vertical line.
+    let mut rows = col().key("signal-path-stages").w_full().gap(0.0);
     if let Some(sp) = s.signal_path {
         rows = rows
-            .child(stage_row(
+            .child(node(
                 "sp-row-source",
                 t!("player.signalPath.source").to_string(),
                 source_value(&sp),
                 None,
+                true,
+                false,
                 p,
             ))
-            .child(stage_row(
+            .child(node(
                 "sp-row-decode",
                 t!("player.signalPath.decode").to_string(),
                 decode_value(&sp),
                 None,
+                true,
+                false,
                 p,
             ))
-            .child(stage_row(
+            .child(node(
                 "sp-row-replaygain",
                 t!("player.signalPath.replayGain").to_string(),
                 replay_gain_value(s.replaygain_mode, sp.replay_gain_db),
                 Some(rg_toggle(s.replaygain_mode, p)),
+                true,
+                false,
                 p,
             ))
-            .child(stage_row(
+            .child(node(
                 "sp-row-resample",
                 t!("player.signalPath.resample").to_string(),
                 resample_value(&sp),
                 None,
+                true,
+                false,
                 p,
             ))
-            .child(stage_row(
+            .child(node(
                 "sp-row-output",
                 t!("player.signalPath.output").to_string(),
                 output_value(&sp),
-                Some(soon_chip(p)),
+                None,
+                true,
+                false,
                 p,
             ));
     } else {
         rows = rows.child(
             text(t!("player.nothingPlaying").to_string())
                 .font(type_::BODY)
-                .color(p.text_secondary),
+                .color(p.text_secondary)
+                .pb(space::MD),
         );
     }
-    // Not-yet-built stages, always surfaced so the whole pipeline is visible.
-    rows.child(stage_row(
+    // Not-yet-built stages, dim on the rail and marked "soon", so the whole
+    // pipeline is visible. DSP is the last node — its rail stops there.
+    rows.child(node(
         "sp-row-exclusive",
         t!("player.signalPath.exclusive").to_string(),
         String::new(),
         Some(soon_chip(p)),
+        false,
+        false,
         p,
     ))
-    .child(stage_row(
+    .child(node(
         "sp-row-dsp",
         t!("player.signalPath.dsp").to_string(),
         String::new(),
         Some(soon_chip(p)),
+        false,
+        true,
         p,
     ))
 }
