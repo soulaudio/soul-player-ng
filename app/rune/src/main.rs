@@ -691,6 +691,8 @@ fn scene_settings_music(s: &mut State) {
     s.settings_tab = SettingsTab::MusicData;
 }
 fn scene_settings_audio(s: &mut State) {
+    // Populate a live chain so the Signal-path card reads out (not "nothing playing").
+    scene_signal_path(s);
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::Audio;
 }
@@ -1221,6 +1223,52 @@ mod tests {
             rt2.find("signal-path").is_none(),
             "no signal-path line when there is no chain"
         );
+    }
+
+    /// Settings → Audio shows the signal-path card with the same stage rows
+    /// (shared `pipeline_rows`), including the not-yet-built "soon" stages.
+    #[test]
+    fn signal_path_card_renders_in_settings_audio() {
+        use soul_player_host::{SignalPath, SourceFormat};
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        scene_queue(&mut s); // a live chain to read out
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.signal_path = Some(SignalPath {
+            source: SourceFormat::Pcm { bits: 24 },
+            decoded_rate: 96_000,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db: 0.0,
+            device_rate: 96_000,
+            resampling: false,
+            output_bits: 24,
+        });
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("signal-path-settings").is_some(),
+            "the Signal path card renders in Settings → Audio"
+        );
+        for k in [
+            "sp-row-source",
+            "sp-row-decode",
+            "sp-row-replaygain",
+            "sp-row-resample",
+            "sp-row-output",
+            "sp-row-exclusive",
+            "sp-row-dsp",
+        ] {
+            assert!(
+                rt.find(k).is_some(),
+                "stage row {k} renders in the settings card"
+            );
+        }
     }
 
     /// Pressing the signal-path line opens the stage-by-stage panel: every stage
