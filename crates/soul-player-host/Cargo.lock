@@ -997,6 +997,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "soul-audio-organize"
+version = "0.1.0"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#011e5197c3e2142a58b6ae9470a8108c3063683d"
+dependencies = [
+ "embedded-io-adapters",
+ "soul-audio-tags",
+]
+
+[[package]]
 name = "soul-audio-queue"
 version = "0.1.0"
 source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#011e5197c3e2142a58b6ae9470a8108c3063683d"
@@ -1041,6 +1050,7 @@ dependencies = [
  "anyhow",
  "soul-audio-core",
  "soul-audio-desktop",
+ "soul-audio-organize",
  "soul-player-backend",
  "tempfile",
 ]

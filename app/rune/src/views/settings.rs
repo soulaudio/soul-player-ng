@@ -16,7 +16,9 @@ use rune::{
     icon, row, text,
 };
 use soul_player_host::ReplayGainMode;
+use soul_player_host::organize;
 
+use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::dropdown;
@@ -25,9 +27,11 @@ use crate::views::scrollbar;
 use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
-    SettingsTab, State, ThemePref, apply_and_save, apply_watch, close_dropdown, set_locale_pref,
-    set_nav_visible, set_output_device, set_replaygain_mode, set_replaygain_preamp,
-    set_settings_tab, set_theme_pref,
+    OrganizePhase, SettingsTab, State, ThemePref, apply_and_save, apply_watch, close_dropdown,
+    organize_begin, organize_confirm, organize_dismiss, organize_ready, set_locale_pref,
+    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
+    set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -209,7 +213,7 @@ fn add_source_trigger(p: &Palette) -> El {
 ///   dialog and folds the pick in (the flow the old button used).
 /// - **Remote server…** — a disabled "coming soon" item: not focusable, greyed,
 ///   with a trailing chip; no handler.
-fn add_source_menu(_s: &State, p: &Palette) -> El {
+fn add_source_menu(s: &State, p: &Palette) -> El {
     let coming_soon = row()
         .center_y()
         .px(space::SNUG)
@@ -291,6 +295,97 @@ fn add_source_menu(_s: &State, p: &Palette) -> El {
         .modal(true, close_dropdown)
         .child(local)
         .child(remote)
+        .child(add_music_row(s, p))
+}
+
+/// The **Add music…** menu row: it runs the managed-library organizer (the
+/// write-path copy/move) over a chosen set of files. It only works once a
+/// managed destination is configured, so without one it renders as a disabled
+/// hint (not focusable, dimmed, with a "Set a destination first" chip, like the
+/// Remote "coming soon" row); with a destination it is a focusable option that
+/// closes the menu and opens the organize modal (`organize_begin`).
+fn add_music_row(s: &State, p: &Palette) -> El {
+    let base = row()
+        .key("add-source-opt-organize")
+        .role("option")
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM);
+    if s.managed_dest.is_some() {
+        base.focusable(true)
+            .label(t!("settings.addMusic").to_string())
+            .cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(0.06))
+            .child(icon(&icons::MUSIC, 16.0).color(p.text_secondary))
+            .child(
+                text(t!("settings.addMusic").to_string())
+                    .color(p.fg)
+                    .grow(1.0)
+                    .truncate(),
+            )
+            .on_press_tx(|s: &mut State, tx: &mut Tx| {
+                // Close the menu before the dialog so it isn't left open behind it.
+                close_dropdown(s);
+                tx.open_folder(
+                    FileDialogOptions {
+                        title: t!("settings.addMusicDialog").to_string(),
+                        ..Default::default()
+                    },
+                    |s: &mut State, result, _tx| {
+                        // Only proceed once a source is picked AND a destination +
+                        // app handle are available (the handle lets the worker post
+                        // the computed plan back onto the main thread).
+                        if let Ok(Some(src_dir)) = result
+                            && let (Some(handle), Some(dest)) =
+                                (s.app_handle.clone(), s.managed_dest.clone())
+                        {
+                            // Show the scanning/planning modal immediately, then do
+                            // the scan + plan off-thread so the UI never blocks.
+                            organize_begin(s);
+                            let template_id = s.managed_template.clone();
+                            let strategy = s.managed_strategy;
+                            std::thread::spawn(move || {
+                                let files = scan_audio(&src_dir);
+                                let plan = organize::plan(
+                                    &files,
+                                    &dest,
+                                    &organize::Template::new(template_for(&template_id)),
+                                    strategy,
+                                );
+                                handle.update(move |s: &mut State, _tx| {
+                                    organize_ready(s, plan);
+                                });
+                            });
+                        }
+                    },
+                );
+            })
+    } else {
+        // No destination yet: a disabled hint, mirroring the Remote "coming soon"
+        // row — present but not focusable, with a trailing chip.
+        let hint = row()
+            .center_y()
+            .px(space::SNUG)
+            .py(space::XXS)
+            .radius(radius::XS)
+            .fill(p.muted)
+            .child(
+                text(t!("settings.setDestinationFirst").to_string())
+                    .font(type_::LABEL)
+                    .color(p.text_secondary),
+            );
+        base.child(icon(&icons::MUSIC, 16.0).color(p.text_secondary))
+            .child(
+                text(t!("settings.addMusic").to_string())
+                    .color(p.text_secondary)
+                    .grow(1.0)
+                    .truncate(),
+            )
+            .child(hint)
+    }
 }
 
 /// Minimum width of the add-source menu panel, so the two rows have room — the
@@ -650,6 +745,211 @@ fn music_data_card(s: &State, p: &Palette) -> El {
         }
     }
     c
+}
+
+// ── Managed Library (the write-path organizer: configure half) ───────────────
+
+/// The key identifying the managed-library template picker (its open state +
+/// panel anchor).
+const MANAGED_TEMPLATE: &str = "managed-template";
+
+/// The human label for a template preset id (ids come from `organize::presets()`).
+/// Shown in the picker trigger + its panel.
+fn preset_label(id: &str) -> String {
+    match id {
+        "artist-year-album" => t!("settings.preset.artist-year-album").to_string(),
+        "genre-artist-album" => t!("settings.preset.genre-artist-album").to_string(),
+        "flat" => t!("settings.preset.flat").to_string(),
+        // "artist-album" is the default preset.
+        _ => t!("settings.preset.artist-album").to_string(),
+    }
+}
+
+/// A static illustrative destination path for a preset, so the user previews the
+/// folder layout without any real file. Keyed to `organize::presets()`'s ids.
+fn preset_example(id: &str) -> &'static str {
+    match id {
+        "artist-year-album" => "Daft Punk/2001 - Discovery/01 - One More Time.flac",
+        "genre-artist-album" => "Electronic/Daft Punk/Discovery/01 - One More Time.flac",
+        "flat" => "Daft Punk - One More Time.flac",
+        _ => "Daft Punk/Discovery/01 - One More Time.flac",
+    }
+}
+
+/// The template presets as `(id, human label)` for the dropdown panel — the ids
+/// come from the organizer so the picker always matches the write path.
+fn preset_options() -> Vec<(String, String)> {
+    organize::presets()
+        .iter()
+        .map(|(id, _)| (id.to_string(), preset_label(id)))
+        .collect()
+}
+
+/// The destination Browse button: opens the native folder dialog and persists the
+/// pick. Folder dialog (not text entry) because Rune's IME is pre-release — same
+/// as Add Source.
+fn managed_browse_button(p: &Palette) -> El {
+    el().key("managed-dest-browse")
+        .role("button")
+        .label(t!("settings.browse").to_string())
+        .focusable(true)
+        .padding(space::MD)
+        .radius(radius::MD)
+        .fill(p.muted)
+        .center()
+        .cursor(Cursor::Pointer)
+        .child(text(t!("settings.browse").to_string()).color(p.fg))
+        .on_press_tx(|_s: &mut State, tx: &mut Tx| {
+            tx.open_folder(
+                FileDialogOptions {
+                    title: t!("settings.managedDestDialog").to_string(),
+                    ..Default::default()
+                },
+                |s: &mut State, result, _tx| {
+                    if let Ok(Some(path)) = result {
+                        set_managed_dest(s, Some(path));
+                    }
+                },
+            );
+        })
+}
+
+/// The destination row: a label over the current path (or "Not set"), with the
+/// Browse button trailing. The path column grows + shrinks to zero so a long path
+/// truncates instead of shoving the button off the card.
+fn managed_dest_row(s: &State, p: &Palette) -> El {
+    let path_line = match &s.managed_dest {
+        Some(dest) => text(dest.to_string_lossy().into_owned())
+            .font(type_::BODY)
+            .color(p.fg)
+            .truncate(),
+        None => text(t!("settings.notSet").to_string())
+            .font(type_::BODY)
+            .color(p.text_secondary),
+    };
+    row()
+        .w_full()
+        .gap(space::MD)
+        .center_y()
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(space::NONE)
+                .child(
+                    text(t!("settings.destination").to_string())
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary),
+                )
+                .child(path_line),
+        )
+        .child(managed_browse_button(p))
+}
+
+/// The template section: a label, the preset picker (the shared `dropdown`), and
+/// an example destination line for the selected preset (keyed `managed-example`).
+fn managed_template_section(s: &State, p: &Palette) -> El {
+    col()
+        .w_full()
+        .gap(space::XS)
+        .child(
+            text(t!("settings.template").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .child(dropdown::trigger(
+            MANAGED_TEMPLATE,
+            preset_label(&s.managed_template),
+            p,
+        ))
+        .child(
+            // A static preview of where a file would land (no real file). `wrap`
+            // keeps a long path inside the card instead of overflowing.
+            col()
+                .key("managed-example")
+                .w_full()
+                .gap(space::XXS)
+                .child(
+                    text(t!("settings.example").to_string())
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary)
+                        .wrap(),
+                )
+                .child(
+                    text(preset_example(&s.managed_template).to_string())
+                        .font(type_::BODY)
+                        .color(p.fg)
+                        .wrap(),
+                ),
+        )
+}
+
+/// One strategy choice (Copy / Move); the active one is filled with the primary
+/// colour (mirrors `theme_button`).
+fn strategy_button(
+    label: String,
+    key: &str,
+    strategy: organize::Strategy,
+    active: bool,
+    p: &Palette,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_managed_strategy(s, strategy))
+}
+
+/// The strategy section: a label over the Copy / Move toggle (wraps on a narrow
+/// card).
+fn managed_strategy_section(s: &State, p: &Palette) -> El {
+    col()
+        .w_full()
+        .gap(space::XS)
+        .child(
+            text(t!("settings.strategy").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .child(
+            row()
+                .gap(space::SM)
+                .flex_wrap()
+                .child(strategy_button(
+                    t!("settings.copyFiles").to_string(),
+                    "managed-copy",
+                    organize::Strategy::Copy,
+                    s.managed_strategy == organize::Strategy::Copy,
+                    p,
+                ))
+                .child(strategy_button(
+                    t!("settings.moveFiles").to_string(),
+                    "managed-move",
+                    organize::Strategy::Move,
+                    s.managed_strategy == organize::Strategy::Move,
+                    p,
+                )),
+        )
+}
+
+/// Managed Library: the write-path destination + template preset + Copy/Move
+/// strategy, persisted to config. Configuring only — the "Add music…" apply flow
+/// that runs the copy/move is a separate task. Rendered under the Sources card on
+/// the Music Data tab.
+fn managed_library_card(s: &State, p: &Palette) -> El {
+    card("managed-library", p)
+        .child(heading(
+            t!("settings.managedLibrary").to_string(),
+            t!("settings.managedLibraryDesc").to_string(),
+            p,
+        ))
+        .child(managed_dest_row(s, p))
+        .child(managed_template_section(s, p))
+        .child(managed_strategy_section(s, p))
 }
 
 /// Output: a "System default" choice plus one button per enumerated output
@@ -1016,7 +1316,8 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         SettingsTab::MusicData => col()
             .key("settings-content")
             .gap(space::LG)
-            .child(music_data_card(s, p)),
+            .child(music_data_card(s, p))
+            .child(managed_library_card(s, p)),
         SettingsTab::Audio => audio_pipeline(s, p, cx),
         SettingsTab::About => col()
             .key("settings-content")
@@ -1064,6 +1365,203 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         )
 }
 
+// ── Organize modal (the "Add music → organize" apply flow) ───────────────────
+
+/// Min / max width of the centered organize card, so it reads as a dialog on a
+/// wide window and still fits a cramped one.
+const ORGANIZE_CARD_MIN_W: f32 = 320.0;
+const ORGANIZE_CARD_MAX_W: f32 = 460.0;
+
+/// The shared surface of the organize modal card: a rounded, bordered panel on
+/// the card colour, width-bounded so a long path truncates rather than overflows.
+fn organize_card(p: &Palette) -> El {
+    col()
+        .key("organize-card")
+        .fill(p.card)
+        .radius(radius::LG)
+        .border_sides([1.0; 4], p.border)
+        .padding(space::LG)
+        .gap(space::MD)
+        .min_w(ORGANIZE_CARD_MIN_W)
+        .max_w(ORGANIZE_CARD_MAX_W)
+}
+
+/// A modal title line (wraps so a longer locale reflows instead of overflowing).
+fn organize_title(title: String, p: &Palette) -> El {
+    text(title).font(type_::TITLE).color(p.fg).wrap()
+}
+
+/// One organize-modal action button (Confirm / Cancel / Close), mirroring
+/// `theme_button`'s selected/idle fill; `primary` tints it as the affirmative
+/// action.
+fn organize_button(
+    key: &str,
+    label: String,
+    primary: bool,
+    p: &Palette,
+    on_press: fn(&mut State),
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if primary { p.primary } else { p.muted })
+        .child(text(label).color(if primary { p.bg } else { p.fg }))
+        .on_press(on_press)
+}
+
+/// Count a plan's entries by [`organize::Action`] into
+/// `(copy, moved, duplicates, conflicts)` for the Confirm summary line.
+fn organize_counts(plan: &organize::OrganizePlan) -> (usize, usize, usize, usize) {
+    let (mut copy, mut moved, mut dup, mut conflict) = (0, 0, 0, 0);
+    for e in &plan.entries {
+        match e.action {
+            organize::Action::Copy => copy += 1,
+            organize::Action::Move => moved += 1,
+            organize::Action::SkipDuplicate => dup += 1,
+            organize::Action::SkipConflict => conflict += 1,
+        }
+    }
+    (copy, moved, dup, conflict)
+}
+
+/// The per-phase card content (without the scrim / modal wrapper).
+fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
+    match phase {
+        OrganizePhase::Planning => organize_card(p).child(
+            text(t!("settings.scanning").to_string())
+                .key("organize-planning")
+                .font(type_::TITLE)
+                .color(p.fg)
+                .wrap(),
+        ),
+        OrganizePhase::Confirm(plan) => {
+            let (copy, moved, dup, conflict) = organize_counts(plan);
+            let summary = t!(
+                "settings.organizeConfirmSummary",
+                copy => copy,
+                moved => moved,
+                dup => dup,
+                conflict => conflict
+            )
+            .to_string();
+            organize_card(p)
+                .child(organize_title(
+                    t!("settings.organizeConfirmTitle").to_string(),
+                    p,
+                ))
+                .child(
+                    col()
+                        .key("organize-confirm")
+                        .w_full()
+                        .gap(space::XXS)
+                        .child(text(summary).font(type_::BODY).color(p.fg).wrap())
+                        .child(
+                            text(plan.dest_root.to_string_lossy().into_owned())
+                                .font(type_::CAPTION)
+                                .color(p.text_secondary)
+                                .truncate(),
+                        ),
+                )
+                .child(
+                    row()
+                        .gap(space::SM)
+                        .flex_wrap()
+                        .child(organize_button(
+                            "organize-cancel",
+                            t!("settings.cancel").to_string(),
+                            false,
+                            p,
+                            organize_dismiss,
+                        ))
+                        .child(organize_button(
+                            "organize-confirm-go",
+                            t!("settings.confirm").to_string(),
+                            true,
+                            p,
+                            organize_confirm,
+                        )),
+                )
+        }
+        OrganizePhase::Applying {
+            done,
+            total,
+            current,
+        } => organize_card(p)
+            .child(organize_title(
+                t!("settings.organizeApplying").to_string(),
+                p,
+            ))
+            .child(
+                text(format!("{done} / {total}"))
+                    .key("organize-progress")
+                    .font(type_::BODY)
+                    .color(p.fg),
+            )
+            .child(
+                text(current.clone())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary)
+                    .truncate(),
+            ),
+        OrganizePhase::Done(summary) => {
+            let line = t!(
+                "settings.organizeDoneSummary",
+                copied => summary.copied,
+                moved => summary.moved,
+                skipped => summary.skipped,
+                failed => summary.failed.len()
+            )
+            .to_string();
+            organize_card(p)
+                .child(organize_title(
+                    t!("settings.organizeDoneTitle").to_string(),
+                    p,
+                ))
+                .child(
+                    text(line)
+                        .key("organize-done")
+                        .font(type_::BODY)
+                        .color(p.fg)
+                        .wrap(),
+                )
+                .child(row().child(organize_button(
+                    "organize-close",
+                    t!("settings.close").to_string(),
+                    true,
+                    p,
+                    organize_dismiss,
+                )))
+        }
+    }
+}
+
+/// The managed-library organize **modal**: a centered card over a dim scrim,
+/// mounted on the root overlay layer (via [`settings_overlays`]) so it shows over
+/// any route. `None` when the flow is idle (`State::organize` is `None`).
+///
+/// The scrim is a full-window element (`absolute` + `w_full`/`h_full`) that dims
+/// the pane; the card inside is the `modal`, so rune traps focus in it, makes the
+/// background inert, and dismisses on Escape or an outside (scrim) press in every
+/// phase — including mid-Confirm, where an outside press simply cancels (the same
+/// as the Cancel button).
+pub fn organize_overlay(s: &State, p: &Palette) -> Option<El> {
+    let phase = s.organize.as_ref()?;
+    Some(
+        col()
+            .key("organize-modal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(Color::BLACK.alpha(0.45))
+            .child(organize_content(phase, p).modal(true, organize_dismiss)),
+    )
+}
+
 /// Settings' root-mounted overlay layer: the open dropdown's floating panel, if
 /// any. [`crate::view`] mounts this after the shell so it draws above everything
 /// and escapes the content scroll viewport's clip (see [`dropdown::panel`]).
@@ -1084,6 +1582,23 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
     }
     if dropdown::is_open(s, ADD_SOURCE_MENU) {
         overlays.push(add_source_menu(s, p));
+    }
+    if dropdown::is_open(s, MANAGED_TEMPLATE) {
+        // Match the panel width to the trigger (once it has a committed layout).
+        let width = cx.layout_size(MANAGED_TEMPLATE).map(|wh| wh[0]);
+        overlays.push(dropdown::panel(
+            MANAGED_TEMPLATE,
+            &preset_options(),
+            &s.managed_template,
+            width,
+            |s: &mut State, id: &str| set_managed_template(s, id),
+            p,
+        ));
+    }
+    // The managed-library organize modal draws over everything (and any route) —
+    // last, so it stacks above any dropdown panel still mounted beneath it.
+    if let Some(modal) = organize_overlay(s, p) {
+        overlays.push(modal);
     }
     overlays
 }
