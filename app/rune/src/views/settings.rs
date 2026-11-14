@@ -737,6 +737,22 @@ fn music_data_card(s: &State, p: &Palette) -> El {
             .child(rescan_button(p))
             .child(add_source_trigger(p)),
     );
+    // A deletion warning from the most recent scan (host `Event::TracksRemoved`),
+    // cleared on the next Sources refresh. `wrap` so a long folder name or locale
+    // can't push it off the card.
+    if let Some((root, count)) = &s.removal_notice {
+        let folder = root
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or_default()
+            .to_string();
+        c = c.child(
+            text(t!("settings.tracksRemoved", count => count, folder => folder).to_string())
+                .key("removal-notice")
+                .color(p.accent)
+                .wrap(),
+        );
+    }
     if s.sources.is_empty() {
         c = c.child(text(t!("settings.noSources").to_string()).color(p.text_secondary));
     } else {

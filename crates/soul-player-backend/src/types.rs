@@ -152,6 +152,16 @@ pub enum Event {
         path: PathBuf,
         gain_db: f32,
     },
+    /// A library rescan found tracks that disappeared from an **available** source
+    /// since the last scan: `root` is the source they were under and `count` is how
+    /// many vanished. Emitted once per affected root so a UI can warn ("N tracks
+    /// removed from <folder>"). Only genuine per-file deletions from a reachable
+    /// root are reported — an offline / unmounted root is skipped wholesale (never
+    /// scanned), so unplugging a drive never mass-reports its tracks as removed.
+    TracksRemoved {
+        root: PathBuf,
+        count: usize,
+    },
 }
 
 /// Now-playing + transport snapshot, emitted ~8×/s and on any change.
