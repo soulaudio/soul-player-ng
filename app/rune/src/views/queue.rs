@@ -396,6 +396,7 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
                 .scroll_edge_fade(FADE_H)
                 .grow(1.0)
                 .min_h(0.0),
+            "queue-content",
             &QUEUE_SCROLL_THUMB.with(|t| t.clone()),
             "queue-scrollbar",
             p,

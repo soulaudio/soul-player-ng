@@ -357,6 +357,7 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             })
             .grow(1.0)
             .min_h(0.0),
+            "tracks",
             &LIB_SCROLL_THUMB.with(|t| t.clone()),
             "library-scrollbar",
             p,

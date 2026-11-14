@@ -1653,6 +1653,7 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                         // Fade the top/bottom edges as content runs under them.
                         .scroll_edge_fade(20.0)
                         .child(inner),
+                    "settings-scroll",
                     &thumb,
                     "settings-scrollbar",
                     p,
