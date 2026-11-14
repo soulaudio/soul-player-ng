@@ -22,8 +22,9 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    Band, BandKind, BrowseAxis, Command, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, IndexingMode,
-    MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode, SPECTRUM_COLS,
+    Band, BandKind, BrowseAxis, Command, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
+    IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
+    SPECTRUM_COLS,
     SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
 };
@@ -580,7 +581,11 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
 /// block). Shared by the enable toggle, the band handles, and the preamp.
 fn apply_eq(s: &State) {
     config::save_eq(s.eq_enabled, &s.eq_bands, s.eq_preamp);
-    s.host.set_eq(s.eq_bands.clone(), s.eq_preamp, s.eq_enabled);
+    s.host.set_dsp_chain(vec![EqUnit {
+        bands: s.eq_bands.clone(),
+        preamp_db: s.eq_preamp,
+        enabled: s.eq_enabled,
+    }]);
 }
 
 /// Toggle the EQ master enable.
@@ -1353,7 +1358,11 @@ fn main() -> anyhow::Result<()> {
     // Restore the persisted EQ before any spawn too, so the first stream opens with
     // the user's bands already applied.
     let (eq_on, eq_bands, eq_preamp) = config::load_eq();
-    host.set_eq(eq_bands, eq_preamp, eq_on);
+    host.set_dsp_chain(vec![EqUnit {
+        bands: eq_bands,
+        preamp_db: eq_preamp,
+        enabled: eq_on,
+    }]);
     // Seed the hybrid-ReplayGain loudness cache from the persisted file (stale
     // entries already dropped on load) BEFORE any spawn, so a previously-analyzed
     // untagged track is normalized this session with no re-scan.
