@@ -2088,6 +2088,246 @@ mod tests {
         );
     }
 
+    /// Build Library in a short window so its ~38-track testdata list overflows
+    /// the viewport and must scroll. Returns the ready runtime (live waker set,
+    /// one frame drawn) so the scroll callback has run and the thumb is laid out.
+    fn overflowing_library(height: f32) -> Runtime<State> {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Library;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, height), env);
+        // Live-bound thumb rects need a waker to land (same as the settings test).
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        rt.frame(0.0);
+        rt
+    }
+
+    /// When the track list overflows, a scrollbar thumb lays out in the right
+    /// gutter with real height.
+    #[test]
+    fn library_scroll_shows_a_scrollbar_thumb_when_content_overflows() {
+        let rt = overflowing_library(300.0);
+        let (thumb, _) = rt
+            .presented("library-scrollbar")
+            .expect("the library scrollbar thumb lays out over an overflowing list");
+        assert!(
+            thumb[3] > 0.0,
+            "the thumb has height when content overflows, got {thumb:?}"
+        );
+    }
+
+    /// The scrollbar is invisible while the list sits at rest and fades in only
+    /// while the pointer is over the list container — a clean resting list.
+    #[test]
+    fn library_scrollbar_is_hidden_at_rest_and_revealed_on_hover() {
+        let mut rt = overflowing_library(300.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        let (_r, rest_op) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb element exists even at rest");
+        assert!(
+            rest_op < 0.05,
+            "the scrollbar is hidden at rest, opacity {rest_op}"
+        );
+
+        // Hover anywhere inside the track list.
+        let (x, y) = rt.find("tracks").expect("the track-list viewport");
+        rt.pointer_move(x, y);
+        rt.settle_all();
+        rt.frame(0.0);
+        let (_r2, hover_op) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb element exists while hovering");
+        assert!(
+            hover_op > 0.9,
+            "the scrollbar is revealed while hovering the list, opacity {hover_op}"
+        );
+    }
+
+    /// The thumb rides the scroll: jumping to the bottom drops it down the gutter.
+    #[test]
+    fn library_scrollbar_thumb_follows_scroll_to_the_bottom() {
+        let mut rt = overflowing_library(300.0);
+        let (top, _) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb lays out at the top");
+        rt.update(|_, tx| tx.scroll_to_instant("tracks", 0.0, 100_000.0));
+        rt.frame(0.0);
+        let (bottom, _) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb lays out after scrolling");
+        assert!(
+            bottom[1] > top[1] + 1.0,
+            "the thumb moved down as the list scrolled: top {top:?} bottom {bottom:?}"
+        );
+    }
+
+    /// Dragging the thumb itself down scrolls the list down — the thumb is a
+    /// handle, not just an indicator — and it follows the drag down the gutter.
+    #[test]
+    fn dragging_the_library_scrollbar_thumb_scrolls_the_list() {
+        let mut rt = overflowing_library(300.0);
+        let (thumb0, _) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb lays out at the top");
+        // Reveal it (hover) and let it fade in, then press on its centre, drag
+        // down, release.
+        let cx = thumb0[0] + thumb0[2] / 2.0;
+        let cy = thumb0[1] + thumb0[3] / 2.0;
+        rt.pointer_move(cx, cy);
+        rt.settle_all();
+        rt.frame(0.0);
+        rt.pointer_down(cx, cy);
+        rt.pointer_move(cx, cy + 80.0);
+        rt.frame(0.0);
+        rt.pointer_up(cx, cy + 80.0);
+        rt.frame(0.0);
+        let (thumb1, _) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb lays out after the drag");
+        assert!(
+            thumb1[1] > thumb0[1] + 20.0,
+            "dragging the thumb down scrolled the list: thumb {} -> {}",
+            thumb0[1],
+            thumb1[1]
+        );
+    }
+
+    /// Dragging the thumb up from a scrolled position scrolls back toward the top.
+    #[test]
+    fn dragging_the_library_scrollbar_thumb_up_scrolls_back() {
+        let mut rt = overflowing_library(300.0);
+        rt.update(|_, tx| tx.scroll_to_instant("tracks", 0.0, 100_000.0));
+        rt.frame(0.0);
+        let (thumb0, _) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb lays out near the bottom");
+        let cx = thumb0[0] + thumb0[2] / 2.0;
+        let cy = thumb0[1] + thumb0[3] / 2.0;
+        rt.pointer_move(cx, cy);
+        rt.settle_all();
+        rt.frame(0.0);
+        rt.pointer_down(cx, cy);
+        rt.pointer_move(cx, cy - 80.0);
+        rt.frame(0.0);
+        rt.pointer_up(cx, cy - 80.0);
+        rt.frame(0.0);
+        let (thumb1, _) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb lays out after the drag");
+        assert!(
+            thumb1[1] < thumb0[1] - 20.0,
+            "dragging the thumb up scrolled back: thumb {} -> {}",
+            thumb0[1],
+            thumb1[1]
+        );
+    }
+
+    /// While a thumb drag is held, the scrollbar stays visible even if the pointer
+    /// leaves the list (dragging off to the side must not fade it out mid-drag).
+    #[test]
+    fn library_scrollbar_stays_visible_while_dragging_off_the_list() {
+        let mut rt = overflowing_library(300.0);
+        let (thumb0, _) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb lays out");
+        let cx = thumb0[0] + thumb0[2] / 2.0;
+        let cy = thumb0[1] + thumb0[3] / 2.0;
+        rt.pointer_move(cx, cy); // hover reveals it
+        rt.pointer_down(cx, cy); // grab the thumb
+        // Keep holding, but drag the pointer off the list into the sidebar.
+        rt.pointer_move(50.0, cy);
+        rt.settle_all();
+        rt.frame(0.0);
+        let (_t, op) = rt
+            .presented("library-scrollbar")
+            .expect("the thumb while dragging off-list");
+        rt.pointer_up(50.0, cy);
+        assert!(
+            op > 0.9,
+            "the scrollbar stays visible while the drag continues off the list, opacity {op}"
+        );
+    }
+
+    /// Build the sidebar queue with a long context so its list overflows the
+    /// panel and must scroll. Returns the ready runtime (waker set, one frame).
+    fn overflowing_queue(height: f32) -> Runtime<State> {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        scene_queue(&mut s);
+        // Many context rows so the queue list overflows a short sidebar for sure.
+        s.context_ids = s.library.iter().map(|t| t.id).collect();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, height), env);
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        rt.frame(0.0);
+        rt
+    }
+
+    /// The queue thumb rides the scroll and stays within the viewport frame — the
+    /// regression this whole change fixes (it used to be dragged off the top as a
+    /// child of the scrolled content).
+    #[test]
+    fn queue_scrollbar_thumb_stays_in_the_viewport_while_scrolling() {
+        let mut rt = overflowing_queue(1200.0);
+        let (vp, _) = rt
+            .presented("queue-content")
+            .expect("the queue viewport renders");
+        let (top, _) = rt
+            .presented("queue-scrollbar")
+            .expect("the queue thumb lays out");
+        assert!(
+            top[3] > 0.0,
+            "precondition: the queue overflows, got {top:?}"
+        );
+        rt.update(|_, tx| tx.scroll_to_instant("queue-content", 0.0, 100_000.0));
+        rt.frame(0.0);
+        let (bottom, _) = rt
+            .presented("queue-scrollbar")
+            .expect("the queue thumb after scroll");
+        assert!(
+            bottom[1] > top[1] + 1.0,
+            "the thumb moved down with the scroll: top {top:?} bottom {bottom:?}"
+        );
+        assert!(
+            bottom[1] >= vp[1] - 1.0 && bottom[1] + bottom[3] <= vp[1] + vp[3] + 1.0,
+            "the thumb stays inside the viewport frame: thumb {bottom:?} viewport {vp:?}"
+        );
+    }
+
+    /// The queue scrollbar is hidden at rest and revealed only while the pointer
+    /// is over the queue list.
+    #[test]
+    fn queue_scrollbar_is_hidden_at_rest_and_revealed_on_hover() {
+        let mut rt = overflowing_queue(500.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        let (_r, rest_op) = rt
+            .presented("queue-scrollbar")
+            .expect("the thumb exists at rest");
+        assert!(rest_op < 0.05, "hidden at rest, opacity {rest_op}");
+
+        let (x, y) = rt.find("queue-content").expect("the queue viewport");
+        rt.pointer_move(x, y);
+        rt.settle_all();
+        rt.frame(0.0);
+        let (_r2, hover_op) = rt
+            .presented("queue-scrollbar")
+            .expect("the thumb exists while hovering");
+        assert!(
+            hover_op > 0.9,
+            "revealed while hovering the queue, opacity {hover_op}"
+        );
+    }
+
     /// Pressing the signal-path line opens the stage-by-stage panel: every stage
     /// row renders, the not-yet-built stages are present (as "soon"), and the
     /// ReplayGain toggle flips the mode.
