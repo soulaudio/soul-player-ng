@@ -147,82 +147,98 @@ fn rg_toggle(mode: ReplayGainMode, p: &Palette) -> El {
     chip
 }
 
-/// The signal-path panel, mounted at the window root (via [`crate::view`]'s
-/// overlay layer) and anchored above the now-playing line. `None` when the panel
-/// is closed or nothing is playing.
+/// The pipeline stage rows (the reusable body shared by the now-playing popover
+/// and the Settings → Audio card): the live chain when a track is playing, then
+/// the not-yet-built Exclusive output & DSP/EQ stages surfaced as "soon".
+pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
+    let mut rows = col().key("signal-path-stages").w_full().gap(space::XXS);
+    if let Some(sp) = s.signal_path {
+        rows = rows
+            .child(stage_row(
+                "sp-row-source",
+                t!("player.signalPath.source").to_string(),
+                source_value(&sp),
+                None,
+                p,
+            ))
+            .child(stage_row(
+                "sp-row-decode",
+                t!("player.signalPath.decode").to_string(),
+                decode_value(&sp),
+                None,
+                p,
+            ))
+            .child(stage_row(
+                "sp-row-replaygain",
+                t!("player.signalPath.replayGain").to_string(),
+                replay_gain_value(s.replaygain_mode, sp.replay_gain_db),
+                Some(rg_toggle(s.replaygain_mode, p)),
+                p,
+            ))
+            .child(stage_row(
+                "sp-row-resample",
+                t!("player.signalPath.resample").to_string(),
+                resample_value(&sp),
+                None,
+                p,
+            ))
+            .child(stage_row(
+                "sp-row-output",
+                t!("player.signalPath.output").to_string(),
+                output_value(&sp),
+                Some(soon_chip(p)),
+                p,
+            ));
+    } else {
+        rows = rows.child(
+            text(t!("player.nothingPlaying").to_string())
+                .font(type_::BODY)
+                .color(p.text_secondary),
+        );
+    }
+    // Not-yet-built stages, always surfaced so the whole pipeline is visible.
+    rows.child(stage_row(
+        "sp-row-exclusive",
+        t!("player.signalPath.exclusive").to_string(),
+        String::new(),
+        Some(soon_chip(p)),
+        p,
+    ))
+    .child(stage_row(
+        "sp-row-dsp",
+        t!("player.signalPath.dsp").to_string(),
+        String::new(),
+        Some(soon_chip(p)),
+        p,
+    ))
+}
+
+/// The signal-path popover, mounted at the window root (via [`crate::view`]'s
+/// overlay layer) and anchored above the now-playing line. `None` when closed.
 pub fn overlay(s: &State, p: &Palette) -> Option<El> {
     if !s.signal_path_open {
         return None;
     }
-    let sp = s.signal_path?;
-    let panel = col()
-        .key("signal-path-panel")
-        .anchored_fit("signal-path", Side::Top, Align::Start, GAP)
-        .focus_group()
-        .focus_return("signal-path".to_string())
-        .fill(p.card)
-        .radius(radius::MD)
-        .border_sides([1.0, 1.0, 1.0, 1.0], p.border)
-        .padding(space::MD)
-        .gap(space::XXS)
-        .min_w(260.0)
-        .modal(true, close_signal_path)
-        .child(
-            text(t!("player.signalPath.title").to_string())
-                .font(type_::SECTION)
-                .color(p.text_secondary),
-        )
-        .child(stage_row(
-            "sp-row-source",
-            t!("player.signalPath.source").to_string(),
-            source_value(&sp),
-            None,
-            p,
-        ))
-        .child(stage_row(
-            "sp-row-decode",
-            t!("player.signalPath.decode").to_string(),
-            decode_value(&sp),
-            None,
-            p,
-        ))
-        .child(stage_row(
-            "sp-row-replaygain",
-            t!("player.signalPath.replayGain").to_string(),
-            replay_gain_value(s.replaygain_mode, sp.replay_gain_db),
-            Some(rg_toggle(s.replaygain_mode, p)),
-            p,
-        ))
-        .child(stage_row(
-            "sp-row-resample",
-            t!("player.signalPath.resample").to_string(),
-            resample_value(&sp),
-            None,
-            p,
-        ))
-        .child(stage_row(
-            "sp-row-output",
-            t!("player.signalPath.output").to_string(),
-            output_value(&sp),
-            Some(soon_chip(p)),
-            p,
-        ))
-        // Not-yet-built stages, surfaced so the whole pipeline is visible.
-        .child(stage_row(
-            "sp-row-exclusive",
-            t!("player.signalPath.exclusive").to_string(),
-            String::new(),
-            Some(soon_chip(p)),
-            p,
-        ))
-        .child(stage_row(
-            "sp-row-dsp",
-            t!("player.signalPath.dsp").to_string(),
-            String::new(),
-            Some(soon_chip(p)),
-            p,
-        ));
-    Some(panel)
+    Some(
+        col()
+            .key("signal-path-panel")
+            .anchored_fit("signal-path", Side::Top, Align::Start, GAP)
+            .focus_group()
+            .focus_return("signal-path".to_string())
+            .fill(p.card)
+            .radius(radius::MD)
+            .border_sides([1.0, 1.0, 1.0, 1.0], p.border)
+            .padding(space::MD)
+            .gap(space::XXS)
+            .min_w(260.0)
+            .modal(true, close_signal_path)
+            .child(
+                text(t!("player.signalPath.title").to_string())
+                    .font(type_::SECTION)
+                    .color(p.text_secondary),
+            )
+            .child(pipeline_rows(s, p)),
+    )
 }
 
 #[cfg(test)]

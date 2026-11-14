@@ -683,3 +683,20 @@ player.signalPath.off:
   zh: '关'
   cs: 'Vyp.'
   ja: 'オフ'
+
+# Settings -> Audio: the signal-path card (shares the pipeline rows with the
+# now-playing popover). Non-English values are initial translations for review.
+settings.signalPath:
+  en: 'Signal path'
+  de: 'Signalweg'
+  es: 'Ruta de senal'
+  zh: '信号路径'
+  cs: 'Cesta signalu'
+  ja: 'シグナルパス'
+settings.signalPathDesc:
+  en: 'The decode-to-output chain for the current track. Exclusive output and DSP are coming soon.'
+  de: 'Die Dekodierungs- bis Ausgabekette des aktuellen Titels. Exklusivausgabe und DSP folgen bald.'
+  es: 'La cadena de decodificacion a salida de la pista actual. Salida exclusiva y DSP llegaran pronto.'
+  zh: '当前曲目的解码到输出链路。独占输出和 DSP 即将推出。'
+  cs: 'Retezec od dekodovani po vystup pro aktualni skladbu. Exkluzivni vystup a DSP brzy.'
+  ja: '現在のトラックのデコードから出力までの経路。排他出力とDSPは近日対応。'
