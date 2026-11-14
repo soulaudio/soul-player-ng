@@ -90,26 +90,17 @@ pub(crate) const HEIGHT: f32 = 40.0;
 /// ~12 pt lights. `main.rs` passes this to `Titlebar::traffic_lights`.
 pub(crate) const TRAFFIC_LIGHTS: (f32, f32) = (19.0, (HEIGHT - 12.0) / 2.0);
 
-/// The window title bar: a full-width strip, `HEIGHT` tall, whose content keeps
-/// clear of the native controls at each end. Minimal for now (a wordmark); the
-/// open centre/trailing area is where custom header components go later.
-pub(crate) fn bar(_s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
-    let chrome = cx.chrome_insets();
-    // Tint the Windows caption-button symbols to the theme, and keep the bar's
-    // height in sync with the app's zoom.
-    cx.caption_color(p.fg);
-    cx.titlebar_height(HEIGHT);
-
+/// The window title bar: a full-width strip, `HEIGHT` tall. Minimal for now (a
+/// wordmark); the open centre/trailing area is where custom header components go
+/// later. Task 2 makes the gutters clear the native controls via `chrome_insets`.
+pub(crate) fn bar(_s: &State, p: &Palette, _cx: &mut Cx<State>) -> El {
     row()
         .key("titlebar")
         .w_full()
         .h(HEIGHT)
         .fill(p.bg)
         .items_center()
-        // Clear the native controls: macOS lights (leading), Windows buttons
-        // (trailing). `max(space::MD)` keeps a sane gutter where an inset is 0.
-        .pl(chrome.leading.max(space::MD))
-        .pr(chrome.trailing.max(space::MD))
+        .px(space::MD)
         .window_drag()
         .child(
             row()
@@ -127,6 +118,8 @@ pub(crate) fn bar(_s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
         )
 }
 ```
+
+(The `_cx` parameter is kept now so Task 2 can read `cx.chrome_insets()` without a signature change.)
 
 - [ ] **Step 4: Register the module** — add to `app/rune/src/views/mod.rs` (alphabetical with the other `pub mod` lines)
 
@@ -193,10 +186,11 @@ git commit -m "feat(ui): custom title-bar strip mounted atop the shell"
 
 **Files:**
 - Modify: `app/rune/src/main.rs` (add test)
-- (Implementation already in `titlebar.rs` from Task 1 — this task proves it against simulated insets.)
+- Modify: `app/rune/src/views/titlebar.rs` (make the gutters chrome-aware + theme the Windows buttons)
 
 **Interfaces:**
 - Consumes: `views::titlebar::bar` and its `"titlebar-content"` inner area from Task 1.
+- Produces: `bar` now reads `cx.chrome_insets()` and calls `cx.caption_color` / `cx.titlebar_height`.
 
 - [ ] **Step 1: Write the failing test** (in `app/rune/src/main.rs`, `mod tests`)
 
@@ -230,18 +224,59 @@ git commit -m "feat(ui): custom title-bar strip mounted atop the shell"
     }
 ```
 
-- [ ] **Step 2: Run the test — verify it passes** (the Task 1 implementation already reads `chrome_insets()`; this proves it)
+- [ ] **Step 2: Run the test — verify it fails**
+
+Run: `cd app/rune && cargo test -q titlebar_content_stays_within_the_chrome_insets 2>&1 | tail -12`
+Expected: FAIL — with the symmetric `.px(space::MD)` gutter from Task 1, the content starts at `space::MD` (12), not clearing the simulated `leading = 80` inset (and runs past `window_w - trailing`).
+
+- [ ] **Step 3: Make the gutters chrome-aware** — in `app/rune/src/views/titlebar.rs`, update `bar` to read the insets and theme the Windows buttons. Replace the `.items_center().px(space::MD)` line and the `_cx` parameter:
+
+```rust
+pub(crate) fn bar(_s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
+    let chrome = cx.chrome_insets();
+    // Tint the Windows caption-button symbols to the theme and keep the bar's
+    // height in sync with the app's zoom.
+    cx.caption_color(p.fg);
+    cx.titlebar_height(HEIGHT);
+
+    row()
+        .key("titlebar")
+        .w_full()
+        .h(HEIGHT)
+        .fill(p.bg)
+        .items_center()
+        // Clear the native controls: macOS lights (leading), Windows buttons
+        // (trailing). `max(space::MD)` keeps a sane gutter where an inset is 0.
+        .pl(chrome.leading.max(space::MD))
+        .pr(chrome.trailing.max(space::MD))
+        .window_drag()
+        .child(
+            row()
+                .key("titlebar-content")
+                .grow(1.0)
+                .min_w(0.0)
+                .h_full()
+                .items_center()
+                .child(
+                    text("Soul Audio".to_string())
+                        .key("titlebar-title")
+                        .font(type_::LABEL)
+                        .color(p.text_secondary),
+                ),
+        )
+}
+```
+
+- [ ] **Step 4: Run the test — verify it passes**
 
 Run: `cd app/rune && cargo test -q titlebar_content_stays_within_the_chrome_insets 2>&1 | tail -8`
 Expected: PASS.
 
-> If it FAILS, the padding in `titlebar::bar` is wrong: ensure the outer row uses `.pl(chrome.leading.max(space::MD))` and `.pr(chrome.trailing.max(space::MD))` and that `"titlebar-content"` is the `grow(1.0)` child inside it. Fix, re-run until PASS.
-
-- [ ] **Step 3: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add app/rune/src/main.rs
-git commit -m "test(ui): title-bar content clears macOS/Windows chrome insets"
+git add app/rune/src/views/titlebar.rs app/rune/src/main.rs
+git commit -m "feat(ui): title-bar gutters clear the macOS/Windows native controls"
 ```
 
 ---
