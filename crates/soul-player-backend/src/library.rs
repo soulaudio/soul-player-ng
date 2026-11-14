@@ -38,17 +38,6 @@ pub struct IncrementalBuild {
     pub removed: Vec<(PathBuf, Vec<PathBuf>)>,
 }
 
-/// Extraction parallelism for the incremental scan: oversubscribed for the
-/// I/O-bound small random tag reads (the OS reorders queued reads by location, so
-/// more in-flight requests hide latency on HDD *and* SSD), capped so a huge core
-/// count doesn't spawn an unreasonable thread pool. See the importer's perf notes.
-fn scan_threads() -> usize {
-    let cores = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    (cores * 4).clamp(4, 32)
-}
-
 /// A `.soulidx` reader over an **owning** in-memory source: `Cursor` owns the
 /// baked bytes, so the reader is `'static` with no leak and no on-disk cache, and
 /// drops cleanly when the `Library` is swapped out on rescan.
@@ -104,8 +93,11 @@ impl Library {
     /// Scan + bake each watched folder **incrementally**: unchanged files are
     /// reused from `priors[i]` (the cache returned by a previous build for
     /// `roots[i]`), only new/changed files are re-read, and parallel extraction
-    /// fans out the I/O. Produces a library byte-identical to [`scan_many`] for the
-    /// same tree — it only changes *how much work* is done — plus the updated
+    /// fans out the I/O across `threads` workers (the caller picks this — e.g. the
+    /// host's adaptive `IndexingMode` — oversubscribed for local disks, bounded for
+    /// a NAS; clamped to at least 1). Produces a library byte-identical to
+    /// [`scan_many`] for the same tree — it only changes *how much work* is done —
+    /// plus the updated
     /// per-root [`ScanCache`] (persist it for a warm next startup) and the
     /// deletions detected per root (for a removal warning). A missing or short
     /// `priors` entry (`priors.get(i)` is `None`) is treated as an empty cache (a
@@ -113,8 +105,9 @@ impl Library {
     pub fn scan_many_incremental(
         roots: &[PathBuf],
         priors: &[ScanCache],
+        threads: usize,
     ) -> anyhow::Result<IncrementalBuild> {
-        let threads = scan_threads();
+        let threads = threads.max(1);
         let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(roots.len());
         let mut counts = Vec::with_capacity(roots.len());
         let mut caches = Vec::with_capacity(roots.len());
@@ -659,7 +652,7 @@ mod tests {
 
         // Cold incremental scan (empty prior) lists the same tracks as a full scan.
         let titles = |l: &Library| l.views().into_iter().map(|v| v.id).collect::<Vec<_>>();
-        let build = Library::scan_many_incremental(&roots, &[ScanCache::default()]).unwrap();
+        let build = Library::scan_many_incremental(&roots, &[ScanCache::default()], 4).unwrap();
         assert_eq!(build.library.len(), 2);
         assert_eq!(
             titles(&build.library),
@@ -673,14 +666,14 @@ mod tests {
 
         // Warm rescan reusing the prior cache: an added file is reflected.
         std::fs::write(root.join("c.wav"), wav(48_000, 48_000)).unwrap();
-        let build2 = Library::scan_many_incremental(&roots, &build.caches).unwrap();
+        let build2 = Library::scan_many_incremental(&roots, &build.caches, 4).unwrap();
         assert_eq!(build2.library.len(), 3, "added file appears");
         assert!(build2.removed.is_empty());
 
         // Deletions are reported per root (an available root — genuine removals).
         std::fs::remove_file(root.join("a.wav")).unwrap();
         std::fs::remove_file(root.join("b.wav")).unwrap();
-        let build3 = Library::scan_many_incremental(&roots, &build2.caches).unwrap();
+        let build3 = Library::scan_many_incremental(&roots, &build2.caches, 4).unwrap();
         assert_eq!(build3.library.len(), 1, "only c.wav remains");
         assert_eq!(build3.removed.len(), 1, "one root reported deletions");
         assert_eq!(build3.removed[0].0, root);

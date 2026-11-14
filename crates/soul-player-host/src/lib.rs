@@ -15,6 +15,7 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
+use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
@@ -80,6 +81,86 @@ pub struct WatchUpdate {
     pub sources: Vec<SourceStatus>,
 }
 
+/// How hard the library scanner may work — the user-facing "indexing speed"
+/// knob. Resolves to an extraction thread count ([`resolve_threads`](IndexingMode::resolve_threads))
+/// each scan, so [`Automatic`](IndexingMode::Automatic) can follow the machine's
+/// live CPU load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndexingMode {
+    /// Follow the machine: scan fast when the CPU is idle, ease off when it's busy.
+    /// Reads current CPU load (a brief sample) and scales parallelism to the idle
+    /// headroom — the recommended default a UI should offer.
+    #[default]
+    Automatic,
+    /// Always oversubscribe for the quickest scan (best for a big first import);
+    /// may briefly load the machine.
+    Maximum,
+    /// Bounded, low parallelism — gentle on an older machine or a network share
+    /// (a NAS), where firing many concurrent reads is counter-productive.
+    Gentle,
+}
+
+impl IndexingMode {
+    /// The config token persisted for this mode (stable across releases).
+    #[must_use]
+    pub fn as_config(self) -> &'static str {
+        match self {
+            IndexingMode::Automatic => "auto",
+            IndexingMode::Maximum => "max",
+            IndexingMode::Gentle => "gentle",
+        }
+    }
+
+    /// Parse a persisted token back to a mode, defaulting to
+    /// [`Automatic`](IndexingMode::Automatic) for anything unknown/missing.
+    #[must_use]
+    pub fn from_config(s: &str) -> Self {
+        match s {
+            "max" => IndexingMode::Maximum,
+            "gentle" => IndexingMode::Gentle,
+            _ => IndexingMode::Automatic,
+        }
+    }
+
+    /// The extraction thread count for this mode *right now*. `Maximum` oversubscribes
+    /// the cores (hiding I/O latency); `Gentle` stays low; `Automatic` samples the
+    /// current CPU load and scales between the two so a busy machine keeps responsive.
+    /// Always at least 2 (some parallelism hides I/O latency) and capped so a huge
+    /// core count can't spawn an unreasonable pool.
+    #[must_use]
+    pub fn resolve_threads(self) -> usize {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        match self {
+            IndexingMode::Maximum => (cores * 4).clamp(4, 32),
+            IndexingMode::Gentle => 2,
+            IndexingMode::Automatic => {
+                // Idle machine → up to 4× cores; fully busy → ~0.25× cores. Fall back
+                // to "mostly idle" if the load can't be read.
+                let idle = cpu_idle_fraction().unwrap_or(0.75);
+                let factor = 0.25 + 3.75 * idle;
+                ((cores as f32 * factor).round() as usize).clamp(2, 32)
+            }
+        }
+    }
+}
+
+/// The fraction of CPU that is idle right now (0.0 = pegged, 1.0 = idle), or
+/// `None` if it can't be sampled. Takes two CPU readings a short interval apart
+/// (sysinfo needs the gap to compute a percentage), so it costs ~one
+/// [`MINIMUM_CPU_UPDATE_INTERVAL`] (~200 ms) — only paid in `Automatic` mode.
+fn cpu_idle_fraction() -> Option<f32> {
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
+    sys.refresh_cpu_usage();
+    let usage = sys.global_cpu_usage();
+    usage
+        .is_finite()
+        .then(|| (1.0 - usage / 100.0).clamp(0.0, 1.0))
+}
+
 /// One configured source: a root path plus whether the user has it enabled.
 /// Stored (deduped, in order) so an enabled flag — like an unavailable root —
 /// survives re-scans and reconciliation.
@@ -121,6 +202,12 @@ struct Inner {
     /// kept alive here so its debounce thread runs; `None` until started. Replaced
     /// (re-armed over the new root set) whenever the configured sources change.
     watcher: Mutex<Option<Debouncer<RecommendedWatcher>>>,
+    /// The library-scan "indexing speed" mode, resolved to a thread count each scan
+    /// (so [`IndexingMode::Automatic`] follows live CPU load). Defaults to
+    /// [`Maximum`](IndexingMode::Maximum) here — no CPU sampling until the app sets
+    /// the user's persisted choice ([`set_indexing_mode`](PlayerHandle::set_indexing_mode),
+    /// whose own default is `Automatic`) — which also keeps the test suite fast.
+    indexing_mode: Mutex<IndexingMode>,
     /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
     /// or `None` for the system default. Read when the actor is (re)spawned and
     /// passed to the sink factory; a change applies to the NEXT spawn, not the
@@ -216,6 +303,7 @@ impl PlayerHandle {
                 caches: Mutex::new(HashMap::new()),
                 watch_subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
+                indexing_mode: Mutex::new(IndexingMode::Maximum),
                 output_device: Mutex::new(None),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
@@ -302,11 +390,21 @@ impl PlayerHandle {
                 .map(|r| caches.get(r).cloned().unwrap_or_default())
                 .collect()
         };
+        // Resolve the extraction parallelism for the current indexing mode — in
+        // Automatic this samples live CPU load, so a scan triggered while the machine
+        // is busy backs off on its own. Copy the mode out of the lock first: the
+        // sample can sleep ~200 ms and we don't want to block a concurrent mode change.
+        let mode = *self
+            .inner
+            .indexing_mode
+            .lock()
+            .expect("indexing_mode mutex");
+        let threads = mode.resolve_threads();
         let IncrementalBuild {
             library,
             caches: fresh,
             removed,
-        } = Library::scan_many_incremental(&to_scan, &priors)?;
+        } = Library::scan_many_incremental(&to_scan, &priors, threads)?;
         // Refresh the scanned roots' caches; keep configured-but-unscanned roots
         // warm (a disabled / offline source re-aggregates from its cache when it
         // returns); prune caches for roots no longer configured.
@@ -392,6 +490,28 @@ impl PlayerHandle {
     #[must_use]
     pub fn caches_snapshot(&self) -> HashMap<PathBuf, ScanCache> {
         self.inner.caches.lock().expect("caches mutex").clone()
+    }
+
+    /// Set the library-scan [`IndexingMode`] (the "indexing speed" the user picks in
+    /// Settings). Applies to the **next** scan — current scans keep their resolved
+    /// thread count. The app restores the persisted choice at startup; call before
+    /// (or any time after) the first scan.
+    pub fn set_indexing_mode(&self, mode: IndexingMode) {
+        *self
+            .inner
+            .indexing_mode
+            .lock()
+            .expect("indexing_mode mutex") = mode;
+    }
+
+    /// The current [`IndexingMode`] (for seeding the Settings UI).
+    #[must_use]
+    pub fn indexing_mode(&self) -> IndexingMode {
+        *self
+            .inner
+            .indexing_mode
+            .lock()
+            .expect("indexing_mode mutex")
     }
 
     /// Reconcile the configured-source set to exactly `roots` (deduped, preserving
@@ -1270,6 +1390,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&missing);
         h.set_sources(&[(missing, true)]).unwrap();
         h.start_watching(); // an unavailable root — nothing to watch, must not panic
+    }
+
+    #[test]
+    fn indexing_mode_resolves_bounded_thread_counts() {
+        assert_eq!(
+            IndexingMode::Gentle.resolve_threads(),
+            2,
+            "gentle is minimal parallelism"
+        );
+        let max = IndexingMode::Maximum.resolve_threads();
+        assert!(
+            (4..=32).contains(&max),
+            "maximum oversubscribes but stays capped: {max}"
+        );
+        // Automatic samples live CPU load; whatever the load, it stays in range.
+        let auto = IndexingMode::Automatic.resolve_threads();
+        assert!(
+            (2..=32).contains(&auto),
+            "automatic stays in [2, 32]: {auto}"
+        );
+    }
+
+    #[test]
+    fn indexing_mode_config_tokens_round_trip() {
+        for m in [
+            IndexingMode::Automatic,
+            IndexingMode::Maximum,
+            IndexingMode::Gentle,
+        ] {
+            assert_eq!(
+                IndexingMode::from_config(m.as_config()),
+                m,
+                "{m:?} round-trips"
+            );
+        }
+        assert_eq!(
+            IndexingMode::from_config("nonsense"),
+            IndexingMode::Automatic,
+            "an unknown/missing token defaults to Automatic"
+        );
+        assert_eq!(IndexingMode::default(), IndexingMode::Automatic);
+    }
+
+    #[test]
+    fn set_indexing_mode_round_trips_on_the_handle() {
+        let h = PlayerHandle::offline();
+        assert_eq!(
+            h.indexing_mode(),
+            IndexingMode::Maximum,
+            "the handle's own default is Maximum until the app restores the user's choice"
+        );
+        h.set_indexing_mode(IndexingMode::Gentle);
+        assert_eq!(h.indexing_mode(), IndexingMode::Gentle);
     }
 
     #[test]
