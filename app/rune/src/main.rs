@@ -1266,6 +1266,80 @@ mod tests {
         }
     }
 
+    /// Build Settings → Audio in a short window so its stage cards overflow the
+    /// viewport and it must scroll. Returns the ready runtime (live waker set, one
+    /// frame drawn) so the scroll callback has run and the thumb is laid out.
+    fn overflowing_audio_settings(height: f32) -> Runtime<State> {
+        use soul_player_host::{SignalPath, SourceFormat};
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.signal_path = Some(SignalPath {
+            source: SourceFormat::Pcm { bits: 24 },
+            decoded_rate: 96_000,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db: 0.0,
+            device_rate: 96_000,
+            resampling: false,
+            output_bits: 24,
+        });
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, height), env);
+        // Live-bound thumb rects need a waker to land; the engine's own scrollbar
+        // test does the same before framing.
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        rt.frame(0.0);
+        rt
+    }
+
+    /// When the Settings content overflows, a scrollbar thumb renders in the
+    /// viewport's right gutter with real height.
+    #[test]
+    fn settings_scroll_shows_a_scrollbar_thumb_when_content_overflows() {
+        let rt = overflowing_audio_settings(420.0);
+        let (thumb, _) = rt
+            .presented("settings-scrollbar")
+            .expect("the scrollbar thumb renders over overflowing content");
+        assert!(
+            thumb[3] > 0.0,
+            "the thumb has height when content overflows, got {thumb:?}"
+        );
+        let (vp, _) = rt
+            .presented("settings-scroll")
+            .expect("the scroll viewport renders");
+        // The thumb sits in the right half of the viewport (its gutter), not over
+        // the cards on the left.
+        assert!(
+            thumb[0] > vp[0] + vp[2] * 0.5,
+            "thumb hugs the right gutter: thumb {thumb:?} viewport {vp:?}"
+        );
+    }
+
+    /// Scrolling to the end leaves a margin below the last stage card — the
+    /// content's bottom padding travels with it instead of sitting flush.
+    #[test]
+    fn settings_scroll_leaves_a_bottom_margin_below_the_last_card() {
+        let mut rt = overflowing_audio_settings(420.0);
+        rt.update(|_, tx| tx.scroll_to_instant("settings-scroll", 0.0, 100_000.0));
+        rt.frame(0.0);
+        let (vp, _) = rt
+            .presented("settings-scroll")
+            .expect("the scroll viewport renders");
+        let (last, _) = rt
+            .presented("sp-stage-exclusive")
+            .expect("the last stage card is scrolled into view");
+        let margin = (vp[1] + vp[3]) - (last[1] + last[3]);
+        assert!(
+            margin > 8.0,
+            "the last card clears the viewport bottom (margin {margin}): viewport {vp:?} card {last:?}"
+        );
+    }
+
     /// Pressing the signal-path line opens the stage-by-stage panel: every stage
     /// row renders, the not-yet-built stages are present (as "soon"), and the
     /// ReplayGain toggle flips the mode.

@@ -9,6 +9,7 @@ pub mod icons;
 pub mod library;
 pub mod player;
 pub mod queue;
+pub mod scrollbar;
 pub mod settings;
 pub mod sidebar;
 pub mod signal_path;
