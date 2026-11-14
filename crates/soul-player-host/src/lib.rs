@@ -10,7 +10,10 @@ mod sink;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
+use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
@@ -29,6 +32,18 @@ pub use soul_player_backend::{
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
+/// A handler for a background (watcher-triggered) library refresh (see
+/// [`PlayerHandle::on_watch_update`]).
+type WatchSubscriber = Box<dyn Fn(WatchUpdate) + Send>;
+/// Deletions from one rescan: `(root, removed file paths)` for each root that lost
+/// files since its prior cache.
+type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
+
+/// Debounce window for the live filesystem watcher: filesystem events for one
+/// logical change (an editor's write-rename, an album copy's many files) are
+/// coalesced into a single rescan this long after the last event in the burst.
+/// Long enough to collapse a burst, short enough to feel live.
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(600);
 
 /// The per-source status of one configured folder, as of the last scan.
 ///
@@ -96,6 +111,16 @@ struct Inner {
     /// a cold full read. A configured-but-unscanned root (disabled / offline) keeps
     /// its cache for when it returns; a de-configured root's cache is pruned.
     caches: Mutex<HashMap<PathBuf, ScanCache>>,
+    /// Subscribers for a background (watcher-triggered) rescan's [`WatchUpdate`], so
+    /// the UI refreshes its library/sources when files change on disk while the app
+    /// is open. Registered via [`on_watch_update`](PlayerHandle::on_watch_update);
+    /// distinct from `subscribers` (backend playback events) because a `WatchUpdate`
+    /// carries the host's own [`SourceStatus`], not a backend [`Event`].
+    watch_subscribers: Mutex<Vec<WatchSubscriber>>,
+    /// The live filesystem watcher ([`start_watching`](PlayerHandle::start_watching)),
+    /// kept alive here so its debounce thread runs; `None` until started. Replaced
+    /// (re-armed over the new root set) whenever the configured sources change.
+    watcher: Mutex<Option<Debouncer<RecommendedWatcher>>>,
     /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
     /// or `None` for the system default. Read when the actor is (re)spawned and
     /// passed to the sink factory; a change applies to the NEXT spawn, not the
@@ -189,6 +214,8 @@ impl PlayerHandle {
                 folders: Mutex::new(Vec::new()),
                 last_sources: Mutex::new(Vec::new()),
                 caches: Mutex::new(HashMap::new()),
+                watch_subscribers: Mutex::new(Vec::new()),
+                watcher: Mutex::new(None),
                 output_device: Mutex::new(None),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
@@ -230,6 +257,34 @@ impl PlayerHandle {
     /// Either way it lists with a 0 `track_count`. An empty / all-disabled /
     /// all-unavailable set yields an empty library, not an error.
     fn rescan(&self) -> anyhow::Result<WatchUpdate> {
+        let (up, removed) = self.rescan_compute()?;
+        // Warn about genuine deletions after the scan: each scanned (hence
+        // available) root reports files gone since its prior cache. An offline root
+        // was never scanned, so it contributes nothing (no mass-removal when a drive
+        // is unplugged). The live watcher emits these AFTER broadcasting the library
+        // refresh (see [`start_watching`]), so the deletion warning always lands
+        // once the list already reflects the removal.
+        for (root, gone) in &removed {
+            self.emit(Event::TracksRemoved {
+                root: root.clone(),
+                count: gone.len(),
+            });
+        }
+        // A user source change (set_sources / set_folders / toggle) funnels through
+        // here; re-arm the live watcher over the new root set if it is running. The
+        // watcher's own background rescans call `rescan_compute`, not this, so they
+        // never re-arm (and never recurse).
+        self.rearm_watcher();
+        Ok(up)
+    }
+
+    /// The scan itself, **without emitting any event**: scan the enabled + reachable
+    /// roots incrementally, swap in the aggregated library, refresh the per-source
+    /// caches, and build the [`WatchUpdate`] plus the per-root deletions
+    /// (`(root, removed paths)`). Split out from [`rescan`](Self::rescan) so the live
+    /// watcher can broadcast the library refresh *before* the deletion warning (the
+    /// synchronous path emits inline right after, ordering the same way).
+    fn rescan_compute(&self) -> anyhow::Result<(WatchUpdate, Deletions)> {
         let cfg = self.inner.folders.lock().expect("folders mutex").clone();
         // Only enabled, reachable roots are scanned — checked at the ROOT so a
         // transient outage is skipped, never purged file-by-file.
@@ -252,16 +307,6 @@ impl PlayerHandle {
             caches: fresh,
             removed,
         } = Library::scan_many_incremental(&to_scan, &priors)?;
-        // Warn about genuine deletions: each scanned (hence available) root reports
-        // files gone since its prior cache. Emitted per root so a UI can surface
-        // "N tracks removed from <folder>"; an offline root was never scanned, so it
-        // contributes nothing here (no mass-removal when a drive is unplugged).
-        for (root, gone) in &removed {
-            self.emit(Event::TracksRemoved {
-                root: root.clone(),
-                count: gone.len(),
-            });
-        }
         // Refresh the scanned roots' caches; keep configured-but-unscanned roots
         // warm (a disabled / offline source re-aggregates from its cache when it
         // returns); prune caches for roots no longer configured.
@@ -304,7 +349,7 @@ impl PlayerHandle {
         // Cache the computed status (with real counts) so `sources()` — the
         // startup UI seed — reports true counts, not a 0 placeholder.
         *self.inner.last_sources.lock().expect("last_sources mutex") = sources.clone();
-        Ok(WatchUpdate { views, sources })
+        Ok((WatchUpdate { views, sources }, removed))
     }
 
     /// Seed the configured-source set from `(path, enabled)` pairs, replacing any
@@ -563,6 +608,88 @@ impl PlayerHandle {
             .iter()
         {
             sub(ev.clone());
+        }
+    }
+
+    /// Register a handler for background (watcher-triggered) library refreshes. The
+    /// app applies the [`WatchUpdate`] on its UI thread (library + Sources list), so
+    /// on-disk changes show up live. See [`start_watching`](Self::start_watching).
+    pub fn on_watch_update(&self, on_update: impl Fn(WatchUpdate) + Send + 'static) {
+        self.inner
+            .watch_subscribers
+            .lock()
+            .expect("watch_subscribers mutex")
+            .push(Box::new(on_update));
+    }
+
+    /// Fan a background rescan's [`WatchUpdate`] out to the watch subscribers.
+    fn broadcast_watch(&self, up: WatchUpdate) {
+        for sub in self
+            .inner
+            .watch_subscribers
+            .lock()
+            .expect("watch_subscribers mutex")
+            .iter()
+        {
+            sub(up.clone());
+        }
+    }
+
+    /// Start — or re-arm — the live filesystem watcher over the currently enabled
+    /// and reachable roots. A debounced change (an album copy coalesces to one
+    /// callback) triggers a background incremental rescan; its [`WatchUpdate`] is
+    /// broadcast to [`on_watch_update`](Self::on_watch_update) subscribers so the UI
+    /// refreshes, and any deletions are emitted right after (so the list updates
+    /// before the "N removed" warning). Idempotent — replaces any existing watcher,
+    /// which is how a source add/remove re-arms it. A watcher that fails to start
+    /// degrades silently (no live reindex; manual Rescan still works).
+    pub fn start_watching(&self) {
+        let roots: Vec<PathBuf> = self
+            .inner
+            .folders
+            .lock()
+            .expect("folders mutex")
+            .iter()
+            .filter(|f| f.enabled && f.path.is_dir())
+            .map(|f| f.path.clone())
+            .collect();
+        let weak = Arc::downgrade(&self.inner);
+        let mut debouncer = match new_debouncer(WATCH_DEBOUNCE, move |res: DebounceEventResult| {
+            if res.is_err() {
+                return; // watch-backend hiccup — ignore; the next event re-triggers
+            }
+            let Some(inner) = weak.upgrade() else {
+                return; // the handle (and app) is gone
+            };
+            let handle = PlayerHandle { inner };
+            // Broadcast the library refresh BEFORE the deletion warning, so the list
+            // already reflects the removal when the "N removed" notice arrives.
+            if let Ok((up, removed)) = handle.rescan_compute() {
+                handle.broadcast_watch(up);
+                for (root, gone) in removed {
+                    handle.emit(Event::TracksRemoved {
+                        root,
+                        count: gone.len(),
+                    });
+                }
+            }
+        }) {
+            Ok(d) => d,
+            Err(_) => return, // no watcher backend available → no live reindex
+        };
+        for root in &roots {
+            let _ = debouncer.watcher().watch(root, RecursiveMode::Recursive);
+        }
+        *self.inner.watcher.lock().expect("watcher mutex") = Some(debouncer);
+    }
+
+    /// Re-arm the watcher over the current roots, but only if it is already running —
+    /// called after a source-set change so a newly added folder is watched (and a
+    /// removed one dropped) without the app re-requesting it.
+    fn rearm_watcher(&self) {
+        let active = self.inner.watcher.lock().expect("watcher mutex").is_some();
+        if active {
+            self.start_watching();
         }
     }
 
@@ -1092,6 +1219,57 @@ mod tests {
             vec![(aroot, 1)],
             "exactly one deletion warning, carrying the right root and count"
         );
+    }
+
+    #[test]
+    fn watcher_reindexes_and_broadcasts_on_a_new_file() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let dir = folder_with("watch_live", &["a.wav"]);
+        let root = dir.path().to_path_buf();
+        let h = PlayerHandle::offline();
+        let (tx, rx) = mpsc::channel();
+        h.on_watch_update(move |up| {
+            let _ = tx.send(up.views.len());
+        });
+        h.set_sources(&[(root.clone(), true)]).unwrap();
+        assert_eq!(h.views().len(), 1, "one track before the change");
+
+        h.start_watching();
+        // Let the platform watcher arm (FSEvents/inotify setup) before the change,
+        // so the create event isn't dropped on the floor.
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(root.join("b.wav"), wav(48_000, 96_000)).unwrap();
+
+        // The debounced watcher should rescan and broadcast a 2-track library. Drain
+        // any intermediate broadcast until the final count arrives (or time out).
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "watcher did not broadcast the new file within 20s"
+            );
+            match rx.recv_timeout(remaining) {
+                Ok(2) => break,
+                Ok(_) => continue, // an earlier broadcast in the burst — keep waiting
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("watcher broadcast timed out"),
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watch channel closed"),
+            }
+        }
+        assert_eq!(h.views().len(), 2, "the live library now has both tracks");
+    }
+
+    #[test]
+    fn start_watching_is_safe_with_no_or_unavailable_sources() {
+        let h = PlayerHandle::offline();
+        h.start_watching(); // no sources configured — must not panic
+        let missing =
+            std::env::temp_dir().join(format!("sas_watch_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        h.set_sources(&[(missing, true)]).unwrap();
+        h.start_watching(); // an unavailable root — nothing to watch, must not panic
     }
 
     #[test]
