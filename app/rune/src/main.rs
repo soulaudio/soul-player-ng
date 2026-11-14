@@ -1896,7 +1896,6 @@ mod tests {
     #[test]
     fn sources_list_renders_a_watched_folder_with_remove() {
         let dir = testdata_dir();
-        let name = dir.file_name().unwrap().to_string_lossy().to_string();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1905,20 +1904,13 @@ mod tests {
         s.settings_tab = SettingsTab::MusicData;
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        assert!(
-            rt.find(&format!("source-{name}")).is_some(),
-            "the watched folder renders"
-        );
-        assert!(
-            rt.find(&format!("remove-{name}")).is_some(),
-            "with a remove control"
-        );
+        assert!(rt.find("source-0").is_some(), "the watched folder renders");
+        assert!(rt.find("remove-0").is_some(), "with a remove control");
     }
 
     #[test]
     fn unavailable_folder_shows_offline_badge() {
         let missing = testdata_dir().join("does-not-exist");
-        let name = missing.file_name().unwrap().to_string_lossy().to_string();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1931,7 +1923,7 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
-            rt.find(&format!("offline-{name}")).is_some(),
+            rt.find("offline-0").is_some(),
             "an unavailable source shows the offline badge"
         );
     }
@@ -1941,22 +1933,15 @@ mod tests {
     #[test]
     fn source_row_shows_full_path_and_track_count() {
         let dir = testdata_dir();
-        let name = dir.file_name().unwrap().to_string_lossy().to_string();
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
         let mut s = settings_state(std::slice::from_ref(&dir), &[]);
         s.settings_tab = SettingsTab::MusicData;
-        // Pin the locale so the "track" word is deterministic regardless of the
-        // persisted preference State::new just applied, or sibling-test order.
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        assert!(
-            rt.find(&format!("source-{name}")).is_some(),
-            "the source row renders"
-        );
+        assert!(rt.find("source-0").is_some(), "the source row renders");
         // The FULL path string appears in some element's text (not just basename).
         let full = dir.to_str().unwrap();
         assert!(
@@ -1967,10 +1952,7 @@ mod tests {
         );
         // A track-count label is rendered. Assert by KEY (not the localized text),
         // so a sibling test flipping the global locale can't flake this.
-        assert!(
-            rt.find(&format!("count-{name}")).is_some(),
-            "a track-count label is shown"
-        );
+        assert!(rt.find("count-0").is_some(), "a track-count label is shown");
     }
 
     /// The leading enable toggle is a focusable control that disables its source:
@@ -1981,7 +1963,6 @@ mod tests {
         // The toggle persists via apply_and_save — isolate config to a temp dir.
         config::use_test_config_dir();
         let dir = testdata_dir();
-        let name = dir.file_name().unwrap().to_string_lossy().to_string();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1996,7 +1977,7 @@ mod tests {
             !rt.state.library.is_empty(),
             "an enabled source contributes tracks"
         );
-        let toggle = format!("enable-{name}");
+        let toggle = "enable-0".to_string();
         assert!(
             el_info(&rt, &toggle).focusable,
             "the enable toggle is keyboard-focusable"

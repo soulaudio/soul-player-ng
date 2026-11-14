@@ -338,7 +338,7 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
     // check) when enabled, `muted` when disabled. Its accessible label states the
     // action it performs (enable when off, disable when on).
     let mut toggle = el()
-        .key(format!("enable-{name}"))
+        .key(format!("enable-{index}"))
         .role("button")
         .label(if enabled {
             t!("settings.disableSource").to_string()
@@ -381,7 +381,10 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
         );
 
     let mut r = row()
-        .key(format!("source-{name}"))
+        // Key by POSITION, not basename: two sources can share a final path
+        // component (D:\Music and E:\Music), and duplicate sibling keys are a
+        // Rune hazard. `index` is unique within the card.
+        .key(format!("source-{index}"))
         .gap(space::MD)
         .center_y()
         .padding(space::SM)
@@ -390,7 +393,7 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
         .child(
             // Keyed so tests can assert the count renders without depending on the
             // (localized) label text.
-            el().key(format!("count-{name}")).child(
+            el().key(format!("count-{index}")).child(
                 text(t!("settings.trackCount", count => status.track_count).to_string())
                     .font(type_::CAPTION)
                     .color(p.text_secondary),
@@ -398,12 +401,12 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
         );
     if unavailable {
         r = r.child(
-            el().key(format!("offline-{name}"))
+            el().key(format!("offline-{index}"))
                 .child(text(t!("settings.offline").to_string()).color(p.text_secondary)),
         );
     }
     r.child(
-        el().key(format!("remove-{name}"))
+        el().key(format!("remove-{index}"))
             .role("button")
             .label(t!("queue.remove").to_string())
             .focusable(true)
