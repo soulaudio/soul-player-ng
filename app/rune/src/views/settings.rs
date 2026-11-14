@@ -16,7 +16,7 @@ use rune::{
     icon, row, text,
 };
 use soul_player_host::organize;
-use soul_player_host::{BAND_FREQS, BANDS, GAIN_LIMIT_DB, ReplayGainMode};
+use soul_player_host::{GAIN_LIMIT_DB, ReplayGainMode};
 
 use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
@@ -28,10 +28,10 @@ use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
     OrganizePhase, SettingsTab, State, ThemePref, apply_and_save, apply_watch, close_dropdown,
-    organize_begin, organize_confirm, organize_dismiss, organize_ready, set_eq_band,
-    set_eq_enabled, set_eq_preamp, set_locale_pref, set_managed_dest, set_managed_strategy,
-    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_theme_pref,
+    organize_begin, organize_confirm, organize_dismiss, organize_ready, set_eq_enabled,
+    set_eq_preamp, set_locale_pref, set_managed_dest, set_managed_strategy, set_managed_template,
+    set_nav_visible, set_output_device, set_replaygain_mode, set_replaygain_preamp,
+    set_settings_tab, set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -1147,21 +1147,6 @@ fn audio_pipeline(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         ))
 }
 
-/// Short band-frequency label (e.g. "31", "1k", "16k") — a computed format value,
-/// not a translatable UI string.
-fn fmt_band_freq(hz: f32) -> String {
-    if hz >= 1000.0 {
-        let k = hz / 1000.0;
-        if k.fract() == 0.0 {
-            format!("{k:.0}k")
-        } else {
-            format!("{k:.1}k")
-        }
-    } else {
-        format!("{hz:.0}")
-    }
-}
-
 /// Map a 0..1 slider position onto the ±[`GAIN_LIMIT_DB`] dB range, rounded to
 /// 0.1 dB.
 fn slider_to_db(v: f32) -> f32 {
@@ -1174,42 +1159,8 @@ fn db_to_slider(db: f32) -> f32 {
     ((db + GAIN_LIMIT_DB) / (2.0 * GAIN_LIMIT_DB)).clamp(0.0, 1.0)
 }
 
-/// One graphic-EQ band: a short frequency label, a gain slider (±[`GAIN_LIMIT_DB`]
-/// dB), and the current dB. `i` indexes [`BAND_FREQS`]. Commits live.
-fn eq_band_row(i: usize, gain: f32, dragging: bool, cx: &Cx<State>, p: &Palette) -> El {
-    let key = format!("eq-band-{i}");
-    let apply = move |st: &mut State, v: f32| set_eq_band(st, i, slider_to_db(v));
-    row()
-        .key(format!("eq-band-row-{i}"))
-        .w_full()
-        .center_y()
-        .gap(space::SM)
-        .child(
-            text(fmt_band_freq(BAND_FREQS[i]))
-                .font(type_::LABEL)
-                .color(p.text_secondary)
-                .w(40.0),
-        )
-        .child(row().grow(1.0).child(slider(
-            &key,
-            db_to_slider(gain),
-            dragging,
-            cx,
-            p,
-            apply,
-            apply,
-        )))
-        .child(
-            text(format!("{gain:+.1}"))
-                .font(type_::LABEL)
-                .color(p.text_secondary)
-                .w(44.0)
-                .align(Align::End),
-        )
-}
-
 /// The **DSP / EQ** stage: a 10-band graphic equalizer. An enable toggle in the
-/// header, a preamp slider for headroom, then one gain slider per octave band.
+/// header, a preamp slider for headroom, then the response-curve graph.
 /// The quality dot goes accent when the EQ is actively shaping the signal.
 fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let on = s.eq_enabled;
@@ -1265,13 +1216,6 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             apply_preamp,
             apply_preamp,
         )));
-    // One slider per band.
-    let mut bands = col().key("eq-bands").w_full().gap(space::SM);
-    for i in 0..BANDS {
-        let key = format!("eq-band-{i}");
-        let dragging = s.dragging_slider.as_deref() == Some(key.as_str());
-        bands = bands.child(eq_band_row(i, s.eq_gains[i], dragging, cx, p));
-    }
     card("sp-stage-dsp", p)
         .child(stage_header(
             if shaping { p.accent } else { p.primary },
@@ -1283,7 +1227,9 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             p,
         ))
         .child(preamp_row)
-        .child(bands)
+        // The response-curve graph with a draggable node per band (Ableton /
+        // FabFilter style) replaces the row of sliders.
+        .child(crate::views::eq_graph::eq_graph(s, p, cx))
 }
 
 /// ReplayGain: an Off / Track / Album mode row plus a preamp slider (−15..+15
