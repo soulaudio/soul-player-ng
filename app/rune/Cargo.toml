@@ -2,7 +2,7 @@
 name = "soul-player-rune"
 version = "0.3.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 publish = false
 description = "Rune (native GPU) UI head for Soul Player, over soul-player-host."
 
