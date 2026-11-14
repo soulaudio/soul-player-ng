@@ -111,6 +111,9 @@ struct Config {
     /// the default layout; extra entries are ignored (so changing the band count
     /// never corrupts a saved file).
     eq_bands: Vec<BandCfg>,
+    /// Library "indexing speed": `auto` | `max` | `gentle`. Controls how much
+    /// parallelism the scanner uses; `auto` follows live CPU load.
+    indexing_mode: String,
 }
 
 /// One persisted parametric band. A plain, TOML-friendly mirror of
@@ -188,6 +191,7 @@ impl Default for Config {
             eq_enabled: false,
             eq_preamp: 0.0,
             eq_bands: Vec::new(),
+            indexing_mode: "auto".into(),
         }
     }
 }
@@ -316,6 +320,20 @@ pub fn load_theme_pref() -> Option<String> {
 pub fn save_theme_pref(pref: &str) {
     let mut cfg = load();
     cfg.theme = pref.to_string();
+    save(&cfg);
+}
+
+/// The persisted library indexing-speed token (`auto` | `max` | `gentle`);
+/// defaults to `auto`. Map it through [`soul_player_host::IndexingMode::from_config`].
+pub fn load_indexing_mode() -> String {
+    load().indexing_mode
+}
+
+/// Persist the library indexing-speed token (from
+/// [`soul_player_host::IndexingMode::as_config`]).
+pub fn save_indexing_mode(mode: &str) {
+    let mut cfg = load();
+    cfg.indexing_mode = mode.to_string();
     save(&cfg);
 }
 
@@ -776,6 +794,7 @@ mod tests {
                 q: 0.7,
                 enabled: true,
             }],
+            indexing_mode: "gentle".into(),
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -1077,5 +1096,15 @@ mod tests {
             load_scan_caches_from(Path::new("/no/such/soul-player/scan_caches.bin")).is_empty(),
             "a missing cache file loads as an empty (cold) cache"
         );
+    }
+
+    #[test]
+    fn indexing_mode_persists() {
+        let _g = use_test_config_dir();
+        assert_eq!(load_indexing_mode(), "auto", "defaults to auto");
+        save_indexing_mode("gentle");
+        assert_eq!(load_indexing_mode(), "gentle");
+        save_indexing_mode("max");
+        assert_eq!(load_indexing_mode(), "max");
     }
 }

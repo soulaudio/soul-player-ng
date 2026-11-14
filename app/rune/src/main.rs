@@ -22,9 +22,9 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    Band, BandKind, BrowseAxis, Command, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS,
-    PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode, SPECTRUM_COLS, SignalPath,
-    SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate, default_bands,
+    Band, BandKind, BrowseAxis, Command, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, IndexingMode,
+    MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode, SPECTRUM_COLS,
+    SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
 };
 
@@ -212,6 +212,9 @@ struct State {
     /// (`(root, count)`). Cleared on the next Sources refresh ([`apply_watch`]) so
     /// it reads as a notice about the *last* scan, not a permanent banner.
     removal_notice: Option<(PathBuf, usize)>,
+    /// The library indexing-speed mode (persisted), rendered by Settings → Sources.
+    /// Drives how much parallelism the scanner uses; `Automatic` follows CPU load.
+    indexing_mode: IndexingMode,
     /// The chosen output device (persisted), rendered by Settings → Output;
     /// `None` = follow the system default. Applies to the next playback session.
     output_device: Option<String>,
@@ -367,6 +370,7 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
             removal_notice: None,
+            indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
             // Restore the persisted device choice (None = system default); the
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
@@ -504,6 +508,14 @@ pub(crate) fn is_dark(pref: ThemePref, system_dark: bool) -> bool {
 pub(crate) fn set_theme_pref(s: &mut State, pref: ThemePref) {
     s.theme_pref = pref;
     config::save_theme_pref(pref.as_config());
+}
+
+/// Set + persist the library indexing-speed mode and apply it to the host (takes
+/// effect on the next scan). Used by the Sources settings control.
+pub(crate) fn set_indexing_mode(s: &mut State, mode: IndexingMode) {
+    s.indexing_mode = mode;
+    s.host.set_indexing_mode(mode);
+    config::save_indexing_mode(mode.as_config());
 }
 
 /// Switch the active Settings category (ephemeral — not persisted). Used by the
@@ -1351,6 +1363,9 @@ fn main() -> anyhow::Result<()> {
     // instead of a cold full read of the whole library. A stale-version cache was
     // already discarded on load.
     host.seed_caches(config::load_scan_caches());
+    // Restore the indexing-speed choice BEFORE the startup scan so it uses the
+    // user's mode (default Automatic → adapts to CPU load).
+    host.set_indexing_mode(IndexingMode::from_config(&config::load_indexing_mode()));
     // The dev/e2e harness loads a single folder from the env; otherwise restore
     // the persisted watched-folder set so Sources survive a restart.
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
@@ -1798,6 +1813,50 @@ mod tests {
         assert!(
             rt2.find("removal-notice").is_none(),
             "no warning when there were no deletions"
+        );
+    }
+
+    #[test]
+    fn set_indexing_mode_updates_state_host_and_persists() {
+        let _g = config::use_test_config_dir();
+        let mut s = populated_state();
+        set_indexing_mode(&mut s, IndexingMode::Gentle);
+        assert_eq!(
+            s.indexing_mode,
+            IndexingMode::Gentle,
+            "State reflects the choice"
+        );
+        assert_eq!(
+            s.host.indexing_mode(),
+            IndexingMode::Gentle,
+            "applied to the host for the next scan"
+        );
+        assert_eq!(config::load_indexing_mode(), "gentle", "persisted");
+    }
+
+    /// The Sources page shows all three indexing-speed buttons (idiot-proof: every
+    /// option visible) with the current mode selectable.
+    #[test]
+    fn indexing_section_renders_the_three_modes_in_sources() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::MusicData;
+        s.indexing_mode = IndexingMode::Gentle;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.find("indexing-auto").is_some()
+                && rt.find("indexing-max").is_some()
+                && rt.find("indexing-gentle").is_some(),
+            "all three indexing-mode buttons render"
         );
     }
 
