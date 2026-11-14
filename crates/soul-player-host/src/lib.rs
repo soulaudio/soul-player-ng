@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex};
 use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
 pub use sink::SinkMode;
+/// The write-path "managed library" organizer (stateless `plan`/`apply` into a
+/// path-template tree), re-exported so a UI head calls it through the one host
+/// contract rather than taking its own core git dependency.
+pub use soul_audio_organize as organize;
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
     SignalPath, SourceCodec, SourceFormat, Tick, TrackView,

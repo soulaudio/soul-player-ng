@@ -24,11 +24,13 @@ use parley_engine as _;
 use soul_player_host::{
     BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
     SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate,
+    organize::{self, Strategy},
 };
 
 mod config;
 #[cfg(test)]
 mod i18n_tests;
+mod organize_job;
 mod theme;
 mod ui;
 mod update;
@@ -123,6 +125,27 @@ impl ThemePref {
     }
 }
 
+/// The managed-library "Add music → organize" flow as an explicit phase machine,
+/// driven entirely by direct state transitions (the pure `organize_*` helpers
+/// below) so it is fully headless-testable. `State::organize` holds the current
+/// phase (`None` = the flow is idle, no modal). The thread wiring that fills
+/// `Planning`/`Applying` with real `organize::plan`/`apply` work is a separate
+/// task; this type and its transitions carry only the UI state machine.
+pub(crate) enum OrganizePhase {
+    /// Scanning the chosen files and computing the plan (Task 2 fills the work).
+    Planning,
+    /// The plan is ready; the user confirms or cancels before anything is written.
+    Confirm(organize::OrganizePlan),
+    /// The plan is being applied; progress ticks in per finished entry.
+    Applying {
+        done: usize,
+        total: usize,
+        current: String,
+    },
+    /// The run finished; the outcome tally is shown.
+    Done(organize::Summary),
+}
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -189,6 +212,26 @@ struct State {
     /// ReplayGain preamp in dB (persisted), a constant offset on top of the mode's
     /// gain. Rendered as a slider in Settings → ReplayGain.
     replaygain_preamp: f32,
+    /// Managed-library destination folder (persisted; `None` = unset), where the
+    /// write-path organizer will copy / move added music. Set in Settings → Music
+    /// Data. Configuring only — the "Add music…" apply flow is separate.
+    managed_dest: Option<PathBuf>,
+    /// Managed-library template preset id (persisted) — the folder layout the
+    /// organizer arranges into. Chosen from presets (Rune's IME is pre-release, so
+    /// there's no free-text template entry).
+    managed_template: String,
+    /// Managed-library file strategy (persisted): `Copy` keeps the source file,
+    /// `Move` removes it.
+    managed_strategy: Strategy,
+    /// The in-flight "Add music → organize" flow, or `None` when idle. Drives the
+    /// centered organize modal (`views::settings::organize_overlay`); the pure
+    /// `organize_*` transitions move it through its phases. Ephemeral.
+    organize: Option<OrganizePhase>,
+    /// A self-handle onto this app, stashed once at startup (`main`), so the
+    /// managed-library organize flow's worker threads can post plan/apply progress
+    /// back onto the main thread via `AppHandle::update`. `None` in headless tests
+    /// (and until `main` sets it), where the organize transitions stay pure.
+    app_handle: Option<rune::AppHandle<State>>,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -248,6 +291,14 @@ impl State {
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
         let locale_pref = config::load_locale();
         apply_locale(&locale_pref);
+        // Restore the managed-library choice (defaults: unset dest, "artist-album"
+        // template, Copy); the stored strategy id maps to the organizer enum.
+        let (managed_dest, managed_template, managed_strategy_id) = config::load_managed_library();
+        let managed_strategy = if managed_strategy_id == "move" {
+            Strategy::Move
+        } else {
+            Strategy::Copy
+        };
         Self {
             host,
             library,
@@ -281,6 +332,12 @@ impl State {
             output_devices,
             replaygain_mode,
             replaygain_preamp,
+            managed_dest,
+            managed_template,
+            managed_strategy,
+            organize: None,
+            // Set once in `main` (a self-posting update); stays `None` in tests.
+            app_handle: None,
             art: ArtCache::new(),
             update_available: None,
             search: String::new(),
@@ -443,6 +500,148 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
     s.replaygain_preamp = preamp_db;
     config::save_replaygain(s.replaygain_mode, preamp_db);
     s.host.set_replay_gain(s.replaygain_mode, preamp_db);
+}
+
+/// The on-disk token for a managed-library strategy (inverse of the `"move"`
+/// mapping in [`State::new`]).
+fn strategy_as_config(strategy: Strategy) -> &'static str {
+    match strategy {
+        Strategy::Copy => "copy",
+        Strategy::Move => "move",
+    }
+}
+
+/// Set + persist the managed-library destination folder (Settings → Music Data).
+/// `None` clears it (unset). Save-only — the actual copy/move "Add music…" flow is
+/// separate, so this never touches the host.
+pub(crate) fn set_managed_dest(s: &mut State, dest: Option<PathBuf>) {
+    s.managed_dest = dest;
+    config::save_managed_library(
+        s.managed_dest.as_deref(),
+        &s.managed_template,
+        strategy_as_config(s.managed_strategy),
+    );
+}
+
+/// Set + persist the managed-library template preset (by id).
+pub(crate) fn set_managed_template(s: &mut State, template_id: &str) {
+    s.managed_template = template_id.to_string();
+    config::save_managed_library(
+        s.managed_dest.as_deref(),
+        &s.managed_template,
+        strategy_as_config(s.managed_strategy),
+    );
+}
+
+/// Set + persist the managed-library file strategy (Copy / Move).
+pub(crate) fn set_managed_strategy(s: &mut State, strategy: Strategy) {
+    s.managed_strategy = strategy;
+    config::save_managed_library(
+        s.managed_dest.as_deref(),
+        &s.managed_template,
+        strategy_as_config(s.managed_strategy),
+    );
+}
+
+// ── Organize flow transitions ────────────────────────────────────────────────
+//
+// Pure phase transitions for the "Add music → organize" modal, each setting
+// `State::organize`. They carry no IO: Task 2 calls `organize_ready` /
+// `organize_progress` / `organize_finish` from `organize::plan`/`apply` thread
+// callbacks, while the UI (this task) wires the modal buttons to `organize_begin`
+// / `organize_confirm` / `organize_dismiss`. Driving these directly is the whole
+// headless-testable surface.
+
+/// Open the modal in its scanning/planning phase (the "Add music…" menu entry).
+pub(crate) fn organize_begin(s: &mut State) {
+    s.organize = Some(OrganizePhase::Planning);
+}
+
+/// Planning → Confirm: a computed plan is ready for the user to review.
+// Posted from the `organize::plan` worker (the "Add music…" menu handler).
+pub(crate) fn organize_ready(s: &mut State, plan: organize::OrganizePlan) {
+    s.organize = Some(OrganizePhase::Confirm(plan));
+}
+
+/// Enter the Applying phase at 0 / `total` (progress ticks in via
+/// [`organize_progress`]).
+pub(crate) fn organize_apply_begin(s: &mut State, total: usize) {
+    s.organize = Some(OrganizePhase::Applying {
+        done: 0,
+        total,
+        current: String::new(),
+    });
+}
+
+/// Update the Applying phase with the latest per-entry progress.
+// Posted from the `organize::apply` progress callback (see `organize_confirm`).
+pub(crate) fn organize_progress(s: &mut State, done: usize, total: usize, current: String) {
+    s.organize = Some(OrganizePhase::Applying {
+        done,
+        total,
+        current,
+    });
+}
+
+/// Applying → Done: the run finished with this outcome tally.
+// Posted when the `organize::apply` worker completes (see `organize_confirm`).
+pub(crate) fn organize_finish(s: &mut State, summary: organize::Summary) {
+    s.organize = Some(OrganizePhase::Done(summary));
+}
+
+/// Close the modal (Cancel / Close, an outside press, or Escape) — the flow is
+/// idle again.
+pub(crate) fn organize_dismiss(s: &mut State) {
+    s.organize = None;
+}
+
+/// Confirm → Applying, the Confirm button's action: take the reviewed plan out of
+/// the modal state, enter the `Applying { 0, total, "" }` phase, then — when an
+/// `app_handle` is present (a real run) — spawn a worker that applies the plan,
+/// streaming progress back per entry and finishing with the summary. The worker
+/// also registers the destination as a watched source so the organized files
+/// appear in the library. With no handle (headless tests) it stays the pure
+/// Confirm → Applying transition, writing nothing to disk.
+pub(crate) fn organize_confirm(s: &mut State) {
+    // Only act from Confirm; take the plan so the worker owns it. Anything else is
+    // restored untouched.
+    let plan = match s.organize.take() {
+        Some(OrganizePhase::Confirm(plan)) => plan,
+        other => {
+            s.organize = other;
+            return;
+        }
+    };
+    organize_apply_begin(s, plan.entries.len());
+    let Some(handle) = s.app_handle.clone() else {
+        // No handle (tests): the modal is in Applying; do not touch the filesystem.
+        return;
+    };
+    let host = s.host.clone();
+    let dest = plan.dest_root.clone();
+    std::thread::spawn(move || {
+        // The progress callback clones the handle per entry and posts an update —
+        // that stream drives the Applying modal's `done / total` + current line.
+        let summary = organize::apply(&plan, |pr| {
+            let h = handle.clone();
+            h.update(move |s: &mut State, _tx: &mut Tx| {
+                organize_progress(s, pr.done, pr.total, pr.current.display().to_string());
+            });
+        })
+        .unwrap_or_else(|e| organize::Summary {
+            failed: vec![(dest.clone(), e.to_string())],
+            ..Default::default()
+        });
+        // Watch the destination so the just-copied files show up in the library,
+        // then post the final summary (both on the main thread, in one update).
+        let watch = host.add_folder(&dest).ok();
+        handle.update(move |s: &mut State, _tx: &mut Tx| {
+            if let Some(up) = watch {
+                apply_and_save(s, up);
+            }
+            organize_finish(s, summary);
+        });
+    });
 }
 
 /// Switch the library's sort order — re-fetches the current library's views in
@@ -806,6 +1005,35 @@ fn scene_signal_path_open(s: &mut State) {
     s.signal_path_open = true;
 }
 
+/// The managed-library organize modal mid-flow, on the Music Data tab, with a
+/// small real `Confirm` plan so `--snap` captures the scrim + card + the
+/// copy/skip counts + the Confirm/Cancel buttons. Pair with `--size 1100x860`.
+fn scene_organize_confirm(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+    let dest = PathBuf::from("/Users/you/Music/Managed");
+    s.organize = Some(OrganizePhase::Confirm(organize::OrganizePlan {
+        dest_root: dest.clone(),
+        entries: vec![
+            organize::PlanEntry {
+                src: PathBuf::from("Daft Punk - One More Time.flac"),
+                dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
+                action: organize::Action::Copy,
+            },
+            organize::PlanEntry {
+                src: PathBuf::from("Daft Punk - Aerodynamic.flac"),
+                dst: dest.join("Daft Punk/Discovery/02 - Aerodynamic.flac"),
+                action: organize::Action::Copy,
+            },
+            organize::PlanEntry {
+                src: PathBuf::from("already-there.flac"),
+                dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
+                action: organize::Action::SkipDuplicate,
+            },
+        ],
+    }));
+}
+
 fn main() -> anyhow::Result<()> {
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
@@ -868,6 +1096,7 @@ fn main() -> anyhow::Result<()> {
             ("queue", scene_queue),
             ("signal-path", scene_signal_path),
             ("signal-path-open", scene_signal_path_open),
+            ("organize-confirm", scene_organize_confirm),
         ],
         ..AppSpec::new(
             "Soul Player",
@@ -891,6 +1120,16 @@ fn main() -> anyhow::Result<()> {
         })
         .init(move || State::new(init_host.clone()));
     let ah = app.handle();
+    // Stash a self-handle in State (once, on the main thread) so the managed-library
+    // organize flow can post plan/apply progress back from its worker threads. This
+    // self-posting update runs on the first frame; `update` only borrows `ah`, so it
+    // stays available for the subscribe below.
+    {
+        let h = ah.clone();
+        ah.update(move |s: &mut State, _tx: &mut Tx| {
+            s.app_handle = Some(h);
+        });
+    }
     // Launch-time update check (release builds only): off-thread so it never
     // blocks startup, and it only *flags* an available update — Settings offers
     // the actual "Install & Restart" so we never yank a playing track away.
@@ -1351,7 +1590,7 @@ mod tests {
     fn signal_path_panel_opens_with_stages_and_rg_toggle() {
         use soul_player_host::{SignalPath, SourceFormat};
         // The RG toggle persists config — isolate it from the real settings dir.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1415,7 +1654,7 @@ mod tests {
     #[test]
     fn language_dropdown_opens_renders_and_picks() {
         // Picking flows through `set_locale_pref`, which writes config — isolate it.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1494,6 +1733,237 @@ mod tests {
             !remote.focusable,
             "the Remote server item is coming soon → not focusable"
         );
+    }
+
+    /// The Managed Library card renders on the Music Data tab with its destination
+    /// Browse button, template picker, example line, and Copy/Move strategy buttons.
+    #[test]
+    fn managed_library_card_renders() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        for k in [
+            "managed-dest-browse",
+            "managed-template",
+            "managed-copy",
+            "managed-move",
+            "managed-example",
+        ] {
+            assert!(rt.find(k).is_some(), "the Managed Library card shows {k}");
+        }
+    }
+
+    /// Picking a template preset from the dropdown commits its id to state and
+    /// persists it to config.
+    #[test]
+    fn selecting_a_template_preset_persists() {
+        // Picking flows through `set_managed_template`, which writes config —
+        // isolate it from the user's real settings, and serialise with every other
+        // config writer (shared per-process test config dir).
+        let _config_guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Open the template dropdown, then settle its enter transition (it fades in
+        // from opacity 0, so the option isn't hit-testable until it finishes).
+        click_key(&mut rt, "managed-template");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(rt.state.open_dropdown.as_deref(), Some("managed-template"));
+        // Pick the genre/artist/album preset.
+        click_key(&mut rt, "managed-template-opt-genre-artist-album");
+        assert_eq!(
+            rt.state.managed_template, "genre-artist-album",
+            "picking commits the preset id to state"
+        );
+        assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
+        assert_eq!(
+            config::load_managed_library().1,
+            "genre-artist-album",
+            "and persists the preset id to config"
+        );
+        apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
+    }
+
+    /// Toggling the strategy to Move commits it to state and persists `"move"`.
+    #[test]
+    fn toggling_strategy_persists() {
+        // The toggle writes config — isolate it from the user's real settings, and
+        // serialise with every other config writer (shared per-process test
+        // config dir).
+        let _config_guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-move");
+        assert_eq!(
+            rt.state.managed_strategy,
+            Strategy::Move,
+            "clicking Move selects the move strategy"
+        );
+        assert_eq!(
+            config::load_managed_library().2,
+            "move",
+            "and persists the strategy to config"
+        );
+    }
+
+    // ── Managed-library organize flow (Task 1: phases, modal, menu entry) ─────
+
+    /// Open the add-source menu on the Music Data tab and settle its enter
+    /// transition, so its rows (including "Add music…") are mounted + hit-testable.
+    fn open_add_source(dest: Option<PathBuf>) -> Runtime<State> {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.managed_dest = dest;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source");
+        rt.settle_all();
+        rt.frame(0.0);
+        rt
+    }
+
+    /// A tiny plan literal (no filesystem) for exercising the modal phases.
+    fn sample_plan() -> organize::OrganizePlan {
+        organize::OrganizePlan {
+            dest_root: testdata_dir(),
+            entries: vec![
+                organize::PlanEntry {
+                    src: PathBuf::from("a.flac"),
+                    dst: testdata_dir().join("A/a.flac"),
+                    action: organize::Action::Copy,
+                },
+                organize::PlanEntry {
+                    src: PathBuf::from("b.flac"),
+                    dst: testdata_dir().join("B/b.flac"),
+                    action: organize::Action::SkipDuplicate,
+                },
+            ],
+        }
+    }
+
+    /// Build a frame with the organize modal in a given phase, settled so its
+    /// controls are present + hit-testable.
+    fn organize_frame(phase: OrganizePhase) -> Runtime<State> {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.organize = Some(phase);
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        rt
+    }
+
+    /// Without a managed destination, the "Add music…" entry is present but a
+    /// disabled hint — not focusable, so the organize flow can't start.
+    #[test]
+    fn add_music_item_hint_when_no_destination() {
+        let rt = open_add_source(None);
+        assert!(
+            rt.find("add-source-opt-organize").is_some(),
+            "the Add music… entry renders in the menu"
+        );
+        assert!(
+            !el_info(&rt, "add-source-opt-organize").focusable,
+            "without a destination it is a disabled hint (not focusable)"
+        );
+        apply_locale("en");
+    }
+
+    /// With a managed destination set, the "Add music…" entry becomes a focusable
+    /// option that can start the organize flow.
+    #[test]
+    fn add_music_item_enabled_with_destination() {
+        let rt = open_add_source(Some(testdata_dir()));
+        assert!(
+            el_info(&rt, "add-source-opt-organize").focusable,
+            "a configured destination makes Add music… focusable"
+        );
+        apply_locale("en");
+    }
+
+    /// The organize modal renders the right keyed controls for each phase.
+    #[test]
+    fn organize_overlay_renders_each_phase() {
+        // Confirm: title/summary + the Confirm and Cancel buttons.
+        let rt = organize_frame(OrganizePhase::Confirm(sample_plan()));
+        for k in ["organize-confirm", "organize-confirm-go", "organize-cancel"] {
+            assert!(rt.find(k).is_some(), "Confirm phase renders {k}");
+        }
+
+        // Applying: the progress line.
+        let rt = organize_frame(OrganizePhase::Applying {
+            done: 3,
+            total: 10,
+            current: "a.flac".to_string(),
+        });
+        assert!(
+            rt.find("organize-progress").is_some(),
+            "Applying phase renders the progress line"
+        );
+
+        // Done: the summary + Close button.
+        let rt = organize_frame(OrganizePhase::Done(organize::Summary {
+            copied: 2,
+            skipped: 1,
+            ..Default::default()
+        }));
+        for k in ["organize-done", "organize-close"] {
+            assert!(rt.find(k).is_some(), "Done phase renders {k}");
+        }
+        apply_locale("en");
+    }
+
+    /// Confirming the plan advances the flow from Confirm to Applying (pressing
+    /// the Confirm button drives `organize_confirm`).
+    #[test]
+    fn confirm_advances_to_applying() {
+        let mut rt = organize_frame(OrganizePhase::Confirm(sample_plan()));
+        click_key(&mut rt, "organize-confirm-go");
+        assert!(
+            matches!(rt.state.organize, Some(OrganizePhase::Applying { .. })),
+            "Confirm → Applying on confirm"
+        );
+        apply_locale("en");
+    }
+
+    /// Closing a finished run dismisses the modal (clears `State::organize`).
+    #[test]
+    fn dismiss_clears() {
+        let mut rt = organize_frame(OrganizePhase::Done(organize::Summary::default()));
+        click_key(&mut rt, "organize-close");
+        assert!(
+            rt.state.organize.is_none(),
+            "Close dismisses the organize modal"
+        );
+        apply_locale("en");
     }
 
     /// Architecture: `views::dropdown` is the ONE way to build a dropdown. No view
@@ -2036,7 +2506,7 @@ mod tests {
     #[test]
     fn toggling_a_source_disables_it() {
         // The toggle persists via apply_and_save — isolate config to a temp dir.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
         let dir = testdata_dir();
         let env = Env {
             system_dark: true,
@@ -2416,7 +2886,7 @@ mod tests {
     #[test]
     fn toggling_navigation_in_settings_hides_the_item_and_persists() {
         // Redirect config to a scratch dir so the real user config is untouched.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
 
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
@@ -2840,7 +3310,7 @@ mod tests {
     fn settings_controls_apply_their_effect_on_click() {
         // These clicks persist (theme/ReplayGain `save_*`) — isolate config to a
         // temp dir so the test never clobbers the user's real settings.
-        config::use_test_config_dir();
+        let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
