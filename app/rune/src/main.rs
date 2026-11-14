@@ -23,7 +23,7 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 use parley_engine as _;
 use soul_player_host::{
     BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
-    SourceFormat, SourceStatus, TrackView, WatchUpdate,
+    SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate,
 };
 
 mod config;
@@ -789,6 +789,7 @@ fn scene_signal_path(s: &mut State) {
     s.replaygain_mode = ReplayGainMode::Track;
     s.signal_path = Some(SignalPath {
         source: SourceFormat::Dsd { rate_hz: 2_822_400 },
+        codec: SourceCodec::Dsd,
         decoded_rate: 44_100,
         decoded_bits: 24,
         channels: 2,
@@ -1190,6 +1191,7 @@ mod tests {
         scene_queue(&mut s); // populates now-playing
         s.signal_path = Some(SignalPath {
             source: SourceFormat::Dsd { rate_hz: 2_822_400 },
+            codec: SourceCodec::Dsd,
             decoded_rate: 44_100,
             decoded_bits: 24,
             channels: 2,
@@ -1239,6 +1241,7 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         s.signal_path = Some(SignalPath {
             source: SourceFormat::Pcm { bits: 24 },
+            codec: SourceCodec::Pcm,
             decoded_rate: 96_000,
             decoded_bits: 24,
             channels: 2,
@@ -1280,6 +1283,7 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         s.signal_path = Some(SignalPath {
             source: SourceFormat::Pcm { bits: 24 },
+            codec: SourceCodec::Pcm,
             decoded_rate: 96_000,
             decoded_bits: 24,
             channels: 2,
@@ -1356,6 +1360,7 @@ mod tests {
         scene_queue(&mut s);
         s.signal_path = Some(SignalPath {
             source: SourceFormat::Dsd { rate_hz: 2_822_400 },
+            codec: SourceCodec::Dsd,
             decoded_rate: 44_100,
             decoded_bits: 24,
             channels: 2,
