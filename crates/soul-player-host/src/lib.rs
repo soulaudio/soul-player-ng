@@ -250,8 +250,18 @@ impl PlayerHandle {
         let IncrementalBuild {
             library,
             caches: fresh,
-            removed: _removed,
+            removed,
         } = Library::scan_many_incremental(&to_scan, &priors)?;
+        // Warn about genuine deletions: each scanned (hence available) root reports
+        // files gone since its prior cache. Emitted per root so a UI can surface
+        // "N tracks removed from <folder>"; an offline root was never scanned, so it
+        // contributes nothing here (no mass-removal when a drive is unplugged).
+        for (root, gone) in &removed {
+            self.emit(Event::TracksRemoved {
+                root: root.clone(),
+                count: gone.len(),
+            });
+        }
         // Refresh the scanned roots' caches; keep configured-but-unscanned roots
         // warm (a disabled / offline source re-aggregates from its cache when it
         // returns); prune caches for roots no longer configured.
@@ -538,6 +548,22 @@ impl PlayerHandle {
             .lock()
             .expect("subscribers mutex")
             .push(Box::new(on_event));
+    }
+
+    /// Fan one event out to every current subscriber — the host's own path to the
+    /// same fan-out the actor's forwarder uses, for events the host originates
+    /// (e.g. a rescan's [`Event::TracksRemoved`] deletion warning) rather than the
+    /// playing actor. Holds only the subscribers lock, briefly.
+    fn emit(&self, ev: Event) {
+        for sub in self
+            .inner
+            .subscribers
+            .lock()
+            .expect("subscribers mutex")
+            .iter()
+        {
+            sub(ev.clone());
+        }
     }
 
     /// Current library views (empty until a folder is opened).
@@ -1024,6 +1050,47 @@ mod tests {
         assert!(
             !snap.contains_key(&broot),
             "dropped source's cache is pruned"
+        );
+    }
+
+    #[test]
+    fn rescan_warns_about_deleted_tracks_on_an_available_root() {
+        let a = folder_with("warn_del", &["a.wav", "b.wav"]);
+        let aroot = a.path().to_path_buf();
+        let h = PlayerHandle::offline();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        {
+            let ev = Arc::clone(&events);
+            h.subscribe(move |e| ev.lock().expect("ev mutex").push(e));
+        }
+
+        // A cold first scan caches both files and warns about nothing.
+        h.set_sources(&[(aroot.clone(), true)]).unwrap();
+        assert!(
+            events
+                .lock()
+                .expect("ev mutex")
+                .iter()
+                .all(|e| !matches!(e, Event::TracksRemoved { .. })),
+            "a cold first scan (no prior cache) warns about no deletions"
+        );
+
+        // Delete one file, rescan warm → exactly one TracksRemoved for the root.
+        std::fs::remove_file(a.path().join("a.wav")).unwrap();
+        h.set_sources(&[(aroot.clone(), true)]).unwrap();
+        let removals: Vec<(PathBuf, usize)> = events
+            .lock()
+            .expect("ev mutex")
+            .iter()
+            .filter_map(|e| match e {
+                Event::TracksRemoved { root, count } => Some((root.clone(), *count)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            removals,
+            vec![(aroot, 1)],
+            "exactly one deletion warning, carrying the right root and count"
         );
     }
 

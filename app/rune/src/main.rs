@@ -207,6 +207,11 @@ struct State {
     /// rendered by Settings → Sources: each carries its path, enabled flag,
     /// current availability (an unreachable root shows "offline"), and track count.
     sources: Vec<SourceStatus>,
+    /// A transient "N tracks removed from <folder>" warning for the Sources page,
+    /// set from the host's [`Event::TracksRemoved`] when a rescan finds deletions
+    /// (`(root, count)`). Cleared on the next Sources refresh ([`apply_watch`]) so
+    /// it reads as a notice about the *last* scan, not a permanent banner.
+    removal_notice: Option<(PathBuf, usize)>,
     /// The chosen output device (persisted), rendered by Settings → Output;
     /// `None` = follow the system default. Applies to the next playback session.
     output_device: Option<String>,
@@ -361,6 +366,7 @@ impl State {
                 .unwrap_or(ThemePref::System),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
+            removal_notice: None,
             // Restore the persisted device choice (None = system default); the
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
@@ -447,6 +453,11 @@ impl State {
             // Persisted off-thread in the subscribe closure (see `main`); the
             // hybrid-ReplayGain cache is silent — no UI state to fold in here.
             Event::TrackLoudnessAnalyzed { .. } => {}
+            // A rescan found deletions under an available source — stash the warning
+            // for the Sources page (cleared on the next refresh by `apply_watch`).
+            Event::TracksRemoved { root, count } => {
+                self.removal_notice = Some((root.clone(), *count));
+            }
         }
     }
 }
@@ -457,6 +468,10 @@ impl State {
 pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     s.library = up.views;
     s.sources = up.sources;
+    // Clear any stale deletion warning; this scan's own `TracksRemoved` event (if
+    // any) is applied right after and re-sets it, so the notice always reflects the
+    // most recent scan rather than lingering.
+    s.removal_notice = None;
 }
 
 /// Apply a `WatchUpdate` and persist the new source set (with each source's
@@ -1675,6 +1690,58 @@ mod tests {
             "{} app layout overflow(s) across locales:\n{}",
             failures.len(),
             failures.join("\n")
+        );
+    }
+
+    /// A Sources refresh clears any stale deletion warning (the next scan's own
+    /// `TracksRemoved`, applied right after, re-sets it if there were deletions).
+    #[test]
+    fn apply_watch_clears_the_removal_notice() {
+        let mut s = populated_state();
+        s.removal_notice = Some((PathBuf::from("/music/live"), 3));
+        apply_watch(&mut s, WatchUpdate::default());
+        assert_eq!(
+            s.removal_notice, None,
+            "a Sources refresh clears the stale deletion warning"
+        );
+    }
+
+    /// The deletion warning renders in Settings → Music Data when set (with the
+    /// count + folder name), and is absent when there were no deletions.
+    #[test]
+    fn removal_notice_renders_in_the_sources_page() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::MusicData;
+        s.removal_notice = Some((PathBuf::from("/music/Concerts"), 2));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("removal-notice").is_some(),
+            "the deletion warning renders when set"
+        );
+        assert!(
+            rt.elements()
+                .into_iter()
+                .any(|e| e.text.as_deref() == Some("2 tracks removed from Concerts")),
+            "it shows the count and the folder name"
+        );
+
+        // Absent when there were no deletions.
+        let mut s2 = populated_state();
+        s2.route = Route::Settings;
+        s2.settings_tab = SettingsTab::MusicData;
+        s2.removal_notice = None;
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("removal-notice").is_none(),
+            "no warning when there were no deletions"
         );
     }
 

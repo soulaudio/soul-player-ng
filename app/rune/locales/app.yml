@@ -385,6 +385,13 @@ settings.noSources:
   zh: '暂无来源 — 添加文件夹以建立音乐库。'
   cs: 'Zatím žádné zdroje — přidejte složku pro vytvoření knihovny.'
   ja: 'ソースがまだありません — フォルダを追加してライブラリを作成します。'
+settings.tracksRemoved:
+  en: '%{count} tracks removed from %{folder}'
+  de: '%{count} Titel aus %{folder} entfernt'
+  es: '%{count} pistas eliminadas de %{folder}'
+  zh: '已从 %{folder} 移除 %{count} 首曲目'
+  cs: 'Z %{folder} odebráno %{count} skladeb'
+  ja: '%{folder} から %{count} 曲を削除しました'
 settings.rescan:
   en: 'Rescan'
   de: 'Neu einlesen'
