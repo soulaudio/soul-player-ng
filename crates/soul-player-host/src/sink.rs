@@ -10,7 +10,7 @@ use soul_audio_desktop::sink::CpalSink;
 use soul_player_backend::{AudioPlayer, Event, Library};
 
 use crate::analyzer::SpectrumShared;
-use crate::eq::{EqShared, EqSink};
+use crate::eq::{DspShared, DspSink};
 
 /// Which sink the actor plays through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +42,7 @@ impl SinkMode {
 pub(crate) fn build_actor(
     mode: SinkMode,
     output_device: Option<String>,
-    eq: EqShared,
+    dsp: DspShared,
     spectrum: SpectrumShared,
     lib: Arc<Library>,
     on_event: impl Fn(Event) + Send + 'static,
@@ -51,7 +51,7 @@ pub(crate) fn build_actor(
         // Offline/headless has no audible output, so the EQ/analyzer are moot there.
         SinkMode::Offline => AudioPlayer::spawn(|| Ok(NullSink::new(48_000, 2)), lib, on_event),
         SinkMode::Device => AudioPlayer::spawn(
-            device_sink_factory(output_device, eq, spectrum),
+            device_sink_factory(output_device, dsp, spectrum),
             lib,
             on_event,
         ),
@@ -61,20 +61,20 @@ pub(crate) fn build_actor(
 /// Build the pump-thread make-sink closure for the real device: open the named
 /// device (falling back to the system default if it is gone — unplugged since the
 /// list was enumerated, or renamed; `None` opens the default directly), then wrap
-/// it in the [`EqSink`] so the graphic EQ runs at the device rate. Returning one
+/// it in the [`DspSink`] so the DSP chain runs at the device rate. Returning one
 /// closure (matching on the `Option` internally) keeps a single concrete `FnOnce`
 /// type for `AudioPlayer::spawn`'s factory bound.
 fn device_sink_factory(
     output_device: Option<String>,
-    eq: EqShared,
+    dsp: DspShared,
     spectrum: SpectrumShared,
-) -> impl FnOnce() -> anyhow::Result<EqSink<CpalSink>> + Send + 'static {
+) -> impl FnOnce() -> anyhow::Result<DspSink<CpalSink>> + Send + 'static {
     move || {
         let device = match output_device {
             Some(name) => CpalSink::new_on_device(&name).or_else(|_| CpalSink::new()),
             None => CpalSink::new(),
         }?;
-        Ok(EqSink::new(device, eq, spectrum))
+        Ok(DspSink::new(device, dsp, spectrum))
     }
 }
 
