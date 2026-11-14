@@ -283,6 +283,7 @@ mod tests {
             title: Some(format!("T{id}")),
             artist: (!artist.is_empty()).then(|| artist.to_string()),
             album: Some("Alb".into()),
+            genre: Some("Rock".into()),
             duration_secs: 1.0,
         }
     }

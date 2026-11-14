@@ -73,6 +73,11 @@ const LEDGER: &[(&str, Status, &str)] = &[
         "flat list uses the baked ArtistAlbumTrack order; no artist drill-down UI",
     ),
     (
+        "genre browse (order + tracks-of-genre)",
+        Wired,
+        "Library::views_by(Genre) -> TrackView.genre; Genres page (name + count -> tracks)",
+    ),
+    (
         "folder browse (folder tree + paths)",
         Pending,
         "core folder table ready; no folder tree UI",
@@ -115,6 +120,7 @@ fn axis_is_recorded(axis: BrowseAxis) {
         BrowseAxis::Title
         | BrowseAxis::ArtistAlbumTrack
         | BrowseAxis::Album
+        | BrowseAxis::Genre
         | BrowseAxis::Folder => {}
     }
 }

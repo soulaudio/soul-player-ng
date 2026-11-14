@@ -84,6 +84,9 @@ pub(crate) enum Route {
     Artists,
     /// An artist's detail page; which artist is in [`State::open_artist`].
     Artist,
+    Genres,
+    /// A genre's detail page; which genre is in [`State::open_genre`].
+    Genre,
     Settings,
 }
 
@@ -189,6 +192,9 @@ struct State {
     /// Which artist's detail page is showing, when `route == Route::Artist`.
     /// Set from an artist card's body click.
     open_artist: Option<String>,
+    /// Which genre's detail page is showing, when `route == Route::Genre`.
+    /// Set from a genre row's click.
+    open_genre: Option<String>,
     /// Which Settings category the content pane shows (ephemeral; defaults to
     /// `Appearance`). Switched by the settings page's own category rail.
     settings_tab: SettingsTab,
@@ -331,6 +337,7 @@ impl State {
             route: Route::Library,
             open_album: None,
             open_artist: None,
+            open_genre: None,
             settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
@@ -813,6 +820,8 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
             Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
             Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
             Route::Artist => views::artists::artist_detail(s, p, scale).grow(1.0),
+            Route::Genres => views::genres::genres_page(s, p).grow(1.0),
+            Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
             Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
         })
 }
@@ -832,6 +841,11 @@ fn mobile_title(s: &State) -> String {
             .open_artist
             .clone()
             .unwrap_or_else(|| t!("nav.artists").to_string()),
+        Route::Genres => t!("nav.genres").to_string(),
+        Route::Genre => s
+            .open_genre
+            .clone()
+            .unwrap_or_else(|| t!("nav.genres").to_string()),
         Route::Settings => t!("settings.title").to_string(),
     }
 }
@@ -978,6 +992,9 @@ fn scene_albums(s: &mut State) {
 }
 fn scene_artists(s: &mut State) {
     s.route = Route::Artists;
+}
+fn scene_genres(s: &mut State) {
+    s.route = Route::Genres;
 }
 fn scene_artist_detail(s: &mut State) {
     s.route = Route::Artist;
@@ -1134,6 +1151,7 @@ fn main() -> anyhow::Result<()> {
             ("album-detail", scene_album_detail),
             ("artists", scene_artists),
             ("artist-detail", scene_artist_detail),
+            ("genres", scene_genres),
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
@@ -1426,9 +1444,10 @@ mod tests {
         let viewports = [(1100.0_f32, 720.0_f32), (900.0, 640.0)];
         // Name → state tweak, the same `fn(&mut State)` shape as a `--scene`.
         type NamedScene = (&'static str, fn(&mut State));
-        let scenes: [NamedScene; 4] = [
+        let scenes: [NamedScene; 5] = [
             ("library", |s: &mut State| s.route = Route::Library),
             ("albums", |s: &mut State| s.route = Route::Albums),
+            ("genres", |s: &mut State| s.route = Route::Genres),
             // Populates now-playing + both queue bands from the library; the
             // sidebar panel then renders over whatever route is active.
             ("queue", scene_queue),
@@ -2820,6 +2839,7 @@ mod tests {
             title: Some(title.to_string()),
             artist: Some("A".into()),
             album: Some("Alb".into()),
+            genre: Some("Rock".into()),
             duration_secs: 1.0,
         }
     }
@@ -2830,6 +2850,18 @@ mod tests {
             title: Some(format!("T{id}")),
             artist: Some(artist.to_string()),
             album: Some("Alb".into()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+        }
+    }
+
+    fn genre_track(id: u32, genre: &str) -> soul_player_host::TrackView {
+        soul_player_host::TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some("A".into()),
+            album: Some("Alb".into()),
+            genre: Some(genre.to_string()),
             duration_secs: 1.0,
         }
     }
@@ -2925,6 +2957,106 @@ mod tests {
                 start: 0
             }],
             "Play All plays only this artist's tracks, from the top"
+        );
+    }
+
+    /// The sidebar offers a Genres nav entry, and pressing it switches the route
+    /// to the Genres page.
+    #[test]
+    fn the_sidebar_offers_a_genres_nav_item_that_switches_route() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("nav-genres").is_some(),
+            "the Genres nav item renders"
+        );
+        click(&mut rt, "nav-genres");
+        assert!(
+            matches!(rt.state.route, Route::Genres),
+            "pressing the nav item switches to the Genres page"
+        );
+    }
+
+    /// Clicking a genre row opens that genre's detail page (and issues no
+    /// playback) — the library grouped by genre, first-seen order.
+    #[test]
+    fn clicking_a_genre_opens_the_detail_page() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![genre_track(1, "Rock"), genre_track(2, "Jazz")];
+        s.route = Route::Genres;
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        click(&mut rt, "genre-0"); // the first grouped genre (Rock)
+        assert!(
+            matches!(rt.state.route, Route::Genre),
+            "the row opens the genre detail page"
+        );
+        assert_eq!(rt.state.open_genre.as_deref(), Some("Rock"));
+        assert!(
+            rt.state.host.recorded_commands().is_empty(),
+            "opening a genre does not start playback"
+        );
+    }
+
+    /// The genre detail page lists the genre's tracks, with a Play All that plays
+    /// them from the top and a back link.
+    #[test]
+    fn the_genre_detail_lists_tracks_with_play_all_and_back() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            genre_track(1, "Rock"),
+            genre_track(2, "Rock"),
+            genre_track(3, "Jazz"),
+        ];
+        s.route = Route::Genre;
+        s.open_genre = Some("Rock".into());
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("genre-header").is_some(),
+            "the detail header renders"
+        );
+        assert!(rt.find("genre-back").is_some(), "a back link renders");
+        assert!(
+            rt.find("album-track-0").is_some(),
+            "the genre's tracks are listed"
+        );
+        click(&mut rt, "genre-play-all");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 0
+            }],
+            "Play All plays only this genre's tracks, from the top"
         );
     }
 
