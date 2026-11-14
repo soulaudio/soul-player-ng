@@ -1627,6 +1627,9 @@ fn num_field(
         text_input(&s.eq_edit_buf, type_::CAPTION.mono())
             .key(key)
             .single_line()
+            // Right-align the field so the digits sit exactly where the static value
+            // did — no horizontal jump when the box opens for editing.
+            .align(Align::End)
             .w(num_w)
             .px(space::XXS)
             .radius(radius::SM)
