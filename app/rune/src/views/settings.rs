@@ -1332,7 +1332,6 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     // One Live carries the thumb geometry from the viewport's scroll callback to
     // the thumb element in the same frame.
     let thumb = SETTINGS_SCROLL_THUMB.with(|t| t.clone());
-    let thumb_cb = thumb.clone();
     row()
         .key("settings")
         .grow(1.0)
@@ -1344,24 +1343,26 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             // free space evenly across grow children, so flanking spacers would
             // only ever leave the column a third-width and drifting); `max_w`
             // caps it on wide windows — the original's `max-w-4xl` column.
-            row().key("settings-body").grow(1.0).min_h(0.0).child(
-                col()
-                    .key("settings-scroll")
-                    .grow(1.0)
-                    .max_w(CONTENT_MAX_W)
-                    .min_h(0.0)
-                    .scroll(ScrollSpec {
-                        stick_bottom: false,
-                    })
-                    // Fade the top/bottom edges as content runs under them, and
-                    // overlay a themed thumb driven by the scroll offset.
-                    .scroll_edge_fade(20.0)
-                    .on_scroll_offset(move |at| {
-                        thumb_cb.set(scrollbar::thumb_rect(at));
-                    })
-                    .child(inner)
-                    .child(scrollbar::overlay(&thumb, "settings-scrollbar", p)),
-            ),
+            row()
+                .key("settings-body")
+                .grow(1.0)
+                .min_h(0.0)
+                .child(scrollbar::attach(
+                    col()
+                        .key("settings-scroll")
+                        .grow(1.0)
+                        .max_w(CONTENT_MAX_W)
+                        .min_h(0.0)
+                        .scroll(ScrollSpec {
+                            stick_bottom: false,
+                        })
+                        // Fade the top/bottom edges as content runs under them.
+                        .scroll_edge_fade(20.0)
+                        .child(inner),
+                    &thumb,
+                    "settings-scrollbar",
+                    p,
+                )),
         )
 }
 
