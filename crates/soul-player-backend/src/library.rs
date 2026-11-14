@@ -17,10 +17,37 @@ use std::sync::Mutex;
 
 use embedded_io_adapters::std::FromStd;
 use soul_audio_catalog::{BrowseAxis, Catalog, StrRef};
+use soul_audio_import::ScanCache;
 use soul_audio_index::IndexReader;
 use soul_audio_multicatalog::{MultiCatalog, unpack};
 
 use crate::types::TrackView;
+
+/// The result of an [incremental scan](Library::scan_many_incremental): the baked
+/// library plus the warm cache and deletions, carried back so the host can persist
+/// the cache and warn about removals.
+pub struct IncrementalBuild {
+    /// The baked, aggregated library (identical to a full [`scan_many`](Library::scan_many)).
+    pub library: Library,
+    /// The updated [`ScanCache`] per root, **parallel to the `roots`** passed in —
+    /// persist it (keyed by root path) to make the next startup a warm diff.
+    pub caches: Vec<ScanCache>,
+    /// Deletions detected since the prior cache, as `(root, removed file paths)`,
+    /// only for roots that had any. These are genuine per-file removals (the host
+    /// only scans *available* roots, so an offline drive never lands here).
+    pub removed: Vec<(PathBuf, Vec<PathBuf>)>,
+}
+
+/// Extraction parallelism for the incremental scan: oversubscribed for the
+/// I/O-bound small random tag reads (the OS reorders queued reads by location, so
+/// more in-flight requests hide latency on HDD *and* SSD), capped so a huge core
+/// count doesn't spawn an unreasonable thread pool. See the importer's perf notes.
+fn scan_threads() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    (cores * 4).clamp(4, 32)
+}
 
 /// A `.soulidx` reader over an **owning** in-memory source: `Cursor` owns the
 /// baked bytes, so the reader is `'static` with no leak and no on-disk cache, and
@@ -71,6 +98,47 @@ impl Library {
             roots: roots.to_vec(),
             counts,
             catalog: Mutex::new(MultiCatalog::new(members)),
+        })
+    }
+
+    /// Scan + bake each watched folder **incrementally**: unchanged files are
+    /// reused from `priors[i]` (the cache returned by a previous build for
+    /// `roots[i]`), only new/changed files are re-read, and parallel extraction
+    /// fans out the I/O. Produces a library byte-identical to [`scan_many`] for the
+    /// same tree — it only changes *how much work* is done — plus the updated
+    /// per-root [`ScanCache`] (persist it for a warm next startup) and the
+    /// deletions detected per root (for a removal warning). A missing or short
+    /// `priors` entry (`priors.get(i)` is `None`) is treated as an empty cache (a
+    /// cold scan of that root). Errors if any root fails to scan.
+    pub fn scan_many_incremental(
+        roots: &[PathBuf],
+        priors: &[ScanCache],
+    ) -> anyhow::Result<IncrementalBuild> {
+        let threads = scan_threads();
+        let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(roots.len());
+        let mut counts = Vec::with_capacity(roots.len());
+        let mut caches = Vec::with_capacity(roots.len());
+        let mut removed = Vec::new();
+        for (i, root) in roots.iter().enumerate() {
+            let prior = priors.get(i).cloned().unwrap_or_default();
+            let outcome = soul_audio_import::scan_incremental(root, &prior, threads, &mut |_| {})?;
+            let bytes = soul_audio_index::build::write_index(&outcome.input);
+            let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(bytes)));
+            counts.push(reader.track_count() as usize);
+            members.push(Box::new(reader));
+            if !outcome.removed.is_empty() {
+                removed.push((root.clone(), outcome.removed));
+            }
+            caches.push(outcome.cache);
+        }
+        Ok(IncrementalBuild {
+            library: Library {
+                roots: roots.to_vec(),
+                counts,
+                catalog: Mutex::new(MultiCatalog::new(members)),
+            },
+            caches,
+            removed,
         })
     }
 
@@ -580,6 +648,43 @@ mod tests {
         let lib = Library::scan_many(&[a.clone(), b.clone()]).unwrap();
         assert_eq!(lib.len(), 5);
         assert_eq!(lib.source_counts(), vec![(a, 2), (b, 3)]);
+    }
+
+    #[test]
+    fn incremental_scan_matches_full_scan_then_warm_reflects_add_and_remove() {
+        let root = tmpdir("incr");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(root.join("b.wav"), wav(48_000, 24_000)).unwrap();
+        let roots = vec![root.clone()];
+
+        // Cold incremental scan (empty prior) lists the same tracks as a full scan.
+        let titles = |l: &Library| l.views().into_iter().map(|v| v.id).collect::<Vec<_>>();
+        let build = Library::scan_many_incremental(&roots, &[ScanCache::default()]).unwrap();
+        assert_eq!(build.library.len(), 2);
+        assert_eq!(
+            titles(&build.library),
+            titles(&Library::scan_many(&roots).unwrap()),
+            "incremental cold scan lists the same tracks as a full scan"
+        );
+        // The returned cache is warm (one entry per file) and nothing was removed.
+        assert_eq!(build.caches.len(), 1);
+        assert_eq!(build.caches[0].len(), 2, "cache holds both files");
+        assert!(build.removed.is_empty());
+
+        // Warm rescan reusing the prior cache: an added file is reflected.
+        std::fs::write(root.join("c.wav"), wav(48_000, 48_000)).unwrap();
+        let build2 = Library::scan_many_incremental(&roots, &build.caches).unwrap();
+        assert_eq!(build2.library.len(), 3, "added file appears");
+        assert!(build2.removed.is_empty());
+
+        // Deletions are reported per root (an available root — genuine removals).
+        std::fs::remove_file(root.join("a.wav")).unwrap();
+        std::fs::remove_file(root.join("b.wav")).unwrap();
+        let build3 = Library::scan_many_incremental(&roots, &build2.caches).unwrap();
+        assert_eq!(build3.library.len(), 1, "only c.wav remains");
+        assert_eq!(build3.removed.len(), 1, "one root reported deletions");
+        assert_eq!(build3.removed[0].0, root);
+        assert_eq!(build3.removed[0].1.len(), 2, "two files removed");
     }
 
     #[cfg(unix)]

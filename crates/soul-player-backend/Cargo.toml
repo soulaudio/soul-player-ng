@@ -25,7 +25,7 @@ soul-audio-loudness = { git = "https://github.com/soulaudio/soul-audio-core", br
 # that the desktop and the DAP read the one catalog/index built in core.
 soul-audio-catalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 soul-audio-index = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["build"] }
-soul-audio-import = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+soul-audio-import = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["serde"] }
 # Aggregate N watched folders into one browse (the desktop's "library = union of
 # sources"); the DAP is the N=1 case and never links this.
 soul-audio-multicatalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
