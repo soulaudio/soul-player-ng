@@ -1710,19 +1710,20 @@ mod tests {
     /// count + folder name), and is absent when there were no deletions.
     #[test]
     fn removal_notice_renders_in_the_sources_page() {
-        // This asserts English UI text, so it must not run while the language-picker
-        // test has the shared `rust_i18n` locale flipped to German. That test holds
-        // the config-test lock for its duration, so take it here too to serialize.
+        // This asserts English UI text. `populated_state()` → `State::new` LOADS the
+        // persisted locale and applies it to the shared `rust_i18n` global, and the
+        // language-picker test persists "de" — so set the locale AFTER building the
+        // state (and hold the config lock to serialize against that test).
         let _guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
         s.removal_notice = Some((PathBuf::from("/music/Concerts"), 2));
+        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
@@ -2201,7 +2202,10 @@ mod tests {
         assert_eq!(rt.state.locale_pref, "de", "picking commits the locale");
         assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
 
-        apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
+        // Reset the PERSISTED locale and the shared rust_i18n global — sibling tests'
+        // `populated_state()` loads the persisted locale, so "de" must not leak.
+        config::save_locale("en");
+        apply_locale("en");
     }
 
     /// The add-source control is a themed `views::dropdown` menu: the trigger
@@ -2302,7 +2306,10 @@ mod tests {
             "genre-artist-album",
             "and persists the preset id to config"
         );
-        apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
+        // Reset the PERSISTED locale and the shared rust_i18n global — sibling tests'
+        // `populated_state()` loads the persisted locale, so "de" must not leak.
+        config::save_locale("en");
+        apply_locale("en");
     }
 
     /// Toggling the strategy to Move commits it to state and persists `"move"`.
