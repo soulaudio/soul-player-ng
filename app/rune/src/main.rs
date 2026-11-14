@@ -681,6 +681,32 @@ pub(crate) fn toggle_eq_editor(s: &mut State) {
     s.eq_editor_open = !s.eq_editor_open;
 }
 
+/// Import an AutoEQ / Equalizer-APO ParametricEQ profile from `path`, replacing the
+/// bands + preamp and enabling the EQ. No-op if the file is unreadable or has no
+/// usable filters.
+pub(crate) fn import_eq(s: &mut State, path: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let (preamp, bands) = soul_player_host::parse_autoeq(&text);
+    if bands.is_empty() {
+        return;
+    }
+    s.eq_bands = bands.into_iter().take(MAX_BANDS).map(clamp_band).collect();
+    s.eq_preamp = ((preamp.clamp(-GAIN_LIMIT_DB, GAIN_LIMIT_DB)) * 10.0).round() / 10.0;
+    s.eq_enabled = true;
+    s.eq_selected = None;
+    s.eq_editor_open = true;
+    apply_eq(s);
+}
+
+/// Export the current EQ to `path` as an AutoEQ / Equalizer-APO ParametricEQ
+/// profile (shareable, re-importable here and in Equalizer APO / Peace).
+pub(crate) fn export_eq(s: &State, path: &std::path::Path) {
+    let text = soul_player_host::format_autoeq(s.eq_preamp, &s.eq_bands);
+    let _ = std::fs::write(path, text);
+}
+
 /// Set the EQ preamp in dB.
 pub(crate) fn set_eq_preamp(s: &mut State, preamp_db: f32) {
     s.eq_preamp = preamp_db;
@@ -1864,6 +1890,9 @@ mod tests {
             "eq-graph",
             "eq-node-0",
             "eq-node-7",
+            "eq-import",
+            "eq-export",
+            "eq-add-band",
         ] {
             assert!(rt.find(key).is_some(), "the EQ card renders {key}");
         }
@@ -2016,6 +2045,44 @@ mod tests {
         click_key(&mut rt, "eq-band-rm-0");
         rt.frame(0.0);
         assert_eq!(rt.state.eq_bands.len(), n0, "remove drops a band");
+    }
+
+    /// Importing an AutoEQ profile replaces the bands + preamp and enables the EQ;
+    /// exporting round-trips the format.
+    #[test]
+    fn importing_and_exporting_an_autoeq_profile() {
+        let _guard = config::use_test_config_dir();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("soul-eq-in-{}.txt", std::process::id()));
+        std::fs::write(
+            &path,
+            "Preamp: -5.0 dB\n\
+             Filter 1: ON PK Fc 120 Hz Gain 4.0 dB Q 1.00\n\
+             Filter 2: ON HSC Fc 8000 Hz Gain -3.0 dB Q 0.70\n",
+        )
+        .unwrap();
+        let mut s = populated_state();
+        import_eq(&mut s, &path);
+        assert!(s.eq_enabled, "import enables the EQ");
+        assert_eq!(s.eq_bands.len(), 2, "both filters import");
+        assert!(
+            (s.eq_preamp + 5.0).abs() < 0.11,
+            "preamp imported: {}",
+            s.eq_preamp
+        );
+        assert_eq!(s.eq_bands[0].kind, BandKind::Peaking);
+        assert!((s.eq_bands[0].freq - 120.0).abs() < 1.0);
+        assert_eq!(s.eq_bands[1].kind, BandKind::HighShelf);
+        // Export writes a re-importable profile.
+        let out = dir.join(format!("soul-eq-out-{}.txt", std::process::id()));
+        export_eq(&s, &out);
+        let txt = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            txt.contains("Filter 1: ON PK Fc 120 Hz"),
+            "exported profile round-trips: {txt}"
+        );
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&out);
     }
 
     /// Build Settings → Audio in a short window so its stage cards overflow the
