@@ -182,8 +182,10 @@ pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32, full_width: b
         // footer gear below, as the original.
         .child({
             // Render the primary nav from NAV_DEFS, skipping items the user has
-            // hidden (Settings → Navigation). Order mirrors the original.
-            let mut nav = col().key("nav").px(space::LG).pt(space::XL).pb(space::LG);
+            // hidden (Settings → Navigation). Order mirrors the original. The top
+            // inset matches the footer's bottom inset so the sidebar is padded
+            // symmetrically top and bottom.
+            let mut nav = col().key("nav").px(space::LG).pt(space::LG).pb(space::LG);
             for def in NAV_DEFS {
                 if s.nav_visible(def.id) {
                     nav = nav.child(nav_item(
@@ -211,7 +213,10 @@ fn settings_footer(s: &State, p: &Palette) -> El {
         .w_full()
         .border_sides([1.0, 0.0, 0.0, 0.0], p.border)
         .px(space::MD)
-        .py(space::SM)
+        // A compact gap under the divider, then the same bottom inset as the
+        // nav's top inset so the sidebar is padded symmetrically top and bottom.
+        .pt(space::SM)
+        .pb(space::LG)
         .center_y()
         .child({
             let gear = el()
