@@ -9,6 +9,8 @@ use soul_audio_core::{SampleFormat, Sink, SinkError, StreamInfo};
 use soul_audio_desktop::sink::CpalSink;
 use soul_player_backend::{AudioPlayer, Event, Library};
 
+use crate::eq::{EqShared, EqSink};
+
 /// Which sink the actor plays through.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SinkMode {
@@ -39,26 +41,35 @@ impl SinkMode {
 pub(crate) fn build_actor(
     mode: SinkMode,
     output_device: Option<String>,
+    eq: EqShared,
     lib: Arc<Library>,
     on_event: impl Fn(Event) + Send + 'static,
 ) -> AudioPlayer {
     match mode {
+        // Offline/headless has no audible output, so the EQ is irrelevant there.
         SinkMode::Offline => AudioPlayer::spawn(|| Ok(NullSink::new(48_000, 2)), lib, on_event),
-        SinkMode::Device => AudioPlayer::spawn(device_sink_factory(output_device), lib, on_event),
+        SinkMode::Device => {
+            AudioPlayer::spawn(device_sink_factory(output_device, eq), lib, on_event)
+        }
     }
 }
 
 /// Build the pump-thread make-sink closure for the real device: open the named
-/// device, falling back to the system default if it is gone (unplugged since the
-/// list was enumerated, or renamed). `None` opens the default directly. Returning
-/// one closure (that matches on the `Option` internally) keeps a single concrete
-/// `FnOnce` type for `AudioPlayer::spawn`'s factory bound.
+/// device (falling back to the system default if it is gone — unplugged since the
+/// list was enumerated, or renamed; `None` opens the default directly), then wrap
+/// it in the [`EqSink`] so the graphic EQ runs at the device rate. Returning one
+/// closure (matching on the `Option` internally) keeps a single concrete `FnOnce`
+/// type for `AudioPlayer::spawn`'s factory bound.
 fn device_sink_factory(
     output_device: Option<String>,
-) -> impl FnOnce() -> anyhow::Result<CpalSink> + Send + 'static {
-    move || match output_device {
-        Some(name) => CpalSink::new_on_device(&name).or_else(|_| CpalSink::new()),
-        None => CpalSink::new(),
+    eq: EqShared,
+) -> impl FnOnce() -> anyhow::Result<EqSink<CpalSink>> + Send + 'static {
+    move || {
+        let device = match output_device {
+            Some(name) => CpalSink::new_on_device(&name).or_else(|_| CpalSink::new()),
+            None => CpalSink::new(),
+        }?;
+        Ok(EqSink::new(device, eq))
     }
 }
 
