@@ -10,109 +10,23 @@
 //! to the device, so turning the EQ off restores an untouched signal path.
 #![forbid(unsafe_code)]
 
-use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
 use soul_audio_core::{Biquad, Equalizer, Sink, SinkError, StreamInfo};
+// The parametric-EQ *design* (RBJ coefficients + magnitude response) and the band
+// model live in the shared **no_std** `soul-audio-eq` crate, so the DAP firmware
+// reuses the exact same pipeline. This host module is the std half: the live
+// config, its shared handle, and the `Sink` decorator that applies it + feeds the
+// spectrum analyzer.
+pub use soul_audio_eq::{
+    Band, BandKind, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN, band_magnitude_db,
+    default_bands, design, eq_magnitude_db,
+};
 
 use crate::analyzer::{Analyzer, SpectrumShared};
 
-/// Maximum number of parametric EQ bands (the fixed size of the core filter
-/// cascade; unused slots run as bypass). Bands can be added up to this, and an
-/// import past it is truncated.
-pub const MAX_BANDS: usize = 16;
-
-/// Gain limit (± dB) for each band and the preamp — the UI clamps to this.
-pub const GAIN_LIMIT_DB: f32 = 12.0;
-
-/// Q (resonance / bandwidth) limits the UI clamps to. The low end is a very wide
-/// band; the high end is surgical.
-pub const Q_MIN: f32 = 0.3;
-pub const Q_MAX: f32 = 12.0;
-
-/// Displayed/draggable frequency range (Hz).
-pub const FREQ_MIN: f32 = 20.0;
-pub const FREQ_MAX: f32 = 20_000.0;
-
 /// Canonical sample bound: the deck normalises to signed 24-bit (±2²³).
 const CANONICAL_MAX: f32 = 8_388_607.0;
-
-/// A band's filter shape.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BandKind {
-    /// Boost/cut everything below the corner (gain applies).
-    LowShelf,
-    /// Boost/cut a bell around the frequency (gain applies).
-    Peaking,
-    /// Boost/cut everything above the corner (gain applies).
-    HighShelf,
-    /// High-pass: attenuate below the corner (gain ignored).
-    LowCut,
-    /// Low-pass: attenuate above the corner (gain ignored).
-    HighCut,
-    /// Reject a narrow band around the frequency (gain ignored).
-    Notch,
-}
-
-impl BandKind {
-    /// Whether this shape uses the `gain_db` field. Cuts and notches don't.
-    #[must_use]
-    pub fn uses_gain(self) -> bool {
-        matches!(self, Self::LowShelf | Self::Peaking | Self::HighShelf)
-    }
-}
-
-/// One parametric band: its shape, corner/centre frequency (Hz), gain (dB, for the
-/// gain shapes), Q, and whether it is engaged.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Band {
-    pub kind: BandKind,
-    pub freq: f32,
-    pub gain_db: f32,
-    pub q: f32,
-    pub enabled: bool,
-}
-
-impl Band {
-    /// Whether this band, as configured, actually changes the signal: an engaged
-    /// gain shape with a non-trivial gain, or any engaged cut/notch.
-    #[must_use]
-    pub fn affects(&self) -> bool {
-        self.enabled
-            && self.freq > 0.0
-            && (if self.kind.uses_gain() {
-                self.gain_db.abs() > 1e-3
-            } else {
-                true
-            })
-    }
-}
-
-/// The default 8-band layout: a low shelf, six bells spread over the spectrum, and
-/// a high shelf — all flat (0 dB), so the default EQ is a passthrough.
-#[must_use]
-pub fn default_bands() -> Vec<Band> {
-    const LAYOUT: [(BandKind, f32, f32); 8] = [
-        (BandKind::LowShelf, 80.0, 0.7),
-        (BandKind::Peaking, 150.0, 1.0),
-        (BandKind::Peaking, 350.0, 1.0),
-        (BandKind::Peaking, 800.0, 1.0),
-        (BandKind::Peaking, 2000.0, 1.0),
-        (BandKind::Peaking, 4500.0, 1.0),
-        (BandKind::Peaking, 9000.0, 1.0),
-        (BandKind::HighShelf, 15_000.0, 0.7),
-    ];
-    LAYOUT
-        .iter()
-        .map(|&(kind, freq, q)| Band {
-            kind,
-            freq,
-            gain_db: 0.0,
-            q,
-            enabled: true,
-        })
-        .collect()
-}
 
 /// The live EQ settings the UI writes and the [`EqSink`] reads: the parametric
 /// bands, a preamp (headroom for boosts), an enable flag, and a `generation`
@@ -133,7 +47,7 @@ pub struct EqConfig {
 impl Default for EqConfig {
     fn default() -> Self {
         Self {
-            bands: default_bands(),
+            bands: default_bands().to_vec(),
             preamp_db: 0.0,
             enabled: false,
             generation: 0,
@@ -154,144 +68,6 @@ impl EqConfig {
 /// A shared handle to the live [`EqConfig`]: the `PlayerHandle` writes it, the
 /// [`EqSink`] (on the pump thread) reads it and redesigns when `generation` moves.
 pub type EqShared = Arc<Mutex<EqConfig>>;
-
-/// RBJ "Audio EQ Cookbook" biquad coefficients, already `a0`-normalised, as
-/// `[b0, b1, b2, a1, a2]` — or `None` (a flat passthrough) for a band that cannot
-/// or should not filter: out of range, non-positive Q, or a gain shape at ~0 dB.
-///
-/// Shelves are parameterised by Q (`alpha = sin(w0)/(2Q)`) rather than the
-/// cookbook's shelf-slope S, which is the modern parametric-EQ convention (at
-/// `Q = 1/√2` it matches the classic `S = 1` shelf). Shared by [`design`] (which
-/// applies the coefficients) and [`band_magnitude_db`] (which evaluates them).
-fn coeffs(kind: BandKind, f0: f32, gain_db: f32, q: f32, fs: f32) -> Option<[f32; 5]> {
-    if f0 <= 0.0 || f0 >= fs / 2.0 || q <= 0.0 {
-        return None;
-    }
-    if kind.uses_gain() && gain_db.abs() < 1e-3 {
-        return None; // a flat bell/shelf is a passthrough
-    }
-    let w0 = 2.0 * PI * f0 / fs;
-    let (sin_w0, cos_w0) = (w0.sin(), w0.cos());
-    let alpha = sin_w0 / (2.0 * q);
-    // `A` is the *amplitude* √(linear gain): exponent /40, not /20 (the classic
-    // RBJ transcription gotcha).
-    let a = 10f32.powf(gain_db / 40.0);
-
-    let (b0, b1, b2, a0, a1, a2) = match kind {
-        BandKind::Peaking => (
-            1.0 + alpha * a,
-            -2.0 * cos_w0,
-            1.0 - alpha * a,
-            1.0 + alpha / a,
-            -2.0 * cos_w0,
-            1.0 - alpha / a,
-        ),
-        BandKind::LowShelf => {
-            let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
-            (
-                a * ((a + 1.0) - (a - 1.0) * cos_w0 + two_sqrt_a_alpha),
-                2.0 * a * ((a - 1.0) - (a + 1.0) * cos_w0),
-                a * ((a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha),
-                (a + 1.0) + (a - 1.0) * cos_w0 + two_sqrt_a_alpha,
-                -2.0 * ((a - 1.0) + (a + 1.0) * cos_w0),
-                (a + 1.0) + (a - 1.0) * cos_w0 - two_sqrt_a_alpha,
-            )
-        }
-        BandKind::HighShelf => {
-            let two_sqrt_a_alpha = 2.0 * a.sqrt() * alpha;
-            (
-                a * ((a + 1.0) + (a - 1.0) * cos_w0 + two_sqrt_a_alpha),
-                -2.0 * a * ((a - 1.0) + (a + 1.0) * cos_w0),
-                a * ((a + 1.0) + (a - 1.0) * cos_w0 - two_sqrt_a_alpha),
-                (a + 1.0) - (a - 1.0) * cos_w0 + two_sqrt_a_alpha,
-                2.0 * ((a - 1.0) - (a + 1.0) * cos_w0),
-                (a + 1.0) - (a - 1.0) * cos_w0 - two_sqrt_a_alpha,
-            )
-        }
-        BandKind::LowCut => (
-            (1.0 + cos_w0) / 2.0,
-            -(1.0 + cos_w0),
-            (1.0 + cos_w0) / 2.0,
-            1.0 + alpha,
-            -2.0 * cos_w0,
-            1.0 - alpha,
-        ),
-        BandKind::HighCut => (
-            (1.0 - cos_w0) / 2.0,
-            1.0 - cos_w0,
-            (1.0 - cos_w0) / 2.0,
-            1.0 + alpha,
-            -2.0 * cos_w0,
-            1.0 - alpha,
-        ),
-        BandKind::Notch => (
-            1.0,
-            -2.0 * cos_w0,
-            1.0,
-            1.0 + alpha,
-            -2.0 * cos_w0,
-            1.0 - alpha,
-        ),
-    };
-    Some([b0 / a0, b1 / a0, b2 / a0, a1 / a0, a2 / a0])
-}
-
-/// The RBJ biquad for a band — the transcendental design the `no_std` core
-/// delegates to the std host. Flat ([`Biquad::bypass`]) for a disabled/flat band
-/// or one out of range.
-#[must_use]
-pub fn design(band: &Band, fs: f32) -> Biquad {
-    if !band.enabled {
-        return Biquad::bypass();
-    }
-    match coeffs(band.kind, band.freq, band.gain_db, band.q, fs) {
-        Some([b0, b1, b2, a1, a2]) => Biquad::new(b0, b1, b2, a1, a2),
-        None => Biquad::bypass(),
-    }
-}
-
-/// Magnitude response (dB) of a biquad `[b0, b1, b2, a1, a2]` at normalised
-/// angular frequency `w` (0..π): `20·log₁₀(|H(e^jw)|)`.
-fn biquad_mag_db(c: [f32; 5], w: f32) -> f32 {
-    let (cw, sw) = (w.cos(), w.sin());
-    let (c2, s2) = ((2.0 * w).cos(), (2.0 * w).sin());
-    let num_re = c[0] + c[1] * cw + c[2] * c2;
-    let num_im = -(c[1] * sw + c[2] * s2);
-    let den_re = 1.0 + c[3] * cw + c[4] * c2;
-    let den_im = -(c[3] * sw + c[4] * s2);
-    let num = (num_re * num_re + num_im * num_im).sqrt();
-    let den = (den_re * den_re + den_im * den_im).sqrt();
-    if den <= 0.0 {
-        0.0
-    } else {
-        20.0 * (num / den).max(1e-9).log10()
-    }
-}
-
-/// A single band's magnitude response (dB) at `freq` Hz for device rate `fs` — the
-/// thin per-band curve the UI draws. `0.0` (flat) for a band that doesn't filter.
-#[must_use]
-pub fn band_magnitude_db(band: &Band, freq: f32, fs: f32) -> f32 {
-    if !band.enabled {
-        return 0.0;
-    }
-    match coeffs(band.kind, band.freq, band.gain_db, band.q, fs) {
-        Some(c) => biquad_mag_db(c, 2.0 * PI * freq / fs),
-        None => 0.0,
-    }
-}
-
-/// The **combined parametric-EQ magnitude response** (dB) at `freq` Hz for a device
-/// rate `fs`: the preamp plus each band's response (cascaded filters multiply in
-/// magnitude = add in dB). This is the thick overall curve the UI draws.
-#[must_use]
-pub fn eq_magnitude_db(bands: &[Band], preamp_db: f32, freq: f32, fs: f32) -> f32 {
-    let mut db = preamp_db;
-    for band in bands {
-        db += band_magnitude_db(band, freq, fs);
-    }
-    db
-}
 
 fn db_to_lin(db: f32) -> f32 {
     10f32.powf(db / 20.0)
@@ -403,6 +179,7 @@ mod tests {
     use super::*;
     use crate::analyzer::SpectrumFrame;
     use soul_audio_core::SampleFormat;
+    use std::f32::consts::PI;
 
     const FS: f32 = 48_000.0;
 
@@ -476,153 +253,6 @@ mod tests {
         };
         edit(&mut cfg);
         Arc::new(Mutex::new(cfg))
-    }
-
-    // ---- coefficient / magnitude design (RBJ) --------------------------------
-
-    #[test]
-    fn a_flat_or_out_of_range_band_is_bypass() {
-        assert_eq!(design(&bell(1000.0, 0.0, 1.0), FS), Biquad::bypass());
-        assert_eq!(
-            design(&bell(16_000.0, 6.0, 1.0), 30_000.0),
-            Biquad::bypass(),
-            "a band at/above Nyquist can't be realised"
-        );
-        let mut disabled = bell(1000.0, 6.0, 1.0);
-        disabled.enabled = false;
-        assert_eq!(design(&disabled, FS), Biquad::bypass());
-        assert_ne!(design(&bell(1000.0, 6.0, 1.0), FS), Biquad::bypass());
-    }
-
-    #[test]
-    fn peaking_hits_its_gain_at_centre_and_is_flat_far_away() {
-        let b = bell(1000.0, 6.0, 1.0);
-        assert!((band_magnitude_db(&b, 1000.0, FS) - 6.0).abs() < 0.2);
-        assert!(band_magnitude_db(&b, 125.0, FS).abs() < 1.0);
-        assert!(band_magnitude_db(&b, 8000.0, FS).abs() < 1.0);
-        // A cut is symmetric.
-        let c = bell(1000.0, -6.0, 1.0);
-        assert!((band_magnitude_db(&c, 1000.0, FS) + 6.0).abs() < 0.2);
-    }
-
-    #[test]
-    fn q_controls_peaking_bandwidth() {
-        // Half an octave out (≈1.4 kHz) a narrow band has fallen off far more than
-        // a wide one.
-        let wide = band_magnitude_db(&bell(1000.0, 10.0, 0.5), 1400.0, FS);
-        let narrow = band_magnitude_db(&bell(1000.0, 10.0, 6.0), 1400.0, FS);
-        assert!(
-            wide > narrow + 3.0,
-            "a wider band (low Q) should still boost 1.4 kHz far more than a narrow one: wide {wide:.2} narrow {narrow:.2}"
-        );
-    }
-
-    #[test]
-    fn shelves_lift_one_side_and_leave_the_other() {
-        let fs = FS;
-        let low = Band {
-            kind: BandKind::LowShelf,
-            freq: 120.0,
-            gain_db: 6.0,
-            q: 0.7,
-            enabled: true,
-        };
-        assert!(
-            (band_magnitude_db(&low, 30.0, fs) - 6.0).abs() < 0.6,
-            "low shelf reaches +6 dB in the bass"
-        );
-        assert!(
-            band_magnitude_db(&low, 10_000.0, fs).abs() < 0.5,
-            "low shelf leaves the treble alone"
-        );
-        let high = Band {
-            kind: BandKind::HighShelf,
-            freq: 8000.0,
-            gain_db: -6.0,
-            q: 0.7,
-            enabled: true,
-        };
-        assert!(
-            (band_magnitude_db(&high, 18_000.0, fs) + 6.0).abs() < 0.8,
-            "high shelf reaches −6 dB on top"
-        );
-        assert!(
-            band_magnitude_db(&high, 200.0, fs).abs() < 0.5,
-            "high shelf leaves the bass alone"
-        );
-    }
-
-    #[test]
-    fn cuts_attenuate_the_stopband_and_pass_the_passband() {
-        let fs = FS;
-        let hp = Band {
-            kind: BandKind::LowCut,
-            freq: 500.0,
-            gain_db: 0.0,
-            q: 0.707,
-            enabled: true,
-        };
-        assert!(
-            band_magnitude_db(&hp, 60.0, fs) < -15.0,
-            "low-cut kills the deep bass"
-        );
-        assert!(
-            (band_magnitude_db(&hp, 500.0, fs) + 3.0).abs() < 1.0,
-            "≈−3 dB at the corner"
-        );
-        assert!(
-            band_magnitude_db(&hp, 8000.0, fs).abs() < 0.3,
-            "passes the highs"
-        );
-        let lp = Band {
-            kind: BandKind::HighCut,
-            freq: 2000.0,
-            gain_db: 0.0,
-            q: 0.707,
-            enabled: true,
-        };
-        assert!(
-            band_magnitude_db(&lp, 16_000.0, fs) < -15.0,
-            "high-cut kills the top"
-        );
-        assert!(
-            band_magnitude_db(&lp, 200.0, fs).abs() < 0.3,
-            "passes the lows"
-        );
-    }
-
-    #[test]
-    fn notch_rejects_its_centre_and_passes_around_it() {
-        let n = Band {
-            kind: BandKind::Notch,
-            freq: 1000.0,
-            gain_db: 0.0,
-            q: 4.0,
-            enabled: true,
-        };
-        assert!(
-            band_magnitude_db(&n, 1000.0, FS) < -30.0,
-            "a notch kills its centre"
-        );
-        assert!(
-            band_magnitude_db(&n, 250.0, FS).abs() < 0.5,
-            "and passes well below"
-        );
-        assert!(
-            band_magnitude_db(&n, 4000.0, FS).abs() < 0.5,
-            "and well above"
-        );
-    }
-
-    #[test]
-    fn combined_response_sums_bands_and_preamp() {
-        let mut bands = default_bands();
-        // Bell index 4 is 2 kHz; set it to +6, and the low shelf (0) to +3.
-        bands[4].gain_db = 6.0;
-        bands[0].gain_db = 3.0;
-        // Around 2 kHz ≈ the bell boost; deep bass ≈ the shelf; plus a −2 preamp.
-        assert!((eq_magnitude_db(&bands, -2.0, 2000.0, FS) - 4.0).abs() < 0.6);
-        assert!((eq_magnitude_db(&bands, -2.0, 30.0, FS) - 1.0).abs() < 0.8);
     }
 
     // ---- EqSink behaviour -----------------------------------------------------

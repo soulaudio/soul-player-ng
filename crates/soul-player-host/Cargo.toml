@@ -19,6 +19,8 @@ all = { level = "deny", priority = -1 }
 [dependencies]
 soul-player-backend = { path = "../soul-player-backend" }
 soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+# Shared no_std parametric-EQ coefficient design (RBJ), reused by the DAP firmware.
+soul-audio-eq = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["playback"] }
 # Write-path "managed library" organizer (copy/move into a path-template tree),
 # re-exported so a UI head can plan/apply without a direct core git dep.
