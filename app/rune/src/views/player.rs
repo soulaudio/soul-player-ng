@@ -673,9 +673,12 @@ mod tests {
     #[test]
     fn signal_path_summary_formats_the_chain() {
         use super::signal_path_summary;
-        use soul_player_host::{SignalPath, SourceFormat};
+        use soul_player_host::{SignalPath, SourceCodec, SourceFormat};
+        // The compact now-playing line shows bit depth, not codec (the codec lives
+        // in the expanded Source stage), so a fixed codec here doesn't affect it.
         let sp = |source, decoded_rate, replay_gain_db, device_rate, resampling| SignalPath {
             source,
+            codec: SourceCodec::Pcm,
             decoded_rate,
             decoded_bits: 24,
             channels: 2,

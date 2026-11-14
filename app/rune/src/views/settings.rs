@@ -134,7 +134,12 @@ fn category_nav(s: &State, p: &Palette) -> El {
         .w(NAV_WIDTH)
         .h_full()
         .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
-        .padding(space::MD)
+        // Top inset `LG` so the first category item's box lines up with the main
+        // sidebar's first nav item and the content pane's first card; sides and
+        // bottom stay `MD`.
+        .px(space::MD)
+        .pt(space::LG)
+        .pb(space::MD)
         .gap(space::XXS)
         .child(category_item(
             "cat-appearance",
@@ -1319,10 +1324,11 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .gap(space::LG)
             .child(about_card(s, p)),
     };
-    // Padding lives INSIDE the scroll viewport: the top then aligns with the nav
-    // rail (no fixed dead gap above the first card) and the bottom margin travels
-    // with the content so the last card clears the window edge when scrolled down.
-    let inner = content.w_full().px(space::XL).pt(space::MD).pb(space::XXL);
+    // Padding lives INSIDE the scroll viewport (no fixed dead gap above the first
+    // card; the bottom margin travels with the content). The top inset is `LG` —
+    // the same as the category rail and the main sidebar's nav — so the first card
+    // lines up with the first rail item and the first nav item.
+    let inner = content.w_full().px(space::XL).pt(space::LG).pb(space::XXL);
     // One Live carries the thumb geometry from the viewport's scroll callback to
     // the thumb element in the same frame.
     let thumb = SETTINGS_SCROLL_THUMB.with(|t| t.clone());
