@@ -1430,6 +1430,19 @@ fn main() -> anyhow::Result<()> {
             tx.instant(); // don't animate fast-moving numeric fields
         });
     });
+    // Live filesystem watcher: when files change under a watched root while the app
+    // is open, the host runs a debounced background rescan and hands us the refreshed
+    // library/Sources via this callback — applied on the UI thread like any other
+    // watch update. The host re-arms the watcher itself as sources are added/removed.
+    {
+        let wh = app.handle();
+        host.on_watch_update(move |up: WatchUpdate| {
+            wh.update(move |s: &mut State, _tx: &mut Tx| {
+                apply_watch(s, up);
+            });
+        });
+        host.start_watching();
+    }
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
     // installer uses the same icons via [package.metadata.packager]).
     if let Err(e) = rune::set_app_icon(include_bytes!("../icons/icon.png").to_vec()) {

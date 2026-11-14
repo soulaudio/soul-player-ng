@@ -27,6 +27,11 @@ anyhow = "1"
 # Real-input FFT for the EQ spectrum analyzer (std host only — the no_std core
 # never sees it). Wraps rustfft with an r2c API and reused buffers.
 realfft = "3"
+# Live filesystem watcher (A6): debounced change events over the watched roots →
+# a background incremental rescan while the app is open. `-mini` coalesces event
+# bursts (an album copy = hundreds of events) into one callback after a quiet
+# window. Cross-platform (inotify / FSEvents / ReadDirectoryChangesW).
+notify-debouncer-mini = "0.4"
 
 [dev-dependencies]
 tempfile = "3"
