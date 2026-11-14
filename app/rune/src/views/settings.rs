@@ -20,7 +20,7 @@ use soul_player_host::{GAIN_LIMIT_DB, ReplayGainMode};
 
 use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
-use crate::ui::{radius, space, type_};
+use crate::ui::{fx, radius, space, type_};
 use crate::views::dropdown;
 use crate::views::icons;
 use crate::views::scrollbar;
@@ -1159,12 +1159,13 @@ fn db_to_slider(db: f32) -> f32 {
     ((db + GAIN_LIMIT_DB) / (2.0 * GAIN_LIMIT_DB)).clamp(0.0, 1.0)
 }
 
-/// The **DSP / EQ** stage: a 10-band graphic equalizer. An enable toggle in the
-/// header, a preamp slider for headroom, then the response-curve graph.
+/// The **DSP / EQ** stage: a fully parametric equalizer. An enable toggle in the
+/// header, a preamp slider for headroom, then the response-curve graph. When the
+/// EQ is off the body is dimmed and only the On/Off toggle stays lit.
 /// The quality dot goes accent when the EQ is actively shaping the signal.
 fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let on = s.eq_enabled;
-    let shaping = on && (s.eq_preamp.abs() > 0.05 || s.eq_gains.iter().any(|g| g.abs() > 0.05));
+    let shaping = on && (s.eq_preamp.abs() > 0.05 || s.eq_bands.iter().any(|b| b.affects()));
     // Header enable toggle (reuses the signal-path On/Off labels).
     let toggle = {
         let label = if on {
@@ -1216,6 +1217,15 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             apply_preamp,
             apply_preamp,
         )));
+    // The card body (preamp + parametric response-curve graph). Dimmed when the EQ
+    // is off, so only the header's On/Off toggle stays lit.
+    let body = col()
+        .key("eq-body")
+        .w_full()
+        .gap(space::MD)
+        .child(preamp_row)
+        .child(crate::views::eq_graph::eq_graph(s, p, cx));
+    let body = if on { body } else { body.opacity(fx::DISABLED) };
     card("sp-stage-dsp", p)
         .child(stage_header(
             if shaping { p.accent } else { p.primary },
@@ -1226,10 +1236,7 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             false,
             p,
         ))
-        .child(preamp_row)
-        // The response-curve graph with a draggable node per band (Ableton /
-        // FabFilter style) replaces the row of sliders.
-        .child(crate::views::eq_graph::eq_graph(s, p, cx))
+        .child(body)
 }
 
 /// ReplayGain: an Off / Track / Album mode row plus a preamp slider (−15..+15
