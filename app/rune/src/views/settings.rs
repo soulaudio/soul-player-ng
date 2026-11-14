@@ -30,10 +30,12 @@ use crate::{
     OrganizePhase, SettingsTab, State, ThemePref, add_eq_band, apply_and_save, apply_watch,
     bump_eq_band_gain, bump_eq_band_q, close_dropdown, cycle_eq_band_kind, export_eq, import_eq,
     organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_eq_band,
-    set_eq_band_enabled, set_eq_enabled, set_eq_preamp, set_locale_pref, set_managed_dest,
-    set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
-    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor,
+    set_eq_band_enabled, set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref,
+    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
+    set_theme_pref, toggle_eq_editor,
 };
+use soul_player_host::IndexingMode;
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
 const RG_PREAMP_MIN: f32 = -15.0;
@@ -616,6 +618,74 @@ fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, 
         .on_press(move |s: &mut State| set_replaygain_mode(s, mode))
 }
 
+/// One indexing-speed choice; the active mode is filled with the primary color
+/// (mirrors [`rg_mode_button`]). Selecting it applies + persists via
+/// [`set_indexing_mode`].
+fn indexing_mode_button(
+    label: String,
+    key: &str,
+    mode: IndexingMode,
+    active: bool,
+    p: &Palette,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_indexing_mode(s, mode))
+}
+
+/// The "Indexing speed" control for the Sources page: a heading whose description
+/// is the *selected* mode's plain-language explanation, plus the three mode
+/// buttons. Built idiot-proof — every option is visible and the help text tells
+/// you exactly what the current choice does.
+fn indexing_section(s: &State, p: &Palette) -> El {
+    let mode = s.indexing_mode;
+    let desc = match mode {
+        IndexingMode::Automatic => t!("settings.indexingAutoDesc"),
+        IndexingMode::Maximum => t!("settings.indexingMaxDesc"),
+        IndexingMode::Gentle => t!("settings.indexingGentleDesc"),
+    };
+    col()
+        .gap(space::SM)
+        .child(heading(
+            t!("settings.indexing").to_string(),
+            desc.to_string(),
+            p,
+        ))
+        .child(
+            row()
+                .gap(space::XS)
+                .flex_wrap()
+                .child(indexing_mode_button(
+                    t!("settings.indexingModeAuto").to_string(),
+                    "indexing-auto",
+                    IndexingMode::Automatic,
+                    mode == IndexingMode::Automatic,
+                    p,
+                ))
+                .child(indexing_mode_button(
+                    t!("settings.indexingModeMax").to_string(),
+                    "indexing-max",
+                    IndexingMode::Maximum,
+                    mode == IndexingMode::Maximum,
+                    p,
+                ))
+                .child(indexing_mode_button(
+                    t!("settings.indexingModeGentle").to_string(),
+                    "indexing-gentle",
+                    IndexingMode::Gentle,
+                    mode == IndexingMode::Gentle,
+                    p,
+                )),
+        )
+}
+
 // ── Cards (one per settings group) ───────────────────────────────────────────
 
 /// Appearance: a System / Light / Dark theme override.
@@ -761,7 +831,8 @@ fn music_data_card(s: &State, p: &Palette) -> El {
             c = c.child(source_row(s, p, i));
         }
     }
-    c
+    // How hard the scanner may work when indexing these sources.
+    c.child(indexing_section(s, p))
 }
 
 // ── Managed Library (the write-path organizer: configure half) ───────────────
