@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use soul_player_backend::driver::queue_for;
 use soul_player_backend::{
-    Command, ServicePlayer, SourceFormat, apply_command, project_signal_path,
+    Command, ServicePlayer, SourceCodec, SourceFormat, apply_command, project_signal_path,
 };
 
 /// A device-less sink at a fixed rate/channels; discards audio (we only inspect
@@ -61,24 +61,26 @@ struct Case {
     file: &'static str,
     dsd_rate_hz: Option<u32>,
     decoded_rate: u32,
+    /// The codec the Source stage should name (MP1/MP2 decode via the MP3 path).
+    codec: SourceCodec,
 }
 
 #[rustfmt::skip]
 const CASES: &[Case] = &[
-    Case { file: "tone.wav",        dsd_rate_hz: None,               decoded_rate: 44_100 },
-    Case { file: "tone.flac",       dsd_rate_hz: None,               decoded_rate: 44_100 },
-    Case { file: "tone.m4a",        dsd_rate_hz: None,               decoded_rate: 44_100 }, // ALAC
-    Case { file: "tone.aif",        dsd_rate_hz: None,               decoded_rate: 44_100 }, // AIFF PCM
-    Case { file: "tone.mp3",        dsd_rate_hz: None,               decoded_rate: 44_100 },
-    Case { file: "tone.aac",        dsd_rate_hz: None,               decoded_rate: 44_100 }, // ADTS
-    Case { file: "tone.mp2",        dsd_rate_hz: None,               decoded_rate: 44_100 },
-    Case { file: "tone.opus",       dsd_rate_hz: None,               decoded_rate: 48_000 },
-    Case { file: "tone.mp1",        dsd_rate_hz: None,               decoded_rate: 32_000 },
-    Case { file: "tone.dsf",        dsd_rate_hz: Some(2_822_400),    decoded_rate: 44_100 }, // DSD64
-    Case { file: "tone.dff",        dsd_rate_hz: Some(2_822_400),    decoded_rate: 44_100 }, // DSD64 (DFF)
-    Case { file: "tone-dsd128.dsf", dsd_rate_hz: Some(5_644_800),    decoded_rate: 44_100 },
-    Case { file: "tone-dsd256.dsf", dsd_rate_hz: Some(11_289_600),   decoded_rate: 44_100 },
-    Case { file: "tone-dsd512.dsf", dsd_rate_hz: Some(22_579_200),   decoded_rate: 44_100 },
+    Case { file: "tone.wav",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Wav },
+    Case { file: "tone.flac",       dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Flac },
+    Case { file: "tone.m4a",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Alac }, // ALAC
+    Case { file: "tone.aif",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Aiff }, // AIFF PCM
+    Case { file: "tone.mp3",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Mp3 },
+    Case { file: "tone.aac",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Aac }, // ADTS
+    Case { file: "tone.mp2",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Mp3 }, // MPEG Layer II via MP3 path
+    Case { file: "tone.opus",       dsd_rate_hz: None,               decoded_rate: 48_000, codec: SourceCodec::Opus },
+    Case { file: "tone.mp1",        dsd_rate_hz: None,               decoded_rate: 32_000, codec: SourceCodec::Mp3 }, // MPEG Layer I via MP3 path
+    Case { file: "tone.dsf",        dsd_rate_hz: Some(2_822_400),    decoded_rate: 44_100, codec: SourceCodec::Dsd }, // DSD64
+    Case { file: "tone.dff",        dsd_rate_hz: Some(2_822_400),    decoded_rate: 44_100, codec: SourceCodec::Dsd }, // DSD64 (DFF)
+    Case { file: "tone-dsd128.dsf", dsd_rate_hz: Some(5_644_800),    decoded_rate: 44_100, codec: SourceCodec::Dsd },
+    Case { file: "tone-dsd256.dsf", dsd_rate_hz: Some(11_289_600),   decoded_rate: 44_100, codec: SourceCodec::Dsd },
+    Case { file: "tone-dsd512.dsf", dsd_rate_hz: Some(22_579_200),   decoded_rate: 44_100, codec: SourceCodec::Dsd },
 ];
 
 const DEVICE_RATES: [u32; 2] = [44_100, 48_000];
@@ -137,6 +139,12 @@ fn check(case: &Case, device_rate: u32) -> Result<(), String> {
                 case.dsd_rate_hz.map(|hz| SourceFormat::Dsd { rate_hz: hz })
             ));
         }
+    }
+    if sp.codec != case.codec {
+        return Err(format!(
+            "{}@{device_rate}: codec {:?} != {:?}",
+            case.file, sp.codec, case.codec
+        ));
     }
     if sp.decoded_rate != case.decoded_rate {
         return Err(format!(

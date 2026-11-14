@@ -9,7 +9,7 @@
 #![forbid(unsafe_code)]
 
 use rune::{Align, Color, Cursor, El, Icon, Side, col, el, icon, row, text};
-use soul_player_host::{ReplayGainMode, SignalPath, SourceFormat};
+use soul_player_host::{ReplayGainMode, SignalPath, SourceCodec, SourceFormat};
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
@@ -30,7 +30,29 @@ fn khz(hz: u32) -> String {
     }
 }
 
-/// Source stage: native DSD (family + 1-bit MHz rate) or PCM bit depth.
+/// The source codec's short display name — a technical identifier (like the
+/// rate / "DSD64" format values), not a translatable UI label.
+fn codec_name(c: SourceCodec) -> &'static str {
+    match c {
+        SourceCodec::Flac => "FLAC",
+        SourceCodec::Alac => "ALAC",
+        SourceCodec::Aac => "AAC",
+        SourceCodec::Mp3 => "MP3",
+        SourceCodec::Opus => "Opus",
+        SourceCodec::Vorbis => "Vorbis",
+        SourceCodec::WavPack => "WavPack",
+        SourceCodec::Wav => "WAV",
+        SourceCodec::Aiff => "AIFF",
+        SourceCodec::Caf => "CAF",
+        SourceCodec::Matroska => "Matroska",
+        SourceCodec::Dsd => "DSD",
+        SourceCodec::Pcm => "PCM",
+    }
+}
+
+/// Source stage: native DSD (family + 1-bit MHz rate), or the PCM codec + bit
+/// depth — the codec name (FLAC / ALAC / AAC / …) is the lossless-vs-lossy
+/// identity a bare "PCM" can't give.
 pub(crate) fn source_value(sp: &SignalPath) -> String {
     match sp.source {
         SourceFormat::Dsd { rate_hz } => format!(
@@ -38,7 +60,7 @@ pub(crate) fn source_value(sp: &SignalPath) -> String {
             (rate_hz / 44_100 / 64).max(1) * 64,
             f64::from(rate_hz) / 1e6
         ),
-        SourceFormat::Pcm { bits } => format!("PCM · {bits}-bit"),
+        SourceFormat::Pcm { bits } => format!("{} · {bits}-bit", codec_name(sp.codec)),
     }
 }
 
@@ -331,12 +353,14 @@ mod tests {
 
     fn sp(
         source: SourceFormat,
+        codec: SourceCodec,
         decoded_rate: u32,
         device_rate: u32,
         resampling: bool,
     ) -> SignalPath {
         SignalPath {
             source,
+            codec,
             decoded_rate,
             decoded_bits: 24,
             channels: 2,
@@ -351,6 +375,7 @@ mod tests {
     fn stage_values_format_each_stage() {
         let dsd = sp(
             SourceFormat::Dsd { rate_hz: 2_822_400 },
+            SourceCodec::Dsd,
             44_100,
             48_000,
             true,
@@ -360,13 +385,51 @@ mod tests {
         assert_eq!(resample_value(&dsd), "44.1 → 48 kHz");
         assert_eq!(output_value(&dsd), "48 kHz · 24-bit");
 
-        let pcm = sp(SourceFormat::Pcm { bits: 16 }, 44_100, 44_100, false);
-        assert_eq!(source_value(&pcm), "PCM · 16-bit");
+        let flac = sp(
+            SourceFormat::Pcm { bits: 16 },
+            SourceCodec::Flac,
+            44_100,
+            44_100,
+            false,
+        );
+        assert_eq!(source_value(&flac), "FLAC · 16-bit");
         // A rate-exact path reads as such, not "a → a".
         assert_eq!(
-            resample_value(&pcm),
+            resample_value(&flac),
             t!("player.signalPath.rateExact").to_string()
         );
+    }
+
+    /// The Source stage names the real codec on an otherwise-identical PCM stream:
+    /// a lossless ALAC, a FLAC, and a bare PCM/WAV read differently (the
+    /// lossless-vs-lossy distinction a plain "PCM · 24-bit" can't give).
+    #[test]
+    fn source_value_names_the_pcm_codec() {
+        let alac = sp(
+            SourceFormat::Pcm { bits: 24 },
+            SourceCodec::Alac,
+            96_000,
+            96_000,
+            false,
+        );
+        assert_eq!(source_value(&alac), "ALAC · 24-bit");
+        let aac = sp(
+            SourceFormat::Pcm { bits: 16 },
+            SourceCodec::Aac,
+            44_100,
+            44_100,
+            false,
+        );
+        assert_eq!(source_value(&aac), "AAC · 16-bit");
+        // A decoder that names no codec falls back to the generic "PCM".
+        let pcm = sp(
+            SourceFormat::Pcm { bits: 16 },
+            SourceCodec::Pcm,
+            44_100,
+            44_100,
+            false,
+        );
+        assert_eq!(source_value(&pcm), "PCM · 16-bit");
     }
 
     #[test]
