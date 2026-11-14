@@ -949,13 +949,12 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .unwrap_or(1100.0);
     let mobile = window_w < views::sidebar::MOBILE_BREAKPOINT;
 
-    // The shell keeps the stable `"app-root"` key that `window_w` measures above
-    // (a `col`/`row` reports its laid-out width back reliably).
-    let shell = if mobile {
+    // Inner shell: the old desktop/mobile layout, now under the title bar.
+    let shell_inner = if mobile {
         // Mobile single-pane (the old app's `isMobile`): the sidebar is the
         // full-width "menu" home view; a nav tap flips to full-screen content
         // with a back bar. Collapse and the resize handle are desktop-only.
-        let root = col().key("app-root").w_full().h_full().fill(p.bg);
+        let root = col().key("shell").w_full().grow(1.0).min_h(0.0).fill(p.bg);
         if s.mobile_show_content {
             root.child(views::sidebar::mobile_top_bar(mobile_title(s), &p))
                 .child(content_pane(s, &p, cx, scale))
@@ -966,9 +965,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         // The old app's desktop shell: a fixed-width left sidebar (nav label,
         // queue, player panel) plus the main content filling the rest.
         row()
-            .key("app-root")
+            .key("shell")
             .w_full()
-            .h_full()
+            .grow(1.0)
+            .min_h(0.0)
             .fill(p.bg)
             .child(if s.sidebar_collapsed {
                 // Collapsed: a 0-width placeholder keeps the resize handle at a
@@ -981,6 +981,16 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .child(views::sidebar::resize_handle(s.sidebar_collapsed, &p))
             .child(content_pane(s, &p, cx, scale))
     };
+
+    // The window shell: the custom title bar over the content. `app-root` keeps
+    // the key `window_w`/mobile detection measure (a col reports its width too).
+    let shell = col()
+        .key("app-root")
+        .w_full()
+        .h_full()
+        .fill(p.bg)
+        .child(views::titlebar::bar(s, &p, cx))
+        .child(shell_inner);
 
     // Overlay layer: the shell, plus any open dropdown's panel (Settings →
     // Language) and the expanded signal-path panel, mounted on top so they draw
@@ -2189,6 +2199,34 @@ mod tests {
         assert!(
             thumb[3] > 0.0,
             "the thumb has height when content overflows, got {thumb:?}"
+        );
+    }
+
+    /// The custom title bar renders as a full-width strip pinned to the top of
+    /// the window, above the sidebar|content shell.
+    #[test]
+    fn titlebar_renders_at_the_top_full_width() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (bar, _) = rt
+            .presented("titlebar")
+            .expect("the custom title bar renders");
+        assert!(bar[1].abs() < 1.0, "bar sits at the top, got y={}", bar[1]);
+        assert!(
+            (bar[2] - 1100.0).abs() < 1.0,
+            "bar spans the window width, got w={}",
+            bar[2]
+        );
+        assert!(
+            (bar[3] - views::titlebar::HEIGHT).abs() < 1.0,
+            "bar is HEIGHT tall, got h={}",
+            bar[3]
         );
     }
 
