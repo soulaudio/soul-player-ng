@@ -9,7 +9,9 @@ mod sink;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
@@ -122,26 +124,96 @@ impl IndexingMode {
         }
     }
 
-    /// The extraction thread count for this mode *right now*. `Maximum` oversubscribes
-    /// the cores (hiding I/O latency); `Gentle` stays low; `Automatic` samples the
-    /// current CPU load and scales between the two so a busy machine keeps responsive.
-    /// Always at least 2 (some parallelism hides I/O latency) and capped so a huge
-    /// core count can't spawn an unreasonable pool.
+    /// The extraction thread count to **start** a scan with for this mode *right
+    /// now*. `Maximum` oversubscribes the cores (hiding I/O latency); `Gentle` stays
+    /// low; `Automatic` samples the current CPU load and scales between the two. For
+    /// `Automatic` this is only the *initial* `target` — a [`LoadSampler`] then keeps
+    /// it tracking load for the rest of the scan (see [`ceiling`](Self::ceiling)).
     #[must_use]
     pub fn resolve_threads(self) -> usize {
-        let cores = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
         match self {
-            IndexingMode::Maximum => (cores * 4).clamp(4, 32),
+            IndexingMode::Maximum => self.ceiling(),
             IndexingMode::Gentle => 2,
+            // Idle machine → up to 4× cores; busy → ~0.25× cores. "Mostly idle"
+            // fallback if the load can't be read.
             IndexingMode::Automatic => {
-                // Idle machine → up to 4× cores; fully busy → ~0.25× cores. Fall back
-                // to "mostly idle" if the load can't be read.
-                let idle = cpu_idle_fraction().unwrap_or(0.75);
-                let factor = 0.25 + 3.75 * idle;
-                ((cores as f32 * factor).round() as usize).clamp(2, 32)
+                threads_for_idle(cores(), cpu_idle_fraction().unwrap_or(0.75))
             }
+        }
+    }
+
+    /// The worker **ceiling** for this mode — how many extraction threads the pool
+    /// may spawn. `Automatic` shares `Maximum`'s ceiling; its live `target` varies
+    /// underneath (down to 2 on a busy machine, up to here when idle).
+    #[must_use]
+    pub fn ceiling(self) -> usize {
+        match self {
+            IndexingMode::Gentle => 2,
+            IndexingMode::Maximum | IndexingMode::Automatic => {
+                (cores() * 4).clamp(4, MAX_SCAN_THREADS)
+            }
+        }
+    }
+}
+
+/// Oversubscription cap for extraction parallelism: the I/O-bound small reads scale
+/// with concurrency, but a huge core count shouldn't spawn an unreasonable pool.
+const MAX_SCAN_THREADS: usize = 32;
+
+/// Logical CPU count (≥1), defaulting to 4 if the platform won't say.
+fn cores() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
+/// Extraction threads for a given CPU idle `fraction` (0.0 = pegged, 1.0 = idle):
+/// scales `0.25×…4×` cores, clamped to `[2, MAX_SCAN_THREADS]`. Pure — both the
+/// initial [`resolve_threads`](IndexingMode::resolve_threads) and the mid-scan
+/// [`LoadSampler`] go through this, so they stay consistent.
+fn threads_for_idle(cores: usize, fraction: f32) -> usize {
+    let factor = 0.25 + 3.75 * fraction.clamp(0.0, 1.0);
+    ((cores.max(1) as f32 * factor).round() as usize).clamp(2, MAX_SCAN_THREADS)
+}
+
+/// A background thread that re-samples CPU load (~every [`MINIMUM_CPU_UPDATE_INTERVAL`])
+/// and writes an updated extraction `target`, so an `Automatic` scan adapts **while
+/// it runs**. Dropping it stops and joins the thread.
+struct LoadSampler {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl LoadSampler {
+    /// Spawn a sampler that keeps `target` tracking the idle headroom, never above
+    /// `ceiling`. Runs until dropped (which stops + joins it, within one sample).
+    fn spawn(target: Arc<AtomicUsize>, ceiling: usize) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let cores = cores();
+        let handle = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                // ~200 ms per sample; loop to keep tracking the live load.
+                if let Some(idle) = cpu_idle_fraction() {
+                    target.store(
+                        threads_for_idle(cores, idle).min(ceiling),
+                        Ordering::Relaxed,
+                    );
+                }
+            }
+        });
+        LoadSampler {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for LoadSampler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
         }
     }
 }
@@ -390,21 +462,28 @@ impl PlayerHandle {
                 .map(|r| caches.get(r).cloned().unwrap_or_default())
                 .collect()
         };
-        // Resolve the extraction parallelism for the current indexing mode — in
-        // Automatic this samples live CPU load, so a scan triggered while the machine
-        // is busy backs off on its own. Copy the mode out of the lock first: the
-        // sample can sleep ~200 ms and we don't want to block a concurrent mode change.
+        // Resolve the extraction parallelism for the current indexing mode. Copy the
+        // mode out of the lock first: the initial sample can sleep ~200 ms and we
+        // don't want to block a concurrent mode change.
         let mode = *self
             .inner
             .indexing_mode
             .lock()
             .expect("indexing_mode mutex");
-        let threads = mode.resolve_threads();
+        let ceiling = mode.ceiling();
+        // A shared, live concurrency target the extractor re-reads per file. For
+        // Automatic, a sampler keeps it tracking CPU load FOR THE DURATION of the
+        // scan — a scan that starts idle but hits load mid-run throttles itself (and
+        // vice-versa). Fixed modes leave it constant (no sampler).
+        let target = Arc::new(AtomicUsize::new(mode.resolve_threads().min(ceiling)));
+        let sampler = matches!(mode, IndexingMode::Automatic)
+            .then(|| LoadSampler::spawn(Arc::clone(&target), ceiling));
         let IncrementalBuild {
             library,
             caches: fresh,
             removed,
-        } = Library::scan_many_incremental(&to_scan, &priors, threads)?;
+        } = Library::scan_many_incremental(&to_scan, &priors, ceiling, &target)?;
+        drop(sampler); // stop the sampler as soon as the scan is done
         // Refresh the scanned roots' caches; keep configured-but-unscanned roots
         // warm (a disabled / offline source re-aggregates from its cache when it
         // returns); prune caches for roots no longer configured.
@@ -1405,11 +1484,79 @@ mod tests {
             (4..=32).contains(&max),
             "maximum oversubscribes but stays capped: {max}"
         );
-        // Automatic samples live CPU load; whatever the load, it stays in range.
+        // Automatic samples live CPU load; whatever the load, it stays in range and
+        // never above its ceiling.
         let auto = IndexingMode::Automatic.resolve_threads();
         assert!(
             (2..=32).contains(&auto),
             "automatic stays in [2, 32]: {auto}"
+        );
+        assert!(auto <= IndexingMode::Automatic.ceiling());
+        assert_eq!(IndexingMode::Gentle.ceiling(), 2);
+        assert!((4..=32).contains(&IndexingMode::Maximum.ceiling()));
+    }
+
+    #[test]
+    fn threads_for_idle_is_bounded_and_monotonic() {
+        // Always in [2, MAX_SCAN_THREADS], whatever the inputs (incl. out-of-range).
+        for &cores in &[1usize, 2, 4, 8, 16, 64] {
+            for &idle in &[-1.0_f32, 0.0, 0.25, 0.5, 0.75, 1.0, 2.0] {
+                let t = threads_for_idle(cores, idle);
+                assert!(
+                    (2..=MAX_SCAN_THREADS).contains(&t),
+                    "cores={cores} idle={idle} -> {t}"
+                );
+            }
+        }
+        // More idle headroom never means FEWER threads (monotonic non-decreasing).
+        let busy = threads_for_idle(8, 0.0);
+        let mid = threads_for_idle(8, 0.5);
+        let idle = threads_for_idle(8, 1.0);
+        assert!(
+            busy <= mid && mid <= idle,
+            "busy={busy} mid={mid} idle={idle}"
+        );
+        assert!(
+            idle > busy,
+            "a fully idle machine runs more threads than a pegged one"
+        );
+    }
+
+    #[test]
+    fn load_sampler_updates_the_target_then_stops_on_drop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
+        let ceiling = 16;
+        let target = Arc::new(AtomicUsize::new(999)); // deliberately out-of-range
+        {
+            let _sampler = LoadSampler::spawn(Arc::clone(&target), ceiling);
+            // Poll for the first real write: the ~200 ms sample interval plus thread
+            // scheduling under parallel-test CPU load make a fixed sleep flaky, a
+            // generous deadline doesn't.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let t = loop {
+                let v = target.load(Ordering::Relaxed);
+                if v != 999 {
+                    break v;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the sampler never updated the target within 5s"
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            };
+            assert!(
+                (2..=ceiling).contains(&t),
+                "the sampler wrote a bounded live target (<= ceiling), got {t}"
+            );
+        } // dropped here → stops + joins
+        // After the sampler is gone the value is frozen (no further writes).
+        let frozen = target.load(Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            target.load(Ordering::Relaxed),
+            frozen,
+            "a dropped sampler stops writing the target"
         );
     }
 
