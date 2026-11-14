@@ -8,8 +8,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Cursor, Drag, El, Phase, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el,
-    icon, row, text,
+    Align, Cursor, Drag, El, Live, Phase, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col,
+    el, icon, row, text,
 };
 use soul_player_host::Command;
 
@@ -18,6 +18,12 @@ use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::player::{QUEUE_COVER, cover};
+use crate::views::scrollbar;
+
+thread_local! {
+    /// Per-render-thread thumb geometry for the sidebar queue scroll viewport.
+    static QUEUE_SCROLL_THUMB: Live<[f32; 4]> = Live::new([0.0; 4]);
+}
 
 /// Width of the scroll-edge fade that eases rows into the nav above (Rune
 /// suggests 16–32 pt).
@@ -378,15 +384,22 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
         content = content.child(band);
     }
 
-    col().key("queue").grow(1.0).min_h(0.0).child(
-        content
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .scroll_edge_fade(FADE_H)
-            .grow(1.0)
-            .min_h(0.0),
-    )
+    col()
+        .key("queue")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(scrollbar::attach(
+            content
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_edge_fade(FADE_H)
+                .grow(1.0)
+                .min_h(0.0),
+            &QUEUE_SCROLL_THUMB.with(|t| t.clone()),
+            "queue-scrollbar",
+            p,
+        ))
 }
 
 #[cfg(test)]

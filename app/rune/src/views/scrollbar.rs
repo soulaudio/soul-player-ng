@@ -56,6 +56,20 @@ pub(crate) fn overlay(thumb: &Live<[f32; 4]>, key: &str, p: &Palette) -> El {
         .radius(BAR_W / 2.0)
 }
 
+/// Attach a themed scrollbar to a vertical scroll `viewport`: wire its
+/// `on_scroll_offset` to drive `thumb` (a per-viewport [`Live`] the caller keeps
+/// alive across frames — typically a module `thread_local!`) through
+/// [`thumb_rect`], and mount the thumb [`overlay`] as a child. `viewport` must
+/// already be a `.scroll()` viewport; `key` is the thumb element's stable key.
+pub(crate) fn attach(viewport: El, thumb: &Live<[f32; 4]>, key: &str, p: &Palette) -> El {
+    let cb = thumb.clone();
+    viewport
+        .on_scroll_offset(move |at| {
+            cb.set(thumb_rect(at));
+        })
+        .child(overlay(thumb, key, p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
