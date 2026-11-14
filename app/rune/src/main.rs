@@ -23,8 +23,8 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 use parley_engine as _;
 use soul_player_host::{
     BANDS, Band, BandKind, BrowseAxis, Command, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
-    PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode, SignalPath, SourceCodec,
-    SourceFormat, SourceStatus, TrackView, WatchUpdate, default_bands,
+    PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode, SPECTRUM_COLS, SignalPath,
+    SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
 };
 
@@ -233,6 +233,13 @@ struct State {
     /// The band whose handle is selected/focused (shows its per-band curve + a
     /// readout). `None` when nothing is selected.
     eq_selected: Option<usize>,
+    /// The latest spectrum-analyzer columns (smoothed dBFS, 20 Hz…20 kHz log) the
+    /// EQ graph draws behind the curve. Empty when not playing / tab hidden. Pulled
+    /// from the host by `spectrum_poll` at frame rate.
+    spectrum: Vec<f32>,
+    /// The sequence of the last spectrum frame copied into `spectrum`, so the poll
+    /// only re-renders on a genuinely new FFT.
+    spectrum_seq: u64,
     /// Managed-library destination folder (persisted; `None` = unset), where the
     /// write-path organizer will copy / move added music. Set in Settings → Music
     /// Data. Configuring only — the "Add music…" apply flow is separate.
@@ -362,6 +369,8 @@ impl State {
             eq_preamp,
             eq_drag: None,
             eq_selected: None,
+            spectrum: Vec::new(),
+            spectrum_seq: 0,
             managed_dest,
             managed_template,
             managed_strategy,
@@ -598,6 +607,32 @@ pub(crate) fn set_eq_band_enabled(s: &mut State, i: usize, on: bool) {
 pub(crate) fn set_eq_preamp(s: &mut State, preamp_db: f32) {
     s.eq_preamp = preamp_db;
     apply_eq(s);
+}
+
+/// Per-frame poll (wired as `AppSpec::poll`) that drives the live EQ spectrum
+/// analyzer: while the Audio settings tab is open and a track is playing, pull the
+/// latest spectrum columns from the host into `State` and keep asking for the next
+/// frame (~60 fps). Clears the spectrum once when playback stops or the tab is
+/// hidden so the display fades out. Returns whether the view must re-render.
+fn spectrum_poll(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
+    let visible = matches!(s.route, Route::Settings) && s.settings_tab == SettingsTab::Audio;
+    if !(visible && s.playing) {
+        if s.spectrum.is_empty() {
+            return false;
+        }
+        s.spectrum.clear();
+        s.spectrum_seq = 0;
+        return true;
+    }
+    // Keep the frame clock ticking while the analyzer is on screen.
+    tx.wake_after(std::time::Duration::from_millis(16));
+    let (seq, cols) = s.host.spectrum();
+    if seq == s.spectrum_seq {
+        return false; // no new FFT since last frame — nothing to redraw
+    }
+    s.spectrum_seq = seq;
+    s.spectrum = cols.to_vec();
+    true
 }
 
 /// The on-disk token for a managed-library strategy (inverse of the `"move"`
@@ -1012,6 +1047,20 @@ fn scene_settings_audio_eq(s: &mut State) {
     s.eq_preamp = -2.0;
     // Select a mid band so its per-band curve shows.
     s.eq_selected = Some(4);
+    // A synthetic spectrum (pink-ish decline + a few bumps) so `--snap` shows the
+    // analyzer behind the curve — there is no live audio in a headless snapshot.
+    s.spectrum = (0..SPECTRUM_COLS)
+        .map(|i| {
+            let t = i as f32 / (SPECTRUM_COLS - 1) as f32;
+            let tilt = -24.0 - 30.0 * t;
+            let bump = |c: f32, w: f32, g: f32| g * (-(((t - c) / w).powi(2))).exp();
+            // A deterministic jitter so the snapshot looks like a real (jagged)
+            // analyzer rather than a smooth synthetic curve.
+            let n = i as f32;
+            let jitter = 3.0 * (n * 2.3).sin() + 2.0 * (n * 0.9 + 1.0).cos();
+            tilt + bump(0.12, 0.05, 15.0) + bump(0.55, 0.09, 11.0) + bump(0.82, 0.04, 8.0) + jitter
+        })
+        .collect();
 }
 /// Like [`scene_settings_audio_eq`] but with the master enable OFF, so `--snap`
 /// shows the dimmed-when-off card (only the On/Off toggle stays lit).
@@ -1207,6 +1256,8 @@ fn main() -> anyhow::Result<()> {
     let spec = AppSpec::<State> {
         setup: Some(setup_art),
         on_key: Some(handle_key),
+        // Drives the live EQ spectrum analyzer while the Audio tab is open + playing.
+        poll: Some(spectrum_poll),
         scenes: &[
             ("settings", scene_settings),
             ("home", scene_home),

@@ -3,6 +3,7 @@
 //! `PlayerHandle` the Rune UI head binds to.
 #![forbid(unsafe_code)]
 
+pub mod analyzer;
 pub mod eq;
 mod sink;
 
@@ -11,6 +12,7 @@ use std::sync::{Arc, Mutex};
 
 use soul_player_backend::{AudioPlayer, Library, cover_bytes};
 
+pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
     BANDS, Band, BandKind, EqConfig, EqShared, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, Q_MAX, Q_MIN,
     band_magnitude_db, default_bands, eq_magnitude_db,
@@ -107,11 +109,14 @@ struct Inner {
     /// here instead of driving the actor, so a head's command wiring can be
     /// asserted headlessly. `None` (the default) in every real handle.
     recorder: Mutex<Option<Vec<Command>>>,
-    /// The live graphic-EQ settings. Shared with the device sink's [`eq::EqSink`]
+    /// The live parametric-EQ settings. Shared with the device sink's [`eq::EqSink`]
     /// (created per spawn) so a change applies to the LIVE stream at its next block
     /// — like ReplayGain, not the output device. Persists across actor respawns
     /// (device changes) because the same `Arc` is handed to each new sink.
     eq: EqShared,
+    /// The latest spectrum-analyzer snapshot, written by the sink (pump thread) and
+    /// polled by the UI. The same `Arc` is handed to each new sink across respawns.
+    spectrum: SpectrumShared,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -180,6 +185,7 @@ impl PlayerHandle {
                 loudness_seed: Mutex::new(Vec::new()),
                 recorder: Mutex::new(None),
                 eq: Arc::new(Mutex::new(EqConfig::default())),
+                spectrum: Arc::new(Mutex::new(SpectrumFrame::default())),
             }),
         }
     }
@@ -439,6 +445,16 @@ impl PlayerHandle {
         cfg.generation = cfg.generation.wrapping_add(1);
     }
 
+    /// The latest spectrum-analyzer snapshot `(seq, columns)`: `seq` bumps each FFT
+    /// (0 if nothing has played yet), `columns` are smoothed dBFS levels on a
+    /// 20 Hz…20 kHz log axis. The UI polls this at frame rate; an unchanged `seq`
+    /// means no new frame. Cheap — a brief lock and a fixed-size copy.
+    #[must_use]
+    pub fn spectrum(&self) -> (u64, [f32; SPECTRUM_COLS]) {
+        let frame = self.inner.spectrum.lock().expect("spectrum mutex");
+        (frame.seq, frame.cols)
+    }
+
     /// Seed the backend's in-memory loudness cache from the app's persisted cache
     /// — `(path, computed track_gain_db)` pairs for previously-untagged tracks the
     /// hybrid-ReplayGain path analyzed in a past session. Call once at startup
@@ -584,7 +600,14 @@ impl PlayerHandle {
             .lock()
             .expect("loudness seed mutex")
             .clone();
-        let actor = sink::build_actor(self.inner.mode, device, self.inner.eq.clone(), lib, forward);
+        let actor = sink::build_actor(
+            self.inner.mode,
+            device,
+            self.inner.eq.clone(),
+            self.inner.spectrum.clone(),
+            lib,
+            forward,
+        );
         actor.send(Command::SetReplayGain {
             mode: rg_mode,
             preamp_db: rg_preamp,
