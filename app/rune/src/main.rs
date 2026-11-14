@@ -22,9 +22,10 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    Band, BandKind, BrowseAxis, Command, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, IndexingMode,
-    MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode, SPECTRUM_COLS,
-    SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate, default_bands,
+    Band, BandKind, BrowseAxis, Command, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
+    IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
+    SPECTRUM_COLS, SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate,
+    default_bands,
     organize::{self, Strategy},
 };
 
@@ -227,14 +228,24 @@ struct State {
     /// ReplayGain preamp in dB (persisted), a constant offset on top of the mode's
     /// gain. Rendered as a slider in Settings → ReplayGain.
     replaygain_preamp: f32,
-    /// Parametric-EQ master enable (persisted). When off, the signal path is a
-    /// bit-exact passthrough. Rendered as the Settings → Audio DSP/EQ card.
+    /// The DSP chain (persisted): an ordered list of EQ units; the signal flows
+    /// through them in order. A future "audio profile" can bundle this whole list.
+    /// Rendered as the reorderable unit list in the Settings → Audio DSP/EQ card.
+    dsp_units: Vec<EqUnit>,
+    /// Which unit's editor (graph + bands) is open. The `eq_*` fields below mirror
+    /// this unit's working copy, so the graph/editor code reads them directly;
+    /// `apply_eq` syncs the mirror back into `dsp_units[dsp_active]`.
+    dsp_active: usize,
+    /// In-flight unit-list reorder drag: `(from, to)` indices, or `None`.
+    dsp_drag: Option<(usize, usize)>,
+    /// Active unit's enable (mirror of `dsp_units[dsp_active].enabled`). When off,
+    /// its editor dims. Rendered as the DSP/EQ card header toggle.
     eq_enabled: bool,
-    /// The parametric EQ bands (persisted, 0..=`MAX_BANDS`): each has its own
+    /// Active unit's parametric bands (mirror, 0..=`MAX_BANDS`): each has its own
     /// shape, frequency, gain and Q. Drawn + dragged in the DSP/EQ graph; bands can
     /// be added/removed from the editor.
     eq_bands: Vec<Band>,
-    /// EQ preamp in dB (persisted) — headroom so band boosts don't clip.
+    /// Active unit's preamp in dB (mirror) — headroom so band boosts don't clip.
     eq_preamp: f32,
     /// In-flight EQ-graph node drag: `(band index, band state at press)`, so the
     /// drag applies absolutely from the press point. `None` when not dragging.
@@ -327,9 +338,12 @@ impl State {
         // Restore the persisted ReplayGain choice (defaults: Off, 0 dB); main()
         // has already pushed the same value to the host before the first spawn.
         let (replaygain_mode, replaygain_preamp) = config::load_replaygain();
-        // Restore the persisted EQ (defaults: off, flat, 0 dB preamp); main() has
-        // already pushed the same settings to the host before the first spawn.
-        let (eq_enabled, eq_bands, eq_preamp) = config::load_eq();
+        // Restore the persisted DSP chain (defaults: one off, flat unit); main() has
+        // already pushed the same chain to the host before the first spawn. The
+        // `eq_*` fields mirror the active (first) unit.
+        let dsp_units = config::load_dsp_chain();
+        let active = dsp_units.first().cloned().unwrap_or_default();
+        let (eq_enabled, eq_bands, eq_preamp) = (active.enabled, active.bands, active.preamp_db);
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
         let locale_pref = config::load_locale();
         apply_locale(&locale_pref);
@@ -377,6 +391,9 @@ impl State {
             output_devices,
             replaygain_mode,
             replaygain_preamp,
+            dsp_units,
+            dsp_active: 0,
+            dsp_drag: None,
             eq_enabled,
             eq_bands,
             eq_preamp,
@@ -576,11 +593,88 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
     s.host.set_replay_gain(s.replaygain_mode, preamp_db);
 }
 
-/// Persist the EQ and push it to the live stream (the device sink reads it each
-/// block). Shared by the enable toggle, the band handles, and the preamp.
-fn apply_eq(s: &State) {
-    config::save_eq(s.eq_enabled, &s.eq_bands, s.eq_preamp);
-    s.host.set_eq(s.eq_bands.clone(), s.eq_preamp, s.eq_enabled);
+/// Sync the active-unit mirror (`eq_bands`/`eq_preamp`/`eq_enabled`) back into the
+/// chain, then persist it and push the whole chain to the live stream (the device
+/// sink reads it each block). Shared by every EQ edit.
+fn apply_eq(s: &mut State) {
+    if let Some(unit) = s.dsp_units.get_mut(s.dsp_active) {
+        unit.bands = s.eq_bands.clone();
+        unit.preamp_db = s.eq_preamp;
+        unit.enabled = s.eq_enabled;
+    }
+    config::save_dsp_chain(&s.dsp_units);
+    s.host.set_dsp_chain(s.dsp_units.clone());
+}
+
+/// Load unit `i` into the active-unit mirror (its graph/editor read the mirror).
+fn load_active_unit(s: &mut State) {
+    if let Some(unit) = s.dsp_units.get(s.dsp_active) {
+        s.eq_bands = unit.bands.clone();
+        s.eq_preamp = unit.preamp_db;
+        s.eq_enabled = unit.enabled;
+    }
+    s.eq_selected = None;
+    s.eq_drag = None;
+}
+
+/// Make unit `i` the active (open) one in the editor.
+pub(crate) fn select_dsp_unit(s: &mut State, i: usize) {
+    if i < s.dsp_units.len() && i != s.dsp_active {
+        s.dsp_active = i;
+        load_active_unit(s);
+    }
+}
+
+/// Append a new EQ unit (enabled, default bands) and make it active.
+pub(crate) fn add_dsp_unit(s: &mut State) {
+    s.dsp_units.push(EqUnit::default());
+    s.dsp_active = s.dsp_units.len() - 1;
+    load_active_unit(s);
+    apply_eq(s);
+}
+
+/// Remove EQ unit `i`; keeps the active selection valid (clamped).
+pub(crate) fn remove_dsp_unit(s: &mut State, i: usize) {
+    if i >= s.dsp_units.len() {
+        return;
+    }
+    s.dsp_units.remove(i);
+    s.dsp_active = s.dsp_active.min(s.dsp_units.len().saturating_sub(1));
+    load_active_unit(s);
+    apply_eq(s);
+}
+
+/// Enable/disable unit `i` from its list row (any unit, not just the active one).
+pub(crate) fn set_dsp_unit_enabled(s: &mut State, i: usize, on: bool) {
+    if let Some(unit) = s.dsp_units.get_mut(i) {
+        unit.enabled = on;
+    }
+    if i == s.dsp_active {
+        s.eq_enabled = on;
+    }
+    apply_eq(s);
+}
+
+/// Move unit `from` to position `to` (the list drag-reorder), keeping the active
+/// unit selected as it moves.
+pub(crate) fn reorder_dsp_units(s: &mut State, from: usize, to: usize) {
+    let n = s.dsp_units.len();
+    if from >= n || to >= n || from == to {
+        return;
+    }
+    let unit = s.dsp_units.remove(from);
+    s.dsp_units.insert(to, unit);
+    // Track the active unit through the move.
+    s.dsp_active = if s.dsp_active == from {
+        to
+    } else if from < s.dsp_active && s.dsp_active <= to {
+        s.dsp_active - 1
+    } else if to <= s.dsp_active && s.dsp_active < from {
+        s.dsp_active + 1
+    } else {
+        s.dsp_active
+    };
+    apply_eq(s);
 }
 
 /// Toggle the EQ master enable.
@@ -1161,6 +1255,21 @@ fn scene_settings_audio_eq(s: &mut State) {
         band.gain_db = g;
     }
     s.eq_preamp = -2.0;
+    // A 3-unit DSP chain so `--snap` shows the reorderable unit list; unit 0 (the
+    // smile) is active and mirrored into the editor.
+    s.dsp_units = vec![
+        EqUnit {
+            bands: s.eq_bands.clone(),
+            preamp_db: s.eq_preamp,
+            enabled: s.eq_enabled,
+        },
+        EqUnit::default(),
+        EqUnit {
+            enabled: false,
+            ..EqUnit::default()
+        },
+    ];
+    s.dsp_active = 0;
     // Select a mid band so its per-band curve shows.
     s.eq_selected = Some(4);
     s.eq_editor_open = true;
@@ -1350,10 +1459,9 @@ fn main() -> anyhow::Result<()> {
     // actor on spawn).
     let (rg_mode, rg_preamp) = config::load_replaygain();
     host.set_replay_gain(rg_mode, rg_preamp);
-    // Restore the persisted EQ before any spawn too, so the first stream opens with
-    // the user's bands already applied.
-    let (eq_on, eq_bands, eq_preamp) = config::load_eq();
-    host.set_eq(eq_bands, eq_preamp, eq_on);
+    // Restore the persisted DSP chain before any spawn too, so the first stream
+    // opens with the user's units already applied.
+    host.set_dsp_chain(config::load_dsp_chain());
     // Seed the hybrid-ReplayGain loudness cache from the persisted file (stale
     // entries already dropped on load) BEFORE any spawn, so a previously-analyzed
     // untagged track is normalized this session with no re-scan.
@@ -2132,6 +2240,53 @@ mod tests {
         click_key(&mut rt, "eq-band-rm-0");
         rt.frame(0.0);
         assert_eq!(rt.state.eq_bands.len(), n0, "remove drops a band");
+    }
+
+    /// The DSP chain's unit list adds, selects, enables and removes units, and
+    /// `reorder_dsp_units` moves a unit in the processing order.
+    #[test]
+    fn the_dsp_chain_adds_selects_enables_removes_and_reorders() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.dsp_units = vec![EqUnit::default()];
+        s.dsp_active = 0;
+        // Collapse the band editor so the card is short enough that the Add button
+        // stays within the (tall) window as the unit list grows.
+        s.eq_editor_open = false;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1500.0, 4200.0), env);
+        rt.frame(0.0);
+        // Add a unit via the button → the newest becomes active.
+        click_key(&mut rt, "dsp-add-unit");
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_units.len(), 2, "Add EQ appends a unit");
+        assert_eq!(rt.state.dsp_active, 1, "adding selects the new unit");
+        // A second one via the mutator (keeps the test independent of the exact
+        // button hit-geometry once the list has grown).
+        add_dsp_unit(&mut rt.state);
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_units.len(), 3);
+        assert_eq!(rt.state.dsp_active, 2, "adding selects the new unit");
+        // Click unit 0's row label → it becomes active.
+        click_key(&mut rt, "dsp-unit-0");
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_active, 0, "clicking a row selects it");
+        // Toggle unit 1 off, reorder, and remove via the mutators (their row chips
+        // are wired identically to the band editor's; the end-to-end button path is
+        // covered by add + select above).
+        set_dsp_unit_enabled(&mut rt.state, 1, false);
+        assert!(!rt.state.dsp_units[1].enabled, "disabling a unit sticks");
+        reorder_dsp_units(&mut rt.state, 0, 2);
+        assert_eq!(rt.state.dsp_active, 2, "the active unit follows the move");
+        remove_dsp_unit(&mut rt.state, 0);
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_units.len(), 2, "remove drops a unit");
     }
 
     /// Importing an AutoEQ profile replaces the bands + preamp and enables the EQ;

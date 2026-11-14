@@ -19,8 +19,8 @@ use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
-    Band, BandKind, EqConfig, EqShared, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN,
-    band_magnitude_db, default_bands, eq_magnitude_db, format_autoeq, parse_autoeq,
+    Band, BandKind, DspChain, DspShared, EqUnit, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS,
+    Q_MAX, Q_MIN, band_magnitude_db, default_bands, eq_magnitude_db, format_autoeq, parse_autoeq,
 };
 pub use sink::SinkMode;
 /// The write-path "managed library" organizer (stateless `plan`/`apply` into a
@@ -229,11 +229,11 @@ struct Inner {
     /// here instead of driving the actor, so a head's command wiring can be
     /// asserted headlessly. `None` (the default) in every real handle.
     recorder: Mutex<Option<Vec<Command>>>,
-    /// The live parametric-EQ settings. Shared with the device sink's [`eq::EqSink`]
-    /// (created per spawn) so a change applies to the LIVE stream at its next block
-    /// — like ReplayGain, not the output device. Persists across actor respawns
-    /// (device changes) because the same `Arc` is handed to each new sink.
-    eq: EqShared,
+    /// The live DSP chain. Shared with the device sink's [`eq::DspSink`] (created
+    /// per spawn) so a change applies to the LIVE stream at its next block — like
+    /// ReplayGain, not the output device. Persists across actor respawns (device
+    /// changes) because the same `Arc` is handed to each new sink.
+    dsp: DspShared,
     /// The latest spectrum-analyzer snapshot, written by the sink (pump thread) and
     /// polled by the UI. The same `Arc` is handed to each new sink across respawns.
     spectrum: SpectrumShared,
@@ -308,7 +308,7 @@ impl PlayerHandle {
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
                 recorder: Mutex::new(None),
-                eq: Arc::new(Mutex::new(EqConfig::default())),
+                dsp: Arc::new(Mutex::new(DspChain::default())),
                 spectrum: Arc::new(Mutex::new(SpectrumFrame::default())),
             }),
         }
@@ -662,18 +662,19 @@ impl PlayerHandle {
         }
     }
 
-    /// Set the parametric-EQ bands, the preamp, and the master enable. Like
+    /// Set the whole DSP chain (its ordered EQ units). Like
     /// [`set_replay_gain`](Self::set_replay_gain), it applies to the LIVE stream at
-    /// its next block — the device sink reads the shared settings each block — and
-    /// is remembered for the next spawn, without ever spawning an actor just to set
-    /// it. A disabled or all-flat EQ is a bit-exact passthrough.
-    pub fn set_eq(&self, mut bands: Vec<eq::Band>, preamp_db: f32, enabled: bool) {
-        bands.truncate(eq::MAX_BANDS);
-        let mut cfg = self.inner.eq.lock().expect("eq mutex");
-        cfg.bands = bands;
-        cfg.preamp_db = preamp_db;
-        cfg.enabled = enabled;
-        cfg.generation = cfg.generation.wrapping_add(1);
+    /// its next block — the device sink reads the shared chain each block — and is
+    /// remembered for the next spawn, without ever spawning an actor just to set it.
+    /// An empty / disabled / all-flat chain is a bit-exact passthrough. Each unit's
+    /// bands are truncated to [`MAX_BANDS`](eq::MAX_BANDS).
+    pub fn set_dsp_chain(&self, mut units: Vec<eq::EqUnit>) {
+        for unit in &mut units {
+            unit.bands.truncate(eq::MAX_BANDS);
+        }
+        let mut chain = self.inner.dsp.lock().expect("dsp chain mutex");
+        chain.units = units;
+        chain.generation = chain.generation.wrapping_add(1);
     }
 
     /// The latest spectrum-analyzer snapshot `(seq, columns)`: `seq` bumps each FFT
@@ -932,7 +933,7 @@ impl PlayerHandle {
         let actor = sink::build_actor(
             self.inner.mode,
             device,
-            self.inner.eq.clone(),
+            self.inner.dsp.clone(),
             self.inner.spectrum.clone(),
             lib,
             forward,
