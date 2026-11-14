@@ -71,6 +71,12 @@ struct Inner {
     /// including any that are currently disabled or unavailable — so a source is
     /// never lost to a transient outage or a toggle.
     folders: Mutex<Vec<FolderConfig>>,
+    /// The most recent [`SourceStatus`] set (with real per-source track counts)
+    /// produced by [`rescan`](PlayerHandle::rescan). Cached so
+    /// [`sources`](PlayerHandle::sources) — which seeds UI state at startup —
+    /// reports the true counts from the last aggregation instead of a 0
+    /// placeholder, keeping the Sources list in step with the loaded library.
+    last_sources: Mutex<Vec<SourceStatus>>,
     /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
     /// or `None` for the system default. Read when the actor is (re)spawned and
     /// passed to the sink factory; a change applies to the NEXT spawn, not the
@@ -154,6 +160,7 @@ impl PlayerHandle {
                 library: Mutex::new(None),
                 subscribers: Mutex::new(Vec::new()),
                 folders: Mutex::new(Vec::new()),
+                last_sources: Mutex::new(Vec::new()),
                 output_device: Mutex::new(None),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
@@ -207,7 +214,7 @@ impl PlayerHandle {
         self.set_library(lib);
         // Status for the FULL configured set — disabled / unavailable sources are
         // listed too, with 0 tracks, so the caller can render and re-enable them.
-        let sources = cfg
+        let sources: Vec<SourceStatus> = cfg
             .iter()
             .map(|f| {
                 let available = f.path.is_dir();
@@ -228,6 +235,9 @@ impl PlayerHandle {
                 }
             })
             .collect();
+        // Cache the computed status (with real counts) so `sources()` — the
+        // startup UI seed — reports true counts, not a 0 placeholder.
+        *self.inner.last_sources.lock().expect("last_sources mutex") = sources.clone();
         Ok(WatchUpdate { views, sources })
     }
 
@@ -314,12 +324,22 @@ impl PlayerHandle {
     }
 
     /// The configured sources as [`SourceStatus`], in order — a cheap listing that
-    /// does **not** re-scan. [`available`](SourceStatus::available) reflects the
-    /// root's current `is_dir`, but [`track_count`](SourceStatus::track_count) is
-    /// always 0 here: real counts come from a [`WatchUpdate`] (prefer reading
-    /// [`WatchUpdate::sources`] when you have one). Useful for seeding UI state
-    /// before the first scan completes.
+    /// does **not** re-scan: it returns the status cached by the most recent
+    /// [`rescan`](Self::rescan), so [`track_count`](SourceStatus::track_count)
+    /// carries the real per-source counts from the last aggregation (ideal for
+    /// seeding UI state at startup). Falls back to a count-0 listing of the
+    /// configured set (with live `is_dir` availability) only before the first scan
+    /// — e.g. if the most recent scan errored.
     pub fn sources(&self) -> Vec<SourceStatus> {
+        let cached = self
+            .inner
+            .last_sources
+            .lock()
+            .expect("last_sources mutex")
+            .clone();
+        if !cached.is_empty() {
+            return cached;
+        }
         self.inner
             .folders
             .lock()
@@ -808,10 +828,7 @@ mod tests {
             .set_folders(&[a.path().to_path_buf(), b.path().to_path_buf()])
             .unwrap();
         assert_eq!(up.views.len(), 3, "1 from a + 2 from b aggregate");
-        assert!(
-            unavailable_of(&up).is_empty(),
-            "both roots are reachable"
-        );
+        assert!(unavailable_of(&up).is_empty(), "both roots are reachable");
         assert_eq!(
             h.watched_folders(),
             vec![a.path().to_path_buf(), b.path().to_path_buf()]
@@ -958,7 +975,25 @@ mod tests {
             .expect("missing source listed");
         assert!(sm.enabled, "missing source stays enabled");
         assert!(!sm.available, "missing source is unavailable");
-        assert_eq!(sm.track_count, 0, "an unavailable source contributes nothing");
+        assert_eq!(
+            sm.track_count, 0,
+            "an unavailable source contributes nothing"
+        );
+    }
+
+    #[test]
+    fn sources_reports_cached_counts_after_a_scan() {
+        // After a scan, the cheap `sources()` listing (used to seed UI state at
+        // startup) must carry the real per-source counts, not a 0 placeholder —
+        // otherwise a fresh launch shows "0 tracks" until the first rescan.
+        let a = folder_with("stat_cache", &["a1.wav", "a2.wav"]);
+        let h = PlayerHandle::offline();
+        h.set_sources(&[(a.path().to_path_buf(), true)]).unwrap();
+
+        let got = h.sources();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].track_count, 2, "cached count, not 0");
+        assert!(got[0].enabled && got[0].available);
     }
 
     #[test]
