@@ -385,6 +385,27 @@ settings.addFolderDialog:
   zh: '添加音乐文件夹'
   cs: 'Přidat složku s hudbou'
   ja: '音楽フォルダを追加'
+settings.addLocalFolder:
+  en: 'Local folder…'
+  de: 'Lokaler Ordner…'
+  es: 'Carpeta local…'
+  zh: '本地文件夹…'
+  cs: 'Místní složka…'
+  ja: 'ローカルフォルダ…'
+settings.addRemoteServer:
+  en: 'Remote server…'
+  de: 'Remote-Server…'
+  es: 'Servidor remoto…'
+  zh: '远程服务器…'
+  cs: 'Vzdálený server…'
+  ja: 'リモートサーバー…'
+settings.comingSoon:
+  en: 'Coming soon'
+  de: 'Demnächst'
+  es: 'Próximamente'
+  zh: '即将推出'
+  cs: 'Již brzy'
+  ja: '近日公開'
 settings.offline:
   en: 'offline'
   de: 'offline'

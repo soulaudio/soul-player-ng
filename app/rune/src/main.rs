@@ -1170,6 +1170,46 @@ mod tests {
         apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
     }
 
+    /// The add-source control is a themed `views::dropdown` menu: the trigger
+    /// renders on the Music Data tab and, when opened (the same press the language
+    /// picker uses), offers a focusable "Local folder…" item and a "Remote
+    /// server…" item that is present but NOT focusable — a disabled "coming soon".
+    #[test]
+    fn add_source_menu_offers_local_and_coming_soon_remote() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Closed: the trigger renders, no panel.
+        assert!(
+            rt.find("add-source").is_some(),
+            "the add-source menu trigger renders"
+        );
+        assert!(
+            rt.find("add-source-menu").is_none(),
+            "the menu is closed initially"
+        );
+        // Open it (same mechanism the language dropdown test uses), then settle the
+        // panel's enter transition.
+        click_key(&mut rt, "add-source");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(rt.state.open_dropdown.as_deref(), Some("add-source"));
+        // Local folder: a real, focusable choice.
+        let local = el_info(&rt, "add-source-opt-local");
+        assert!(local.focusable, "the Local folder item is focusable");
+        // Remote server: present but not focusable (coming soon → disabled).
+        let remote = el_info(&rt, "add-source-opt-remote");
+        assert!(
+            !remote.focusable,
+            "the Remote server item is coming soon → not focusable"
+        );
+    }
+
     /// Architecture: `views::dropdown` is the ONE way to build a dropdown. No view
     /// may fall back to rune's native picker (`PopupMenu::picker`), which draws an
     /// OS-styled menu that clashes with the app's look. Native `popup_menu`

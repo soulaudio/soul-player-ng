@@ -11,7 +11,9 @@
 //! shows while Settings is routed.
 #![forbid(unsafe_code)]
 
-use rune::{Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text};
+use rune::{
+    Align, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Side, Tx, col, el, icon, row, text,
+};
 use soul_player_host::ReplayGainMode;
 
 use crate::theme::Palette;
@@ -21,9 +23,9 @@ use crate::views::icons;
 use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
-    SettingsTab, State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_nav_visible,
-    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
-    set_theme_pref,
+    SettingsTab, State, ThemePref, apply_and_save, apply_watch, close_dropdown, set_locale_pref,
+    set_nav_visible, set_output_device, set_replaygain_mode, set_replaygain_preamp,
+    set_settings_tab, set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -164,20 +166,62 @@ fn category_nav(s: &State, p: &Palette) -> El {
 
 // ── Leaf controls ────────────────────────────────────────────────────────────
 
-/// `+ Add Source` — native folder dialog, then `host.add_folder` folded in via
-/// `apply_watch`. Mirrors `views::open_folder`'s dialog pattern.
-fn add_source_button(p: &Palette) -> El {
-    el().key("add-source")
-        .role("button")
+/// The key identifying the add-source menu (its open state + panel anchor).
+const ADD_SOURCE_MENU: &str = "add-source";
+
+/// `+ Add Source` — now a themed `dropdown` trigger opening the [`add_source_menu`]
+/// (Local folder, and Remote server as a "coming soon" item), instead of jumping
+/// straight to the folder dialog. The trigger carries an explicit accessible label
+/// (the visible text is in a child, which does not supply the a11y name).
+fn add_source_trigger(p: &Palette) -> El {
+    dropdown::trigger(ADD_SOURCE_MENU, t!("settings.addSource").to_string(), p)
         .label(t!("settings.addSource").to_string())
+}
+
+/// The add-source menu's floating panel — **mount at the window root** via
+/// [`settings_overlays`], exactly like [`dropdown::panel`], so it escapes the
+/// settings scroll clip. It mirrors `panel`'s styling (anchored under the trigger,
+/// focus-trapped, card surface + border + radius, modal dismiss) but carries two
+/// bespoke rows rather than a uniform choice list:
+/// - **Local folder…** — focusable; closes the menu, then opens the native folder
+///   dialog and folds the pick in (the flow the old button used).
+/// - **Remote server…** — a disabled "coming soon" item: not focusable, greyed,
+///   with a trailing chip; no handler.
+fn add_source_menu(_s: &State, p: &Palette) -> El {
+    let coming_soon = row()
+        .center_y()
+        .px(space::SNUG)
+        .py(space::XXS)
+        .radius(radius::XS)
+        .fill(p.muted)
+        .child(
+            text(t!("settings.comingSoon").to_string())
+                .font(type_::LABEL)
+                .color(p.text_secondary),
+        );
+    let local = row()
+        .key("add-source-opt-local")
+        .role("option")
         .focusable(true)
-        .padding(space::MD)
-        .radius(radius::MD)
-        .fill(p.primary)
-        .center()
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
         .cursor(Cursor::Pointer)
-        .child(text(t!("settings.addSource").to_string()).color(p.bg))
-        .on_press_tx(|_s: &mut State, tx: &mut Tx| {
+        // Same hover wash as `dropdown::panel`'s rows, so the menu reads identically.
+        .hover(p.fg.alpha(0.06))
+        .child(icon(&icons::FOLDER, 16.0).color(p.text_secondary))
+        .child(
+            text(t!("settings.addLocalFolder").to_string())
+                .color(p.fg)
+                .grow(1.0)
+                .truncate(),
+        )
+        .on_press_tx(|s: &mut State, tx: &mut Tx| {
+            // Close the menu before the dialog so it isn't left open behind it.
+            close_dropdown(s);
             tx.open_folder(
                 FileDialogOptions {
                     title: t!("settings.addFolderDialog").to_string(),
@@ -191,8 +235,45 @@ fn add_source_button(p: &Palette) -> El {
                     }
                 },
             );
-        })
+        });
+    let remote = row()
+        .key("add-source-opt-remote")
+        .role("option")
+        // Not focusable: it's a "coming soon" placeholder, so it can't be activated.
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .child(icon(&icons::SERVER, 16.0).color(p.text_secondary))
+        .child(
+            text(t!("settings.addRemoteServer").to_string())
+                .color(p.text_secondary)
+                .grow(1.0)
+                .truncate(),
+        )
+        .child(coming_soon);
+    col()
+        .key(format!("{ADD_SOURCE_MENU}-menu"))
+        .anchored_fit(ADD_SOURCE_MENU, Side::Bottom, Align::Start, space::XS)
+        .focus_group()
+        .focus_return(ADD_SOURCE_MENU.to_string())
+        .min_w(MENU_MIN_W)
+        .fill(p.card)
+        .radius(radius::MD)
+        .border_sides([1.0; 4], p.border)
+        .padding(space::XXS)
+        .gap(space::XXS)
+        .min_h(space::NONE)
+        .modal(true, close_dropdown)
+        .child(local)
+        .child(remote)
 }
+
+/// Minimum width of the add-source menu panel, so the two rows have room even
+/// though the (full-width) trigger doesn't constrain it.
+const MENU_MIN_W: f32 = 220.0;
 
 /// Re-aggregate the current watched set — picks up files added/removed on disk
 /// and roots that came back online. The set is unchanged, so no save (apply_watch,
@@ -470,7 +551,7 @@ fn music_data_card(s: &State, p: &Palette) -> El {
                 .shrink(),
             )
             .child(rescan_button(p))
-            .child(add_source_button(p)),
+            .child(add_source_trigger(p)),
     );
     if s.sources.is_empty() {
         c = c.child(text(t!("settings.noSources").to_string()).color(p.text_secondary));
@@ -721,6 +802,9 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
             |s: &mut State, id: &str| set_locale_pref(s, id),
             p,
         ));
+    }
+    if dropdown::is_open(s, ADD_SOURCE_MENU) {
+        overlays.push(add_source_menu(s, p));
     }
     overlays
 }
