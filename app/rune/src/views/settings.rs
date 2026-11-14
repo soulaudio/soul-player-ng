@@ -12,8 +12,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, Live, ScrollSpec, Side, Tx, col, el,
-    icon, row, text,
+    Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Side, Tx,
+    WheelEvent, col, el, icon, row, text, text_input,
 };
 use soul_player_host::organize;
 use soul_player_host::{BandKind, GAIN_LIMIT_DB, ReplayGainMode};
@@ -27,9 +27,10 @@ use crate::views::scrollbar;
 use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
-    OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band, apply_and_save,
-    apply_watch, bump_eq_band_gain, bump_eq_band_q, close_dropdown, cycle_eq_band_kind, export_eq,
-    import_eq, organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
+    NumField, OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band,
+    apply_and_save, apply_watch, close_dropdown, commit_eq_edit, cycle_eq_band_kind, eq_edit_start,
+    eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, import_eq,
+    organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
     remove_eq_band, reorder_dsp_units, select_dsp_unit, set_dsp_unit_enabled, set_eq_band_enabled,
     set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest,
     set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
@@ -1466,14 +1467,6 @@ fn kind_chip_label(kind: BandKind) -> &'static str {
     }
 }
 
-fn hz_label(f: f32) -> String {
-    if f >= 1000.0 {
-        format!("{:.1} kHz", f / 1000.0)
-    } else {
-        format!("{f:.0} Hz")
-    }
-}
-
 /// A small chip-style button for the editor rows.
 fn chip_btn(
     key: String,
@@ -1600,39 +1593,128 @@ fn eq_band_editor(s: &State, p: &Palette) -> El {
     panel
 }
 
-/// One editor row: type chip · frequency · gain ± · Q ± · bypass · remove.
+/// The key-slug for a band number's column (keeps the test keys stable).
+fn field_slug(field: NumField) -> &'static str {
+    match field {
+        NumField::Freq => "freq",
+        NumField::Gain => "gain",
+        NumField::Q => "q",
+    }
+}
+
+/// An Ableton-style number box for band `i`'s `field`: the value `num` drawn mono +
+/// right-aligned in a fixed `num_w` column (so a column's decimals line up), with an
+/// optional `unit` label to its right. Drag it vertically or scroll on it to change
+/// the value; double-click to type one. While that number is being typed, the box
+/// becomes an inline text field bound to the shared edit buffer.
+fn num_field(
+    i: usize,
+    field: NumField,
+    num: String,
+    unit: &str,
+    num_w: f32,
+    s: &State,
+    p: &Palette,
+) -> El {
+    let key = format!("eq-num-{}-{i}", field_slug(field));
+    let editing = s.eq_edit == Some((i, field));
+    // Frequency reads as a secondary value; gain and Q are primary foreground.
+    let color = match field {
+        NumField::Freq => p.text_secondary,
+        NumField::Gain | NumField::Q => p.fg,
+    };
+    let value: El = if editing {
+        text_input(&s.eq_edit_buf, type_::CAPTION.mono())
+            .key(key)
+            .single_line()
+            .w(num_w)
+            .px(space::XXS)
+            .radius(radius::SM)
+            .fill(p.primary.alpha(0.16))
+            .color(p.fg)
+            .on_edit(|st: &mut State| &mut st.eq_edit_buf)
+            .on_submit(|st: &mut State, _tx| commit_eq_edit(st))
+    } else {
+        text(num)
+            .font(type_::CAPTION.mono())
+            .color(color)
+            .align(Align::End)
+            .w(num_w)
+            .px(space::XXS)
+            .radius(radius::SM)
+            .key(key)
+            .role("button")
+            .focusable(true)
+            .cursor(Cursor::ResizeRow)
+            .on_double_press(move |st: &mut State| eq_edit_start(st, i, field))
+            .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
+                Phase::Down => eq_num_drag_start(st, i, field),
+                Phase::Move => eq_num_drag_move(st, d.dy),
+                Phase::Up => eq_num_drag_end(st),
+            })
+            .on_wheel(move |st: &mut State, ev: WheelEvent, _tx| {
+                // Scroll up (negative dy) raises the value, as on the graph.
+                eq_num_scroll(st, i, field, ev.dy < 0.0);
+                true
+            })
+    };
+    let mut cell = row().center_y().gap(space::XXS).child(value);
+    if !unit.is_empty() {
+        cell = cell.child(
+            text(unit.to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .w(24.0),
+        );
+    }
+    cell
+}
+
+/// One editor row: type chip · frequency · gain · Q · bypass · remove. The three
+/// numbers are Ableton-style boxes (drag / scroll / double-click to type), mono and
+/// right-aligned so each column's decimals line up.
 fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
     let band = s.eq_bands[i];
     let gains = band.kind.uses_gain();
-    let gain_color = if gains { p.fg } else { p.muted };
-    let gain_group = row()
-        .center_y()
-        .gap(space::XXS)
-        .child(chip_btn(
-            format!("eq-band-gdn-{i}"),
-            "−".into(),
-            p.muted,
-            p.fg,
-            move |st| bump_eq_band_gain(st, i, -1.0),
-        ))
-        .child(
-            text(if gains {
-                format!("{:+.1} dB", band.gain_db)
-            } else {
-                "—".to_string()
-            })
-            .font(type_::CAPTION)
-            .color(gain_color)
-            .w(58.0),
+    // Frequency: whole Hz under 1 kHz, one-decimal kHz above.
+    let (freq_num, freq_unit) = if band.freq >= 1000.0 {
+        (format!("{:.1}", band.freq / 1000.0), "kHz")
+    } else {
+        (format!("{:.0}", band.freq), "Hz")
+    };
+    let freq = num_field(i, NumField::Freq, freq_num, freq_unit, 40.0, s, p);
+    // Gain: an editable box for shapes that use gain; a static dash (same column
+    // metrics) for the cuts / notch that don't.
+    let gain = if gains {
+        num_field(
+            i,
+            NumField::Gain,
+            format!("{:+.1}", band.gain_db),
+            "dB",
+            46.0,
+            s,
+            p,
         )
-        .child(chip_btn(
-            format!("eq-band-gup-{i}"),
-            "+".into(),
-            p.muted,
-            p.fg,
-            move |st| bump_eq_band_gain(st, i, 1.0),
-        ));
-    let q_group = row()
+    } else {
+        row()
+            .center_y()
+            .gap(space::XXS)
+            .child(
+                text("—".to_string())
+                    .font(type_::CAPTION.mono())
+                    .color(p.muted)
+                    .align(Align::End)
+                    .px(space::XXS)
+                    .w(46.0),
+            )
+            .child(
+                text("dB".to_string())
+                    .font(type_::CAPTION)
+                    .color(p.muted)
+                    .w(24.0),
+            )
+    };
+    let q = row()
         .center_y()
         .gap(space::XXS)
         .child(
@@ -1640,26 +1722,7 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
         )
-        .child(chip_btn(
-            format!("eq-band-qdn-{i}"),
-            "−".into(),
-            p.muted,
-            p.fg,
-            move |st| bump_eq_band_q(st, i, false),
-        ))
-        .child(
-            text(format!("{:.2}", band.q))
-                .font(type_::CAPTION)
-                .color(p.fg)
-                .w(36.0),
-        )
-        .child(chip_btn(
-            format!("eq-band-qup-{i}"),
-            "+".into(),
-            p.muted,
-            p.fg,
-            move |st| bump_eq_band_q(st, i, true),
-        ));
+        .child(num_field(i, NumField::Q, format!("{:.2}", band.q), "", 44.0, s, p));
     let (en_fill, en_fg) = if band.enabled {
         (p.primary.alpha(0.16), p.primary)
     } else {
@@ -1680,14 +1743,9 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
             p.fg,
             move |st| cycle_eq_band_kind(st, i),
         )))
-        .child(
-            text(hz_label(band.freq))
-                .font(type_::CAPTION)
-                .color(p.text_secondary)
-                .w(64.0),
-        )
-        .child(gain_group)
-        .child(q_group)
+        .child(freq)
+        .child(gain)
+        .child(q)
         .child(el().grow(1.0))
         .child(chip_btn(
             format!("eq-band-en-{i}"),
