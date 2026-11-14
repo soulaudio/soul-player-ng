@@ -1456,6 +1456,19 @@ fn main() -> anyhow::Result<()> {
             tx.instant(); // don't animate fast-moving numeric fields
         });
     });
+    // Live filesystem watcher: when files change under a watched root while the app
+    // is open, the host runs a debounced background rescan and hands us the refreshed
+    // library/Sources via this callback — applied on the UI thread like any other
+    // watch update. The host re-arms the watcher itself as sources are added/removed.
+    {
+        let wh = app.handle();
+        host.on_watch_update(move |up: WatchUpdate| {
+            wh.update(move |s: &mut State, _tx: &mut Tx| {
+                apply_watch(s, up);
+            });
+        });
+        host.start_watching();
+    }
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
     // installer uses the same icons via [package.metadata.packager]).
     if let Err(e) = rune::set_app_icon(include_bytes!("../icons/icon.png").to_vec()) {
@@ -1751,16 +1764,25 @@ mod tests {
         s.removal_notice = Some((PathBuf::from("/music/Concerts"), 2));
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // The settings page carries a scrollbar whose live-bound layout needs a waker
+        // to settle before the scrolled content is laid out for `find`.
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
         rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        // Assert on the folder name + count, NOT the full phrase: other tests mutate
+        // the process-global i18n locale in parallel, so the notice may render in any
+        // language — but "Concerts" and "2" appear in every translation. (Also proves
+        // it renders: `find` returns the notice element's own text.)
+        let notice = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("removal-notice"))
+            .and_then(|e| e.text)
+            .expect("the deletion warning renders when set");
         assert!(
-            rt.find("removal-notice").is_some(),
-            "the deletion warning renders when set"
-        );
-        assert!(
-            rt.elements()
-                .into_iter()
-                .any(|e| e.text.as_deref() == Some("2 tracks removed from Concerts")),
-            "it shows the count and the folder name"
+            notice.contains("Concerts") && notice.contains('2'),
+            "the notice names the folder and the count (any locale): {notice:?}"
         );
 
         // Absent when there were no deletions.
@@ -1769,6 +1791,9 @@ mod tests {
         s2.settings_tab = SettingsTab::MusicData;
         s2.removal_notice = None;
         let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.set_live_waker(std::sync::Arc::new(|| {}));
+        rt2.frame(0.0);
+        rt2.settle_all();
         rt2.frame(0.0);
         assert!(
             rt2.find("removal-notice").is_none(),
