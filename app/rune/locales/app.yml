@@ -413,6 +413,27 @@ settings.offline:
   zh: '离线'
   cs: 'offline'
   ja: 'オフライン'
+settings.trackCount:
+  en: '%{count} tracks'
+  de: '%{count} Titel'
+  es: '%{count} pistas'
+  zh: '%{count} 首'
+  cs: '%{count} skladeb'
+  ja: '%{count} 曲'
+settings.enableSource:
+  en: 'Enable source'
+  de: 'Quelle aktivieren'
+  es: 'Activar fuente'
+  zh: '启用来源'
+  cs: 'Povolit zdroj'
+  ja: 'ソースを有効化'
+settings.disableSource:
+  en: 'Disable source'
+  de: 'Quelle deaktivieren'
+  es: 'Desactivar fuente'
+  zh: '禁用来源'
+  cs: 'Zakázat zdroj'
+  ja: 'ソースを無効化'
 settings.navigation:
   en: 'Navigation'
   de: 'Navigation'

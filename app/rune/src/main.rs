@@ -1725,6 +1725,85 @@ mod tests {
         );
     }
 
+    /// A rich source row surfaces the source's FULL path (under its name) and a
+    /// per-source track-count label — not just the basename.
+    #[test]
+    fn source_row_shows_full_path_and_track_count() {
+        let dir = testdata_dir();
+        let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        // Pin the locale so the "track" word is deterministic regardless of the
+        // persisted preference State::new just applied, or sibling-test order.
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find(&format!("source-{name}")).is_some(),
+            "the source row renders"
+        );
+        // The FULL path string appears in some element's text (not just basename).
+        let full = dir.to_str().unwrap();
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some(full)),
+            "the full source path is shown somewhere in the row"
+        );
+        // A track-count label is rendered (English "N tracks").
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref().is_some_and(|t| t.contains("track"))),
+            "a track-count label is shown"
+        );
+    }
+
+    /// The leading enable toggle is a focusable control that disables its source:
+    /// clicking it flips `enabled` off and the (now-disabled) source stops
+    /// contributing tracks, emptying the aggregated library.
+    #[test]
+    fn toggling_a_source_disables_it() {
+        // The toggle persists via apply_and_save — isolate config to a temp dir.
+        config::use_test_config_dir();
+        let dir = testdata_dir();
+        let name = dir.file_name().unwrap().to_string_lossy().to_string();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Precondition: an enabled, available source contributes its tracks.
+        assert!(rt.state.sources[0].enabled, "source starts enabled");
+        assert!(
+            !rt.state.library.is_empty(),
+            "an enabled source contributes tracks"
+        );
+        let toggle = format!("enable-{name}");
+        assert!(
+            el_info(&rt, &toggle).focusable,
+            "the enable toggle is keyboard-focusable"
+        );
+        click_key(&mut rt, &toggle);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            !rt.state.sources[0].enabled,
+            "clicking the toggle disables the source"
+        );
+        assert!(
+            rt.state.library.is_empty(),
+            "a disabled source contributes no tracks"
+        );
+    }
+
     #[test]
     fn sidebar_has_library_and_settings_nav() {
         let env = Env {

@@ -301,22 +301,83 @@ fn rescan_button(p: &Palette) -> El {
         })
 }
 
-/// One watched folder: name, an "offline" badge if currently unavailable, and a
-/// remove (✕) that drops it from the set and re-aggregates.
+/// Side of the per-source enable/disable toggle box — a small square checkbox
+/// sized to seat the check glyph, consistent with the app's other inline icons.
+const TOGGLE_PX: f32 = 20.0;
+/// The check glyph inside the enable toggle.
+const TOGGLE_ICON_PX: f32 = 14.0;
+
+/// One watched source, richly: a leading enable/disable toggle, the source name
+/// over its full path, a per-source track count, an "offline" badge if currently
+/// unavailable, and a remove (✕) that drops it from the set and re-aggregates.
 fn source_row(s: &State, p: &Palette, index: usize) -> El {
     let status = &s.sources[index];
     let folder = status.path.clone();
     let name = basename(&folder);
+    let full_path = folder.to_string_lossy().into_owned();
+    let enabled = status.enabled;
     let unavailable = !status.available;
+    let toggle_for = folder.clone();
     let remove_for = folder.clone();
+
+    // Leading enable/disable toggle: a small square, filled `primary` (with a
+    // check) when enabled, `muted` when disabled. Its accessible label states the
+    // action it performs (enable when off, disable when on).
+    let mut toggle = el()
+        .key(format!("enable-{name}"))
+        .role("button")
+        .label(if enabled {
+            t!("settings.disableSource").to_string()
+        } else {
+            t!("settings.enableSource").to_string()
+        })
+        .focusable(true)
+        .size(TOGGLE_PX, TOGGLE_PX)
+        .radius(radius::XS)
+        .center()
+        .cursor(Cursor::Pointer)
+        .fill(if enabled { p.primary } else { p.muted })
+        .on_press(move |st: &mut State| {
+            if let Ok(up) = st.host.set_folder_enabled(&toggle_for, !enabled) {
+                apply_and_save(st, up);
+            }
+        });
+    if enabled {
+        toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
+    }
+
+    // Name over full path. A disabled source reads inactive, so its name dims to
+    // the secondary colour. Both lines truncate and the column grows + shrinks to
+    // zero so a long path can't shove the count / badge / ✕ off the card.
+    let name_color = if enabled { p.fg } else { p.text_secondary };
+    let identity = col()
+        .grow(1.0)
+        .min_w(space::NONE)
+        .child(
+            text(name.clone())
+                .font(type_::ITEM)
+                .color(name_color)
+                .truncate(),
+        )
+        .child(
+            text(full_path)
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .truncate(),
+        );
+
     let mut r = row()
         .key(format!("source-{name}"))
         .gap(space::MD)
         .center_y()
         .padding(space::SM)
-        // `truncate` (ellipsis + shrink-to-0) so a long folder name can't shove
-        // the offline badge and remove ✕ off the card.
-        .child(text(name.clone()).color(p.fg).grow(1.0).truncate());
+        .child(toggle)
+        .child(identity)
+        .child(
+            text(t!("settings.trackCount", count => status.track_count).to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        );
     if unavailable {
         r = r.child(
             el().key(format!("offline-{name}"))
