@@ -466,6 +466,10 @@ pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
         .map(|x| (x.path.clone(), x.enabled))
         .collect();
     config::save_sources_enabled(&entries);
+    // A Sources mutation just re-scanned (the host refreshed its per-source
+    // caches); persist them so the next launch stays warm, with this add/remove/
+    // toggle already folded in.
+    config::save_scan_caches(&s.host.caches_snapshot());
 }
 
 /// Resolve the effective dark/light mode from the user's preference.
@@ -1241,6 +1245,11 @@ fn main() -> anyhow::Result<()> {
     // entries already dropped on load) BEFORE any spawn, so a previously-analyzed
     // untagged track is normalized this session with no re-scan.
     host.seed_loudness(config::load_loudness_cache());
+    // Seed the per-source scan caches from the persisted file BEFORE restoring the
+    // sources, so the startup scan is a warm diff (only new/changed files re-read)
+    // instead of a cold full read of the whole library. A stale-version cache was
+    // already discarded on load.
+    host.seed_caches(config::load_scan_caches());
     // The dev/e2e harness loads a single folder from the env; otherwise restore
     // the persisted watched-folder set so Sources survive a restart.
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
@@ -1249,6 +1258,9 @@ fn main() -> anyhow::Result<()> {
         let saved = config::load_sources_with_enabled();
         if !saved.is_empty() {
             let _ = host.set_sources(&saved);
+            // Persist the refreshed caches so the next launch stays warm (adds /
+            // edits since last run are now folded in).
+            config::save_scan_caches(&host.caches_snapshot());
         }
     }
 
