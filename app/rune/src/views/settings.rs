@@ -12,7 +12,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text,
+    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Side, Tx, col, el, icon,
+    row, text,
 };
 use soul_player_host::ReplayGainMode;
 
@@ -23,9 +24,9 @@ use crate::views::icons;
 use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
-    SettingsTab, State, ThemePref, apply_and_save, apply_watch, set_locale_pref, set_nav_visible,
-    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
-    set_theme_pref,
+    SettingsTab, State, ThemePref, apply_and_save, apply_watch, close_dropdown, set_locale_pref,
+    set_nav_visible, set_output_device, set_replaygain_mode, set_replaygain_preamp,
+    set_settings_tab, set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -166,20 +167,77 @@ fn category_nav(s: &State, p: &Palette) -> El {
 
 // ── Leaf controls ────────────────────────────────────────────────────────────
 
-/// `+ Add Source` — native folder dialog, then `host.add_folder` folded in via
-/// `apply_watch`. Mirrors `views::open_folder`'s dialog pattern.
-fn add_source_button(p: &Palette) -> El {
-    el().key("add-source")
+/// The key identifying the add-source menu (its open state + panel anchor).
+const ADD_SOURCE_MENU: &str = "add-source";
+
+/// `+ Add Source` — a compact primary button (the original add-button metrics,
+/// plus a chevron that marks it as a menu) that toggles the [`add_source_menu`]
+/// (Local folder, and Remote server as a "coming soon" item) open, instead of
+/// jumping straight to the folder dialog. A select-style full-width trigger reads
+/// wrong for an action button, so this is a bespoke compact trigger rather than
+/// `dropdown::trigger`; it still anchors the shared menu via its `ADD_SOURCE_MENU`
+/// key. The visible text is a child, so the control carries an explicit a11y label.
+fn add_source_trigger(p: &Palette) -> El {
+    row()
+        .key(ADD_SOURCE_MENU)
         .role("button")
         .label(t!("settings.addSource").to_string())
         .focusable(true)
+        .center_y()
+        .gap(space::XS)
         .padding(space::MD)
         .radius(radius::MD)
         .fill(p.primary)
-        .center()
         .cursor(Cursor::Pointer)
         .child(text(t!("settings.addSource").to_string()).color(p.bg))
-        .on_press_tx(|_s: &mut State, tx: &mut Tx| {
+        .child(icon(&icons::CHEVRON_DOWN, 16.0).color(p.bg))
+        .on_press(move |s: &mut State| crate::toggle_dropdown(s, ADD_SOURCE_MENU))
+}
+
+/// The add-source menu's floating panel — **mount at the window root** via
+/// [`settings_overlays`], exactly like [`dropdown::panel`], so it escapes the
+/// settings scroll clip. It mirrors `panel`'s styling (anchored under the trigger,
+/// focus-trapped, card surface + border + radius, modal dismiss) but carries two
+/// bespoke rows rather than a uniform choice list:
+/// - **Local folder…** — focusable; closes the menu, then opens the native folder
+///   dialog and folds the pick in (the flow the old button used).
+/// - **Remote server…** — a disabled "coming soon" item: not focusable, greyed,
+///   with a trailing chip; no handler.
+fn add_source_menu(_s: &State, p: &Palette) -> El {
+    let coming_soon = row()
+        .center_y()
+        .px(space::SNUG)
+        .py(space::XXS)
+        .radius(radius::XS)
+        .fill(p.muted)
+        .child(
+            text(t!("settings.comingSoon").to_string())
+                .font(type_::LABEL)
+                .color(p.text_secondary),
+        );
+    let local = row()
+        .key("add-source-opt-local")
+        .role("option")
+        .focusable(true)
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        // Same hover wash as `dropdown::panel`'s rows, so the menu reads identically.
+        .hover(p.fg.alpha(0.06))
+        .child(icon(&icons::FOLDER, 16.0).color(p.text_secondary))
+        .child(
+            text(t!("settings.addLocalFolder").to_string())
+                .color(p.fg)
+                .grow(1.0)
+                .truncate(),
+        )
+        .on_press_tx(|s: &mut State, tx: &mut Tx| {
+            // Close the menu before the dialog so it isn't left open behind it.
+            close_dropdown(s);
             tx.open_folder(
                 FileDialogOptions {
                     title: t!("settings.addFolderDialog").to_string(),
@@ -193,8 +251,45 @@ fn add_source_button(p: &Palette) -> El {
                     }
                 },
             );
-        })
+        });
+    let remote = row()
+        .key("add-source-opt-remote")
+        .role("option")
+        // Not focusable: it's a "coming soon" placeholder, so it can't be activated.
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .child(icon(&icons::SERVER, 16.0).color(p.text_secondary))
+        .child(
+            text(t!("settings.addRemoteServer").to_string())
+                .color(p.text_secondary)
+                .grow(1.0)
+                .truncate(),
+        )
+        .child(coming_soon);
+    col()
+        .key(format!("{ADD_SOURCE_MENU}-menu"))
+        .anchored_fit(ADD_SOURCE_MENU, Side::Bottom, Align::Start, space::XS)
+        .focus_group()
+        .focus_return(ADD_SOURCE_MENU.to_string())
+        .min_w(MENU_MIN_W)
+        .fill(p.card)
+        .radius(radius::MD)
+        .border_sides([1.0; 4], p.border)
+        .padding(space::XXS)
+        .gap(space::XXS)
+        .min_h(space::NONE)
+        .modal(true, close_dropdown)
+        .child(local)
+        .child(remote)
 }
+
+/// Minimum width of the add-source menu panel, so the two rows have room — the
+/// compact trigger is narrower than the menu, so it doesn't constrain it.
+const MENU_MIN_W: f32 = 220.0;
 
 /// Re-aggregate the current watched set — picks up files added/removed on disk
 /// and roots that came back online. The set is unchanged, so no save (apply_watch,
@@ -211,35 +306,108 @@ fn rescan_button(p: &Palette) -> El {
         .cursor(Cursor::Pointer)
         .child(text(t!("settings.rescan").to_string()).color(p.fg))
         .on_press(|s: &mut State| {
-            if let Ok(up) = s.host.set_folders(&s.watched_folders) {
+            // Reconcile the current configured set (set_folders preserves each
+            // source's enabled flag), re-aggregating files/roots that changed on
+            // disk. The set itself is unchanged, so no save (apply_watch).
+            let roots: Vec<std::path::PathBuf> = s.sources.iter().map(|x| x.path.clone()).collect();
+            if let Ok(up) = s.host.set_folders(&roots) {
                 apply_watch(s, up);
             }
         })
 }
 
-/// One watched folder: name, an "offline" badge if currently unavailable, and a
-/// remove (✕) that drops it from the set and re-aggregates.
+/// Side of the per-source enable/disable toggle box — a small square checkbox
+/// sized to seat the check glyph, consistent with the app's other inline icons.
+const TOGGLE_PX: f32 = 20.0;
+/// The check glyph inside the enable toggle.
+const TOGGLE_ICON_PX: f32 = 14.0;
+
+/// One watched source, richly: a leading enable/disable toggle, the source name
+/// over its full path, a per-source track count, an "offline" badge if currently
+/// unavailable, and a remove (✕) that drops it from the set and re-aggregates.
 fn source_row(s: &State, p: &Palette, index: usize) -> El {
-    let folder = s.watched_folders[index].clone();
+    let status = &s.sources[index];
+    let folder = status.path.clone();
     let name = basename(&folder);
-    let unavailable = s.unavailable.iter().any(|u| u == &folder);
+    let full_path = folder.to_string_lossy().into_owned();
+    let enabled = status.enabled;
+    let unavailable = !status.available;
+    let toggle_for = folder.clone();
     let remove_for = folder.clone();
+
+    // Leading enable/disable toggle: a small square, filled `primary` (with a
+    // check) when enabled, `muted` when disabled. Its accessible label states the
+    // action it performs (enable when off, disable when on).
+    let mut toggle = el()
+        .key(format!("enable-{index}"))
+        .role("button")
+        .label(if enabled {
+            t!("settings.disableSource").to_string()
+        } else {
+            t!("settings.enableSource").to_string()
+        })
+        .focusable(true)
+        .size(TOGGLE_PX, TOGGLE_PX)
+        .radius(radius::XS)
+        .center()
+        .cursor(Cursor::Pointer)
+        .fill(if enabled { p.primary } else { p.muted })
+        .on_press(move |st: &mut State| {
+            if let Ok(up) = st.host.set_folder_enabled(&toggle_for, !enabled) {
+                apply_and_save(st, up);
+            }
+        });
+    if enabled {
+        toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
+    }
+
+    // Name over full path. A disabled source reads inactive, so its name dims to
+    // the secondary colour. Both lines truncate and the column grows + shrinks to
+    // zero so a long path can't shove the count / badge / ✕ off the card.
+    let name_color = if enabled { p.fg } else { p.text_secondary };
+    let identity = col()
+        .grow(1.0)
+        .min_w(space::NONE)
+        .child(
+            text(name.clone())
+                .font(type_::ITEM)
+                .color(name_color)
+                .truncate(),
+        )
+        .child(
+            text(full_path)
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .truncate(),
+        );
+
     let mut r = row()
-        .key(format!("source-{name}"))
+        // Key by POSITION, not basename: two sources can share a final path
+        // component (D:\Music and E:\Music), and duplicate sibling keys are a
+        // Rune hazard. `index` is unique within the card.
+        .key(format!("source-{index}"))
         .gap(space::MD)
         .center_y()
         .padding(space::SM)
-        // `truncate` (ellipsis + shrink-to-0) so a long folder name can't shove
-        // the offline badge and remove ✕ off the card.
-        .child(text(name.clone()).color(p.fg).grow(1.0).truncate());
+        .child(toggle)
+        .child(identity)
+        .child(
+            // Keyed so tests can assert the count renders without depending on the
+            // (localized) label text.
+            el().key(format!("count-{index}")).child(
+                text(t!("settings.trackCount", count => status.track_count).to_string())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary),
+            ),
+        );
     if unavailable {
         r = r.child(
-            el().key(format!("offline-{name}"))
+            el().key(format!("offline-{index}"))
                 .child(text(t!("settings.offline").to_string()).color(p.text_secondary)),
         );
     }
     r.child(
-        el().key(format!("remove-{name}"))
+        el().key(format!("remove-{index}"))
             .role("button")
             .label(t!("queue.remove").to_string())
             .focusable(true)
@@ -466,12 +634,12 @@ fn music_data_card(s: &State, p: &Palette) -> El {
                 .shrink(),
             )
             .child(rescan_button(p))
-            .child(add_source_button(p)),
+            .child(add_source_trigger(p)),
     );
-    if s.watched_folders.is_empty() {
+    if s.sources.is_empty() {
         c = c.child(text(t!("settings.noSources").to_string()).color(p.text_secondary));
     } else {
-        for i in 0..s.watched_folders.len() {
+        for i in 0..s.sources.len() {
             c = c.child(source_row(s, p, i));
         }
     }
@@ -886,6 +1054,9 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
             |s: &mut State, id: &str| set_locale_pref(s, id),
             p,
         ));
+    }
+    if dropdown::is_open(s, ADD_SOURCE_MENU) {
+        overlays.push(add_source_menu(s, p));
     }
     overlays
 }
