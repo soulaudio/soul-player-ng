@@ -4,7 +4,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row, text,
+    Cursor, Cx, El, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row,
+    text,
 };
 use soul_player_host::{BrowseAxis, Command, TrackView};
 
@@ -13,6 +14,12 @@ use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::player::cover;
+use crate::views::scrollbar;
+
+thread_local! {
+    /// Per-render-thread thumb geometry for the track-list scroll viewport.
+    static LIB_SCROLL_THUMB: Live<[f32; 4]> = Live::new([0.0; 4]);
+}
 
 pub(crate) fn fmt_dur(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -344,11 +351,16 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         for (i, t) in visible.iter().enumerate() {
             list = list.child(track_row(s, p, t, &ids, i, compact, scale));
         }
-        list.scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .grow(1.0)
-        .min_h(0.0)
+        scrollbar::attach(
+            list.scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .grow(1.0)
+            .min_h(0.0),
+            &LIB_SCROLL_THUMB.with(|t| t.clone()),
+            "library-scrollbar",
+            p,
+        )
     };
     col()
         .key("library-page")
