@@ -1757,11 +1757,10 @@ mod tests {
                 .any(|e| e.text.as_deref() == Some(full)),
             "the full source path is shown somewhere in the row"
         );
-        // A track-count label is rendered (English "N tracks").
+        // A track-count label is rendered. Assert by KEY (not the localized text),
+        // so a sibling test flipping the global locale can't flake this.
         assert!(
-            rt.elements()
-                .iter()
-                .any(|e| e.text.as_deref().is_some_and(|t| t.contains("track"))),
+            rt.find(&format!("count-{name}")).is_some(),
             "a track-count label is shown"
         );
     }

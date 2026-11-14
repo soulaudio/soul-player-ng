@@ -388,9 +388,13 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
         .child(toggle)
         .child(identity)
         .child(
-            text(t!("settings.trackCount", count => status.track_count).to_string())
-                .font(type_::CAPTION)
-                .color(p.text_secondary),
+            // Keyed so tests can assert the count renders without depending on the
+            // (localized) label text.
+            el().key(format!("count-{name}")).child(
+                text(t!("settings.trackCount", count => status.track_count).to_string())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary),
+            ),
         );
     if unavailable {
         r = r.child(
