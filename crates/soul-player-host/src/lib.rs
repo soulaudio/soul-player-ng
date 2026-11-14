@@ -16,7 +16,7 @@ use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
     Band, BandKind, EqConfig, EqShared, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN,
-    band_magnitude_db, default_bands, eq_magnitude_db,
+    band_magnitude_db, default_bands, eq_magnitude_db, format_autoeq, parse_autoeq,
 };
 pub use sink::SinkMode;
 /// The write-path "managed library" organizer (stateless `plan`/`apply` into a
