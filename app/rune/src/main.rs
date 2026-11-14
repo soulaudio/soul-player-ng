@@ -1117,7 +1117,7 @@ fn scene_settings_audio_eq(s: &mut State) {
     scene_settings_audio(s);
     s.eq_enabled = true;
     // A gentle smiley: lift the lows (shelf) and highs (shelf), dip the mids.
-    s.eq_bands = default_bands();
+    s.eq_bands = default_bands().to_vec();
     let gains = [6.0, 3.0, -2.0, -3.5, -2.5, 1.5, 4.0, 5.0];
     for (band, g) in s.eq_bands.iter_mut().zip(gains) {
         band.gain_db = g;
@@ -1710,15 +1710,20 @@ mod tests {
     /// count + folder name), and is absent when there were no deletions.
     #[test]
     fn removal_notice_renders_in_the_sources_page() {
+        // This asserts English UI text. `populated_state()` → `State::new` LOADS the
+        // persisted locale and applies it to the shared `rust_i18n` global, and the
+        // language-picker test persists "de" — so set the locale AFTER building the
+        // state (and hold the config lock to serialize against that test).
+        let _guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
         s.removal_notice = Some((PathBuf::from("/music/Concerts"), 2));
+        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
@@ -1979,7 +1984,7 @@ mod tests {
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
         s.eq_enabled = true;
-        s.eq_bands = soul_player_host::default_bands();
+        s.eq_bands = soul_player_host::default_bands().to_vec();
         s.eq_editor_open = true;
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
@@ -2437,7 +2442,10 @@ mod tests {
         assert_eq!(rt.state.locale_pref, "de", "picking commits the locale");
         assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
 
-        apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
+        // Reset the PERSISTED locale and the shared rust_i18n global — sibling tests'
+        // `populated_state()` loads the persisted locale, so "de" must not leak.
+        config::save_locale("en");
+        apply_locale("en");
     }
 
     /// The add-source control is a themed `views::dropdown` menu: the trigger
@@ -2538,7 +2546,10 @@ mod tests {
             "genre-artist-album",
             "and persists the preset id to config"
         );
-        apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
+        // Reset the PERSISTED locale and the shared rust_i18n global — sibling tests'
+        // `populated_state()` loads the persisted locale, so "de" must not leak.
+        config::save_locale("en");
+        apply_locale("en");
     }
 
     /// Toggling the strategy to Move commits it to state and persists `"move"`.
