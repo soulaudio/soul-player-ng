@@ -16,7 +16,7 @@ use rune::{
     icon, row, text,
 };
 use soul_player_host::organize;
-use soul_player_host::{GAIN_LIMIT_DB, ReplayGainMode};
+use soul_player_host::{BandKind, GAIN_LIMIT_DB, ReplayGainMode};
 
 use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
@@ -27,11 +27,12 @@ use crate::views::scrollbar;
 use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
-    OrganizePhase, SettingsTab, State, ThemePref, apply_and_save, apply_watch, close_dropdown,
-    organize_begin, organize_confirm, organize_dismiss, organize_ready, set_eq_enabled,
-    set_eq_preamp, set_locale_pref, set_managed_dest, set_managed_strategy, set_managed_template,
-    set_nav_visible, set_output_device, set_replaygain_mode, set_replaygain_preamp,
-    set_settings_tab, set_theme_pref,
+    OrganizePhase, SettingsTab, State, ThemePref, add_eq_band, apply_and_save, apply_watch,
+    bump_eq_band_gain, bump_eq_band_q, close_dropdown, cycle_eq_band_kind, organize_begin,
+    organize_confirm, organize_dismiss, organize_ready, remove_eq_band, set_eq_band_enabled,
+    set_eq_enabled, set_eq_preamp, set_locale_pref, set_managed_dest, set_managed_strategy,
+    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
+    set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -1224,7 +1225,8 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .w_full()
         .gap(space::MD)
         .child(preamp_row)
-        .child(crate::views::eq_graph::eq_graph(s, p, cx));
+        .child(crate::views::eq_graph::eq_graph(s, p, cx))
+        .child(eq_band_editor(s, p));
     let body = if on { body } else { body.opacity(fx::DISABLED) };
     card("sp-stage-dsp", p)
         .child(stage_header(
@@ -1237,6 +1239,196 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             p,
         ))
         .child(body)
+}
+
+/// A compact label for a band's shape (editor type chip).
+fn kind_chip_label(kind: BandKind) -> &'static str {
+    match kind {
+        BandKind::LowShelf => "Lo shelf",
+        BandKind::Peaking => "Bell",
+        BandKind::HighShelf => "Hi shelf",
+        BandKind::LowCut => "Lo cut",
+        BandKind::HighCut => "Hi cut",
+        BandKind::Notch => "Notch",
+    }
+}
+
+fn hz_label(f: f32) -> String {
+    if f >= 1000.0 {
+        format!("{:.1} kHz", f / 1000.0)
+    } else {
+        format!("{f:.0} Hz")
+    }
+}
+
+/// A small chip-style button for the editor rows.
+fn chip_btn(
+    key: String,
+    label: String,
+    fill: Color,
+    fg: Color,
+    on: impl Fn(&mut State) + 'static,
+) -> El {
+    text(label)
+        .font(type_::LABEL)
+        .px(space::SNUG)
+        .py(space::XXS)
+        .radius(radius::SM)
+        .key(key)
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .fill(fill)
+        .color(fg)
+        .on_press(move |st: &mut State| on(st))
+}
+
+/// The expandable per-band editor under the graph: a header with the band count,
+/// an Add button, and (when open) a row per band to retype / nudge gain & Q /
+/// bypass / remove it.
+fn eq_band_editor(s: &State, p: &Palette) -> El {
+    let n = s.eq_bands.len();
+    let open = s.eq_editor_open;
+    let chevron = if open { "▾" } else { "▸" };
+    let toggle = row()
+        .key("eq-editor-toggle")
+        .center_y()
+        .gap(space::XS)
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .on_press(toggle_eq_editor)
+        .child(text(chevron.to_string()).color(p.text_secondary))
+        .child(text(format!("Bands ({n})")).font(type_::LABEL).color(p.fg));
+    let can_add = n < soul_player_host::MAX_BANDS;
+    let add = chip_btn(
+        "eq-add-band".into(),
+        "+ Add band".into(),
+        if can_add {
+            p.primary.alpha(0.16)
+        } else {
+            p.muted
+        },
+        if can_add { p.primary } else { p.text_secondary },
+        move |st| {
+            // Add a bell in the mid-band (1 kHz, flat) — the user then drags it.
+            add_eq_band(st, 1000.0, 0.0);
+        },
+    );
+    let header = row()
+        .w_full()
+        .center_y()
+        .child(toggle)
+        .child(el().grow(1.0))
+        .child(add);
+    let mut panel = col().key("eq-editor").w_full().gap(space::SM).child(header);
+    if open {
+        let mut list = col().w_full().gap(space::XS);
+        for i in 0..n {
+            list = list.child(eq_band_row(i, s, p));
+        }
+        panel = panel.child(list);
+    }
+    panel
+}
+
+/// One editor row: type chip · frequency · gain ± · Q ± · bypass · remove.
+fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
+    let band = s.eq_bands[i];
+    let gains = band.kind.uses_gain();
+    let gain_color = if gains { p.fg } else { p.muted };
+    let gain_group = row()
+        .center_y()
+        .gap(space::XXS)
+        .child(chip_btn(
+            format!("eq-band-gdn-{i}"),
+            "−".into(),
+            p.muted,
+            p.fg,
+            move |st| bump_eq_band_gain(st, i, -1.0),
+        ))
+        .child(
+            text(format!("{:+.1} dB", band.gain_db))
+                .font(type_::CAPTION)
+                .color(gain_color)
+                .w(58.0),
+        )
+        .child(chip_btn(
+            format!("eq-band-gup-{i}"),
+            "+".into(),
+            p.muted,
+            p.fg,
+            move |st| bump_eq_band_gain(st, i, 1.0),
+        ));
+    let q_group = row()
+        .center_y()
+        .gap(space::XXS)
+        .child(
+            text("Q".to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .child(chip_btn(
+            format!("eq-band-qdn-{i}"),
+            "−".into(),
+            p.muted,
+            p.fg,
+            move |st| bump_eq_band_q(st, i, false),
+        ))
+        .child(
+            text(format!("{:.2}", band.q))
+                .font(type_::CAPTION)
+                .color(p.fg)
+                .w(36.0),
+        )
+        .child(chip_btn(
+            format!("eq-band-qup-{i}"),
+            "+".into(),
+            p.muted,
+            p.fg,
+            move |st| bump_eq_band_q(st, i, true),
+        ));
+    let (en_fill, en_fg) = if band.enabled {
+        (p.primary.alpha(0.16), p.primary)
+    } else {
+        (p.muted, p.text_secondary)
+    };
+    let enabled = band.enabled;
+    row()
+        .key(format!("eq-band-row-{i}"))
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .child(chip_btn(
+            format!("eq-band-type-{i}"),
+            kind_chip_label(band.kind).to_string(),
+            p.muted,
+            p.fg,
+            move |st| cycle_eq_band_kind(st, i),
+        ))
+        .child(
+            text(hz_label(band.freq))
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .w(64.0),
+        )
+        .child(gain_group)
+        .child(q_group)
+        .child(el().grow(1.0))
+        .child(chip_btn(
+            format!("eq-band-en-{i}"),
+            if enabled { "On" } else { "Off" }.into(),
+            en_fill,
+            en_fg,
+            move |st| set_eq_band_enabled(st, i, !enabled),
+        ))
+        .child(chip_btn(
+            format!("eq-band-rm-{i}"),
+            "✕".into(),
+            p.muted,
+            p.text_secondary,
+            move |st| remove_eq_band(st, i),
+        ))
 }
 
 /// ReplayGain: an Off / Track / Album mode row plus a preamp slider (−15..+15
