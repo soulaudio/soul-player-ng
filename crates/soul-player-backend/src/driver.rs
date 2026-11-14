@@ -303,6 +303,7 @@ pub fn project_signal_path<K: Sink, D: SeekableDecoder>(
     };
     Some(SignalPath {
         source,
+        codec: di.codec.into(),
         decoded_rate: di.decoded.sample_rate,
         decoded_bits: di.decoded.format.bits_per_sample(),
         channels: di.decoded.channels as u8,

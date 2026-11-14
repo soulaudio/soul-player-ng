@@ -206,6 +206,65 @@ pub enum SourceFormat {
     Dsd { rate_hz: u32 },
 }
 
+/// The current track's original **codec** — the lossless-vs-lossy identity the
+/// Source stage names (FLAC / ALAC / AAC / …). [`SourceFormat`] only says PCM vs
+/// DSD and the bit depth, so a FLAC, a WAV and an ALAC otherwise read the same.
+/// A serde DTO mirroring `soul_audio_core::SourceCodec`, which (being `no_std`)
+/// carries no serde of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SourceCodec {
+    /// PCM whose decoder didn't name a more specific codec.
+    Pcm,
+    /// RIFF/WAVE PCM.
+    Wav,
+    /// AIFF / AIFF-C PCM.
+    Aiff,
+    /// FLAC (native or Ogg). Lossless.
+    Flac,
+    /// Apple Lossless (ALAC), in MP4/M4A or CAF. Lossless.
+    Alac,
+    /// AAC-LC, in MP4/M4A or ADTS. Lossy.
+    Aac,
+    /// MP3 (MPEG-1/2 Layer III). Lossy.
+    Mp3,
+    /// Opus (Ogg or Matroska). Lossy.
+    Opus,
+    /// Vorbis (Ogg or Matroska). Lossy.
+    Vorbis,
+    /// WavPack. Lossless.
+    WavPack,
+    /// Apple CAF container (lpcm/alac not yet split out).
+    Caf,
+    /// Matroska / WebM audio (FLAC/Opus not yet split out).
+    Matroska,
+    /// Native 1-bit DSD (DSF / DFF).
+    Dsd,
+}
+
+impl From<soul_audio_core::SourceCodec> for SourceCodec {
+    fn from(c: soul_audio_core::SourceCodec) -> Self {
+        use soul_audio_core::SourceCodec as C;
+        match c {
+            C::Pcm => SourceCodec::Pcm,
+            C::Wav => SourceCodec::Wav,
+            C::Aiff => SourceCodec::Aiff,
+            C::Flac => SourceCodec::Flac,
+            C::Alac => SourceCodec::Alac,
+            C::Aac => SourceCodec::Aac,
+            C::Mp3 => SourceCodec::Mp3,
+            C::Opus => SourceCodec::Opus,
+            C::Vorbis => SourceCodec::Vorbis,
+            C::WavPack => SourceCodec::WavPack,
+            C::Caf => SourceCodec::Caf,
+            C::Matroska => SourceCodec::Matroska,
+            C::Dsd => SourceCodec::Dsd,
+            // `soul_audio_core::SourceCodec` is `#[non_exhaustive]`; a codec added
+            // there but not yet mirrored here reads as the generic PCM fallback.
+            _ => SourceCodec::Pcm,
+        }
+    }
+}
+
 /// The current track's real decode → DSP → output chain — what the engine
 /// actually does to the samples, for a "signal path" display. A `device_rate`
 /// equal to `decoded_rate` with `!resampling` is a sample-rate-exact path.
@@ -213,6 +272,9 @@ pub enum SourceFormat {
 pub struct SignalPath {
     /// The ORIGINAL source (DSD stays DSD even though it decodes to PCM).
     pub source: SourceFormat,
+    /// The original codec the track is encoded with (FLAC / ALAC / AAC / DSD / …)
+    /// — the lossless-vs-lossy identity the Source stage names.
+    pub codec: SourceCodec,
     /// The PCM the decoder hands the engine.
     pub decoded_rate: u32,
     pub decoded_bits: u8,

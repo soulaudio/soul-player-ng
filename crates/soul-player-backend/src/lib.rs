@@ -27,6 +27,6 @@ pub use driver::{
 pub use library::Library;
 pub use soul_audio_catalog::BrowseAxis;
 pub use types::{
-    Command, Event, PlayState, QueueState, RepeatMode, ReplayGainMode, SignalPath, SourceFormat,
-    Tick, TrackView,
+    Command, Event, PlayState, QueueState, RepeatMode, ReplayGainMode, SignalPath, SourceCodec,
+    SourceFormat, Tick, TrackView,
 };
