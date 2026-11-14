@@ -20,7 +20,7 @@ use soul_audio_core::{Biquad, Equalizer, Sink, SinkError, StreamInfo};
 // spectrum analyzer.
 pub use soul_audio_eq::{
     Band, BandKind, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN, band_magnitude_db,
-    default_bands, design, eq_magnitude_db,
+    default_bands, design, eq_magnitude_db, format_autoeq, parse_autoeq,
 };
 
 use crate::analyzer::{Analyzer, SpectrumShared};
