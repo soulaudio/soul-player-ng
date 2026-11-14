@@ -8,18 +8,18 @@
 //! outside press / Escape), the same mechanism as [`crate::views::dropdown`].
 #![forbid(unsafe_code)]
 
-use rune::{Align, Cursor, El, Side, col, el, row, text};
+use rune::{Align, Color, Cursor, El, Icon, Side, col, el, icon, row, text};
 use soul_player_host::{ReplayGainMode, SignalPath, SourceFormat};
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
+use crate::views::icons;
 use crate::{State, close_signal_path, set_replaygain_mode};
 
 /// Gap between the anchor line and the panel.
 const GAP: f32 = 6.0;
-/// Connector column width + the stage dot size (the vertical "signal rail").
-const RAIL_W: f32 = 18.0;
-const DOT: f32 = 9.0;
+/// Quality dot size on each stage card.
+const DOT: f32 = 8.0;
 
 /// kHz label: whole kHz stays integer (48, 96), fractional keeps one place.
 fn khz(hz: u32) -> String {
@@ -87,66 +87,79 @@ fn soon_chip(p: &Palette) -> El {
         .fill(p.muted)
 }
 
-/// One **flow node** in the signal-path pipeline: a dot on the vertical "signal
-/// rail" (lit for a stage the signal flows through, dim for a not-yet-built one),
-/// then the stage name over its value, with an optional trailing control (the
-/// ReplayGain toggle, or a "soon" chip). `is_last` drops the rail below the dot so
-/// the chain ends. `key` is stable for tests. The dots + connecting rail read as
-/// the signal flowing top → bottom through each stage.
-fn node(
+/// One **stage card** in the signal-path pipeline. Each pipeline stage is its own
+/// card (foobar/Roon style: Decoder → ReplayGain → DSP → Output), with a Roon-like
+/// quality dot — `primary` for a clean/lossless pass, `accent` for a stage that
+/// *enhances/processes* the signal (ReplayGain on, a resample) — a stage icon, the
+/// name, its value, and an optional trailing control (the ReplayGain toggle, or a
+/// "soon" chip). Dim cards are not-yet-built stages. `key` is stable for tests.
+#[allow(clippy::too_many_arguments)]
+fn stage_card(
     key: &str,
+    glyph: &'static Icon,
     name: String,
     value: String,
     trailing: Option<El>,
-    active: bool,
-    is_last: bool,
+    accent: Color,
+    dim: bool,
     p: &Palette,
 ) -> El {
-    let dot = if active { p.primary } else { p.border };
-    let rail = if active {
-        p.primary.alpha(0.45)
-    } else {
-        p.border
-    };
-    // Connector: the dot, then (unless this is the last stage) a rail filling the
-    // row height down to the next dot — a continuous vertical line.
-    let mut connector = col()
-        .align(Align::Center)
-        .w(RAIL_W)
-        .child(el().w(DOT).h(DOT).radius(DOT / 2.0).fill(dot));
-    if !is_last {
-        connector = connector.child(el().w(2.0).grow(1.0).min_h(14.0).fill(rail));
-    }
-    // Stage name (+ trailing control) over the value.
-    let mut head = row().w_full().center_y().gap(space::SM).child(
-        text(name)
-            .font(type_::LABEL)
-            .color(p.text_secondary)
-            .grow(1.0),
-    );
+    let dot = if dim { p.border } else { accent };
+    let border = if dim { p.border } else { accent.alpha(0.45) };
+    let name_color = if dim { p.text_secondary } else { p.fg };
+    let mut head = row()
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .child(el().w(DOT).h(DOT).radius(DOT / 2.0).fill(dot))
+        .child(icon(glyph, 15.0).color(if dim { p.text_secondary } else { accent }))
+        .child(
+            text(name)
+                .font(type_::LABEL)
+                .color(name_color)
+                .grow(1.0)
+                .truncate(),
+        );
     if let Some(t) = trailing {
         head = head.child(t);
     }
-    let mut content = col()
-        .grow(1.0)
-        .min_w(0.0)
-        .gap(space::XXS)
-        .pb(space::MD)
-        .child(head);
-    if !value.is_empty() {
-        content = content.child(
-            text(value)
-                .font(type_::BODY)
-                .color(if active { p.fg } else { p.text_secondary })
-                .truncate(),
-        );
-    }
-    row()
+    let mut body = col()
         .key(key.to_string())
         .w_full()
-        .gap(space::SM)
-        .child(connector)
-        .child(content)
+        .min_w(0.0)
+        .fill(p.muted)
+        .radius(radius::MD)
+        .border_sides([1.0, 1.0, 1.0, 1.0], border)
+        .padding(space::SM)
+        .gap(space::XXS)
+        .child(head);
+    if !value.is_empty() {
+        body = body.child(
+            // Indented under the dot+icon so the value lines up with the name.
+            row().w_full().pl(DOT + space::SM + 15.0 + space::SM).child(
+                text(value)
+                    .font(type_::BODY)
+                    .color(if dim { p.text_secondary } else { p.fg })
+                    .grow(1.0)
+                    .truncate(),
+            ),
+        );
+    }
+    body
+}
+
+/// A flow connector between two stage cards — a centered down-chevron showing the
+/// signal moving from one card into the next. Dim when it leads into a
+/// not-yet-built stage.
+fn connector(dim: bool, p: &Palette) -> El {
+    col()
+        .w_full()
+        .align(Align::Center)
+        .child(icon(&icons::CHEVRON_DOWN, 14.0).color(if dim {
+            p.border
+        } else {
+            p.primary.alpha(0.7)
+        }))
 }
 
 /// The ReplayGain on/off toggle chip — the one real pipeline toggle today. Off ↔
@@ -186,80 +199,99 @@ fn rg_toggle(mode: ReplayGainMode, p: &Palette) -> El {
 /// and the Settings → Audio card): the live chain when a track is playing, then
 /// the not-yet-built Exclusive output & DSP/EQ stages surfaced as "soon".
 pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
-    // gap(0): the per-node connector rails abut into one continuous vertical line.
-    let mut rows = col().key("signal-path-stages").w_full().gap(0.0);
+    let mut rows = col().key("signal-path-stages").w_full().gap(space::XS);
     if let Some(sp) = s.signal_path {
+        // Roon-style accent: `primary` = clean/lossless pass; `accent` = a stage
+        // that *processes* the signal (ReplayGain applied, a resample).
+        let rg_accent = if s.replaygain_mode == ReplayGainMode::Off {
+            p.primary
+        } else {
+            p.accent
+        };
+        let rs_accent = if sp.resampling { p.accent } else { p.primary };
         rows = rows
-            .child(node(
+            .child(stage_card(
                 "sp-row-source",
+                &icons::MUSIC,
                 t!("player.signalPath.source").to_string(),
                 source_value(&sp),
                 None,
-                true,
+                p.primary,
                 false,
                 p,
             ))
-            .child(node(
+            .child(connector(false, p))
+            .child(stage_card(
                 "sp-row-decode",
+                &icons::PLAY,
                 t!("player.signalPath.decode").to_string(),
                 decode_value(&sp),
                 None,
-                true,
+                p.primary,
                 false,
                 p,
             ))
-            .child(node(
+            .child(connector(false, p))
+            .child(stage_card(
                 "sp-row-replaygain",
+                &icons::VOLUME,
                 t!("player.signalPath.replayGain").to_string(),
                 replay_gain_value(s.replaygain_mode, sp.replay_gain_db),
                 Some(rg_toggle(s.replaygain_mode, p)),
-                true,
+                rg_accent,
                 false,
                 p,
             ))
-            .child(node(
+            .child(connector(false, p))
+            .child(stage_card(
                 "sp-row-resample",
+                &icons::REPEAT,
                 t!("player.signalPath.resample").to_string(),
                 resample_value(&sp),
                 None,
-                true,
+                rs_accent,
                 false,
                 p,
             ))
-            .child(node(
+            .child(connector(false, p))
+            .child(stage_card(
                 "sp-row-output",
+                &icons::VOLUME,
                 t!("player.signalPath.output").to_string(),
                 output_value(&sp),
                 None,
-                true,
+                p.primary,
                 false,
                 p,
-            ));
+            ))
+            .child(connector(true, p));
     } else {
         rows = rows.child(
             text(t!("player.nothingPlaying").to_string())
                 .font(type_::BODY)
                 .color(p.text_secondary)
-                .pb(space::MD),
+                .pb(space::SM),
         );
     }
-    // Not-yet-built stages, dim on the rail and marked "soon", so the whole
-    // pipeline is visible. DSP is the last node — its rail stops there.
-    rows.child(node(
+    // Not-yet-built stages: dim cards marked "soon", still in the flow.
+    rows.child(stage_card(
         "sp-row-exclusive",
+        &icons::SETTINGS,
         t!("player.signalPath.exclusive").to_string(),
         String::new(),
         Some(soon_chip(p)),
-        false,
-        false,
+        p.primary,
+        true,
         p,
     ))
-    .child(node(
+    .child(connector(true, p))
+    .child(stage_card(
         "sp-row-dsp",
+        &icons::SETTINGS,
         t!("player.signalPath.dsp").to_string(),
         String::new(),
         Some(soon_chip(p)),
-        false,
+        p.primary,
         true,
         p,
     ))
