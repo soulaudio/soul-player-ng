@@ -256,9 +256,27 @@ fn graph_shape(
     sh.stroke(curve, 2.0, p.primary)
 }
 
-/// A small readout of the selected band (shape · frequency · gain · Q) plus a
-/// per-band bypass toggle.
-fn readout(i: usize, band: &Band, p: &Palette) -> El {
+/// A slim readout bar shown ABOVE the graph (so it never covers the top bands):
+/// the selected band's shape · frequency · gain · Q and a per-band bypass toggle,
+/// or a hint when nothing is selected. Fixed height, so selecting doesn't jump the
+/// layout.
+fn readout_bar(s: &State, p: &Palette) -> El {
+    let bar = row()
+        .key("eq-readout")
+        .w_full()
+        .h(20.0)
+        .center_y()
+        .gap(space::SM);
+    let Some((i, band)) = s
+        .eq_selected
+        .and_then(|i| s.eq_bands.get(i).map(|b| (i, *b)))
+    else {
+        return bar.child(
+            text("Drag a node — or add a band — to shape the sound".to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        );
+    };
     let txt = if band.kind.uses_gain() {
         format!(
             "{} · {} · {:+.1} dB · Q {:.2}",
@@ -291,19 +309,8 @@ fn readout(i: usize, band: &Band, p: &Palette) -> El {
     } else {
         chip.fill(p.muted).color(p.text_secondary)
     };
-    // A floating pill (in the darker page colour) so the readout reads clearly over
-    // the curve and clears the axis labels.
-    row()
-        .key("eq-readout")
-        .absolute(space::SM, space::SM)
-        .gap(space::SM)
-        .center_y()
-        .fill(p.bg.alpha(0.92))
-        .px(space::SM)
-        .py(space::XXS)
-        .radius(radius::SM)
-        .border_sides([1.0; 4], p.border.alpha(0.6))
-        .child(text(txt).font(type_::CAPTION).color(p.fg))
+    bar.child(text(txt).font(type_::CAPTION).color(p.fg))
+        .child(el().grow(1.0))
         .child(chip)
 }
 
@@ -430,10 +437,13 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .cursor(Cursor::Pointer);
         graph = graph.child(node);
     }
-    if let Some(i) = s.eq_selected {
-        graph = graph.child(readout(i, &s.eq_bands[i], p));
-    }
-    graph
+    // The readout sits ABOVE the plot so it never blocks the top bands.
+    col()
+        .key("eq-graph-wrap")
+        .w_full()
+        .gap(space::XS)
+        .child(readout_bar(s, p))
+        .child(graph)
 }
 
 #[cfg(test)]

@@ -1419,10 +1419,14 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
             move |st| bump_eq_band_gain(st, i, -1.0),
         ))
         .child(
-            text(format!("{:+.1} dB", band.gain_db))
-                .font(type_::CAPTION)
-                .color(gain_color)
-                .w(58.0),
+            text(if gains {
+                format!("{:+.1} dB", band.gain_db)
+            } else {
+                "—".to_string()
+            })
+            .font(type_::CAPTION)
+            .color(gain_color)
+            .w(58.0),
         )
         .child(chip_btn(
             format!("eq-band-gup-{i}"),
@@ -1470,13 +1474,15 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
         .w_full()
         .center_y()
         .gap(space::SM)
-        .child(chip_btn(
+        // Fixed-width type column so the row doesn't reshuffle when the shape
+        // label changes width (e.g. "Bell" → "Hi shelf").
+        .child(row().w(84.0).center_y().child(chip_btn(
             format!("eq-band-type-{i}"),
             kind_chip_label(band.kind).to_string(),
             p.muted,
             p.fg,
             move |st| cycle_eq_band_kind(st, i),
-        ))
+        )))
         .child(
             text(hz_label(band.freq))
                 .font(type_::CAPTION)
