@@ -23,7 +23,8 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 use parley_engine as _;
 use soul_player_host::{
     BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
-    SourceFormat, SourceStatus, TrackView, WatchUpdate, organize::Strategy,
+    SourceFormat, SourceStatus, TrackView, WatchUpdate,
+    organize::{self, Strategy},
 };
 
 mod config;
@@ -123,6 +124,27 @@ impl ThemePref {
     }
 }
 
+/// The managed-library "Add music → organize" flow as an explicit phase machine,
+/// driven entirely by direct state transitions (the pure `organize_*` helpers
+/// below) so it is fully headless-testable. `State::organize` holds the current
+/// phase (`None` = the flow is idle, no modal). The thread wiring that fills
+/// `Planning`/`Applying` with real `organize::plan`/`apply` work is a separate
+/// task; this type and its transitions carry only the UI state machine.
+pub(crate) enum OrganizePhase {
+    /// Scanning the chosen files and computing the plan (Task 2 fills the work).
+    Planning,
+    /// The plan is ready; the user confirms or cancels before anything is written.
+    Confirm(organize::OrganizePlan),
+    /// The plan is being applied; progress ticks in per finished entry.
+    Applying {
+        done: usize,
+        total: usize,
+        current: String,
+    },
+    /// The run finished; the outcome tally is shown.
+    Done(organize::Summary),
+}
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -200,6 +222,10 @@ struct State {
     /// Managed-library file strategy (persisted): `Copy` keeps the source file,
     /// `Move` removes it.
     managed_strategy: Strategy,
+    /// The in-flight "Add music → organize" flow, or `None` when idle. Drives the
+    /// centered organize modal (`views::settings::organize_overlay`); the pure
+    /// `organize_*` transitions move it through its phases. Ephemeral.
+    organize: Option<OrganizePhase>,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -303,6 +329,7 @@ impl State {
             managed_dest,
             managed_template,
             managed_strategy,
+            organize: None,
             art: ArtCache::new(),
             update_available: None,
             search: String::new(),
@@ -506,6 +533,71 @@ pub(crate) fn set_managed_strategy(s: &mut State, strategy: Strategy) {
         &s.managed_template,
         strategy_as_config(s.managed_strategy),
     );
+}
+
+// ── Organize flow transitions ────────────────────────────────────────────────
+//
+// Pure phase transitions for the "Add music → organize" modal, each setting
+// `State::organize`. They carry no IO: Task 2 calls `organize_ready` /
+// `organize_progress` / `organize_finish` from `organize::plan`/`apply` thread
+// callbacks, while the UI (this task) wires the modal buttons to `organize_begin`
+// / `organize_confirm` / `organize_dismiss`. Driving these directly is the whole
+// headless-testable surface.
+
+/// Open the modal in its scanning/planning phase (the "Add music…" menu entry).
+pub(crate) fn organize_begin(s: &mut State) {
+    s.organize = Some(OrganizePhase::Planning);
+}
+
+/// Planning → Confirm: a computed plan is ready for the user to review.
+// Wired by Task 2 from the `organize::plan` thread callback.
+#[allow(dead_code)]
+pub(crate) fn organize_ready(s: &mut State, plan: organize::OrganizePlan) {
+    s.organize = Some(OrganizePhase::Confirm(plan));
+}
+
+/// Enter the Applying phase at 0 / `total` (progress ticks in via
+/// [`organize_progress`]).
+pub(crate) fn organize_apply_begin(s: &mut State, total: usize) {
+    s.organize = Some(OrganizePhase::Applying {
+        done: 0,
+        total,
+        current: String::new(),
+    });
+}
+
+/// Update the Applying phase with the latest per-entry progress.
+// Wired by Task 2 from the `organize::apply` progress callback.
+#[allow(dead_code)]
+pub(crate) fn organize_progress(s: &mut State, done: usize, total: usize, current: String) {
+    s.organize = Some(OrganizePhase::Applying {
+        done,
+        total,
+        current,
+    });
+}
+
+/// Applying → Done: the run finished with this outcome tally.
+// Wired by Task 2 when the `organize::apply` thread completes.
+#[allow(dead_code)]
+pub(crate) fn organize_finish(s: &mut State, summary: organize::Summary) {
+    s.organize = Some(OrganizePhase::Done(summary));
+}
+
+/// Close the modal (Cancel / Close, an outside press, or Escape) — the flow is
+/// idle again.
+pub(crate) fn organize_dismiss(s: &mut State) {
+    s.organize = None;
+}
+
+/// Confirm → Applying, the Confirm button's action. For now it only transitions
+/// so the button is testable with no thread; Task 2 overrides this to spawn the
+/// real `organize::apply`, seeding the same `Applying { 0, total, "" }` phase.
+pub(crate) fn organize_confirm(s: &mut State) {
+    if let Some(OrganizePhase::Confirm(plan)) = &s.organize {
+        let total = plan.entries.len();
+        organize_apply_begin(s, total);
+    }
 }
 
 /// Switch the library's sort order — re-fetches the current library's views in
@@ -1647,6 +1739,148 @@ mod tests {
             "move",
             "and persists the strategy to config"
         );
+    }
+
+    // ── Managed-library organize flow (Task 1: phases, modal, menu entry) ─────
+
+    /// Open the add-source menu on the Music Data tab and settle its enter
+    /// transition, so its rows (including "Add music…") are mounted + hit-testable.
+    fn open_add_source(dest: Option<PathBuf>) -> Runtime<State> {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.managed_dest = dest;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source");
+        rt.settle_all();
+        rt.frame(0.0);
+        rt
+    }
+
+    /// A tiny plan literal (no filesystem) for exercising the modal phases.
+    fn sample_plan() -> organize::OrganizePlan {
+        organize::OrganizePlan {
+            dest_root: testdata_dir(),
+            entries: vec![
+                organize::PlanEntry {
+                    src: PathBuf::from("a.flac"),
+                    dst: testdata_dir().join("A/a.flac"),
+                    action: organize::Action::Copy,
+                },
+                organize::PlanEntry {
+                    src: PathBuf::from("b.flac"),
+                    dst: testdata_dir().join("B/b.flac"),
+                    action: organize::Action::SkipDuplicate,
+                },
+            ],
+        }
+    }
+
+    /// Build a frame with the organize modal in a given phase, settled so its
+    /// controls are present + hit-testable.
+    fn organize_frame(phase: OrganizePhase) -> Runtime<State> {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.organize = Some(phase);
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        rt
+    }
+
+    /// Without a managed destination, the "Add music…" entry is present but a
+    /// disabled hint — not focusable, so the organize flow can't start.
+    #[test]
+    fn add_music_item_hint_when_no_destination() {
+        let rt = open_add_source(None);
+        assert!(
+            rt.find("add-source-opt-organize").is_some(),
+            "the Add music… entry renders in the menu"
+        );
+        assert!(
+            !el_info(&rt, "add-source-opt-organize").focusable,
+            "without a destination it is a disabled hint (not focusable)"
+        );
+        apply_locale("en");
+    }
+
+    /// With a managed destination set, the "Add music…" entry becomes a focusable
+    /// option that can start the organize flow.
+    #[test]
+    fn add_music_item_enabled_with_destination() {
+        let rt = open_add_source(Some(testdata_dir()));
+        assert!(
+            el_info(&rt, "add-source-opt-organize").focusable,
+            "a configured destination makes Add music… focusable"
+        );
+        apply_locale("en");
+    }
+
+    /// The organize modal renders the right keyed controls for each phase.
+    #[test]
+    fn organize_overlay_renders_each_phase() {
+        // Confirm: title/summary + the Confirm and Cancel buttons.
+        let rt = organize_frame(OrganizePhase::Confirm(sample_plan()));
+        for k in ["organize-confirm", "organize-confirm-go", "organize-cancel"] {
+            assert!(rt.find(k).is_some(), "Confirm phase renders {k}");
+        }
+
+        // Applying: the progress line.
+        let rt = organize_frame(OrganizePhase::Applying {
+            done: 3,
+            total: 10,
+            current: "a.flac".to_string(),
+        });
+        assert!(
+            rt.find("organize-progress").is_some(),
+            "Applying phase renders the progress line"
+        );
+
+        // Done: the summary + Close button.
+        let rt = organize_frame(OrganizePhase::Done(organize::Summary {
+            copied: 2,
+            skipped: 1,
+            ..Default::default()
+        }));
+        for k in ["organize-done", "organize-close"] {
+            assert!(rt.find(k).is_some(), "Done phase renders {k}");
+        }
+        apply_locale("en");
+    }
+
+    /// Confirming the plan advances the flow from Confirm to Applying (pressing
+    /// the Confirm button drives `organize_confirm`).
+    #[test]
+    fn confirm_advances_to_applying() {
+        let mut rt = organize_frame(OrganizePhase::Confirm(sample_plan()));
+        click_key(&mut rt, "organize-confirm-go");
+        assert!(
+            matches!(rt.state.organize, Some(OrganizePhase::Applying { .. })),
+            "Confirm → Applying on confirm"
+        );
+        apply_locale("en");
+    }
+
+    /// Closing a finished run dismisses the modal (clears `State::organize`).
+    #[test]
+    fn dismiss_clears() {
+        let mut rt = organize_frame(OrganizePhase::Done(organize::Summary::default()));
+        click_key(&mut rt, "organize-close");
+        assert!(
+            rt.state.organize.is_none(),
+            "Close dismisses the organize modal"
+        );
+        apply_locale("en");
     }
 
     /// Architecture: `views::dropdown` is the ONE way to build a dropdown. No view
