@@ -1710,6 +1710,10 @@ mod tests {
     /// count + folder name), and is absent when there were no deletions.
     #[test]
     fn removal_notice_renders_in_the_sources_page() {
+        // This asserts English UI text, so it must not run while the language-picker
+        // test has the shared `rust_i18n` locale flipped to German. That test holds
+        // the config-test lock for its duration, so take it here too to serialize.
+        let _guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
             scale: 2.0,
