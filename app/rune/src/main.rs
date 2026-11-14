@@ -23,7 +23,7 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 use parley_engine as _;
 use soul_player_host::{
     BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
-    SourceFormat, TrackView, WatchUpdate,
+    SourceFormat, SourceStatus, TrackView, WatchUpdate,
 };
 
 mod config;
@@ -173,10 +173,10 @@ struct State {
     theme_pref: ThemePref,
     /// Which baked axis the library list is ordered by.
     sort_axis: BrowseAxis,
-    /// The watched-folder set (from the host), rendered by Settings → Sources;
-    /// `unavailable` are configured roots currently unreachable (shown "offline").
-    watched_folders: Vec<PathBuf>,
-    unavailable: Vec<PathBuf>,
+    /// The configured sources with their per-source status (from the host),
+    /// rendered by Settings → Sources: each carries its path, enabled flag,
+    /// current availability (an unreachable root shows "offline"), and track count.
+    sources: Vec<SourceStatus>,
     /// The chosen output device (persisted), rendered by Settings → Output;
     /// `None` = follow the system default. Applies to the next playback session.
     output_device: Option<String>,
@@ -235,15 +235,10 @@ struct State {
 impl State {
     fn new(host: PlayerHandle) -> Self {
         let library = host.views();
-        let watched_folders = host.watched_folders();
-        // At startup the host has no fresh WatchUpdate, so derive the offline set
-        // directly: a restored watched root that isn't a readable directory is
-        // unavailable (and shows the badge). Live edits refresh it via apply_watch.
-        let unavailable = watched_folders
-            .iter()
-            .filter(|p| !p.is_dir())
-            .cloned()
-            .collect();
+        // Seed the per-source status from the host (its configured set, each with
+        // live availability). Counts are 0 until the first rescan's WatchUpdate —
+        // live edits refresh the full status via apply_watch.
+        let sources = host.sources();
         // Enumerate the output devices once (computed before `host` is moved into
         // the struct) for the Settings → Output picker.
         let output_devices = host.output_devices();
@@ -279,8 +274,7 @@ impl State {
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
-            watched_folders,
-            unavailable,
+            sources,
             // Restore the persisted device choice (None = system default); the
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
@@ -362,16 +356,20 @@ impl State {
 /// what's watched is separate from what's playing (the host's own contract).
 pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     s.library = up.views;
-    s.watched_folders = s.host.watched_folders();
-    s.unavailable = up.unavailable;
+    s.sources = up.sources;
 }
 
-/// Apply a `WatchUpdate` and persist the new watched set — used by the Sources
-/// add/remove handlers. Kept separate from the pure `apply_watch` so unit tests
-/// never touch the user's config on disk.
+/// Apply a `WatchUpdate` and persist the new source set (with each source's
+/// enabled flag) — used by the Sources add/remove/enable handlers. Kept separate
+/// from the pure `apply_watch` so unit tests never touch the user's config on disk.
 pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
     apply_watch(s, up);
-    config::save_sources(&s.watched_folders);
+    let entries: Vec<(PathBuf, bool)> = s
+        .sources
+        .iter()
+        .map(|x| (x.path.clone(), x.enabled))
+        .collect();
+    config::save_sources_enabled(&entries);
 }
 
 /// Resolve the effective dark/light mode from the user's preference.
@@ -836,9 +834,9 @@ fn main() -> anyhow::Result<()> {
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
         host.autoload_from_env()?;
     } else {
-        let saved = config::load_sources();
+        let saved = config::load_sources_with_enabled();
         if !saved.is_empty() {
-            let _ = host.set_folders(&saved);
+            let _ = host.set_sources(&saved);
         }
     }
 
@@ -972,50 +970,51 @@ mod tests {
     }
 
     #[test]
-    fn new_state_starts_on_library_with_host_watched_folders() {
+    fn new_state_starts_on_library_with_no_sources() {
         let s = State::new(PlayerHandle::offline());
         assert!(matches!(s.route, Route::Library));
-        assert!(s.watched_folders.is_empty());
-        assert!(s.unavailable.is_empty());
+        assert!(s.sources.is_empty());
     }
 
     #[test]
-    fn new_state_derives_offline_badge_for_unavailable_watched_roots() {
+    fn new_state_marks_unavailable_restored_roots_offline() {
         let missing = testdata_dir().join("does-not-exist-at-launch");
         let host = PlayerHandle::offline();
         host.set_folders(std::slice::from_ref(&missing)).unwrap();
         let s = State::new(host);
-        assert_eq!(s.watched_folders, vec![missing.clone()]);
-        assert_eq!(
-            s.unavailable,
-            vec![missing],
+        assert_eq!(s.sources.len(), 1);
+        assert_eq!(s.sources[0].path, missing);
+        assert!(
+            !s.sources[0].available,
             "a restored, currently-unavailable root is offline at launch"
         );
     }
 
     #[test]
-    fn apply_watch_folds_a_watchupdate_into_state() {
-        let host = PlayerHandle::offline();
-        let mut s = State::new(host);
-        assert!(s.watched_folders.is_empty());
+    fn apply_watch_folds_sources_into_state() {
+        let mut s = State::new(PlayerHandle::offline());
+        assert!(s.sources.is_empty());
         // add_folder scans the committed testdata (real audio) and returns the
         // WatchUpdate the UI folds in.
         let up = s.host.add_folder(&testdata_dir()).expect("add_folder");
         apply_watch(&mut s, up);
-        assert_eq!(s.watched_folders, vec![testdata_dir()]);
+        assert_eq!(s.sources.len(), 1);
+        assert_eq!(s.sources[0].path, testdata_dir());
+        assert!(s.sources[0].enabled && s.sources[0].available);
         assert!(!s.library.is_empty(), "testdata scanned into the library");
-        assert!(s.unavailable.is_empty());
     }
 
-    /// A `State` routed to Settings with a given watched set + unavailable list.
-    fn settings_state(folders: &[PathBuf], unavailable: &[PathBuf]) -> State {
+    /// A `State` routed to Settings seeded with a given source set. Each source's
+    /// availability is now derived by the host (a path that isn't a readable dir
+    /// reads as offline), so the second argument is retained only for call-site
+    /// compatibility and no longer drives the offline state.
+    fn settings_state(folders: &[PathBuf], _unavailable: &[PathBuf]) -> State {
         let host = PlayerHandle::offline();
         if !folders.is_empty() {
             let _ = host.set_folders(folders);
         }
         let mut s = State::new(host);
         s.route = Route::Settings;
-        s.unavailable = unavailable.to_vec();
         s
     }
 
@@ -1376,6 +1375,46 @@ mod tests {
         assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
 
         apply_locale("en"); // reset the shared rust_i18n locale for sibling tests
+    }
+
+    /// The add-source control is a themed `views::dropdown` menu: the trigger
+    /// renders on the Music Data tab and, when opened (the same press the language
+    /// picker uses), offers a focusable "Local folder…" item and a "Remote
+    /// server…" item that is present but NOT focusable — a disabled "coming soon".
+    #[test]
+    fn add_source_menu_offers_local_and_coming_soon_remote() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Closed: the trigger renders, no panel.
+        assert!(
+            rt.find("add-source").is_some(),
+            "the add-source menu trigger renders"
+        );
+        assert!(
+            rt.find("add-source-menu").is_none(),
+            "the menu is closed initially"
+        );
+        // Open it (same mechanism the language dropdown test uses), then settle the
+        // panel's enter transition.
+        click_key(&mut rt, "add-source");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(rt.state.open_dropdown.as_deref(), Some("add-source"));
+        // Local folder: a real, focusable choice.
+        let local = el_info(&rt, "add-source-opt-local");
+        assert!(local.focusable, "the Local folder item is focusable");
+        // Remote server: present but not focusable (coming soon → disabled).
+        let remote = el_info(&rt, "add-source-opt-remote");
+        assert!(
+            !remote.focusable,
+            "the Remote server item is coming soon → not focusable"
+        );
     }
 
     /// Architecture: `views::dropdown` is the ONE way to build a dropdown. No view
@@ -1853,7 +1892,6 @@ mod tests {
     #[test]
     fn sources_list_renders_a_watched_folder_with_remove() {
         let dir = testdata_dir();
-        let name = dir.file_name().unwrap().to_string_lossy().to_string();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1862,20 +1900,13 @@ mod tests {
         s.settings_tab = SettingsTab::MusicData;
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        assert!(
-            rt.find(&format!("source-{name}")).is_some(),
-            "the watched folder renders"
-        );
-        assert!(
-            rt.find(&format!("remove-{name}")).is_some(),
-            "with a remove control"
-        );
+        assert!(rt.find("source-0").is_some(), "the watched folder renders");
+        assert!(rt.find("remove-0").is_some(), "with a remove control");
     }
 
     #[test]
     fn unavailable_folder_shows_offline_badge() {
         let missing = testdata_dir().join("does-not-exist");
-        let name = missing.file_name().unwrap().to_string_lossy().to_string();
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1888,8 +1919,75 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
-            rt.find(&format!("offline-{name}")).is_some(),
+            rt.find("offline-0").is_some(),
             "an unavailable source shows the offline badge"
+        );
+    }
+
+    /// A rich source row surfaces the source's FULL path (under its name) and a
+    /// per-source track-count label — not just the basename.
+    #[test]
+    fn source_row_shows_full_path_and_track_count() {
+        let dir = testdata_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("source-0").is_some(), "the source row renders");
+        // The FULL path string appears in some element's text (not just basename).
+        let full = dir.to_str().unwrap();
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some(full)),
+            "the full source path is shown somewhere in the row"
+        );
+        // A track-count label is rendered. Assert by KEY (not the localized text),
+        // so a sibling test flipping the global locale can't flake this.
+        assert!(rt.find("count-0").is_some(), "a track-count label is shown");
+    }
+
+    /// The leading enable toggle is a focusable control that disables its source:
+    /// clicking it flips `enabled` off and the (now-disabled) source stops
+    /// contributing tracks, emptying the aggregated library.
+    #[test]
+    fn toggling_a_source_disables_it() {
+        // The toggle persists via apply_and_save — isolate config to a temp dir.
+        config::use_test_config_dir();
+        let dir = testdata_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Precondition: an enabled, available source contributes its tracks.
+        assert!(rt.state.sources[0].enabled, "source starts enabled");
+        assert!(
+            !rt.state.library.is_empty(),
+            "an enabled source contributes tracks"
+        );
+        let toggle = "enable-0".to_string();
+        assert!(
+            el_info(&rt, &toggle).focusable,
+            "the enable toggle is keyboard-focusable"
+        );
+        click_key(&mut rt, &toggle);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            !rt.state.sources[0].enabled,
+            "clicking the toggle disables the source"
+        );
+        assert!(
+            rt.state.library.is_empty(),
+            "a disabled source contributes no tracks"
         );
     }
 

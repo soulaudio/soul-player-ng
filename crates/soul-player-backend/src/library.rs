@@ -35,6 +35,9 @@ type MemReader = IndexReader<FromStd<Cursor<Vec<u8>>>>;
 pub struct Library {
     /// Physical root per source, indexed by a compound id's source bits.
     roots: Vec<PathBuf>,
+    /// Each source's own track count (parallel to `roots`), captured at scan
+    /// time before the per-root reader is boxed into the aggregate.
+    counts: Vec<usize>,
     /// The aggregate behind a `Mutex`: `MultiCatalog` is `Send` but not `Sync`
     /// (its readers use single-threaded `RefCell` interior mutability), so the
     /// shared `Arc<Library>` serializes catalog access here. The lock is held
@@ -57,13 +60,16 @@ impl Library {
     /// importer's. Errors if any root fails to scan.
     pub fn scan_many(roots: &[PathBuf]) -> anyhow::Result<Library> {
         let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(roots.len());
+        let mut counts = Vec::with_capacity(roots.len());
         for root in roots {
             let bytes = soul_audio_import::bake(root)?;
             let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(bytes)));
+            counts.push(reader.track_count() as usize);
             members.push(Box::new(reader));
         }
         Ok(Library {
             roots: roots.to_vec(),
+            counts,
             catalog: Mutex::new(MultiCatalog::new(members)),
         })
     }
@@ -83,6 +89,16 @@ impl Library {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.cat().track_count() == 0
+    }
+
+    /// (root, track_count) per scanned source, in scan (source-bit) order.
+    #[must_use]
+    pub fn source_counts(&self) -> Vec<(PathBuf, usize)> {
+        self.roots
+            .iter()
+            .cloned()
+            .zip(self.counts.iter().copied())
+            .collect()
     }
 
     /// The absolute file path for track `id`: `roots[source] / folder.path /
@@ -455,6 +471,23 @@ mod tests {
         let missing = std::env::temp_dir().join("sas_lib_definitely_missing");
         let _ = std::fs::remove_dir_all(&missing);
         assert!(Library::scan(&missing).is_err());
+    }
+
+    #[test]
+    fn source_counts_reports_tracks_per_root() {
+        // Two roots with distinct, known track counts; source_counts() must
+        // report each root's own count, in scan order, alongside the total.
+        let a = tmpdir("counts_a");
+        std::fs::write(a.join("a1.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(a.join("a2.wav"), wav(48_000, 48_000)).unwrap();
+        let b = tmpdir("counts_b");
+        std::fs::write(b.join("b1.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(b.join("b2.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(b.join("b3.wav"), wav(48_000, 48_000)).unwrap();
+
+        let lib = Library::scan_many(&[a.clone(), b.clone()]).unwrap();
+        assert_eq!(lib.len(), 5);
+        assert_eq!(lib.source_counts(), vec![(a, 2), (b, 3)]);
     }
 
     #[cfg(unix)]
