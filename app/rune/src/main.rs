@@ -22,8 +22,8 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode, SignalPath,
-    SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate,
+    BANDS, BrowseAxis, Command, Event, PlayState, PlayerHandle, RepeatMode, ReplayGainMode,
+    SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate,
     organize::{self, Strategy},
 };
 
@@ -218,6 +218,14 @@ struct State {
     /// ReplayGain preamp in dB (persisted), a constant offset on top of the mode's
     /// gain. Rendered as a slider in Settings → ReplayGain.
     replaygain_preamp: f32,
+    /// Graphic-EQ master enable (persisted). When off, the signal path is a
+    /// bit-exact passthrough. Rendered as the Settings → Audio DSP/EQ card.
+    eq_enabled: bool,
+    /// Per-band EQ gains in dB (persisted), one per `soul_player_host::BAND_FREQS`
+    /// octave band. Each a slider in the DSP/EQ card.
+    eq_gains: [f32; BANDS],
+    /// EQ preamp in dB (persisted) — headroom so band boosts don't clip.
+    eq_preamp: f32,
     /// Managed-library destination folder (persisted; `None` = unset), where the
     /// write-path organizer will copy / move added music. Set in Settings → Music
     /// Data. Configuring only — the "Add music…" apply flow is separate.
@@ -294,6 +302,9 @@ impl State {
         // Restore the persisted ReplayGain choice (defaults: Off, 0 dB); main()
         // has already pushed the same value to the host before the first spawn.
         let (replaygain_mode, replaygain_preamp) = config::load_replaygain();
+        // Restore the persisted EQ (defaults: off, flat, 0 dB preamp); main() has
+        // already pushed the same settings to the host before the first spawn.
+        let (eq_enabled, eq_gains, eq_preamp) = config::load_eq();
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
         let locale_pref = config::load_locale();
         apply_locale(&locale_pref);
@@ -339,6 +350,9 @@ impl State {
             output_devices,
             replaygain_mode,
             replaygain_preamp,
+            eq_enabled,
+            eq_gains,
+            eq_preamp,
             managed_dest,
             managed_template,
             managed_strategy,
@@ -507,6 +521,33 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
     s.replaygain_preamp = preamp_db;
     config::save_replaygain(s.replaygain_mode, preamp_db);
     s.host.set_replay_gain(s.replaygain_mode, preamp_db);
+}
+
+/// Persist the EQ and push it to the live stream (the device sink reads it each
+/// block). Shared by the enable toggle, the band sliders, and the preamp.
+fn apply_eq(s: &State) {
+    config::save_eq(s.eq_enabled, &s.eq_gains, s.eq_preamp);
+    s.host.set_eq(s.eq_gains, s.eq_preamp, s.eq_enabled);
+}
+
+/// Toggle the EQ master enable.
+pub(crate) fn set_eq_enabled(s: &mut State, on: bool) {
+    s.eq_enabled = on;
+    apply_eq(s);
+}
+
+/// Set band `i`'s gain in dB (one graphic-EQ slider).
+pub(crate) fn set_eq_band(s: &mut State, i: usize, gain_db: f32) {
+    if let Some(g) = s.eq_gains.get_mut(i) {
+        *g = gain_db;
+    }
+    apply_eq(s);
+}
+
+/// Set the EQ preamp in dB.
+pub(crate) fn set_eq_preamp(s: &mut State, preamp_db: f32) {
+    s.eq_preamp = preamp_db;
+    apply_eq(s);
 }
 
 /// The on-disk token for a managed-library strategy (inverse of the `"move"`
@@ -1071,6 +1112,10 @@ fn main() -> anyhow::Result<()> {
     // actor on spawn).
     let (rg_mode, rg_preamp) = config::load_replaygain();
     host.set_replay_gain(rg_mode, rg_preamp);
+    // Restore the persisted EQ before any spawn too, so the first stream opens with
+    // the user's bands already applied.
+    let (eq_on, eq_gains, eq_preamp) = config::load_eq();
+    host.set_eq(eq_gains, eq_preamp, eq_on);
     // Seed the hybrid-ReplayGain loudness cache from the persisted file (stale
     // entries already dropped on load) BEFORE any spawn, so a previously-analyzed
     // untagged track is normalized this session with no re-scan.
@@ -1525,6 +1570,53 @@ mod tests {
                 "stage card {k} renders in the Settings → Audio pipeline"
             );
         }
+    }
+
+    /// The DSP/EQ stage renders the real graphic-EQ controls — an enable toggle, a
+    /// preamp, and one slider per band — instead of the old "soon" placeholder.
+    #[test]
+    fn eq_card_renders_bands_and_enable_in_settings_audio() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        apply_locale("en");
+        // Tall window so every band row lays out within the scroll content.
+        let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
+        rt.frame(0.0);
+        for key in [
+            "sp-stage-dsp",
+            "eq-enable",
+            "eq-preamp",
+            "eq-bands",
+            "eq-band-0",
+            "eq-band-9",
+        ] {
+            assert!(rt.find(key).is_some(), "the EQ card renders {key}");
+        }
+    }
+
+    /// Clicking the DSP/EQ enable toggle flips the master enable.
+    #[test]
+    fn toggling_the_eq_enable_flips_state() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
+        rt.frame(0.0);
+        assert!(!rt.state.eq_enabled, "the EQ starts disabled");
+        click_key(&mut rt, "eq-enable");
+        assert!(rt.state.eq_enabled, "clicking the toggle enables the EQ");
     }
 
     /// Build Settings → Audio in a short window so its stage cards overflow the
