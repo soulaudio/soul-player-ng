@@ -18,6 +18,7 @@ use rune::{
 use soul_player_host::ReplayGainMode;
 use soul_player_host::organize;
 
+use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::dropdown;
@@ -27,9 +28,10 @@ use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
     OrganizePhase, SettingsTab, State, ThemePref, apply_and_save, apply_watch, close_dropdown,
-    organize_begin, organize_confirm, organize_dismiss, set_locale_pref, set_managed_dest,
-    set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
-    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref,
+    organize_begin, organize_confirm, organize_dismiss, organize_ready, set_locale_pref,
+    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
+    set_theme_pref,
 };
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
@@ -319,10 +321,42 @@ fn add_music_row(s: &State, p: &Palette) -> El {
                     .grow(1.0)
                     .truncate(),
             )
-            .on_press(|s: &mut State| {
-                // Close the menu before the modal opens over the settings pane.
+            .on_press_tx(|s: &mut State, tx: &mut Tx| {
+                // Close the menu before the dialog so it isn't left open behind it.
                 close_dropdown(s);
-                organize_begin(s);
+                tx.open_folder(
+                    FileDialogOptions {
+                        title: t!("settings.addMusicDialog").to_string(),
+                        ..Default::default()
+                    },
+                    |s: &mut State, result, _tx| {
+                        // Only proceed once a source is picked AND a destination +
+                        // app handle are available (the handle lets the worker post
+                        // the computed plan back onto the main thread).
+                        if let Ok(Some(src_dir)) = result
+                            && let (Some(handle), Some(dest)) =
+                                (s.app_handle.clone(), s.managed_dest.clone())
+                        {
+                            // Show the scanning/planning modal immediately, then do
+                            // the scan + plan off-thread so the UI never blocks.
+                            organize_begin(s);
+                            let template_id = s.managed_template.clone();
+                            let strategy = s.managed_strategy;
+                            std::thread::spawn(move || {
+                                let files = scan_audio(&src_dir);
+                                let plan = organize::plan(
+                                    &files,
+                                    &dest,
+                                    &organize::Template::new(template_for(&template_id)),
+                                    strategy,
+                                );
+                                handle.update(move |s: &mut State, _tx| {
+                                    organize_ready(s, plan);
+                                });
+                            });
+                        }
+                    },
+                );
             })
     } else {
         // No destination yet: a disabled hint, mirroring the Remote "coming soon"

@@ -867,6 +867,13 @@ settings.addMusic:
   zh: '添加音乐…'
   cs: 'Přidat hudbu…'
   ja: '音楽を追加…'
+settings.addMusicDialog:
+  en: 'Choose a folder of music to organize'
+  de: 'Musikordner zum Organisieren auswählen'
+  es: 'Elige una carpeta de música para organizar'
+  zh: '选择要整理的音乐文件夹'
+  cs: 'Vyberte složku s hudbou k uspořádání'
+  ja: '整理する音楽フォルダを選択'
 settings.setDestinationFirst:
   en: 'Set a destination first'
   de: 'Zuerst ein Ziel festlegen'

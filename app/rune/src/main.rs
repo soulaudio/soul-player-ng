@@ -30,6 +30,7 @@ use soul_player_host::{
 mod config;
 #[cfg(test)]
 mod i18n_tests;
+mod organize_job;
 mod theme;
 mod ui;
 mod update;
@@ -226,6 +227,11 @@ struct State {
     /// centered organize modal (`views::settings::organize_overlay`); the pure
     /// `organize_*` transitions move it through its phases. Ephemeral.
     organize: Option<OrganizePhase>,
+    /// A self-handle onto this app, stashed once at startup (`main`), so the
+    /// managed-library organize flow's worker threads can post plan/apply progress
+    /// back onto the main thread via `AppHandle::update`. `None` in headless tests
+    /// (and until `main` sets it), where the organize transitions stay pure.
+    app_handle: Option<rune::AppHandle<State>>,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -330,6 +336,8 @@ impl State {
             managed_template,
             managed_strategy,
             organize: None,
+            // Set once in `main` (a self-posting update); stays `None` in tests.
+            app_handle: None,
             art: ArtCache::new(),
             update_available: None,
             search: String::new(),
@@ -550,8 +558,7 @@ pub(crate) fn organize_begin(s: &mut State) {
 }
 
 /// Planning → Confirm: a computed plan is ready for the user to review.
-// Wired by Task 2 from the `organize::plan` thread callback.
-#[allow(dead_code)]
+// Posted from the `organize::plan` worker (the "Add music…" menu handler).
 pub(crate) fn organize_ready(s: &mut State, plan: organize::OrganizePlan) {
     s.organize = Some(OrganizePhase::Confirm(plan));
 }
@@ -567,8 +574,7 @@ pub(crate) fn organize_apply_begin(s: &mut State, total: usize) {
 }
 
 /// Update the Applying phase with the latest per-entry progress.
-// Wired by Task 2 from the `organize::apply` progress callback.
-#[allow(dead_code)]
+// Posted from the `organize::apply` progress callback (see `organize_confirm`).
 pub(crate) fn organize_progress(s: &mut State, done: usize, total: usize, current: String) {
     s.organize = Some(OrganizePhase::Applying {
         done,
@@ -578,8 +584,7 @@ pub(crate) fn organize_progress(s: &mut State, done: usize, total: usize, curren
 }
 
 /// Applying → Done: the run finished with this outcome tally.
-// Wired by Task 2 when the `organize::apply` thread completes.
-#[allow(dead_code)]
+// Posted when the `organize::apply` worker completes (see `organize_confirm`).
 pub(crate) fn organize_finish(s: &mut State, summary: organize::Summary) {
     s.organize = Some(OrganizePhase::Done(summary));
 }
@@ -590,14 +595,53 @@ pub(crate) fn organize_dismiss(s: &mut State) {
     s.organize = None;
 }
 
-/// Confirm → Applying, the Confirm button's action. For now it only transitions
-/// so the button is testable with no thread; Task 2 overrides this to spawn the
-/// real `organize::apply`, seeding the same `Applying { 0, total, "" }` phase.
+/// Confirm → Applying, the Confirm button's action: take the reviewed plan out of
+/// the modal state, enter the `Applying { 0, total, "" }` phase, then — when an
+/// `app_handle` is present (a real run) — spawn a worker that applies the plan,
+/// streaming progress back per entry and finishing with the summary. The worker
+/// also registers the destination as a watched source so the organized files
+/// appear in the library. With no handle (headless tests) it stays the pure
+/// Confirm → Applying transition, writing nothing to disk.
 pub(crate) fn organize_confirm(s: &mut State) {
-    if let Some(OrganizePhase::Confirm(plan)) = &s.organize {
-        let total = plan.entries.len();
-        organize_apply_begin(s, total);
-    }
+    // Only act from Confirm; take the plan so the worker owns it. Anything else is
+    // restored untouched.
+    let plan = match s.organize.take() {
+        Some(OrganizePhase::Confirm(plan)) => plan,
+        other => {
+            s.organize = other;
+            return;
+        }
+    };
+    organize_apply_begin(s, plan.entries.len());
+    let Some(handle) = s.app_handle.clone() else {
+        // No handle (tests): the modal is in Applying; do not touch the filesystem.
+        return;
+    };
+    let host = s.host.clone();
+    let dest = plan.dest_root.clone();
+    std::thread::spawn(move || {
+        // The progress callback clones the handle per entry and posts an update —
+        // that stream drives the Applying modal's `done / total` + current line.
+        let summary = organize::apply(&plan, |pr| {
+            let h = handle.clone();
+            h.update(move |s: &mut State, _tx: &mut Tx| {
+                organize_progress(s, pr.done, pr.total, pr.current.display().to_string());
+            });
+        })
+        .unwrap_or_else(|e| organize::Summary {
+            failed: vec![(dest.clone(), e.to_string())],
+            ..Default::default()
+        });
+        // Watch the destination so the just-copied files show up in the library,
+        // then post the final summary (both on the main thread, in one update).
+        let watch = host.add_folder(&dest).ok();
+        handle.update(move |s: &mut State, _tx: &mut Tx| {
+            if let Some(up) = watch {
+                apply_and_save(s, up);
+            }
+            organize_finish(s, summary);
+        });
+    });
 }
 
 /// Switch the library's sort order — re-fetches the current library's views in
@@ -960,6 +1004,35 @@ fn scene_signal_path_open(s: &mut State) {
     s.signal_path_open = true;
 }
 
+/// The managed-library organize modal mid-flow, on the Music Data tab, with a
+/// small real `Confirm` plan so `--snap` captures the scrim + card + the
+/// copy/skip counts + the Confirm/Cancel buttons. Pair with `--size 1100x860`.
+fn scene_organize_confirm(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+    let dest = PathBuf::from("/Users/you/Music/Managed");
+    s.organize = Some(OrganizePhase::Confirm(organize::OrganizePlan {
+        dest_root: dest.clone(),
+        entries: vec![
+            organize::PlanEntry {
+                src: PathBuf::from("Daft Punk - One More Time.flac"),
+                dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
+                action: organize::Action::Copy,
+            },
+            organize::PlanEntry {
+                src: PathBuf::from("Daft Punk - Aerodynamic.flac"),
+                dst: dest.join("Daft Punk/Discovery/02 - Aerodynamic.flac"),
+                action: organize::Action::Copy,
+            },
+            organize::PlanEntry {
+                src: PathBuf::from("already-there.flac"),
+                dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
+                action: organize::Action::SkipDuplicate,
+            },
+        ],
+    }));
+}
+
 fn main() -> anyhow::Result<()> {
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
@@ -1022,6 +1095,7 @@ fn main() -> anyhow::Result<()> {
             ("queue", scene_queue),
             ("signal-path", scene_signal_path),
             ("signal-path-open", scene_signal_path_open),
+            ("organize-confirm", scene_organize_confirm),
         ],
         ..AppSpec::new(
             "Soul Player",
@@ -1045,6 +1119,16 @@ fn main() -> anyhow::Result<()> {
         })
         .init(move || State::new(init_host.clone()));
     let ah = app.handle();
+    // Stash a self-handle in State (once, on the main thread) so the managed-library
+    // organize flow can post plan/apply progress back from its worker threads. This
+    // self-posting update runs on the first frame; `update` only borrows `ah`, so it
+    // stays available for the subscribe below.
+    {
+        let h = ah.clone();
+        ah.update(move |s: &mut State, _tx: &mut Tx| {
+            s.app_handle = Some(h);
+        });
+    }
     // Launch-time update check (release builds only): off-thread so it never
     // blocks startup, and it only *flags* an available update — Settings offers
     // the actual "Install & Restart" so we never yank a playing track away.
