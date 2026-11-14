@@ -12,8 +12,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Side, Tx, col, el, icon,
-    row, text,
+    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, Live, ScrollSpec, Side, Tx, col, el,
+    icon, row, text,
 };
 use soul_player_host::ReplayGainMode;
 
@@ -21,6 +21,7 @@ use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::dropdown;
 use crate::views::icons;
+use crate::views::scrollbar;
 use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
@@ -988,9 +989,17 @@ fn about_card(s: &State, p: &Palette) -> El {
 
 // ── Page ─────────────────────────────────────────────────────────────────────
 
+thread_local! {
+    /// Thumb geometry for the Settings scroll viewport: written each frame by the
+    /// viewport's `on_scroll_offset` and read by the thumb's `live_rect`, so the
+    /// bar follows the scroll in the same frame without re-running the view. One
+    /// per render thread (there is a single Settings viewport at a time).
+    static SETTINGS_SCROLL_THUMB: Live<[f32; 4]> = Live::new([0.0; 4]);
+}
+
 /// The Settings page: the category rail on the left, the selected category's
 /// cards centred and width-capped on the right (mirroring the original's
-/// `max-w-4xl mx-auto`), scrollable.
+/// `max-w-4xl mx-auto`), scrollable with a themed scrollbar.
 pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let content = match s.settings_tab {
         SettingsTab::Appearance => col()
@@ -1009,31 +1018,43 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .gap(space::LG)
             .child(about_card(s, p)),
     };
+    // Padding lives INSIDE the scroll viewport: the top then aligns with the nav
+    // rail (no fixed dead gap above the first card) and the bottom margin travels
+    // with the content so the last card clears the window edge when scrolled down.
+    let inner = content.w_full().px(space::XL).pt(space::MD).pb(space::XXL);
+    // One Live carries the thumb geometry from the viewport's scroll callback to
+    // the thumb element in the same frame.
+    let thumb = SETTINGS_SCROLL_THUMB.with(|t| t.clone());
+    let thumb_cb = thumb.clone();
     row()
         .key("settings")
         .grow(1.0)
         .min_h(0.0)
         .child(category_nav(s, p))
         .child(
-            row()
-                .key("settings-body")
-                .grow(1.0)
-                .min_h(0.0)
-                .padding(space::XL)
-                // `grow` lets the column claim the body width so every tab's cards
-                // fill one consistent width and share a left edge (this engine splits
-                // free space evenly across grow children, so flanking spacers would
-                // only ever leave the column a third-width and drifting); `max_w`
-                // caps it on wide windows — the original's `max-w-4xl` column.
-                .child(
-                    content
-                        .grow(1.0)
-                        .max_w(CONTENT_MAX_W)
-                        .min_h(0.0)
-                        .scroll(ScrollSpec {
-                            stick_bottom: false,
-                        }),
-                ),
+            // `grow` lets the column claim the body width so every tab's cards
+            // fill one consistent width and share a left edge (this engine splits
+            // free space evenly across grow children, so flanking spacers would
+            // only ever leave the column a third-width and drifting); `max_w`
+            // caps it on wide windows — the original's `max-w-4xl` column.
+            row().key("settings-body").grow(1.0).min_h(0.0).child(
+                col()
+                    .key("settings-scroll")
+                    .grow(1.0)
+                    .max_w(CONTENT_MAX_W)
+                    .min_h(0.0)
+                    .scroll(ScrollSpec {
+                        stick_bottom: false,
+                    })
+                    // Fade the top/bottom edges as content runs under them, and
+                    // overlay a themed thumb driven by the scroll offset.
+                    .scroll_edge_fade(20.0)
+                    .on_scroll_offset(move |at| {
+                        thumb_cb.set(scrollbar::thumb_rect(at));
+                    })
+                    .child(inner)
+                    .child(scrollbar::overlay(&thumb, "settings-scrollbar", p)),
+            ),
         )
 }
 
