@@ -12,8 +12,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Side, Tx, col, el, icon, row,
-    text,
+    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, ScrollSpec, Side, Tx, col, el, icon,
+    row, text,
 };
 use soul_player_host::ReplayGainMode;
 
