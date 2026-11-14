@@ -1484,7 +1484,7 @@ mod tests {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use rune::{Cursor, Env, Mods, Runtime, WheelEvent};
+    use rune::{Cursor, Env, FileDialogKind, Mods, Runtime, WheelEvent};
 
     use super::*;
     use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
@@ -1904,6 +1904,9 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
+        // Set the bands explicitly so a sibling test's persisted EQ (e.g. a 1-band
+        // import) can't leak in via `populated_state()` and drop `eq-node-7`.
+        s.eq_bands = soul_player_host::default_bands().to_vec();
         apply_locale("en");
         // Tall window so every band row lays out within the scroll content.
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
@@ -2107,6 +2110,81 @@ mod tests {
             "exported profile round-trips: {txt}"
         );
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// End-to-end: clicking **Import** opens an open-file dialog; answering it with
+    /// a profile path imports the bands + preamp and enables the EQ — exercising the
+    /// real `eq-import` button → `tx.open_file` → the runtime's scripted dialog →
+    /// the `import_eq` callback.
+    #[test]
+    fn e2e_importing_an_autoeq_profile_through_the_button() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let path = std::env::temp_dir().join(format!("soul-eq-e2e-in-{}.txt", std::process::id()));
+        std::fs::write(
+            &path,
+            "Preamp: -4.0 dB\nFilter 1: ON PK Fc 440 Hz Gain 6.0 dB Q 1.50\n",
+        )
+        .unwrap();
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
+        rt.frame(0.0);
+        // Press Import → an open-file dialog is pending.
+        click_key(&mut rt, "eq-import");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Import opens a file dialog");
+        assert_eq!(kind, FileDialogKind::Open);
+        // Answer it with our profile; the import callback runs on the next frame.
+        rt.resolve_file_dialog(Some(path.clone())).unwrap();
+        rt.frame(0.0);
+        assert!(rt.state.eq_enabled, "import enabled the EQ");
+        assert_eq!(rt.state.eq_bands.len(), 1);
+        assert_eq!(rt.state.eq_bands[0].kind, BandKind::Peaking);
+        assert!((rt.state.eq_bands[0].freq - 440.0).abs() < 1.0);
+        assert!((rt.state.eq_preamp + 4.0).abs() < 0.11);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// End-to-end: clicking **Export** opens a save dialog; answering it writes a
+    /// re-importable ParametricEQ profile of the current EQ.
+    #[test]
+    fn e2e_exporting_an_autoeq_profile_through_the_button() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_editor_open = true;
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        s.eq_bands[4].gain_db = 5.0; // the 2 kHz bell
+        s.eq_preamp = -1.0;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "eq-export");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Export opens a file dialog");
+        assert_eq!(kind, FileDialogKind::Save);
+        let out = std::env::temp_dir().join(format!("soul-eq-e2e-out-{}.txt", std::process::id()));
+        rt.resolve_file_dialog(Some(out.clone())).unwrap();
+        rt.frame(0.0);
+        let txt = std::fs::read_to_string(&out).expect("export wrote the file");
+        assert!(txt.contains("Preamp: -1.0 dB"), "wrote the preamp: {txt}");
+        assert!(
+            txt.contains("Fc 2000 Hz Gain 5.0 dB"),
+            "wrote the 2 kHz bell: {txt}"
+        );
         let _ = std::fs::remove_file(&out);
     }
 
