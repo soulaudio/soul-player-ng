@@ -213,6 +213,17 @@ fn add_source_trigger(p: &Palette) -> El {
         .on_press(move |s: &mut State| crate::toggle_dropdown(s, ADD_SOURCE_MENU))
 }
 
+/// An add-source option's label stacked over a one-line description, growing to fill
+/// the row so any trailing chip sits at the right edge. The description makes each
+/// choice self-explanatory (and, when disabled, says what to set up first).
+fn source_option_text(label: String, desc: String, label_color: Color, p: &Palette) -> El {
+    col()
+        .grow(1.0)
+        .gap(2.0)
+        .child(text(label).color(label_color))
+        .child(text(desc).font(type_::LABEL).color(p.text_secondary))
+}
+
 /// The add-source menu's floating panel — **mount at the window root** via
 /// [`settings_overlays`], exactly like [`dropdown::panel`], so it escapes the
 /// settings scroll clip. It mirrors `panel`'s styling (anchored under the trigger,
@@ -248,11 +259,12 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         // Same hover wash as `dropdown::panel`'s rows, so the menu reads identically.
         .hover(p.fg.alpha(0.06))
         .child(icon(&icons::FOLDER, 16.0).color(p.text_secondary))
-        .child(
-            text(t!("settings.addLocalFolder").to_string())
-                .color(p.fg)
-                .grow(1.0),
-        )
+        .child(source_option_text(
+            t!("settings.addLocalFolder").to_string(),
+            t!("settings.addLocalFolderDesc").to_string(),
+            p.fg,
+            p,
+        ))
         .on_press_tx(|s: &mut State, tx: &mut Tx| {
             // Close the menu before the dialog so it isn't left open behind it.
             close_dropdown(s);
@@ -281,11 +293,12 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         .py(space::SM)
         .radius(radius::SM)
         .child(icon(&icons::SERVER, 16.0).color(p.text_secondary))
-        .child(
-            text(t!("settings.addRemoteServer").to_string())
-                .color(p.text_secondary)
-                .grow(1.0),
-        )
+        .child(source_option_text(
+            t!("settings.addRemoteServer").to_string(),
+            t!("settings.addRemoteServerDesc").to_string(),
+            p.text_secondary,
+            p,
+        ))
         .child(coming_soon);
     // The dialog card: a title over the option rows. `modal` traps focus, makes the
     // background inert, and dismisses on Escape or an outside (scrim) press.
@@ -346,11 +359,12 @@ fn add_music_row(s: &State, p: &Palette) -> El {
             .cursor(Cursor::Pointer)
             .hover(p.fg.alpha(0.06))
             .child(icon(&icons::MUSIC, 16.0).color(p.text_secondary))
-            .child(
-                text(t!("settings.addMusic").to_string())
-                    .color(p.fg)
-                    .grow(1.0),
-            )
+            .child(source_option_text(
+                t!("settings.addMusic").to_string(),
+                t!("settings.addMusicDesc").to_string(),
+                p.fg,
+                p,
+            ))
             .on_press_tx(|s: &mut State, tx: &mut Tx| {
                 // Close the menu before the dialog so it isn't left open behind it.
                 close_dropdown(s);
@@ -389,26 +403,15 @@ fn add_music_row(s: &State, p: &Palette) -> El {
                 );
             })
     } else {
-        // No destination yet: a disabled hint, mirroring the Remote "coming soon"
-        // row — present but not focusable, with a trailing chip.
-        let hint = row()
-            .center_y()
-            .px(space::SNUG)
-            .py(space::XXS)
-            .radius(radius::XS)
-            .fill(p.muted)
-            .child(
-                text(t!("settings.setDestinationFirst").to_string())
-                    .font(type_::LABEL)
-                    .color(p.text_secondary),
-            );
+        // No destination yet: dimmed + not focusable, its description explaining what to
+        // set up first (clearer than a cryptic trailing chip).
         base.child(icon(&icons::MUSIC, 16.0).color(p.text_secondary))
-            .child(
-                text(t!("settings.addMusic").to_string())
-                    .color(p.text_secondary)
-                    .grow(1.0),
-            )
-            .child(hint)
+            .child(source_option_text(
+                t!("settings.addMusic").to_string(),
+                t!("settings.setDestinationFirst").to_string(),
+                p.text_secondary,
+                p,
+            ))
     }
 }
 
