@@ -11,6 +11,8 @@
 pub mod actor;
 pub mod art;
 pub mod driver;
+pub mod fingerprint;
+pub mod identify;
 pub mod library;
 pub mod loudness;
 pub mod types;
@@ -24,6 +26,8 @@ pub use driver::{
     RgInfo, ServicePlayer, VolumeState, apply_command, project_queue, project_signal_path,
     project_tick,
 };
+pub use fingerprint::{Fingerprint, fingerprint_file, fingerprint_pcm};
+pub use identify::{AcousticId, IdentifyCache};
 pub use library::{IncrementalBuild, Library};
 pub use soul_audio_catalog::BrowseAxis;
 /// The importer's reusable scan cache + its version tag, surfaced so the host can
