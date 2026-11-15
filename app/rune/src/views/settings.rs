@@ -29,13 +29,15 @@ use crate::views::slider::slider;
 use crate::{
     NumField, OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band,
     apply_and_save, apply_watch, close_dropdown, commit_dsp_rename, commit_eq_edit,
-    cycle_eq_band_kind, eq_edit_start, eq_num_drag_end, eq_num_drag_move, eq_num_drag_start,
-    eq_num_scroll, export_eq, import_eq, organize_begin, organize_confirm, organize_dismiss,
+    commit_profile_rename, cycle_eq_band_kind, delete_profile, duplicate_profile, eq_edit_start,
+    eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, export_profile,
+    import_eq, import_profile, new_profile, organize_begin, organize_confirm, organize_dismiss,
     organize_ready, remove_dsp_unit, remove_eq_band, reorder_dsp_units, set_dsp_unit_enabled,
     set_eq_band_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest,
     set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
     set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, start_dsp_rename,
-    toggle_dsp_expanded, toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
+    start_profile_rename, switch_profile, toggle_dsp_expanded, toggle_eq_bands_expanded,
+    unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
@@ -1293,6 +1295,188 @@ fn db_to_slider(db: f32) -> f32 {
     ((db + GAIN_LIMIT_DB) / (2.0 * GAIN_LIMIT_DB)).clamp(0.0, 1.0)
 }
 
+/// The profile switcher's dropdown key (its open state + panel anchor).
+const PROFILE_PICKER: &str = "profile-picker";
+/// The inline profile-rename text field's key (distinct from the Rename button's
+/// `profile-rename`, so the two never collide while renaming).
+const PROFILE_RENAME: &str = "profile-rename-field";
+
+/// The `(id, label)` choices for the profile switcher dropdown — one per saved
+/// profile, keyed by index so picking one calls `switch_profile`.
+fn profile_options(s: &State) -> Vec<(String, String)> {
+    s.profiles
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i.to_string(), p.name.clone()))
+        .collect()
+}
+
+/// A small square icon button for the profile bar. Disabled = greyed, not focusable,
+/// no handler (used for Delete when only one profile remains). `label` is the
+/// accessible name / tooltip (already localized).
+fn profile_icon_btn(
+    key: &str,
+    glyph: &'static Icon,
+    label: String,
+    enabled: bool,
+    p: &Palette,
+    on: impl Fn(&mut State) + 'static,
+) -> El {
+    let tint = if enabled {
+        p.text_secondary
+    } else {
+        p.text_secondary.alpha(0.35)
+    };
+    let btn = el()
+        .key(key.to_string())
+        .role("button")
+        .label(label)
+        .focusable(enabled)
+        .size(28.0, 28.0)
+        .center()
+        .radius(radius::SM)
+        .child(icon(glyph, 16.0).color(tint));
+    if enabled {
+        btn.cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(0.06))
+            .on_press(move |st: &mut State| on(st))
+    } else {
+        btn
+    }
+}
+
+/// Like [`profile_icon_btn`] but the handler gets the transaction (to open a file
+/// dialog for import / export).
+fn profile_icon_btn_tx(
+    key: &str,
+    glyph: &'static Icon,
+    label: String,
+    p: &Palette,
+    on: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .size(28.0, 28.0)
+        .center()
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.06))
+        .child(icon(glyph, 16.0).color(p.text_secondary))
+        .on_press_tx(move |st: &mut State, tx: &mut Tx| on(st, tx))
+}
+
+/// The profile bar at the top of the DSP card: the switcher (a themed dropdown, or an
+/// inline text field while renaming) on the left, and New / Duplicate / Rename /
+/// Delete | Import / Export icon buttons on the right. Delete is disabled when only one
+/// profile remains (there must always be at least one).
+fn profile_bar(s: &State, p: &Palette) -> El {
+    let switcher: El = if s.profile_rename.is_some() {
+        text_input(&s.profile_rename_buf, type_::ITEM_STRONG)
+            .key(PROFILE_RENAME)
+            .single_line()
+            .grow(1.0)
+            .px(space::SM)
+            .py(space::XXS)
+            .radius(radius::SM)
+            .fill(p.primary.alpha(0.16))
+            .color(p.fg)
+            .on_edit(|st: &mut State| &mut st.profile_rename_buf)
+            .on_submit(|st: &mut State, _tx| commit_profile_rename(st))
+    } else {
+        let name = s
+            .profiles
+            .get(s.active_profile)
+            .map(|pr| pr.name.clone())
+            .unwrap_or_default();
+        dropdown::trigger(PROFILE_PICKER, name, p).grow(1.0)
+    };
+    let can_delete = s.profiles.len() > 1;
+    row()
+        .key("profile-bar")
+        .w_full()
+        .center_y()
+        .gap(space::XS)
+        .pb(space::SM)
+        .child(switcher)
+        .child(profile_icon_btn(
+            "profile-new",
+            &icons::PLUS,
+            t!("settings.profileNew").to_string(),
+            true,
+            p,
+            new_profile,
+        ))
+        .child(profile_icon_btn(
+            "profile-duplicate",
+            &icons::COPY,
+            t!("settings.profileDuplicate").to_string(),
+            true,
+            p,
+            duplicate_profile,
+        ))
+        .child(profile_icon_btn(
+            "profile-rename",
+            &icons::PENCIL,
+            t!("settings.profileRename").to_string(),
+            true,
+            p,
+            start_profile_rename,
+        ))
+        .child(profile_icon_btn(
+            "profile-delete",
+            &icons::TRASH,
+            t!("settings.profileDelete").to_string(),
+            can_delete,
+            p,
+            delete_profile,
+        ))
+        // A hairline divider between manage and import/export.
+        .child(el().w(1.0).h(16.0).radius(0.5).fill(p.border))
+        .child(profile_icon_btn_tx(
+            "profile-import",
+            &icons::DOWNLOAD,
+            t!("settings.profileImport").to_string(),
+            p,
+            |_st, tx| {
+                tx.open_file(
+                    FileDialogOptions {
+                        title: t!("settings.profileImport").to_string(),
+                        ..Default::default()
+                    }
+                    .filter("Audio profile (*.json)", &["json"]),
+                    move |s: &mut State, result, _tx| {
+                        if let Ok(Some(path)) = result {
+                            import_profile(s, &path);
+                        }
+                    },
+                );
+            },
+        ))
+        .child(profile_icon_btn_tx(
+            "profile-export",
+            &icons::UPLOAD,
+            t!("settings.profileExport").to_string(),
+            p,
+            |_st, tx| {
+                tx.save_file(
+                    FileDialogOptions {
+                        title: t!("settings.profileExport").to_string(),
+                        file_name: Some("profile.json".into()),
+                        ..Default::default()
+                    }
+                    .filter("Audio profile (*.json)", &["json"]),
+                    move |s: &mut State, result, _tx| {
+                        if let Ok(Some(path)) = result {
+                            export_profile(s, &path);
+                        }
+                    },
+                );
+            },
+        ))
+}
+
 /// The **DSP chain** stage: an ordered list of expandable DSP unit cards (EQ is
 /// the only kind today), each flowing into the next, plus an "+ Add DSP" control.
 /// There is no master toggle — every unit card owns its own enable. The stage dot
@@ -1302,16 +1486,19 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         unit_enabled(s, i)
             && (unit_preamp(s, i).abs() > 0.05 || unit_bands(s, i).iter().any(|b| b.affects()))
     });
-    let mut card = card("sp-stage-dsp", p).child(stage_header(
-        if shaping { p.accent } else { p.primary },
-        &icons::SETTINGS,
-        t!("player.signalPath.dsp").to_string(),
-        None,
-        // No master toggle — each unit card has its own.
-        None,
-        false,
-        p,
-    ));
+    let mut card = card("sp-stage-dsp", p)
+        .child(stage_header(
+            if shaping { p.accent } else { p.primary },
+            &icons::SETTINGS,
+            t!("player.signalPath.dsp").to_string(),
+            None,
+            // No master toggle — each unit card has its own.
+            None,
+            false,
+            p,
+        ))
+        // The profile bar: switch/create/rename/delete/import/export the whole chain.
+        .child(profile_bar(s, p));
     // One expandable unit card per position, in processing order; a drop line marks
     // the GAP the dragged card will land in. Moving a card DOWN (to > from) it lands
     // *after* `to`, so the line sits before `to + 1` (or at the very end); moving it
@@ -2489,6 +2676,24 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
     }
     if dropdown::is_open(s, ADD_DSP_MENU) {
         overlays.push(add_dsp_menu(p));
+    }
+    if dropdown::is_open(s, PROFILE_PICKER) {
+        // Match the panel width to the trigger; the active profile is pre-selected.
+        let width = cx.layout_size(PROFILE_PICKER).map(|wh| wh[0]);
+        let active = s.active_profile.to_string();
+        overlays.push(dropdown::panel(
+            PROFILE_PICKER,
+            &profile_options(s),
+            &active,
+            width,
+            |s: &mut State, id: &str| {
+                if let Ok(i) = id.parse::<usize>() {
+                    switch_profile(s, i);
+                }
+            },
+            None,
+            p,
+        ));
     }
     if dropdown::is_open(s, MANAGED_TEMPLATE) {
         // Match the panel width to the trigger (once it has a committed layout).
