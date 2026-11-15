@@ -7,12 +7,12 @@
 //! On Windows we draw our OWN caption glyphs over the native buttons: the native
 //! symbols are tinted transparent (`caption_color` alpha 0) so only ours show,
 //! while the native buttons underneath still take the clicks (preserving the OS
-//! minimize/maximize/close wiring, Aero Snap and the resize edges). Our glyphs
-//! fade in and out with the band's hover via `group_opacity` + `hover_motion`,
-//! which a per-frame `caption_color` can't do.
+//! minimize/maximize/close wiring, Aero Snap and the resize edges). The glyphs
+//! are always visible, matching native Windows 11 (which never hides its caption
+//! buttons) — see the note on `bar` for why hover-to-reveal can't work here.
 #![forbid(unsafe_code)]
 
-use rune::{Cx, El, Icon, Spring, el, icon, row, text};
+use rune::{Cx, El, Icon, el, icon, row, text};
 use soul_player_host::{ScanPhase, ScanProgress};
 
 use crate::State;
@@ -28,17 +28,19 @@ pub(crate) const HEIGHT: f32 = 32.0;
 /// this to `Titlebar::traffic_lights`. macOS only — they sit over the sidebar.
 pub(crate) const TRAFFIC_LIGHTS: (f32, f32) = (19.0, (HEIGHT - 12.0) / 2.0);
 
-/// Smooth both-way fade for the hover-revealed Windows caption glyphs.
-const GLYPH_FADE: Spring = Spring::new(0.16, 0.0);
-
 /// Caption-glyph icon size, in points. The glyphs' marks fill ~16 of their 24-unit
 /// viewbox, so this lands them near the native ~10 pt Windows 11 symbol.
 const GLYPH_SIZE: f32 = 15.0;
 
 /// The window title-bar band over the content: `HEIGHT` tall, draggable. On Windows
-/// it carries our own `_ [] X` glyphs at the trailing edge, revealed only while the
-/// band is hovered; the open area to their left is where custom header components go
-/// later.
+/// it carries our own always-visible `_ [] X` glyphs at the trailing edge; the open
+/// area to their left is where custom header components go later.
+///
+/// The glyphs don't hover-reveal: the native caption buttons are a non-client OS
+/// region (`WM_NCHITTEST` → `HTMINBUTTON`/`HTMAXBUTTON`/`HTCLOSE`), so the pointer
+/// over them never reaches the app's client-area hover group — a reveal would blank
+/// out exactly as you reach for a button. Native Windows keeps them always shown, so
+/// we do too.
 pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     let chrome = cx.chrome_insets();
     // Hide the native Windows caption symbols — we draw our own (animatable) glyphs
@@ -78,42 +80,23 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
         .items_center()
         .pl(space::MD)
         .window_drag()
-        // The band is the hover group; its glyphs' `group_opacity` follows this
-        // track, and `hover_motion` makes that follow smooth in both directions.
-        .hover_group()
-        .hover_motion(GLYPH_FADE, GLYPH_FADE)
         .child(content);
 
     // Windows only (`trailing` is 0 where the native frame stays, e.g. macOS/Linux):
-    // our three caption glyphs span the trailing gutter, one per native button.
+    // our three always-visible caption glyphs span the trailing gutter, one per
+    // native button.
     if chrome.trailing > 0.0 {
         let cell = chrome.trailing / 3.0;
-        // Rest opacity: fully visible when the user prefers "always show", else
-        // 0 so they fade in only on band hover.
-        let rest = if s.titlebar_controls_always { 1.0 } else { 0.0 };
         strip.child(
             row()
                 .key("caption-glyphs")
                 .h_full()
-                .child(caption_glyph(
-                    "caption-min",
-                    &icons::CAPTION_MIN,
-                    cell,
-                    rest,
-                    p,
-                ))
-                .child(caption_glyph(
-                    "caption-max",
-                    &icons::CAPTION_MAX,
-                    cell,
-                    rest,
-                    p,
-                ))
+                .child(caption_glyph("caption-min", &icons::CAPTION_MIN, cell, p))
+                .child(caption_glyph("caption-max", &icons::CAPTION_MAX, cell, p))
                 .child(caption_glyph(
                     "caption-close",
                     &icons::CAPTION_CLOSE,
                     cell,
-                    rest,
                     p,
                 )),
         )
@@ -122,23 +105,13 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     }
 }
 
-/// One caption glyph cell: `width` wide, full height, glyph centred. Its `rest`
-/// opacity is 0 for the default hover-reveal (fades in with the band's
-/// `hover_motion`) or 1 when the user keeps the controls always visible; either
-/// way it reaches full opacity on hover. Purely visual — the native button
-/// underneath takes the click.
-fn caption_glyph(
-    key: &'static str,
-    glyph: &'static Icon,
-    width: f32,
-    rest: f32,
-    p: &Palette,
-) -> El {
+/// One caption glyph cell: `width` wide, full height, glyph centred. Always
+/// visible. Purely visual — the native button underneath takes the click.
+fn caption_glyph(key: &'static str, glyph: &'static Icon, width: f32, p: &Palette) -> El {
     el().key(key)
         .w(width)
         .h_full()
         .center()
-        .group_opacity(rest, 1.0)
         .child(icon(glyph, GLYPH_SIZE).color(p.fg))
 }
 

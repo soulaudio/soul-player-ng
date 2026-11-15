@@ -373,9 +373,6 @@ struct State {
     /// and driven by the drag handle in `views::sidebar`.
     sidebar_width: f32,
     sidebar_collapsed: bool,
-    /// Whether the custom window controls (`_ [] X`) stay visible instead of
-    /// revealing on title-bar hover (Windows; persisted). Read by `titlebar::bar`.
-    titlebar_controls_always: bool,
     /// Mobile (narrow window) single-pane state: `false` shows the sidebar
     /// (nav + queue + player), `true` shows the content page with a back bar —
     /// the old app's `mobileShowContent`. Ignored on desktop (both panes show).
@@ -511,7 +508,6 @@ impl State {
             searching: false,
             sidebar_width,
             sidebar_collapsed,
-            titlebar_controls_always: config::load_titlebar_controls_always(),
             // The menu is the mobile home view; a nav tap flips this true.
             mobile_show_content: false,
             nav_hidden: config::load_nav_hidden(),
@@ -1802,13 +1798,6 @@ pub(crate) fn set_nav_visible(s: &mut State, id: &str, visible: bool) {
         s.nav_hidden.push(id.to_string());
     }
     config::save_nav_hidden(&s.nav_hidden);
-}
-
-/// Set + persist whether the custom window controls stay visible (vs. reveal on
-/// hover). `titlebar::bar` reads the flag on the next frame.
-pub(crate) fn set_titlebar_controls_always(s: &mut State, always: bool) {
-    s.titlebar_controls_always = always;
-    config::save_titlebar_controls_always(always);
 }
 
 /// The window handle, captured in `on_ready`, so `flush_on_exit` can read the
@@ -4633,17 +4622,14 @@ mod tests {
     }
 
     /// On Windows (trailing inset > 0) the band draws its own `_ [] X` glyphs over
-    /// the native caption buttons: invisible while the top bar rests, faded in only
-    /// while the pointer is over the band — a clean strip until it's reached.
+    /// the native caption buttons, hard against the window's right edge.
     #[test]
-    fn windows_caption_glyphs_hidden_at_rest_and_revealed_on_hover() {
+    fn windows_caption_glyphs_sit_at_the_right_edge() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        let s = populated_state();
-        apply_locale("en");
-        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        let mut rt = Runtime::new(populated_state(), view, (1100.0, 720.0), env);
         let mut insets = rune::ChromeInsets::default();
         insets.trailing = 138.0; // three Windows caption buttons
         insets.height = views::titlebar::HEIGHT;
@@ -4651,86 +4637,53 @@ mod tests {
         rt.settle_all();
         rt.frame(0.0);
 
-        let (close, rest_op) = rt
+        let (close, _op) = rt
             .presented("caption-close")
             .expect("the close glyph renders over the native button");
-        // It sits in the trailing gutter, hard against the window's right edge.
         assert!(
             (close[0] + close[2] - 1100.0).abs() < 2.0,
             "close glyph sits at the right edge, got right={}",
             close[0] + close[2]
         );
-        assert!(
-            rest_op < 0.05,
-            "caption glyphs are hidden at rest, opacity {rest_op}"
-        );
+    }
 
-        // Hover the band (over the close glyph); the glyphs fade in over a handful
-        // of frames (the `hover_motion` spring).
-        let cx = close[0] + close[2] / 2.0;
-        let cy = close[1] + close[3] / 2.0;
-        rt.pointer_move(cx, cy);
-        for _ in 0..40 {
-            rt.frame(1.0 / 60.0);
+    /// The custom caption glyphs are always visible (native Windows 11 behavior):
+    /// where the app draws its own controls (trailing inset > 0), all three render
+    /// at full opacity with no hover needed. (Hover-to-reveal was removed — the
+    /// native caption buttons are a non-client region the app's hover group can't
+    /// track, so a reveal blanks the button exactly as you reach for it.)
+    #[test]
+    fn windows_caption_glyphs_are_always_visible() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(populated_state(), view, (1100.0, 720.0), env);
+        let mut insets = rune::ChromeInsets::default();
+        insets.trailing = 138.0;
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        for key in ["caption-min", "caption-max", "caption-close"] {
+            let (_el, op) = rt
+                .presented(key)
+                .unwrap_or_else(|| panic!("the {key} glyph renders"));
+            assert!(op > 0.9, "{key} is fully visible at rest, opacity {op}");
         }
-        let (_c2, hover_op) = rt
-            .presented("caption-close")
-            .expect("the close glyph renders while hovering");
-        assert!(
-            hover_op > 0.9,
-            "caption glyphs are revealed while hovering the band, opacity {hover_op}"
-        );
     }
 
-    /// With "always show" enabled the custom controls stay fully visible at rest —
-    /// no hover needed — the user's preference over the default hover-reveal.
+    /// The custom caption glyphs render only where the app draws its own controls
+    /// (trailing chrome inset > 0, i.e. Windows), not under a native frame.
     #[test]
-    fn windows_caption_glyphs_always_show_when_enabled() {
+    fn caption_glyphs_only_where_the_app_draws_controls() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        let mut s = populated_state();
-        s.titlebar_controls_always = true;
-        apply_locale("en");
-        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
-        let mut insets = rune::ChromeInsets::default();
-        insets.trailing = 138.0;
-        insets.height = views::titlebar::HEIGHT;
-        rt.set_chrome_insets(insets);
-        rt.settle_all();
-        rt.frame(0.0);
-
-        let (_close, rest_op) = rt
-            .presented("caption-close")
-            .expect("the close glyph renders");
-        assert!(
-            rest_op > 0.9,
-            "caption glyphs stay visible at rest when 'always show' is on, opacity {rest_op}"
-        );
-    }
-
-    /// The Settings window-controls toggle appears only where the app draws its own
-    /// controls (trailing chrome inset > 0, i.e. Windows), not under a native frame.
-    #[test]
-    fn window_controls_toggle_only_where_the_app_draws_them() {
-        let env = Env {
-            system_dark: true,
-            scale: 2.0,
-        };
-        apply_locale("en");
-        let has_toggle = |rt: &Runtime<State>| {
-            rt.elements()
-                .into_iter()
-                .any(|e| e.key.as_deref() == Some("window-controls-toggle"))
-        };
-
-        // Custom controls (trailing inset set): the toggle shows in Appearance.
-        let mut s = populated_state();
-        s.route = Route::Settings;
-        s.settings_tab = SettingsTab::Appearance;
-        let mut rt = Runtime::new(s, view, (1100.0, 900.0), env);
-        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        // Custom controls (trailing inset set): glyphs present.
+        let mut rt = Runtime::new(populated_state(), view, (1100.0, 720.0), env);
         let mut insets = rune::ChromeInsets::default();
         insets.trailing = 138.0;
         insets.height = views::titlebar::HEIGHT;
@@ -4739,22 +4692,18 @@ mod tests {
         rt.settle_all();
         rt.frame(0.0);
         assert!(
-            has_toggle(&rt),
-            "the toggle shows where the app draws its own window controls"
+            rt.presented("caption-close").is_some(),
+            "glyphs show where the app draws its own controls"
         );
 
-        // Native frame (default insets, trailing 0): no toggle.
-        let mut s2 = populated_state();
-        s2.route = Route::Settings;
-        s2.settings_tab = SettingsTab::Appearance;
-        let mut rt2 = Runtime::new(s2, view, (1100.0, 900.0), env);
-        rt2.set_live_waker(std::sync::Arc::new(|| {}));
+        // Native frame (default insets, trailing 0): no custom glyphs.
+        let mut rt2 = Runtime::new(populated_state(), view, (1100.0, 720.0), env);
         rt2.frame(0.0);
         rt2.settle_all();
         rt2.frame(0.0);
         assert!(
-            !has_toggle(&rt2),
-            "no toggle where the native frame draws the controls"
+            rt2.presented("caption-close").is_none(),
+            "no custom glyphs under a native frame"
         );
     }
 

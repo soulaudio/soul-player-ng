@@ -721,35 +721,9 @@ fn nav_toggle(id: &'static str, visible: bool, p: &Palette) -> El {
         .on_press(move |s: &mut State| set_nav_visible(s, id, !s.nav_visible(id)))
 }
 
-/// The window-controls visibility toggle: flips between "always show" and the
-/// default hover-reveal for the custom `_ [] X` buttons. Mirrors `nav_toggle`.
-fn window_controls_toggle(always: bool, p: &Palette) -> El {
-    el().key("window-controls-toggle")
-        .role("button")
-        .label(t!("settings.windowControls").to_string())
-        .focusable(true)
-        .padding(space::SM)
-        .radius(radius::SM)
-        .cursor(Cursor::Pointer)
-        .fill(if always { p.primary } else { p.muted })
-        .child(
-            text(if always {
-                t!("settings.controlsAlways").to_string()
-            } else {
-                t!("settings.controlsHover").to_string()
-            })
-            .color(if always { p.bg } else { p.fg }),
-        )
-        .on_press(move |s: &mut State| {
-            crate::set_titlebar_controls_always(s, !s.titlebar_controls_always)
-        })
-}
-
 /// Navigation: one show/hide toggle per primary sidebar item, so the user
-/// decides which pages appear (the original's configurable nav). On platforms
-/// where the app draws its own window buttons (`show_window_controls`), a final
-/// row toggles whether those stay visible or reveal on hover.
-fn navigation_card(s: &State, p: &Palette, show_window_controls: bool) -> El {
+/// decides which pages appear (the original's configurable nav).
+fn navigation_card(s: &State, p: &Palette) -> El {
     let mut c = card("navigation", p).child(heading(
         t!("settings.navigation").to_string(),
         t!("settings.navigationDesc").to_string(),
@@ -767,20 +741,6 @@ fn navigation_card(s: &State, p: &Palette, show_window_controls: bool) -> El {
                         .grow(1.0),
                 )
                 .child(nav_toggle(def.id, s.nav_visible(def.id), p)),
-        );
-    }
-    if show_window_controls {
-        c = c.child(
-            row()
-                .key("window-controls-row")
-                .center_y()
-                .child(
-                    text(t!("settings.windowControls").to_string())
-                        .font(type_::ITEM)
-                        .color(p.fg)
-                        .grow(1.0),
-                )
-                .child(window_controls_toggle(s.titlebar_controls_always, p)),
         );
     }
     c
@@ -2413,9 +2373,7 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .key("settings-content")
             .gap(space::LG)
             .child(appearance_card(s, p))
-            // The window-controls toggle only applies where the app draws its own
-            // controls (Windows) — gate it on the trailing chrome inset.
-            .child(navigation_card(s, p, cx.chrome_insets().trailing > 0.0))
+            .child(navigation_card(s, p))
             .child(language_card(s, p)),
         SettingsTab::MusicData => col()
             .key("settings-content")
