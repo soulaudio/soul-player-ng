@@ -13,7 +13,7 @@
 
 use rune::{
     Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Shadow,
-    Side, Tx, WheelEvent, col, el, icon, row, text, text_input,
+    Tx, WheelEvent, col, el, icon, row, text, text_input,
 };
 use soul_player_host::organize;
 use soul_player_host::{BandKind, DspUnit, GAIN_LIMIT_DB, ReplayGainMode};
@@ -191,13 +191,12 @@ fn category_nav(s: &State, p: &Palette) -> El {
 /// The key identifying the add-source menu (its open state + panel anchor).
 const ADD_SOURCE_MENU: &str = "add-source";
 
-/// `+ Add Source` — a compact primary button (the original add-button metrics,
-/// plus a chevron that marks it as a menu) that toggles the [`add_source_menu`]
-/// (Local folder, and Remote server as a "coming soon" item) open, instead of
-/// jumping straight to the folder dialog. A select-style full-width trigger reads
-/// wrong for an action button, so this is a bespoke compact trigger rather than
-/// `dropdown::trigger`; it still anchors the shared menu via its `ADD_SOURCE_MENU`
-/// key. The visible text is a child, so the control carries an explicit a11y label.
+/// `+ Add Source` — a compact primary action button that opens the [`add_source_menu`]
+/// **modal dialog** (Local folder, Remote server as a "coming soon" item, and Add music
+/// when a managed destination is set). A modal, not an anchored menu, so the choices
+/// read as a proper dialog and stay centered + legible at any card width. The visible
+/// text is a child, so the control carries an explicit a11y label. `ADD_SOURCE_MENU` is
+/// still the open-state key (via `toggle_dropdown`); the overlay renders it as a modal.
 fn add_source_trigger(p: &Palette) -> El {
     row()
         .key(ADD_SOURCE_MENU)
@@ -205,14 +204,24 @@ fn add_source_trigger(p: &Palette) -> El {
         .label(t!("settings.addSource").to_string())
         .focusable(true)
         .center_y()
-        .gap(space::XS)
-        .padding(space::MD)
-        .radius(radius::MD)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
         .fill(p.primary)
         .cursor(Cursor::Pointer)
         .child(text(t!("settings.addSource").to_string()).color(p.bg))
-        .child(icon(&icons::CHEVRON_DOWN, 16.0).color(p.bg))
         .on_press(move |s: &mut State| crate::toggle_dropdown(s, ADD_SOURCE_MENU))
+}
+
+/// An add-source option's label stacked over a one-line description, growing to fill
+/// the row so any trailing chip sits at the right edge. The description makes each
+/// choice self-explanatory (and, when disabled, says what to set up first).
+fn source_option_text(label: String, desc: String, label_color: Color, p: &Palette) -> El {
+    col()
+        .grow(1.0)
+        .gap(2.0)
+        .child(text(label).color(label_color))
+        .child(text(desc).font(type_::LABEL).color(p.text_secondary))
 }
 
 /// The add-source menu's floating panel — **mount at the window root** via
@@ -250,12 +259,12 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         // Same hover wash as `dropdown::panel`'s rows, so the menu reads identically.
         .hover(p.fg.alpha(0.06))
         .child(icon(&icons::FOLDER, 16.0).color(p.text_secondary))
-        .child(
-            text(t!("settings.addLocalFolder").to_string())
-                .color(p.fg)
-                .grow(1.0)
-                .truncate(),
-        )
+        .child(source_option_text(
+            t!("settings.addLocalFolder").to_string(),
+            t!("settings.addLocalFolderDesc").to_string(),
+            p.fg,
+            p,
+        ))
         .on_press_tx(|s: &mut State, tx: &mut Tx| {
             // Close the menu before the dialog so it isn't left open behind it.
             close_dropdown(s);
@@ -282,29 +291,48 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         .py(space::SM)
         .radius(radius::SM)
         .child(icon(&icons::SERVER, 16.0).color(p.text_secondary))
-        .child(
-            text(t!("settings.addRemoteServer").to_string())
-                .color(p.text_secondary)
-                .grow(1.0)
-                .truncate(),
-        )
+        .child(source_option_text(
+            t!("settings.addRemoteServer").to_string(),
+            t!("settings.addRemoteServerDesc").to_string(),
+            p.text_secondary,
+            p,
+        ))
         .child(coming_soon);
-    col()
+    // The dialog card: a title over the option rows. `modal` traps focus, makes the
+    // background inert, and dismisses on Escape or an outside (scrim) press.
+    let dialog = col()
         .key(format!("{ADD_SOURCE_MENU}-menu"))
-        .anchored_fit(ADD_SOURCE_MENU, Side::Bottom, Align::Start, space::XS)
         .focus_group()
         .focus_return(ADD_SOURCE_MENU.to_string())
-        .min_w(MENU_MIN_W)
+        // Sized to fit the full (localized) rows — the labels no longer truncate, so a
+        // generous max keeps even the longest translation + its trailing chip on one
+        // line; the min keeps it dialog-like when the labels are short.
+        .min_w(340.0)
+        .max_w(540.0)
         .fill(p.card)
         .radius(radius::MD)
         .border_sides([1.0; 4], p.border)
-        .padding(space::XXS)
-        .gap(space::XXS)
+        .padding(space::LG)
+        .gap(space::XS)
         .min_h(space::NONE)
-        .modal(true, close_dropdown)
+        .child(
+            text(t!("settings.addSourceTitle").to_string())
+                .font(type_::ITEM_STRONG)
+                .color(p.fg),
+        )
         .child(local)
         .child(remote)
         .child(add_music_row(s, p))
+        .modal(true, close_dropdown);
+    // A dimming scrim filling the window, centering the dialog.
+    col()
+        .key(format!("{ADD_SOURCE_MENU}-scrim"))
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .center()
+        .fill(Color::BLACK.alpha(0.45))
+        .child(dialog)
 }
 
 /// The **Add music…** menu row: it runs the managed-library organizer (the
@@ -329,12 +357,12 @@ fn add_music_row(s: &State, p: &Palette) -> El {
             .cursor(Cursor::Pointer)
             .hover(p.fg.alpha(0.06))
             .child(icon(&icons::MUSIC, 16.0).color(p.text_secondary))
-            .child(
-                text(t!("settings.addMusic").to_string())
-                    .color(p.fg)
-                    .grow(1.0)
-                    .truncate(),
-            )
+            .child(source_option_text(
+                t!("settings.addMusic").to_string(),
+                t!("settings.addMusicDesc").to_string(),
+                p.fg,
+                p,
+            ))
             .on_press_tx(|s: &mut State, tx: &mut Tx| {
                 // Close the menu before the dialog so it isn't left open behind it.
                 close_dropdown(s);
@@ -373,33 +401,17 @@ fn add_music_row(s: &State, p: &Palette) -> El {
                 );
             })
     } else {
-        // No destination yet: a disabled hint, mirroring the Remote "coming soon"
-        // row — present but not focusable, with a trailing chip.
-        let hint = row()
-            .center_y()
-            .px(space::SNUG)
-            .py(space::XXS)
-            .radius(radius::XS)
-            .fill(p.muted)
-            .child(
-                text(t!("settings.setDestinationFirst").to_string())
-                    .font(type_::LABEL)
-                    .color(p.text_secondary),
-            );
+        // No destination yet: dimmed + not focusable, its description explaining what to
+        // set up first (clearer than a cryptic trailing chip).
         base.child(icon(&icons::MUSIC, 16.0).color(p.text_secondary))
-            .child(
-                text(t!("settings.addMusic").to_string())
-                    .color(p.text_secondary)
-                    .grow(1.0)
-                    .truncate(),
-            )
-            .child(hint)
+            .child(source_option_text(
+                t!("settings.addMusic").to_string(),
+                t!("settings.setDestinationFirst").to_string(),
+                p.text_secondary,
+                p,
+            ))
     }
 }
-
-/// Minimum width of the add-source menu panel, so the two rows have room — the
-/// compact trigger is narrower than the menu, so it doesn't constrain it.
-const MENU_MIN_W: f32 = 220.0;
 
 /// Re-aggregate the current watched set — picks up files added/removed on disk
 /// and roots that came back online. The set is unchanged, so no save (apply_watch,
@@ -409,8 +421,9 @@ fn rescan_button(p: &Palette) -> El {
         .role("button")
         .label(t!("settings.rescan").to_string())
         .focusable(true)
-        .padding(space::MD)
-        .radius(radius::MD)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
         .fill(p.muted)
         .center()
         .cursor(Cursor::Pointer)
@@ -800,10 +813,14 @@ fn language_card(s: &State, p: &Palette) -> El {
 fn music_data_card(s: &State, p: &Palette) -> El {
     let mut c = card("sources", p).child(
         row()
+            .w_full()
             .gap(space::MD)
-            // Wrap so the Rescan / Add Source buttons drop to their own line
-            // rather than off the card when a longer locale's heading needs the
-            // width; `shrink` lets the (wrapping) heading yield that width first.
+            // Keep the heading readable (a min width) and grow it to fill; group the
+            // action buttons so, when the card is too narrow for all three on one line,
+            // `flex_wrap` drops the WHOLE button group to its own line below the heading
+            // instead of crushing the heading to a sliver and ballooning the buttons.
+            // `items_start` keeps the buttons at their natural height (no cross-stretch).
+            .items_start()
             .flex_wrap()
             .child(
                 heading(
@@ -812,10 +829,15 @@ fn music_data_card(s: &State, p: &Palette) -> El {
                     p,
                 )
                 .grow(1.0)
-                .shrink(),
+                .min_w(180.0),
             )
-            .child(rescan_button(p))
-            .child(add_source_trigger(p)),
+            .child(
+                row()
+                    .gap(space::SM)
+                    .items_center()
+                    .child(rescan_button(p))
+                    .child(add_source_trigger(p)),
+            ),
     );
     // A deletion warning from the most recent scan (host `Event::TracksRemoved`),
     // cleared on the next Sources refresh. `wrap` so a long folder name or locale
