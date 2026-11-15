@@ -1402,7 +1402,7 @@ fn crash_overlay(s: &State, p: &theme::Palette) -> Option<El> {
 /// Report actions. Report opens the same pre-filled GitHub issue as Settings →
 /// About and closes the dialog.
 fn crash_dialog(p: &theme::Palette) -> El {
-    use crate::ui::{radius, space, type_};
+    use crate::ui::{radius, space};
     col()
         .key("crash-dialog")
         .w(380.0)
@@ -1411,17 +1411,7 @@ fn crash_dialog(p: &theme::Palette) -> El {
         .border(1.0, p.border)
         .padding(space::LG)
         .gap(space::MD)
-        .child(
-            rune::text(t!("crash.title").to_string())
-                .font(type_::CARD_TITLE)
-                .color(p.fg)
-                .wrap(),
-        )
-        .child(
-            rune::text(t!("crash.body").to_string())
-                .color(p.text_secondary)
-                .wrap(),
-        )
+        .child(rune::text(t!("crash.body").to_string()).color(p.fg).wrap())
         .child(
             row()
                 .gap(space::SM)
