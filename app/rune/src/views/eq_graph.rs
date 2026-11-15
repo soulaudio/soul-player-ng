@@ -386,16 +386,22 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             }
         })
         // Wheel over the graph adjusts the nearest band's Q (curvature); Shift fines
-        // the step. Consume it so the settings page doesn't scroll.
+        // the step. Consume it so the settings page doesn't scroll. Windows delivers
+        // Shift+wheel as a horizontal delta (`dx`, `dy == 0`), so read whichever axis
+        // carries it or the fine step would always narrow one way.
         .on_wheel(move |st: &mut State, e: WheelEvent, _tx| {
             if st.eq_bands.is_empty() {
                 return false;
+            }
+            let raw = if e.dy != 0.0 { e.dy } else { e.dx };
+            if raw == 0.0 {
+                return true;
             }
             let xf = (e.x / gw.max(1.0)).clamp(0.0, 1.0);
             let i = nearest_band(&st.eq_bands, xf);
             st.eq_selected = Some(i);
             let step = if e.mods.shift { Q_STEP_FINE } else { Q_STEP };
-            let factor = if e.dy < 0.0 { step } else { 1.0 / step };
+            let factor = if raw < 0.0 { step } else { 1.0 / step };
             set_eq_band_q(st, i, st.eq_bands[i].q * factor);
             true
         });
