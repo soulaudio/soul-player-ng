@@ -239,6 +239,10 @@ struct State {
     /// starts open. Every EQ mutator takes an explicit unit index — each card passes
     /// its own position `i`.
     dsp_expanded: Vec<bool>,
+    /// Per-unit band-table expand flags, parallel to `dsp_units`. `true` = the band
+    /// list under that unit's graph is shown; `false` collapses it to just its header.
+    /// Kept in sync alongside `dsp_expanded`; defaults open.
+    eq_bands_expanded: Vec<bool>,
     /// In-flight unit-list reorder drag: `(from, to)` indices, or `None`.
     dsp_drag: Option<(usize, usize)>,
     /// In-flight EQ-graph node drag: `(unit, band, band state at press)`, so the
@@ -355,6 +359,8 @@ impl State {
         let dsp_units = config::load_dsp_chain();
         // One expand flag per unit; the first card starts open, the rest collapsed.
         let dsp_expanded: Vec<bool> = (0..dsp_units.len()).map(|i| i == 0).collect();
+        // Band tables default open within an expanded card.
+        let eq_bands_expanded: Vec<bool> = vec![true; dsp_units.len()];
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
         let locale_pref = config::load_locale();
         apply_locale(&locale_pref);
@@ -404,6 +410,7 @@ impl State {
             replaygain_preamp,
             dsp_units,
             dsp_expanded,
+            eq_bands_expanded,
             dsp_drag: None,
             eq_drag: None,
             eq_selected: None,
@@ -657,15 +664,23 @@ pub(crate) fn toggle_dsp_expanded(s: &mut State, i: usize) {
     }
 }
 
+/// Toggle whether unit `i`'s band table is expanded (within its open card).
+pub(crate) fn toggle_eq_bands_expanded(s: &mut State, i: usize) {
+    if let Some(open) = s.eq_bands_expanded.get_mut(i) {
+        *open = !*open;
+    }
+}
+
 /// Append a new EQ unit (enabled, default bands) and open its card.
 pub(crate) fn add_dsp_unit(s: &mut State) {
     s.dsp_units.push(DspUnit::Eq(EqUnit::default()));
     s.dsp_expanded.push(true);
+    s.eq_bands_expanded.push(true);
     clear_eq_editor(s);
     apply_dsp(s);
 }
 
-/// Remove EQ unit `i`, dropping its expand flag with it.
+/// Remove EQ unit `i`, dropping its expand flags with it.
 pub(crate) fn remove_dsp_unit(s: &mut State, i: usize) {
     if i >= s.dsp_units.len() {
         return;
@@ -673,6 +688,9 @@ pub(crate) fn remove_dsp_unit(s: &mut State, i: usize) {
     s.dsp_units.remove(i);
     if i < s.dsp_expanded.len() {
         s.dsp_expanded.remove(i);
+    }
+    if i < s.eq_bands_expanded.len() {
+        s.eq_bands_expanded.remove(i);
     }
     clear_eq_editor(s);
     apply_dsp(s);
@@ -699,6 +717,11 @@ pub(crate) fn reorder_dsp_units(s: &mut State, from: usize, to: usize) {
     if from < s.dsp_expanded.len() {
         let open = s.dsp_expanded.remove(from);
         s.dsp_expanded.insert(to.min(s.dsp_expanded.len()), open);
+    }
+    if from < s.eq_bands_expanded.len() {
+        let open = s.eq_bands_expanded.remove(from);
+        s.eq_bands_expanded
+            .insert(to.min(s.eq_bands_expanded.len()), open);
     }
     clear_eq_editor(s);
     apply_dsp(s);
@@ -2822,6 +2845,49 @@ mod tests {
             rt.state.dsp_expanded.len(),
             n - 1,
             "the expand flags stay parallel to the units"
+        );
+    }
+
+    /// The band table collapses within an open card: its chevron hides the band rows
+    /// while the response graph stays.
+    #[test]
+    fn the_band_table_collapses_within_a_card() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.dsp_units = vec![DspUnit::Eq(EqUnit {
+            bands: soul_player_host::default_bands().to_vec(),
+            preamp_db: 0.0,
+            enabled: true,
+        })];
+        s.dsp_expanded = vec![true];
+        s.eq_bands_expanded = vec![true];
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1200.0, 2600.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("eq-band-row-0-0").is_some(),
+            "band rows show when the table is expanded"
+        );
+        // Collapse the band table via its chevron.
+        click_key(&mut rt, "eq-bands-expand-0");
+        rt.frame(0.0);
+        assert!(
+            !rt.state.eq_bands_expanded[0],
+            "the chevron collapsed the band table"
+        );
+        assert!(
+            rt.find("eq-band-row-0-0").is_none(),
+            "band rows are hidden when collapsed"
+        );
+        assert!(
+            rt.find("eq-graph-0").is_some(),
+            "the response graph stays visible"
         );
     }
 

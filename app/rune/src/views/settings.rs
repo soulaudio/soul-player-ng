@@ -34,8 +34,8 @@ use crate::{
     remove_eq_band, reorder_dsp_units, set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp,
     set_indexing_mode, set_locale_pref, set_managed_dest, set_managed_strategy,
     set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_dsp_expanded, unit_bands,
-    unit_enabled, unit_preamp,
+    set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_dsp_expanded,
+    toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
@@ -1291,24 +1291,43 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     card.child(add_dsp_control(p))
 }
 
+/// A disclosure chevron sized for a card / section header (a 16 px `chevron-down`
+/// icon, bigger than a text glyph): points down when `expanded`, right when
+/// collapsed. Shared by the DSP card and the band-list headers.
+fn expand_chevron(
+    expanded: bool,
+    key: String,
+    p: &Palette,
+    on: impl Fn(&mut State) + 'static,
+) -> El {
+    let caret = icon(&icons::CHEVRON_DOWN, 16.0).color(p.text_secondary);
+    let caret = if expanded {
+        caret
+    } else {
+        caret.rotate(-std::f32::consts::FRAC_PI_2)
+    };
+    el().key(key)
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .px(space::XXS)
+        .center()
+        .child(caret)
+        .on_press(move |st: &mut State| on(st))
+}
+
 /// One **DSP unit card** (keyed by POSITION, never a unit id): an always-visible
-/// header — expand chevron · type label · reorder grip · enable · remove — and,
+/// header — reorder grip · expand chevron · type label · enable · remove — and,
 /// when expanded, the unit's body (preamp + response graph + band table). The body
 /// dims when the unit is disabled.
 fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let enabled = unit_enabled(s, i);
     let expanded = s.dsp_expanded.get(i).copied().unwrap_or(false);
     let dragged = s.dsp_drag.map(|(from, _)| from) == Some(i);
-    // Expand/collapse chevron (▸ collapsed, ▾ open).
-    let chevron = text(if expanded { "▾" } else { "▸" }.to_string())
-        .font(type_::LABEL)
-        .color(p.text_secondary)
-        .px(space::XXS)
-        .key(format!("dsp-expand-{i}"))
-        .role("button")
-        .focusable(true)
-        .cursor(Cursor::Pointer)
-        .on_press(move |st: &mut State| toggle_dsp_expanded(st, i));
+    // Expand/collapse chevron (points down when open, right when collapsed).
+    let chevron = expand_chevron(expanded, format!("dsp-expand-{i}"), p, move |st| {
+        toggle_dsp_expanded(st, i)
+    });
     // The unit type label (EQ is the only kind today).
     let label = text("EQ".to_string())
         .font(type_::ITEM_STRONG)
@@ -1362,9 +1381,9 @@ fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .w_full()
         .center_y()
         .gap(space::SM)
+        .child(grip)
         .child(chevron)
         .child(label)
-        .child(grip)
         .child(el().grow(1.0))
         .child(enable)
         .child(remove);
@@ -1543,8 +1562,16 @@ fn chip_btn_tx(
 /// collapse — there is no inner "Bands" toggle).
 fn eq_band_editor(unit: usize, s: &State, p: &Palette) -> El {
     let n = unit_bands(s, unit).len();
+    let bands_open = s.eq_bands_expanded.get(unit).copied().unwrap_or(true);
     let count = row()
         .center_y()
+        .gap(space::XXS)
+        .child(expand_chevron(
+            bands_open,
+            format!("eq-bands-expand-{unit}"),
+            p,
+            move |st| toggle_eq_bands_expanded(st, unit),
+        ))
         .child(text(format!("Bands ({n})")).font(type_::LABEL).color(p.fg));
     let can_add = n < soul_player_host::MAX_BANDS;
     let add = chip_btn(
@@ -1612,16 +1639,19 @@ fn eq_band_editor(unit: usize, s: &State, p: &Palette) -> El {
         .child(import)
         .child(export)
         .child(add);
-    let mut list = col().w_full().gap(space::XS);
-    for i in 0..n {
-        list = list.child(eq_band_row(unit, i, s, p));
-    }
-    col()
+    let mut editor = col()
         .key(format!("eq-editor-{unit}"))
         .w_full()
         .gap(space::SM)
-        .child(header)
-        .child(list)
+        .child(header);
+    if bands_open {
+        let mut list = col().w_full().gap(space::XS);
+        for i in 0..n {
+            list = list.child(eq_band_row(unit, i, s, p));
+        }
+        editor = editor.child(list);
+    }
+    editor
 }
 
 /// The key-slug for a band number's column (keeps the test keys stable).
