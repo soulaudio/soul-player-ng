@@ -160,20 +160,6 @@ player.pause:
   zh: '暂停'
   cs: 'Pozastavit'
   ja: '一時停止'
-player.mute:
-  en: 'Mute'
-  de: 'Stumm'
-  es: 'Silenciar'
-  zh: '静音'
-  cs: 'Ztlumit'
-  ja: 'ミュート'
-player.unmute:
-  en: 'Unmute'
-  de: 'Ton an'
-  es: 'Activar sonido'
-  zh: '取消静音'
-  cs: 'Zrušit ztlumení'
-  ja: 'ミュート解除'
 player.previous:
   en: 'Previous'
   de: 'Zurück'
@@ -380,12 +366,19 @@ settings.sources:
   cs: 'Zdroje'
   ja: 'ソース'
 settings.musicData:
-  en: 'Music Data'
-  de: 'Musikdaten'
-  es: 'Datos de música'
-  zh: '音乐数据'
-  cs: 'Hudební data'
-  ja: '音楽データ'
+  en: 'Audio Data'
+  de: 'Audiodaten'
+  es: 'Datos de audio'
+  zh: '音频数据'
+  cs: 'Audio data'
+  ja: 'オーディオデータ'
+settings.addSourceTitle:
+  en: 'Add a source'
+  de: 'Quelle hinzufügen'
+  es: 'Añadir una fuente'
+  zh: '添加来源'
+  cs: 'Přidat zdroj'
+  ja: 'ソースを追加'
 settings.musicDataDesc:
   en: 'Folders scanned into your library. Edits never interrupt playback.'
   de: 'Ordner, die in deine Bibliothek eingelesen werden. Änderungen unterbrechen nie die Wiedergabe.'
@@ -534,19 +527,33 @@ settings.addFolderDialog:
   cs: 'Přidat složku s hudbou'
   ja: '音楽フォルダを追加'
 settings.addLocalFolder:
-  en: 'Local folder…'
-  de: 'Lokaler Ordner…'
-  es: 'Carpeta local…'
-  zh: '本地文件夹…'
-  cs: 'Místní složka…'
-  ja: 'ローカルフォルダ…'
+  en: 'Local folder'
+  de: 'Lokaler Ordner'
+  es: 'Carpeta local'
+  zh: '本地文件夹'
+  cs: 'Místní složka'
+  ja: 'ローカルフォルダ'
+settings.addLocalFolderDesc:
+  en: 'Add a folder on this computer'
+  de: 'Einen Ordner auf diesem Computer hinzufügen'
+  es: 'Añade una carpeta de este equipo'
+  zh: '添加此电脑上的文件夹'
+  cs: 'Přidat složku v tomto počítači'
+  ja: 'このパソコンのフォルダを追加'
 settings.addRemoteServer:
-  en: 'Remote server…'
-  de: 'Remote-Server…'
-  es: 'Servidor remoto…'
-  zh: '远程服务器…'
-  cs: 'Vzdálený server…'
-  ja: 'リモートサーバー…'
+  en: 'Remote server'
+  de: 'Remote-Server'
+  es: 'Servidor remoto'
+  zh: '远程服务器'
+  cs: 'Vzdálený server'
+  ja: 'リモートサーバー'
+settings.addRemoteServerDesc:
+  en: 'A music server on your network'
+  de: 'Ein Musikserver in deinem Netzwerk'
+  es: 'Un servidor de música en tu red'
+  zh: '网络中的音乐服务器'
+  cs: 'Hudební server ve vaší síti'
+  ja: 'ネットワーク上の音楽サーバー'
 settings.comingSoon:
   en: 'Coming soon'
   de: 'Demnächst'
@@ -982,14 +989,6 @@ settings.signalPathDesc:
   cs: 'Retezec od dekodovani po vystup pro aktualni skladbu. Exkluzivni vystup a DSP brzy.'
   ja: '現在のトラックのデコードから出力までの経路。排他出力とDSPは近日対応。'
 
-settings.comingSoon:
-  en: 'Coming soon'
-  de: 'Demnaechst'
-  es: 'Proximamente'
-  zh: '即将推出'
-  cs: 'Jiz brzy'
-  ja: '近日対応'
-
 # Settings -> Music Data: the Managed Library card (write-path organizer). The
 # template is chosen from presets (no free-text entry — Rune's IME is pre-release).
 settings.managedLibrary:
@@ -1100,12 +1099,19 @@ settings.preset.flat:
 # Settings -> Music Data: the "Add music -> organize" apply flow (modal). The
 # "Add music…" menu entry starts it; it needs a managed destination configured.
 settings.addMusic:
-  en: 'Add music…'
-  de: 'Musik hinzufügen…'
-  es: 'Añadir música…'
-  zh: '添加音乐…'
-  cs: 'Přidat hudbu…'
-  ja: '音楽を追加…'
+  en: 'Add music'
+  de: 'Musik hinzufügen'
+  es: 'Añadir música'
+  zh: '添加音乐'
+  cs: 'Přidat hudbu'
+  ja: '音楽を追加'
+settings.addMusicDesc:
+  en: 'Copy or move files into your organized library'
+  de: 'Dateien in deine organisierte Bibliothek kopieren oder verschieben'
+  es: 'Copia o mueve archivos a tu biblioteca organizada'
+  zh: '将文件复制或移动到你的整理库'
+  cs: 'Zkopírovat nebo přesunout soubory do organizované knihovny'
+  ja: 'ファイルを整理済みライブラリにコピーまたは移動'
 settings.addMusicDialog:
   en: 'Choose a folder of music to organize'
   de: 'Musikordner zum Organisieren auswählen'
@@ -1114,12 +1120,12 @@ settings.addMusicDialog:
   cs: 'Vyberte složku s hudbou k uspořádání'
   ja: '整理する音楽フォルダを選択'
 settings.setDestinationFirst:
-  en: 'Set a destination first'
-  de: 'Zuerst ein Ziel festlegen'
-  es: 'Define primero un destino'
-  zh: '请先设置目标位置'
-  cs: 'Nejprve nastavte cíl'
-  ja: '先に保存先を設定'
+  en: 'Set up a Managed Library folder first'
+  de: 'Zuerst einen Ordner für die verwaltete Bibliothek einrichten'
+  es: 'Configura primero una carpeta de biblioteca gestionada'
+  zh: '请先设置“托管库”文件夹'
+  cs: 'Nejprve nastavte složku spravované knihovny'
+  ja: 'まず管理ライブラリのフォルダを設定してください'
 settings.scanning:
   en: 'Scanning…'
   de: 'Wird gescannt…'
