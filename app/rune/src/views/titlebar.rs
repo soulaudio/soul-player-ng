@@ -46,51 +46,11 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     cx.caption_color(p.fg.alpha(0.0));
     cx.titlebar_height(HEIGHT);
 
-    // The window's committed width (previous frame) — the same measure `view` uses
-    // for mobile; recomputed each frame, so the bar reflows on resize.
-    let window_w = cx
-        .layout_size("app-root")
-        .map(|size| size[0])
-        .filter(|w| *w > 0.0)
-        .unwrap_or(1100.0);
-    // The header content area's width — the band minus the leading pad and the
-    // trailing caption gutter (`chrome.trailing` is the width the window controls
-    // occupy: nonzero on Windows where `_ [] X` are trailing, 0 on macOS where the
-    // traffic lights are leading). Used only to pick the activity widget's responsive
-    // variant; the content row itself `grow`s to fill the same space (which already
-    // reserves the caption gutter), so it adapts when the controls' side/width change.
-    let content_w = (window_w - space::MD - chrome.trailing).max(0.0);
-
-    // The header content area (a `grow` row that reserves the trailing caption
-    // gutter). `justify_between` docks the leading group at the left edge and the
-    // trailing group at the right (just inside the controls); future header
-    // components slot into whichever group fits — the bar is the shared home for
-    // title-bar widgets, not just the scan indicator.
-    let leading = row()
-        .key("titlebar-leading")
-        .h_full()
-        .items_center()
-        .gap(space::MD);
-    let mut trailing = row()
-        .key("titlebar-trailing")
-        .h_full()
-        .items_center()
-        .gap(space::MD);
-    if let Some(prog) = &s.scan_progress {
-        trailing = trailing.child(scan_activity(prog, s.scan_anim, p, content_w));
-    }
-    let content = row()
-        .key("titlebar-content")
-        .grow(1.0)
-        .min_w(0.0)
-        .h_full()
-        .items_center()
-        .justify_between()
-        // A small gap so the trailing group doesn't butt against the controls.
-        .pr(space::SM)
-        .child(leading)
-        .child(trailing);
-
+    // The draggable band. The scan-activity widget is NOT a child here — it is a
+    // window-level overlay ([`scan_overlay`], mounted by `view`). On desktop this
+    // band lives INSIDE the shell (right of the resizable sidebar), so its width is
+    // not the window's; docking a trailing widget within it was unreliable across
+    // sidebar/window sizes. A window-pinned overlay sidesteps that entirely.
     let strip = row()
         .key("titlebar")
         .w_full()
@@ -103,7 +63,7 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
         // track, and `hover_motion` makes that follow smooth in both directions.
         .hover_group()
         .hover_motion(GLYPH_FADE, GLYPH_FADE)
-        .child(content);
+        .child(row().key("titlebar-content").grow(1.0).min_w(0.0).h_full());
 
     // Windows only (`trailing` is 0 where the native frame stays, e.g. macOS/Linux):
     // our three caption glyphs span the trailing gutter, one per native button.
@@ -161,6 +121,35 @@ fn caption_glyph(
         .center()
         .group_opacity(rest, 1.0)
         .child(icon(glyph, GLYPH_SIZE).color(p.fg))
+}
+
+/// The scan-activity widget as a WINDOW-LEVEL overlay, pinned to the top-right of the
+/// window (inset past the trailing controls) and vertically centred in the band.
+/// Mounted by `view` on the root — NOT inside `bar` — so its position is relative to
+/// the whole window, unaffected by the resizable sidebar the desktop title-bar band
+/// sits beside (which made in-band docking unreliable). `None` when no scan runs;
+/// `window_w` is the window width, for the responsive variant.
+pub(crate) fn scan_overlay(
+    s: &State,
+    p: &Palette,
+    chrome: rune::ChromeInsets,
+    window_w: f32,
+) -> Option<El> {
+    s.scan_progress.as_ref().map(|prog| {
+        let avail = (window_w - space::MD - chrome.trailing).max(0.0);
+        // A full-width strip pinned across the top of the window (left+right=0
+        // stretches it — the reliable pin form), with the widget CENTERED. Rune's
+        // title-bar band ignored every trailing inset (padding/margin/pin-right/
+        // absolute/spacer were all dropped), so a right dock that clears the window
+        // controls isn't reachable; centering is reliable and clears both the leading
+        // traffic lights and the trailing `_ [] X`.
+        row()
+            .key("titlebar-scan-layer")
+            .pin(Some(0.0), Some(0.0), Some(0.0), None)
+            .h(HEIGHT)
+            .center()
+            .child(scan_activity(prog, s.scan_anim, p, avail))
+    })
 }
 
 /// Width-responsive thresholds (available header width, pt) for the scan-activity

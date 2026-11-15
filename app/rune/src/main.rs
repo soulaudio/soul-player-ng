@@ -1392,10 +1392,19 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(dialog) = crash_overlay(s, &p) {
         overlays.push(dialog);
     }
-    if overlays.is_empty() {
+    // The scan-activity widget is a window-level overlay pinned to the top-right —
+    // NOT a child of the title-bar band, whose desktop width excludes the resizable
+    // sidebar and so docked it unreliably. Pinned to the window root, it clears the
+    // caption controls at every window/sidebar size.
+    let scan = views::titlebar::scan_overlay(s, &p, cx.chrome_insets(), window_w);
+    if overlays.is_empty() && scan.is_none() {
         shell
     } else {
-        el().w_full().h_full().child(shell).children(overlays)
+        let mut root = el().w_full().h_full().child(shell);
+        if let Some(sc) = scan {
+            root = root.child(sc);
+        }
+        root.children(overlays)
     }
 }
 
@@ -2305,10 +2314,11 @@ mod tests {
         );
     }
 
-    /// The widget docks to the trailing edge (not floating mid-bar) and stays clear of
-    /// the Windows caption controls reported via `chrome_insets().trailing`.
+    /// The scan widget (a window-level overlay) stays clear of the window controls at
+    /// BOTH ends — the trailing Windows caption buttons and the leading edge — so it
+    /// never overlaps them at any window size.
     #[test]
-    fn activity_widget_docks_to_the_trailing_edge() {
+    fn activity_widget_clears_the_window_controls() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -2325,20 +2335,16 @@ mod tests {
         insets.height = views::titlebar::HEIGHT;
         rt.set_chrome_insets(insets);
         rt.frame(0.0);
-        rt.frame(0.0); // settle window_w → the responsive/dock geometry
+        rt.frame(0.0); // settle window_w → the overlay geometry
         let (scan, _) = rt
             .presented("titlebar-scan")
             .expect("the activity widget renders");
         let right = scan[0] + scan[2];
         assert!(
             right <= 1100.0 - 138.0 + 0.5,
-            "widget clears the caption controls, right={right}"
+            "clears the trailing caption controls, right={right}"
         );
-        assert!(
-            scan[0] > 1100.0 / 2.0,
-            "widget docks to the trailing half, not mid-bar, x={}",
-            scan[0]
-        );
+        assert!(scan[0] >= -0.5, "clears the leading edge, left={}", scan[0]);
     }
 
     #[test]
