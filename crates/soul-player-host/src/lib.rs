@@ -576,6 +576,35 @@ impl PlayerHandle {
         self.rescan()
     }
 
+    /// Seed the configured-source set from `(path, enabled)` pairs **without
+    /// scanning** — for a fast first paint. The window can render the Sources list
+    /// immediately ([`sources`](Self::sources) falls back to a count-0 listing of the
+    /// configured set before any scan), while the actual library scan runs off the
+    /// main thread afterwards via [`rescan_sources`](Self::rescan_sources). Pairs are
+    /// deduped preserving order (first occurrence of a path wins). Touches only the
+    /// configured set — not the library, the caches, or the watcher.
+    pub fn configure_sources(&self, entries: &[(PathBuf, bool)]) {
+        let mut set: Vec<FolderConfig> = Vec::with_capacity(entries.len());
+        for (p, en) in entries {
+            if !set.iter().any(|f| &f.path == p) {
+                set.push(FolderConfig {
+                    path: p.clone(),
+                    enabled: *en,
+                });
+            }
+        }
+        *self.inner.folders.lock().expect("folders mutex") = set;
+    }
+
+    /// Rescan the already-configured source set and return the refreshed
+    /// [`WatchUpdate`] — the public entry the app's deferred startup scan (and a
+    /// manual Rescan) runs off the main thread. Same as the internal post-mutation
+    /// rescan but without changing the configured set. Emits `TracksRemoved` for any
+    /// deletions and re-arms the watcher if it is running.
+    pub fn rescan_sources(&self) -> anyhow::Result<WatchUpdate> {
+        self.rescan()
+    }
+
     /// Seed the per-source scan caches (as persisted by a previous run), keyed by
     /// root path, **before** [`set_sources`](Self::set_sources) — so the first scan
     /// at startup is a warm diff (only new/changed files re-read) instead of a cold
@@ -1421,6 +1450,46 @@ mod tests {
             Some(2),
             "seeded cache survives the rescan and stays warm"
         );
+    }
+
+    #[test]
+    fn configure_sources_seeds_the_set_without_scanning() {
+        let a = folder_with("cfg_a", &["a1.wav", "a2.wav"]);
+        let aroot = a.path().to_path_buf();
+        let h = PlayerHandle::offline();
+
+        // Configure WITHOUT scanning: the source is listed (available, count 0) so the
+        // window can paint the Sources list immediately, but no library is built yet.
+        h.configure_sources(&[(aroot.clone(), true)]);
+        let srcs = h.sources();
+        assert_eq!(srcs.len(), 1, "the configured source is listed at once");
+        assert_eq!(srcs[0].path, aroot);
+        assert!(srcs[0].enabled && srcs[0].available);
+        assert_eq!(srcs[0].track_count, 0, "no scan yet → count 0 (loading)");
+        assert!(
+            h.views().is_empty(),
+            "configure_sources does NOT scan — the library stays empty until rescan"
+        );
+        assert_eq!(h.watched_folders(), vec![aroot.clone()]);
+
+        // The deferred (off-thread) scan then folds in the real tracks + counts.
+        let up = h.rescan_sources().expect("rescan");
+        assert_eq!(up.views.len(), 2, "the deferred scan folds the tracks in");
+        assert_eq!(up.sources.len(), 1);
+        assert_eq!(up.sources[0].track_count, 2);
+    }
+
+    #[test]
+    fn configure_sources_dedups_by_path_preserving_order() {
+        let a = folder_with("cfg_dedup", &["a.wav"]);
+        let aroot = a.path().to_path_buf();
+        let h = PlayerHandle::offline();
+        // Duplicate path (second disabled) must not create a second entry; first wins.
+        h.configure_sources(&[(aroot.clone(), true), (aroot.clone(), false)]);
+        assert_eq!(h.watched_folders(), vec![aroot.clone()]);
+        let srcs = h.sources();
+        assert_eq!(srcs.len(), 1);
+        assert!(srcs[0].enabled, "first occurrence wins the enabled flag");
     }
 
     #[test]
