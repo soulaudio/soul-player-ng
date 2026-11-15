@@ -1725,7 +1725,15 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
         )
-        .child(num_field(i, NumField::Q, format!("{:.2}", band.q), "", 44.0, s, p));
+        .child(num_field(
+            i,
+            NumField::Q,
+            format!("{:.2}", band.q),
+            "",
+            44.0,
+            s,
+            p,
+        ));
     let (en_fill, en_fg) = if band.enabled {
         (p.primary.alpha(0.16), p.primary)
     } else {
