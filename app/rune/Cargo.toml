@@ -54,6 +54,8 @@ dirs = "6"
 # dir, (de)serialised via serde — replaces the earlier scattered plain-text files.
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+# Portable JSON for exported/imported audio profiles (the format the future DAP reads).
+serde_json = "1"
 # Compact binary (de)serialisation for the per-source scan cache (warm startup).
 # TOML can't carry the cache's path-keyed map + u128 stamps; postcard is a lean,
 # pure-Rust, no-FFI format whose MIT/Apache-2.0 licence clears the policy gate.
@@ -85,6 +87,27 @@ os_info = "3"
 # we pull from Rune via `WindowHandle::with_raw_handle` using `raw-window-handle`.
 souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
 raw-window-handle = "0.6"
+# Decode the bundled app icon (PNG) to RGBA for the system-tray icon.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# Enumerate connected monitors (stateless `DisplayInfo::all()`, no event loop) to
+# clamp a restored window on-screen when a display was unplugged / resized. Its
+# Windows backend uses `windows 0.62` (our exact pin — no version split) and it's
+# Apache-2.0. Rune owns the only winit EventLoop, so we can't use winit's own
+# `available_monitors()`; this queries the OS display list independently.
+display-info = "0.5"
+
+# Native toast notifications (update-available, now-playing-while-backgrounded).
+# We call the WinRT API directly on the `windows` crate souvlaki already compiled
+# for SMTC — no `notify-rust`/`rune-notify`, so no second `windows` version. The
+# explicit top-level `windows = "0.62"` also PINS the resolver: gpu-allocator has
+# a wide `>=0.53,<=0.62` range and cpal/sysinfo pull 0.54, so without this upper
+# anchor the resolver can feed gpu-allocator 0.54 and break wgpu-hal (its
+# `ID3D12Heap` must match wgpu-hal's). All WinRT + registry calls are safe (no
+# `unsafe`). `windows-registry` (0.62-family split crates, not the big `windows`)
+# writes the unpackaged-app AUMID under HKCU so Windows renders our toasts.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["UI_Notifications", "Data_Xml_Dom", "Foundation"] }
+windows-registry = "0.6"
 
 # cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
 # installer today (SmartScreen nags); the signed updater + OS code-signing +

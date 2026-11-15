@@ -21,8 +21,9 @@ use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
-    Band, BandKind, DspChain, DspShared, EqUnit, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS,
-    Q_MAX, Q_MIN, band_magnitude_db, default_bands, eq_magnitude_db, format_autoeq, parse_autoeq,
+    Band, BandKind, DspChain, DspKind, DspShared, DspUnit, EqUnit, FREQ_MAX, FREQ_MIN,
+    GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN, band_magnitude_db, default_bands, eq_magnitude_db,
+    format_autoeq, parse_autoeq,
 };
 pub use sink::SinkMode;
 /// The write-path "managed library" organizer (stateless `plan`/`apply` into a
@@ -761,19 +762,30 @@ impl PlayerHandle {
         }
     }
 
-    /// Set the whole DSP chain (its ordered EQ units). Like
+    /// Set the whole DSP chain (its ordered, typed DSP units). Like
     /// [`set_replay_gain`](Self::set_replay_gain), it applies to the LIVE stream at
     /// its next block — the device sink reads the shared chain each block — and is
     /// remembered for the next spawn, without ever spawning an actor just to set it.
-    /// An empty / disabled / all-flat chain is a bit-exact passthrough. Each unit's
-    /// bands are truncated to [`MAX_BANDS`](eq::MAX_BANDS).
-    pub fn set_dsp_chain(&self, mut units: Vec<eq::EqUnit>) {
+    /// An empty / disabled / all-flat chain is a bit-exact passthrough. Each EQ
+    /// unit's bands are truncated to [`MAX_BANDS`](eq::MAX_BANDS).
+    pub fn set_dsp_chain(&self, mut units: Vec<eq::DspUnit>) {
         for unit in &mut units {
-            unit.bands.truncate(eq::MAX_BANDS);
+            if let Some(eq) = unit.as_eq_mut() {
+                eq.bands.truncate(eq::MAX_BANDS);
+            }
         }
         let mut chain = self.inner.dsp.lock().expect("dsp chain mutex");
         chain.units = units;
         chain.generation = chain.generation.wrapping_add(1);
+    }
+
+    /// The live DSP chain the device sink is applying (a clone of the shared state).
+    /// Symmetric with [`set_dsp_chain`](Self::set_dsp_chain) — lets callers and tests
+    /// read back exactly what the engine will apply at its next block, including the
+    /// `generation` counter that tells the sink to re-design.
+    #[must_use]
+    pub fn dsp_chain(&self) -> eq::DspChain {
+        self.inner.dsp.lock().expect("dsp chain mutex").clone()
     }
 
     /// The latest spectrum-analyzer snapshot `(seq, columns)`: `seq` bumps each FFT

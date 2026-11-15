@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use soul_player_host::{
-    Band, BandKind, EqUnit, MAX_BANDS, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, default_bands,
+    Band, BandKind, DspUnit, EqUnit, MAX_BANDS, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache,
+    default_bands,
 };
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
@@ -107,10 +108,12 @@ struct Config {
     managed_library_template: String,
     /// Managed-library file strategy: `"copy"` (keep the source) or `"move"`.
     managed_library_strategy: String,
-    /// The DSP chain: an ordered list of EQ units the signal flows through. A
-    /// future "audio profile" can bundle this whole list. Empty + legacy EQ fields
-    /// present → migrated to a single unit on load.
-    eq_units: Vec<EqUnitCfg>,
+    /// The DSP chain: an ordered list of typed DSP units the signal flows through
+    /// (EQ is the only kind today). A future "audio profile" can bundle this whole
+    /// list. Empty + legacy EQ fields present → migrated to a single unit on load.
+    /// Kept under the on-disk key `eq_units` so configs from before the typed-unit
+    /// migration load unchanged.
+    eq_units: Vec<DspUnitCfg>,
     /// Legacy single-EQ fields (pre-chain), kept for one-time migration into
     /// `eq_units`. New saves leave them at defaults.
     eq_enabled: bool,
@@ -119,45 +122,239 @@ struct Config {
     /// Library "indexing speed": `auto` | `max` | `gentle`. Controls how much
     /// parallelism the scanner uses; `auto` follows live CPU load.
     indexing_mode: String,
+    /// Saved audio profiles — each a named snapshot of the whole DSP chain. The
+    /// *active* profile's chain is the live one (and is mirrored into `eq_units`
+    /// above for backward-compat). Empty in configs written before profiles existed
+    /// → migrated to one `"Default"` profile from `eq_units` on load.
+    profiles: Vec<ProfileCfg>,
+    /// Index of the active profile within `profiles` (clamped on load).
+    active_profile: usize,
+    /// Last window geometry, restored on the next launch. Absent on a fresh
+    /// install → the window opens at its default placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window: Option<WindowGeometry>,
 }
 
-/// One persisted EQ unit: its enable, preamp and bands. TOML-friendly mirror of
-/// [`soul_player_host::EqUnit`].
+/// One persisted audio profile: a name plus the whole DSP chain. The TOML-friendly
+/// mirror of a live [`Profile`]; reuses [`DspUnitCfg`] so there's no new chain
+/// serialization. Also the shape of an exported `.json` profile file.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct EqUnitCfg {
+struct ProfileCfg {
+    name: String,
+    chain: Vec<DspUnitCfg>,
+}
+
+/// A live audio profile: a name plus a decoded DSP chain. Owned here (not in the app)
+/// because this module already holds the [`DspUnit`] ⇄ [`DspUnitCfg`] conversion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Profile {
+    pub name: String,
+    pub chain: Vec<DspUnit>,
+}
+
+impl ProfileCfg {
+    /// Decode to a live [`Profile`], skipping unknown-kind units (forward-compat).
+    fn to_profile(&self) -> Profile {
+        Profile {
+            name: self.name.clone(),
+            chain: self.chain.iter().filter_map(DspUnitCfg::to_unit).collect(),
+        }
+    }
+
+    /// Encode a live [`Profile`] for persistence / export.
+    fn from_profile(p: &Profile) -> Self {
+        Self {
+            name: p.name.clone(),
+            chain: p.chain.iter().map(DspUnitCfg::from).collect(),
+        }
+    }
+}
+
+/// A persisted window rectangle (outer position + content size) and maximized
+/// state, so the app reopens where and how the user left it. Physical desktop
+/// pixels, matching Rune's `WindowPlacement` / `WindowOptions`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+/// Decide the geometry to persist from the current window placement plus whatever
+/// was saved before. Pure so it can be unit-tested without a live window.
+///
+/// - Minimized: return `None` — a minimized rect would poison the saved "normal"
+///   geometry, and there's nothing useful to restore to.
+/// - Maximized: keep the previously-saved *normal* rect (un-maximize returns
+///   there) and only flip the `maximized` flag; if nothing was saved yet, fall
+///   back to the current rect.
+/// - Normal: store the current rect with `maximized = false`.
+fn geometry_to_save(
+    pos: (i32, i32),
+    size: (u32, u32),
+    maximized: bool,
+    minimized: bool,
+    prev: Option<WindowGeometry>,
+) -> Option<WindowGeometry> {
+    if minimized {
+        return None;
+    }
+    let current = WindowGeometry {
+        x: pos.0,
+        y: pos.1,
+        w: size.0,
+        h: size.1,
+        maximized: false,
+    };
+    if maximized {
+        Some(WindowGeometry {
+            maximized: true,
+            ..prev.unwrap_or(current)
+        })
+    } else {
+        Some(current)
+    }
+}
+
+/// A connected display's bounds in physical desktop pixels (origins may be
+/// negative on multi-monitor layouts). `primary` marks the fallback display used
+/// when a restored window overlaps none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayBounds {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub primary: bool,
+}
+
+/// Adjust a restored window rect so it stays visible on a currently-connected
+/// display. Picks the display with the largest overlap and clamps the window
+/// fully inside it; if the saved rect overlaps NONE (e.g. an external monitor was
+/// unplugged, or the resolution shrank), it is centered on the primary display.
+/// With no display info (enumeration failed / headless), the geometry is returned
+/// unchanged — better to trust the saved position than to force-move the window.
+fn clamp_to_displays(geom: WindowGeometry, displays: &[DisplayBounds]) -> WindowGeometry {
+    if displays.is_empty() {
+        return geom;
+    }
+    // The display the window mostly sits on; ties resolve to any max (all equal).
+    let best = displays
+        .iter()
+        .max_by_key(|d| overlap_area(&geom, d))
+        .expect("displays is non-empty");
+    if overlap_area(&geom, best) > 0 {
+        fit_into(geom, best)
+    } else {
+        // Overlaps nothing (unplugged monitor / resolution change) → recenter.
+        let primary = displays.iter().find(|d| d.primary).unwrap_or(&displays[0]);
+        center_on(geom, primary)
+    }
+}
+
+/// Area (physical px²) the window rect and a display share; 0 if disjoint. Widened
+/// to i64 so a 4K-scale rect can't overflow.
+fn overlap_area(g: &WindowGeometry, d: &DisplayBounds) -> i64 {
+    let (gx, gy) = (i64::from(g.x), i64::from(g.y));
+    let (dx, dy) = (i64::from(d.x), i64::from(d.y));
+    let ix = (gx + i64::from(g.w)).min(dx + i64::from(d.w)) - gx.max(dx);
+    let iy = (gy + i64::from(g.h)).min(dy + i64::from(d.h)) - gy.max(dy);
+    ix.max(0) * iy.max(0)
+}
+
+/// Shrink the window to the display if larger, then slide it fully inside.
+fn fit_into(g: WindowGeometry, d: &DisplayBounds) -> WindowGeometry {
+    let (w, h) = (g.w.min(d.w), g.h.min(d.h));
+    WindowGeometry {
+        x: g.x.clamp(d.x, d.x + (d.w - w) as i32),
+        y: g.y.clamp(d.y, d.y + (d.h - h) as i32),
+        w,
+        h,
+        maximized: g.maximized,
+    }
+}
+
+/// Center the window on the display (shrinking to fit first).
+fn center_on(g: WindowGeometry, d: &DisplayBounds) -> WindowGeometry {
+    let (w, h) = (g.w.min(d.w), g.h.min(d.h));
+    WindowGeometry {
+        x: d.x + ((d.w - w) / 2) as i32,
+        y: d.y + ((d.h - h) / 2) as i32,
+        w,
+        h,
+        maximized: g.maximized,
+    }
+}
+
+/// The stable on-disk tag for an EQ unit's `kind`. A config written before the DSP
+/// chain grew beyond EQ has no `kind` field, so it defaults to this (= still EQ).
+fn default_dsp_kind() -> String {
+    "eq".into()
+}
+
+/// One persisted DSP-chain unit: a `kind` tag plus the EQ fields (enable, preamp,
+/// bands). TOML-friendly mirror of [`soul_player_host::DspUnit`]. The `kind` tag
+/// makes the chain forward-compatible: today only `"eq"` is known (and is the
+/// default for an untagged legacy entry), while an unknown future kind round-trips
+/// on disk but is skipped when building the live chain.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct DspUnitCfg {
+    #[serde(default = "default_dsp_kind")]
+    kind: String,
+    /// The user-given unit name, if any. Skipped when `None` so an unnamed unit
+    /// doesn't bloat the file, and defaulted so old configs (without the field)
+    /// load as unnamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     enabled: bool,
     preamp: f32,
     bands: Vec<BandCfg>,
 }
 
-impl From<&EqUnit> for EqUnitCfg {
-    fn from(u: &EqUnit) -> Self {
-        Self {
-            enabled: u.enabled,
-            preamp: u.preamp_db,
-            bands: u.bands.iter().map(BandCfg::from).collect(),
+impl From<&DspUnit> for DspUnitCfg {
+    fn from(u: &DspUnit) -> Self {
+        match u {
+            DspUnit::Eq(eq) => Self {
+                kind: "eq".into(),
+                name: u.name().map(String::from),
+                enabled: eq.enabled,
+                preamp: eq.preamp_db,
+                bands: eq.bands.iter().map(BandCfg::from).collect(),
+            },
         }
     }
 }
 
-impl EqUnitCfg {
-    fn to_unit(&self) -> EqUnit {
-        let fallback = Band {
-            kind: BandKind::Peaking,
-            freq: 1000.0,
-            gain_db: 0.0,
-            q: 1.0,
-            enabled: true,
-        };
-        EqUnit {
-            bands: self
-                .bands
-                .iter()
-                .take(MAX_BANDS)
-                .map(|b| b.to_band(&fallback))
-                .collect(),
-            preamp_db: self.preamp,
-            enabled: self.enabled,
+impl DspUnitCfg {
+    /// Build a host [`DspUnit`] from this persisted entry, or `None` for an unknown
+    /// `kind` (so a forward-compatible config's future units are skipped rather than
+    /// misread). A `"eq"` — or untagged legacy — entry maps to a [`DspUnit::Eq`].
+    fn to_unit(&self) -> Option<DspUnit> {
+        match self.kind.trim() {
+            "eq" => {
+                let fallback = Band {
+                    kind: BandKind::Peaking,
+                    freq: 1000.0,
+                    gain_db: 0.0,
+                    q: 1.0,
+                    enabled: true,
+                };
+                Some(DspUnit::Eq(EqUnit {
+                    bands: self
+                        .bands
+                        .iter()
+                        .take(MAX_BANDS)
+                        .map(|b| b.to_band(&fallback))
+                        .collect(),
+                    preamp_db: self.preamp,
+                    enabled: self.enabled,
+                    name: self.name.clone(),
+                }))
+            }
+            _ => None,
         }
     }
 }
@@ -240,6 +437,9 @@ impl Default for Config {
             eq_preamp: 0.0,
             eq_bands: Vec::new(),
             indexing_mode: "auto".into(),
+            profiles: Vec::new(),
+            active_profile: 0,
+            window: None,
         }
     }
 }
@@ -383,6 +583,54 @@ pub fn save_indexing_mode(mode: &str) {
     let mut cfg = load();
     cfg.indexing_mode = mode.to_string();
     save(&cfg);
+}
+
+/// The saved window geometry to restore on launch, or `None` on a fresh install.
+pub fn load_window_geometry() -> Option<WindowGeometry> {
+    load().window
+}
+
+/// Enumerate connected displays in physical-pixel desktop coordinates, for the
+/// off-screen clamp. Stateless (`DisplayInfo::all()` — no winit event loop). Empty
+/// on failure (the clamp then trusts the saved geometry) and in tests (hardware is
+/// never touched; [`clamp_to_displays`] is unit-tested directly).
+#[cfg(not(test))]
+fn displays() -> Vec<DisplayBounds> {
+    display_info::DisplayInfo::all()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| DisplayBounds {
+            x: d.x,
+            y: d.y,
+            w: d.width,
+            h: d.height,
+            primary: d.is_primary,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn displays() -> Vec<DisplayBounds> {
+    Vec::new()
+}
+
+/// The window geometry to restore on launch: the saved rect, clamped so it's
+/// visible on a currently-connected display (recovering from an unplugged monitor
+/// or a resolution change). `None` on a fresh install.
+pub fn restore_window_geometry() -> Option<WindowGeometry> {
+    Some(clamp_to_displays(load_window_geometry()?, &displays()))
+}
+
+/// Persist the window geometry derived from the current placement: pass the outer
+/// position, content size, and maximized/minimized flags (e.g. from Rune's
+/// `WindowPlacement`). A minimized window is skipped so it never overwrites the
+/// stored normal rect.
+pub fn save_window_geometry(pos: (i32, i32), size: (u32, u32), maximized: bool, minimized: bool) {
+    let mut cfg = load();
+    if let Some(g) = geometry_to_save(pos, size, maximized, minimized, cfg.window) {
+        cfg.window = Some(g);
+        save(&cfg);
+    }
 }
 
 /// Restore the sidebar geometry `(width, collapsed)`; width is clamped to the
@@ -557,12 +805,17 @@ pub fn save_replaygain(mode: ReplayGainMode, preamp_db: f32) {
     }
 }
 
-/// The saved DSP chain (ordered EQ units), defaulting to a single off/flat unit.
-/// Migrates the pre-chain single-EQ fields into one unit when `eq_units` is absent.
-pub fn load_dsp_chain() -> Vec<EqUnit> {
+/// The saved DSP chain (ordered, typed DSP units), defaulting to a single off/flat
+/// EQ unit. Unknown-kind entries (a config from a newer build) are skipped. Migrates
+/// the pre-chain single-EQ fields into one EQ unit when `eq_units` is absent.
+pub fn load_dsp_chain() -> Vec<DspUnit> {
     let cfg = load();
     if !cfg.eq_units.is_empty() {
-        return cfg.eq_units.iter().map(EqUnitCfg::to_unit).collect();
+        return cfg
+            .eq_units
+            .iter()
+            .filter_map(DspUnitCfg::to_unit)
+            .collect();
     }
     // Migrate a legacy single EQ, or fall back to one default (off) unit.
     let fallback = Band {
@@ -581,17 +834,71 @@ pub fn load_dsp_chain() -> Vec<EqUnit> {
             .map(|b| b.to_band(&fallback))
             .collect()
     };
-    vec![EqUnit {
+    vec![DspUnit::Eq(EqUnit {
         bands,
         preamp_db: cfg.eq_preamp,
         enabled: cfg.eq_enabled,
-    }]
+        name: None,
+    })]
 }
 
-/// Persist the DSP chain (load-modify-write the one config file).
-pub fn save_dsp_chain(units: &[EqUnit]) {
+/// Persist just the legacy `eq_units` chain (load-modify-write). Superseded in
+/// production by [`save_profiles`] (which mirrors the active chain into `eq_units`);
+/// kept as a test helper for the legacy-chain migration path that [`load_dsp_chain`]
+/// still reads.
+#[cfg(test)]
+pub fn save_dsp_chain(units: &[DspUnit]) {
     let mut cfg = load();
-    cfg.eq_units = units.iter().map(EqUnitCfg::from).collect();
+    cfg.eq_units = units.iter().map(DspUnitCfg::from).collect();
+    save(&cfg);
+}
+
+/// The saved audio profiles and the active index. Always returns **at least one**
+/// profile: a config written before profiles existed (no `profiles`, just `eq_units`)
+/// migrates to a single `"Default"` profile from the existing chain. The active index
+/// is clamped into range.
+pub fn load_profiles() -> (Vec<Profile>, usize) {
+    let cfg = load();
+    if !cfg.profiles.is_empty() {
+        let profiles: Vec<Profile> = cfg.profiles.iter().map(ProfileCfg::to_profile).collect();
+        let active = cfg.active_profile.min(profiles.len() - 1);
+        return (profiles, active);
+    }
+    // Migrate: one "Default" profile from the legacy chain (handles `eq_units` + the
+    // pre-chain single-EQ fields, and falls back to one default unit).
+    (
+        vec![Profile {
+            name: "Default".into(),
+            chain: load_dsp_chain(),
+        }],
+        0,
+    )
+}
+
+/// Serialize a profile to the portable JSON used by exported `.json` files (and read by
+/// the future DAP): `{ "name": ..., "chain": [ <tagged DspUnitCfg> ] }`.
+pub fn profile_to_json(p: &Profile) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(&ProfileCfg::from_profile(p))
+}
+
+/// Parse a profile from the portable JSON. Unknown-kind units are skipped (so a file
+/// from a newer build still imports what this build understands).
+pub fn profile_from_json(text: &str) -> Result<Profile, serde_json::Error> {
+    Ok(serde_json::from_str::<ProfileCfg>(text)?.to_profile())
+}
+
+/// Persist the audio profiles + active index. Also mirrors the active profile's chain
+/// into the legacy `eq_units` key, so a rollback to a pre-profiles build still loads
+/// the right live chain.
+pub fn save_profiles(profiles: &[Profile], active: usize) {
+    let mut cfg = load();
+    let active = active.min(profiles.len().saturating_sub(1));
+    cfg.profiles = profiles.iter().map(ProfileCfg::from_profile).collect();
+    cfg.active_profile = active;
+    cfg.eq_units = profiles
+        .get(active)
+        .map(|p| p.chain.iter().map(DspUnitCfg::from).collect())
+        .unwrap_or_default();
     save(&cfg);
 }
 
@@ -850,7 +1157,9 @@ mod tests {
             managed_library_path: "/music/managed".into(),
             managed_library_template: "flat".into(),
             managed_library_strategy: "move".into(),
-            eq_units: vec![EqUnitCfg {
+            eq_units: vec![DspUnitCfg {
+                kind: "eq".into(),
+                name: Some("my-name".into()),
                 enabled: true,
                 preamp: -2.0,
                 bands: vec![BandCfg {
@@ -871,11 +1180,30 @@ mod tests {
                 enabled: true,
             }],
             indexing_mode: "gentle".into(),
+            profiles: vec![ProfileCfg {
+                name: "Studio".into(),
+                chain: vec![DspUnitCfg {
+                    kind: "eq".into(),
+                    name: None,
+                    enabled: true,
+                    preamp: 1.0,
+                    bands: Vec::new(),
+                }],
+            }],
+            active_profile: 0,
+            window: Some(WindowGeometry {
+                x: 100,
+                y: 80,
+                w: 1280,
+                h: 800,
+                maximized: true,
+            }),
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
         assert_eq!(back.sources, cfg.sources);
         assert_eq!(back.theme, "dark");
+        assert_eq!(back.window, cfg.window);
         assert_eq!(back.sidebar_width, 300.0);
         assert!(back.sidebar_collapsed);
         assert_eq!(back.locale, "de");
@@ -887,6 +1215,122 @@ mod tests {
         assert_eq!(back.managed_library_path, "/music/managed");
         assert_eq!(back.managed_library_template, "flat");
         assert_eq!(back.managed_library_strategy, "move");
+        assert_eq!(back.profiles, cfg.profiles);
+        assert_eq!(back.active_profile, 0);
+    }
+
+    #[test]
+    fn profiles_roundtrip_migrate_default_and_mirror_the_active_chain() {
+        let _g = use_test_config_dir();
+        // No profiles saved yet, but a legacy chain exists → one "Default" profile
+        // carrying that chain.
+        save_dsp_chain(&[DspUnit::Eq(EqUnit {
+            preamp_db: -4.0,
+            ..EqUnit::default()
+        })]);
+        let (migrated, active) = load_profiles();
+        assert_eq!(active, 0);
+        assert_eq!(migrated.len(), 1, "a lone Default profile is synthesized");
+        assert_eq!(migrated[0].name, "Default");
+        assert_eq!(migrated[0].chain[0].as_eq().unwrap().preamp_db, -4.0);
+
+        // Two explicit profiles with active = 1 reload with their names, chains and
+        // the active index intact.
+        let studio = Profile {
+            name: "Studio".into(),
+            chain: vec![DspUnit::Eq(EqUnit {
+                preamp_db: -2.0,
+                ..EqUnit::default()
+            })],
+        };
+        let bass = Profile {
+            name: "Bass".into(),
+            chain: vec![DspUnit::Eq(EqUnit {
+                preamp_db: 3.0,
+                ..EqUnit::default()
+            })],
+        };
+        save_profiles(&[studio.clone(), bass.clone()], 1);
+        let (back, active) = load_profiles();
+        assert_eq!(active, 1);
+        assert_eq!(back, vec![studio.clone(), bass.clone()]);
+
+        // The active profile's chain mirrors into the legacy `eq_units`, so an older
+        // build (load_dsp_chain) still loads the right live chain.
+        assert_eq!(
+            load_dsp_chain()[0].as_eq().unwrap().preamp_db,
+            3.0,
+            "eq_units mirrors the active profile"
+        );
+
+        // An out-of-range active index clamps to the last profile.
+        save_profiles(std::slice::from_ref(&studio), 9);
+        assert_eq!(load_profiles().1, 0, "the active index clamps into range");
+    }
+
+    #[test]
+    fn dsp_chain_roundtrips_and_an_untagged_entry_loads_as_eq() {
+        let _g = use_test_config_dir();
+        // A DspUnit::Eq survives the full save → load round-trip through the shared
+        // config file (bands, preamp and enable all reload).
+        let unit = DspUnit::Eq(EqUnit {
+            bands: vec![Band {
+                kind: BandKind::LowShelf,
+                freq: 90.0,
+                gain_db: 4.5,
+                q: 0.7,
+                enabled: true,
+            }],
+            preamp_db: -2.0,
+            enabled: true,
+            name: Some("my-name".into()),
+        });
+        save_dsp_chain(std::slice::from_ref(&unit));
+        let back = load_dsp_chain();
+        assert_eq!(back.len(), 1, "the saved unit reloads");
+        assert_eq!(
+            back[0].name(),
+            Some("my-name"),
+            "the user-given name reloads"
+        );
+        let eq = back[0].as_eq().expect("round-trips as an EQ unit");
+        assert!(eq.enabled);
+        assert_eq!(eq.preamp_db, -2.0);
+        assert_eq!(eq.bands.len(), 1);
+        assert_eq!(eq.bands[0].kind, BandKind::LowShelf);
+
+        // An unnamed unit stays unnamed (the field is skipped on disk, defaulted on
+        // load) rather than reloading as an empty string.
+        let unnamed = DspUnit::Eq(EqUnit::default());
+        save_dsp_chain(std::slice::from_ref(&unnamed));
+        assert_eq!(
+            load_dsp_chain()[0].name(),
+            None,
+            "an unnamed unit reloads as unnamed"
+        );
+
+        // An OLD entry written before the `kind` tag existed (no `kind` field) still
+        // deserializes — defaulting to kind "eq" — and maps to a DspUnit::Eq.
+        let untagged: DspUnitCfg =
+            toml::from_str("enabled = true\npreamp = -1.5\nbands = []\n").unwrap();
+        assert_eq!(
+            untagged.kind, "eq",
+            "an untagged entry defaults to the EQ kind"
+        );
+        let as_unit = untagged
+            .to_unit()
+            .expect("an untagged (eq) entry builds a unit");
+        assert!(matches!(as_unit, DspUnit::Eq(_)), "untagged → DspUnit::Eq");
+
+        // An unknown future kind is skipped (forward-compatible), not misread as EQ.
+        let unknown = DspUnitCfg {
+            kind: "compressor".into(),
+            name: None,
+            enabled: true,
+            preamp: 0.0,
+            bands: Vec::new(),
+        };
+        assert!(unknown.to_unit().is_none(), "an unknown kind is skipped");
     }
 
     #[test]
@@ -960,6 +1404,209 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(wide.sidebar_width.clamp(MIN_WIDTH, MAX_WIDTH), MAX_WIDTH);
+    }
+
+    #[test]
+    fn geometry_normal_window_stores_current_rect() {
+        let g = geometry_to_save((50, 60), (1000, 700), false, false, None);
+        assert_eq!(
+            g,
+            Some(WindowGeometry {
+                x: 50,
+                y: 60,
+                w: 1000,
+                h: 700,
+                maximized: false
+            })
+        );
+    }
+
+    #[test]
+    fn geometry_minimized_is_not_saved() {
+        let prev = Some(WindowGeometry {
+            x: 1,
+            y: 2,
+            w: 800,
+            h: 600,
+            maximized: false,
+        });
+        assert_eq!(geometry_to_save((0, 0), (0, 0), false, true, prev), None);
+    }
+
+    #[test]
+    fn geometry_maximized_keeps_previous_normal_rect() {
+        // When quitting maximized, the stored rect must stay the last *normal* one
+        // so un-maximize returns there — only the flag flips.
+        let prev = Some(WindowGeometry {
+            x: 50,
+            y: 60,
+            w: 1000,
+            h: 700,
+            maximized: false,
+        });
+        let g = geometry_to_save((0, 0), (3840, 2160), true, false, prev);
+        assert_eq!(
+            g,
+            Some(WindowGeometry {
+                x: 50,
+                y: 60,
+                w: 1000,
+                h: 700,
+                maximized: true
+            })
+        );
+    }
+
+    #[test]
+    fn geometry_maximized_with_no_history_falls_back_to_current() {
+        let g = geometry_to_save((0, 0), (3840, 2160), true, false, None);
+        assert_eq!(
+            g,
+            Some(WindowGeometry {
+                x: 0,
+                y: 0,
+                w: 3840,
+                h: 2160,
+                maximized: true
+            })
+        );
+    }
+
+    // A primary 1920x1080 at origin and a secondary 2560x1440 to its right.
+    fn two_monitors() -> Vec<DisplayBounds> {
+        vec![
+            DisplayBounds {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                primary: true,
+            },
+            DisplayBounds {
+                x: 1920,
+                y: 0,
+                w: 2560,
+                h: 1440,
+                primary: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn clamp_window_fully_on_a_monitor_is_unchanged() {
+        let g = WindowGeometry {
+            x: 100,
+            y: 100,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        assert_eq!(clamp_to_displays(g, &two_monitors()), g);
+    }
+
+    #[test]
+    fn clamp_window_on_the_secondary_monitor_stays_there() {
+        // Fully inside the secondary (1920..4480, 0..1440) → untouched.
+        let g = WindowGeometry {
+            x: 2000,
+            y: 100,
+            w: 1000,
+            h: 800,
+            maximized: false,
+        };
+        assert_eq!(clamp_to_displays(g, &two_monitors()), g);
+    }
+
+    #[test]
+    fn clamp_window_hanging_off_an_edge_is_pulled_fully_onto_its_monitor() {
+        // Mostly on the primary but spilling past its right edge (1600+800 > 1920).
+        let g = WindowGeometry {
+            x: 1600,
+            y: 100,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        let only_primary = &two_monitors()[..1];
+        assert_eq!(
+            clamp_to_displays(g, only_primary),
+            WindowGeometry {
+                x: 1120,
+                y: 100,
+                w: 800,
+                h: 600,
+                maximized: false
+            }
+        );
+    }
+
+    #[test]
+    fn clamp_window_on_a_disconnected_monitor_centers_on_primary() {
+        // Saved far away (an unplugged external) → overlaps nothing → centered on
+        // the primary: x = (1920-800)/2 = 560, y = (1080-600)/2 = 240.
+        let g = WindowGeometry {
+            x: 5000,
+            y: 5000,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        assert_eq!(
+            clamp_to_displays(g, &two_monitors()),
+            WindowGeometry {
+                x: 560,
+                y: 240,
+                w: 800,
+                h: 600,
+                maximized: false
+            }
+        );
+    }
+
+    #[test]
+    fn clamp_window_larger_than_its_monitor_shrinks_to_fit() {
+        let g = WindowGeometry {
+            x: 0,
+            y: 0,
+            w: 3000,
+            h: 2000,
+            maximized: false,
+        };
+        let only_primary = &two_monitors()[..1];
+        assert_eq!(
+            clamp_to_displays(g, only_primary),
+            WindowGeometry {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                maximized: false
+            }
+        );
+    }
+
+    #[test]
+    fn clamp_with_no_display_info_trusts_the_saved_geometry() {
+        let g = WindowGeometry {
+            x: -4000,
+            y: -4000,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        assert_eq!(clamp_to_displays(g, &[]), g);
+    }
+
+    #[test]
+    fn clamp_preserves_the_maximized_flag() {
+        let g = WindowGeometry {
+            x: 5000,
+            y: 5000,
+            w: 800,
+            h: 600,
+            maximized: true,
+        };
+        assert!(clamp_to_displays(g, &two_monitors()).maximized);
     }
 
     #[test]
@@ -1183,5 +1830,65 @@ mod tests {
         assert_eq!(load_indexing_mode(), "gentle");
         save_indexing_mode("max");
         assert_eq!(load_indexing_mode(), "max");
+    }
+
+    #[test]
+    fn window_geometry_persists_through_the_config_file() {
+        let _g = use_test_config_dir();
+        // A normal window persists its exact rect.
+        save_window_geometry((120, 90), (1200, 760), false, false);
+        assert_eq!(
+            load_window_geometry(),
+            Some(WindowGeometry {
+                x: 120,
+                y: 90,
+                w: 1200,
+                h: 760,
+                maximized: false
+            })
+        );
+        // Quitting maximized keeps the stored normal rect, only flipping the flag.
+        save_window_geometry((0, 0), (3840, 2160), true, false);
+        assert_eq!(
+            load_window_geometry(),
+            Some(WindowGeometry {
+                x: 120,
+                y: 90,
+                w: 1200,
+                h: 760,
+                maximized: true
+            })
+        );
+        // A minimized window must not overwrite the saved rect.
+        save_window_geometry((7, 7), (50, 50), false, true);
+        assert_eq!(
+            load_window_geometry(),
+            Some(WindowGeometry {
+                x: 120,
+                y: 90,
+                w: 1200,
+                h: 760,
+                maximized: true
+            })
+        );
+    }
+
+    #[test]
+    fn restore_window_geometry_returns_the_saved_rect() {
+        let _g = use_test_config_dir();
+        save_window_geometry((42, 24), (900, 600), false, false);
+        // In a test build `displays()` is empty, so the clamp is a pass-through and
+        // restore returns exactly what was saved (the clamp itself is covered by the
+        // `clamp_*` cases above). This exercises the load → clamp restore wiring.
+        assert_eq!(
+            restore_window_geometry(),
+            Some(WindowGeometry {
+                x: 42,
+                y: 24,
+                w: 900,
+                h: 600,
+                maximized: false
+            })
+        );
     }
 }

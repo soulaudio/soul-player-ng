@@ -22,7 +22,10 @@ use soul_player_host::{
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
-use crate::{State, add_eq_band, remove_eq_band, set_eq_band, set_eq_band_enabled, set_eq_band_q};
+use crate::{
+    State, add_eq_band, remove_eq_band, set_eq_band, set_eq_band_enabled, set_eq_band_q,
+    unit_bands, unit_preamp,
+};
 
 /// Graph height, in points.
 const GRAPH_H: f32 = 190.0;
@@ -256,20 +259,21 @@ fn graph_shape(
     sh.stroke(curve, 2.0, p.primary)
 }
 
-/// A slim readout bar shown ABOVE the graph (so it never covers the top bands):
-/// the selected band's shape · frequency · gain · Q and a per-band bypass toggle,
-/// or a hint when nothing is selected. Fixed height, so selecting doesn't jump the
-/// layout.
-fn readout_bar(s: &State, p: &Palette) -> El {
+/// A slim readout bar shown ABOVE unit `unit`'s graph (so it never covers the top
+/// bands): the selected band's shape · frequency · gain · Q and a per-band bypass
+/// toggle, or a hint when nothing in THIS unit is selected. Fixed height, so
+/// selecting doesn't jump the layout.
+fn readout_bar(unit: usize, s: &State, p: &Palette) -> El {
     let bar = row()
-        .key("eq-readout")
+        .key(format!("eq-readout-{unit}"))
         .w_full()
         .h(20.0)
         .center_y()
         .gap(space::SM);
-    let Some((i, band)) = s
+    let Some((u, i, band)) = s
         .eq_selected
-        .and_then(|i| s.eq_bands.get(i).map(|b| (i, *b)))
+        .filter(|(u, _)| *u == unit)
+        .and_then(|(u, i)| unit_bands(s, u).get(i).map(|b| (u, i, *b)))
     else {
         return bar.child(
             text("Drag a node — or add a band — to shape the sound".to_string())
@@ -299,11 +303,11 @@ fn readout_bar(s: &State, p: &Palette) -> El {
         .px(space::SM)
         .py(space::XXS)
         .radius(radius::SM)
-        .key("eq-band-bypass")
+        .key(format!("eq-band-bypass-{unit}"))
         .role("button")
         .focusable(true)
         .cursor(Cursor::Pointer)
-        .on_press(move |st: &mut State| set_eq_band_enabled(st, i, !enabled));
+        .on_press(move |st: &mut State| set_eq_band_enabled(st, u, i, !enabled));
     let chip = if enabled {
         chip.fill(p.primary.alpha(0.16)).color(p.primary)
     } else {
@@ -317,22 +321,23 @@ fn readout_bar(s: &State, p: &Palette) -> El {
 /// The response-curve graph: the `canvas`, axis labels, and a draggable handle per
 /// band. All gestures live on the container; `cx` gives its laid-out size so the
 /// handles sit on the curve.
-pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
-    let [gw, gh] = cx.layout_size("eq-graph").unwrap_or([FALLBACK_W, GRAPH_H]);
+pub(crate) fn eq_graph(unit: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let graph_key = format!("eq-graph-{unit}");
+    let [gw, gh] = cx.layout_size(&graph_key).unwrap_or([FALLBACK_W, GRAPH_H]);
+    // This card's graph operates on unit `unit`; its gestures capture that index
+    // (Copy) and pass it to the unit-indexed mutators.
+    let bands = unit_bands(s, unit);
+    let preamp = unit_preamp(s, unit);
+    // The selected band index, but only when the selection belongs to this unit.
+    let selected = s.eq_selected.and_then(|(u, i)| (u == unit).then_some(i));
     let mut graph = col()
-        .key("eq-graph")
+        .key(graph_key)
         .w_full()
         .h(GRAPH_H)
         .child(
-            canvas(graph_shape(
-                &s.eq_bands,
-                s.eq_preamp,
-                s.eq_selected,
-                &s.spectrum,
-                p,
-            ))
-            .w_full()
-            .h_full(),
+            canvas(graph_shape(bands, preamp, selected, &s.spectrum, p))
+                .w_full()
+                .h_full(),
         )
         // Drag a handle: x = frequency, y = gain (or Q for a gain-less shape).
         // Double-click a handle removes its band; double-click an empty spot adds a
@@ -343,9 +348,10 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             match d.phase {
                 Phase::Down => {
                     // Is the press on an existing handle?
-                    let grabbed = (!st.eq_bands.is_empty()).then(|| {
-                        let i = nearest_band(&st.eq_bands, xf);
-                        let band = st.eq_bands[i];
+                    let grabbed = (!unit_bands(st, unit).is_empty()).then(|| {
+                        let bands = unit_bands(st, unit);
+                        let i = nearest_band(bands, xf);
+                        let band = bands[i];
                         let dx = x_frac(band.freq) * gw - d.x;
                         let dy = node_yf(&band) * gh - d.y;
                         let near = (dx * dx + dy * dy).sqrt() <= GRAB_PX;
@@ -356,22 +362,23 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                         // a bell at the cursor and start dragging it.
                         match grabbed {
                             Some((i, _, true)) => {
-                                remove_eq_band(st, i);
+                                remove_eq_band(st, unit, i);
                                 st.eq_drag = None;
                             }
                             _ => {
-                                if let Some(i) = add_eq_band(st, freq_at(xf), db_at(yf)) {
-                                    st.eq_drag = Some((i, st.eq_bands[i]));
+                                if let Some(i) = add_eq_band(st, unit, freq_at(xf), db_at(yf)) {
+                                    let b = unit_bands(st, unit)[i];
+                                    st.eq_drag = Some((unit, i, b));
                                 }
                             }
                         }
                     } else if let Some((i, band, _)) = grabbed {
-                        st.eq_selected = Some(i);
-                        st.eq_drag = Some((i, band));
+                        st.eq_selected = Some((unit, i));
+                        st.eq_drag = Some((unit, i, band));
                     }
                 }
                 Phase::Move => {
-                    if let Some((i, start)) = st.eq_drag {
+                    if let Some((u, i, start)) = st.eq_drag {
                         let mut b = start;
                         b.freq = freq_at(xf);
                         if b.kind.uses_gain() {
@@ -379,7 +386,7 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                         } else {
                             b.q = q_at(yf);
                         }
-                        set_eq_band(st, i, b);
+                        set_eq_band(st, u, i, b);
                     }
                 }
                 Phase::Up => st.eq_drag = None,
@@ -390,7 +397,7 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         // Shift+wheel as a horizontal delta (`dx`, `dy == 0`), so read whichever axis
         // carries it or the fine step would always narrow one way.
         .on_wheel(move |st: &mut State, e: WheelEvent, _tx| {
-            if st.eq_bands.is_empty() {
+            if unit_bands(st, unit).is_empty() {
                 return false;
             }
             let raw = if e.dy != 0.0 { e.dy } else { e.dx };
@@ -398,11 +405,12 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 return true;
             }
             let xf = (e.x / gw.max(1.0)).clamp(0.0, 1.0);
-            let i = nearest_band(&st.eq_bands, xf);
-            st.eq_selected = Some(i);
+            let i = nearest_band(unit_bands(st, unit), xf);
+            st.eq_selected = Some((unit, i));
             let step = if e.mods.shift { Q_STEP_FINE } else { Q_STEP };
             let factor = if raw < 0.0 { step } else { 1.0 / step };
-            set_eq_band_q(st, i, st.eq_bands[i].q * factor);
+            let q = unit_bands(st, unit)[i].q * factor;
+            set_eq_band_q(st, unit, i, q);
             true
         });
     // Axis tick labels, under the nodes: frequency along the bottom, dB up the left.
@@ -420,35 +428,34 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         );
     }
     // Band handles (visual only — the container owns the gestures).
-    for i in 0..s.eq_bands.len() {
-        let band = s.eq_bands[i];
-        let selected = s.eq_selected == Some(i);
+    for (i, &band) in bands.iter().enumerate() {
+        let is_selected = selected == Some(i);
         let node_x = x_frac(band.freq).clamp(0.0, 1.0) * gw - NODE_D / 2.0;
         let node_y = node_yf(&band) * gh - NODE_D / 2.0;
         let color = if !band.enabled {
             p.muted
-        } else if selected {
+        } else if is_selected {
             p.accent
         } else {
             p.primary
         };
         let node = el()
-            .key(format!("eq-node-{i}"))
+            .key(format!("eq-node-{unit}-{i}"))
             .absolute(node_x, node_y)
             .size(NODE_D, NODE_D)
             .radius(NODE_D / 2.0)
             .fill(color)
             // A ring in the page colour so the handle reads clearly over the curve.
-            .border_sides([if selected { 2.5 } else { 2.0 }; 4], p.bg)
+            .border_sides([if is_selected { 2.5 } else { 2.0 }; 4], p.bg)
             .cursor(Cursor::Pointer);
         graph = graph.child(node);
     }
     // The readout sits ABOVE the plot so it never blocks the top bands.
     col()
-        .key("eq-graph-wrap")
+        .key(format!("eq-graph-wrap-{unit}"))
         .w_full()
         .gap(space::XS)
-        .child(readout_bar(s, p))
+        .child(readout_bar(unit, s, p))
         .child(graph)
 }
 

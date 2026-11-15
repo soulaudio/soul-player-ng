@@ -12,11 +12,11 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Side, Tx,
-    WheelEvent, col, el, icon, row, text, text_input,
+    Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Shadow,
+    Side, Tx, WheelEvent, col, el, icon, row, text, text_input,
 };
 use soul_player_host::organize;
-use soul_player_host::{BandKind, GAIN_LIMIT_DB, ReplayGainMode};
+use soul_player_host::{BandKind, DspUnit, GAIN_LIMIT_DB, ReplayGainMode};
 
 use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
@@ -28,14 +28,16 @@ use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
     NumField, OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band,
-    apply_and_save, apply_watch, close_dropdown, commit_eq_edit, cycle_eq_band_kind, eq_edit_start,
-    eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, import_eq,
-    organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
-    remove_eq_band, reorder_dsp_units, scan_in_background, select_dsp_unit, set_dsp_unit_enabled,
-    set_eq_band_enabled, set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref,
-    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
-    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
-    set_theme_pref, toggle_eq_editor,
+    apply_and_save, apply_watch, close_dropdown, commit_dsp_rename, commit_eq_edit,
+    commit_profile_rename, cycle_eq_band_kind, delete_profile, duplicate_profile, eq_edit_start,
+    eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, export_profile,
+    import_eq, import_profile, new_profile, organize_begin, organize_confirm, organize_dismiss,
+    organize_ready, remove_dsp_unit, remove_eq_band, reorder_dsp_units, scan_in_background,
+    set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref,
+    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, start_dsp_rename,
+    start_profile_rename, switch_profile, toggle_dsp_expanded, toggle_eq_bands_expanded, unit_bands,
+    unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
@@ -1177,10 +1179,15 @@ fn stage_header(
 /// A flow arrow between two stage cards — a centered down-chevron showing the
 /// signal moving from one card into the next.
 fn pipeline_arrow(p: &Palette) -> El {
+    // A vertical "wire" running card-to-card (the column around it has gap 0, so the
+    // stubs meet both cards' edges) with a flow chevron riding on it — the signal
+    // visibly travels from one stage into the next.
     col()
         .w_full()
-        .align(Align::Center)
-        .child(icon(&icons::CHEVRON_DOWN, 20.0).color(p.primary.alpha(0.8)))
+        .items_center()
+        .child(el().w(2.0).h(10.0).fill(p.primary.alpha(0.3)))
+        .child(icon(&icons::CHEVRON_DOWN, 14.0).color(p.primary.alpha(0.75)))
+        .child(el().w(2.0).h(10.0).fill(p.primary.alpha(0.3)))
 }
 
 /// A "soon" chip for a not-yet-built stage.
@@ -1245,10 +1252,11 @@ fn audio_pipeline(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     } else {
         p.primary
     };
-    col()
-        .key("settings-content")
-        .gap(space::SM)
+    // The signal-path stages, flush (gap 0) so each `pipeline_arrow` wire visibly
+    // bridges one card into the next.
+    let pipeline = col()
         .w_full()
+        .gap(0.0)
         .child(readout_card(
             "sp-stage-source",
             &icons::MUSIC,
@@ -1279,7 +1287,26 @@ fn audio_pipeline(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             t!("player.signalPath.exclusive").to_string(),
             t!("settings.comingSoon").to_string(),
             p,
-        ))
+        ));
+    // Audio profiles belong to the whole page, not the DSP card, so they ride a bar
+    // pinned to the top of the audio pipeline — switch/manage profiles while scrolled
+    // anywhere down the chain. `fill(p.bg)` hides cards scrolling under it; a hairline
+    // `stuck_shadow` separates it from the content only once it's actually stuck.
+    let profiles = profile_bar(s, p)
+        .py(space::SM)
+        .fill(p.bg)
+        .sticky_top(0.0)
+        .stuck_shadow(Shadow {
+            y: 0.5,
+            color: p.border,
+            ..Default::default()
+        });
+    col()
+        .key("settings-content")
+        .w_full()
+        .gap(space::MD)
+        .child(profiles)
+        .child(pipeline)
 }
 
 /// Map a 0..1 slider position onto the ±[`GAIN_LIMIT_DB`] dB range, rounded to
@@ -1294,139 +1321,305 @@ fn db_to_slider(db: f32) -> f32 {
     ((db + GAIN_LIMIT_DB) / (2.0 * GAIN_LIMIT_DB)).clamp(0.0, 1.0)
 }
 
-/// The **DSP / EQ** stage: a fully parametric equalizer. An enable toggle in the
-/// header, a preamp slider for headroom, then the response-curve graph. When the
-/// EQ is off the body is dimmed and only the On/Off toggle stays lit.
-/// The quality dot goes accent when the EQ is actively shaping the signal.
-fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
-    let on = s.eq_enabled;
-    let shaping = on && (s.eq_preamp.abs() > 0.05 || s.eq_bands.iter().any(|b| b.affects()));
-    // Header enable toggle (reuses the signal-path On/Off labels).
-    let toggle = {
-        let label = if on {
-            t!("player.signalPath.on")
-        } else {
-            t!("player.signalPath.off")
-        };
-        let chip = text(label.to_string())
-            .font(type_::LABEL)
+/// The profile switcher's dropdown key (its open state + panel anchor).
+const PROFILE_PICKER: &str = "profile-picker";
+/// The inline profile-rename text field's key (distinct from the Rename button's
+/// `profile-rename`, so the two never collide while renaming).
+const PROFILE_RENAME: &str = "profile-rename-field";
+
+/// The `(id, label)` choices for the profile switcher dropdown — one per saved
+/// profile, keyed by index so picking one calls `switch_profile`.
+fn profile_options(s: &State) -> Vec<(String, String)> {
+    s.profiles
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (i.to_string(), p.name.clone()))
+        .collect()
+}
+
+/// A small square icon button for the profile bar. Disabled = greyed, not focusable,
+/// no handler (used for Delete when only one profile remains). `label` is the
+/// accessible name / tooltip (already localized).
+fn profile_icon_btn(
+    key: &str,
+    glyph: &'static Icon,
+    label: String,
+    enabled: bool,
+    p: &Palette,
+    on: impl Fn(&mut State) + 'static,
+) -> El {
+    let tint = if enabled {
+        p.text_secondary
+    } else {
+        p.text_secondary.alpha(0.35)
+    };
+    let btn = el()
+        .key(key.to_string())
+        .role("button")
+        .label(label)
+        .focusable(enabled)
+        .size(28.0, 28.0)
+        .center()
+        .radius(radius::SM)
+        .child(icon(glyph, 16.0).color(tint));
+    if enabled {
+        btn.cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(0.06))
+            .on_press(move |st: &mut State| on(st))
+    } else {
+        btn
+    }
+}
+
+/// Like [`profile_icon_btn`] but the handler gets the transaction (to open a file
+/// dialog for import / export).
+fn profile_icon_btn_tx(
+    key: &str,
+    glyph: &'static Icon,
+    label: String,
+    p: &Palette,
+    on: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .size(28.0, 28.0)
+        .center()
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(0.06))
+        .child(icon(glyph, 16.0).color(p.text_secondary))
+        .on_press_tx(move |st: &mut State, tx: &mut Tx| on(st, tx))
+}
+
+/// The profile bar at the top of the DSP card: the switcher (a themed dropdown, or an
+/// inline text field while renaming) on the left, and New / Duplicate / Rename /
+/// Delete | Import / Export icon buttons on the right. Delete is disabled when only one
+/// profile remains (there must always be at least one).
+fn profile_bar(s: &State, p: &Palette) -> El {
+    let switcher: El = if s.profile_rename.is_some() {
+        text_input(&s.profile_rename_buf, type_::ITEM_STRONG)
+            .key(PROFILE_RENAME)
+            .single_line()
+            .grow(1.0)
             .px(space::SM)
             .py(space::XXS)
             .radius(radius::SM)
-            .key("eq-enable")
+            .fill(p.primary.alpha(0.16))
+            .color(p.fg)
+            .on_edit(|st: &mut State| &mut st.profile_rename_buf)
+            .on_submit(|st: &mut State, _tx| commit_profile_rename(st))
+    } else {
+        let name = s
+            .profiles
+            .get(s.active_profile)
+            .map(|pr| pr.name.clone())
+            .unwrap_or_default();
+        dropdown::trigger(PROFILE_PICKER, name, p).grow(1.0)
+    };
+    let can_delete = s.profiles.len() > 1;
+    row()
+        .key("profile-bar")
+        .w_full()
+        .center_y()
+        .gap(space::XS)
+        .child(switcher)
+        .child(profile_icon_btn(
+            "profile-new",
+            &icons::PLUS,
+            t!("settings.profileNew").to_string(),
+            true,
+            p,
+            new_profile,
+        ))
+        .child(profile_icon_btn(
+            "profile-duplicate",
+            &icons::COPY,
+            t!("settings.profileDuplicate").to_string(),
+            true,
+            p,
+            duplicate_profile,
+        ))
+        .child(profile_icon_btn(
+            "profile-rename",
+            &icons::PENCIL,
+            t!("settings.profileRename").to_string(),
+            true,
+            p,
+            start_profile_rename,
+        ))
+        .child(profile_icon_btn(
+            "profile-delete",
+            &icons::TRASH,
+            t!("settings.profileDelete").to_string(),
+            can_delete,
+            p,
+            delete_profile,
+        ))
+        // A hairline divider between manage and import/export.
+        .child(el().w(1.0).h(16.0).radius(0.5).fill(p.border))
+        .child(profile_icon_btn_tx(
+            "profile-import",
+            &icons::DOWNLOAD,
+            t!("settings.profileImport").to_string(),
+            p,
+            |_st, tx| {
+                tx.open_file(
+                    FileDialogOptions {
+                        title: t!("settings.profileImport").to_string(),
+                        ..Default::default()
+                    }
+                    .filter("Audio profile (*.json)", &["json"]),
+                    move |s: &mut State, result, _tx| {
+                        if let Ok(Some(path)) = result {
+                            import_profile(s, &path);
+                        }
+                    },
+                );
+            },
+        ))
+        .child(profile_icon_btn_tx(
+            "profile-export",
+            &icons::UPLOAD,
+            t!("settings.profileExport").to_string(),
+            p,
+            |_st, tx| {
+                tx.save_file(
+                    FileDialogOptions {
+                        title: t!("settings.profileExport").to_string(),
+                        file_name: Some("profile.json".into()),
+                        ..Default::default()
+                    }
+                    .filter("Audio profile (*.json)", &["json"]),
+                    move |s: &mut State, result, _tx| {
+                        if let Ok(Some(path)) = result {
+                            export_profile(s, &path);
+                        }
+                    },
+                );
+            },
+        ))
+}
+
+/// The **DSP chain** stage: an ordered list of expandable DSP unit cards (EQ is
+/// the only kind today), each flowing into the next, plus an "+ Add DSP" control.
+/// There is no master toggle — every unit card owns its own enable. The stage dot
+/// goes accent when ANY enabled unit is actively shaping the signal.
+fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let shaping = (0..s.dsp_units.len()).any(|i| {
+        unit_enabled(s, i)
+            && (unit_preamp(s, i).abs() > 0.05 || unit_bands(s, i).iter().any(|b| b.affects()))
+    });
+    let mut card = card("sp-stage-dsp", p).child(stage_header(
+        if shaping { p.accent } else { p.primary },
+        &icons::SETTINGS,
+        t!("player.signalPath.dsp").to_string(),
+        None,
+        // No master toggle — each unit card has its own.
+        None,
+        false,
+        p,
+    ));
+    // One expandable unit card per position, in processing order; a drop line marks
+    // the GAP the dragged card will land in. Moving a card DOWN (to > from) it lands
+    // *after* `to`, so the line sits before `to + 1` (or at the very end); moving it
+    // UP it lands before `to`. (Drawing the line before `to` in both directions put
+    // it on the wrong side when dragging downward.)
+    let line_slot = s.dsp_drag.and_then(|(from, to)| match to.cmp(&from) {
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(to + 1),
+        std::cmp::Ordering::Less => Some(to),
+    });
+    let drop_line = |p: &Palette| {
+        el().key("dsp-drop")
+            .w_full()
+            .h(2.0)
+            .radius(1.0)
+            .fill(p.accent)
+    };
+    for i in 0..s.dsp_units.len() {
+        if line_slot == Some(i) {
+            card = card.child(drop_line(p));
+        }
+        card = card.child(dsp_card(i, s, p, cx));
+    }
+    if line_slot == Some(s.dsp_units.len()) {
+        card = card.child(drop_line(p));
+    }
+    card.child(add_dsp_control(p))
+}
+
+/// A disclosure chevron sized for a card / section header (a 16 px `chevron-down`
+/// icon, bigger than a text glyph): points down when `expanded`, right when
+/// collapsed. Shared by the DSP card and the band-list headers.
+fn expand_chevron(
+    expanded: bool,
+    key: String,
+    p: &Palette,
+    on: impl Fn(&mut State) + 'static,
+) -> El {
+    let caret = icon(&icons::CHEVRON_DOWN, 16.0).color(p.text_secondary);
+    let caret = if expanded {
+        caret
+    } else {
+        caret.rotate(-std::f32::consts::FRAC_PI_2)
+    };
+    el().key(key)
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .px(space::XXS)
+        .center()
+        .child(caret)
+        .on_press(move |st: &mut State| on(st))
+}
+
+/// One **DSP unit card** (keyed by POSITION, never a unit id): an always-visible
+/// header — reorder grip · expand chevron · type label · enable · remove — and,
+/// when expanded, the unit's body (preamp + response graph + band table). The body
+/// dims when the unit is disabled.
+fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let enabled = unit_enabled(s, i);
+    let expanded = s.dsp_expanded.get(i).copied().unwrap_or(false);
+    let dragged = s.dsp_drag.map(|(from, _)| from) == Some(i);
+    // Expand/collapse chevron (points down when open, right when collapsed).
+    let chevron = expand_chevron(expanded, format!("dsp-expand-{i}"), p, move |st| {
+        toggle_dsp_expanded(st, i)
+    });
+    // The unit title: "<name> (EQ)" when the user has named it, else just its type
+    // ("EQ"). Double-click it to rename the unit; while renaming it becomes an inline
+    // text field bound to the shared rename buffer (mirrors the number editor).
+    let name_key = format!("dsp-name-{i}");
+    let label: El = if s.dsp_rename == Some(i) {
+        text_input(&s.dsp_rename_buf, type_::ITEM_STRONG)
+            .key(name_key)
+            .single_line()
+            .min_w(96.0)
+            .px(space::XXS)
+            .radius(radius::SM)
+            .fill(p.primary.alpha(0.16))
+            .color(p.fg)
+            .on_edit(|st: &mut State| &mut st.dsp_rename_buf)
+            .on_submit(|st: &mut State, _tx| commit_dsp_rename(st))
+    } else {
+        let label_text = match s.dsp_units.get(i).and_then(DspUnit::name) {
+            Some(n) => format!("{n} (EQ)"),
+            None => "EQ".to_string(),
+        };
+        text(label_text)
+            .font(type_::ITEM_STRONG)
+            .color(if enabled { p.fg } else { p.text_secondary })
+            .key(name_key)
             .role("button")
             .focusable(true)
             .cursor(Cursor::Pointer)
-            .on_press(move |st: &mut State| set_eq_enabled(st, !on));
-        if on {
-            chip.fill(p.primary.alpha(0.16)).color(p.primary)
-        } else {
-            chip.fill(p.muted).color(p.text_secondary)
-        }
+            .on_double_press(move |st: &mut State| start_dsp_rename(st, i))
     };
-    // Preamp slider (same ± range as a band; commits live).
-    let preamp = s.eq_preamp;
-    let apply_preamp = |st: &mut State, v: f32| set_eq_preamp(st, slider_to_db(v));
-    let preamp_row = col()
-        .key("eq-preamp-row")
-        .w_full()
-        .gap(space::XS)
-        .child(
-            row()
-                .w_full()
-                .center_y()
-                .child(
-                    text(t!("settings.preamp").to_string())
-                        .color(p.text_secondary)
-                        .grow(1.0)
-                        .shrink(),
-                )
-                .child(text(format!("{preamp:+.1} dB")).color(p.text_secondary)),
-        )
-        .child(row().w_full().child(slider(
-            "eq-preamp",
-            db_to_slider(preamp),
-            s.dragging_slider.as_deref() == Some("eq-preamp"),
-            cx,
-            p,
-            apply_preamp,
-            apply_preamp,
-        )));
-    // The card body (preamp + parametric response-curve graph). Dimmed when the EQ
-    // is off, so only the header's On/Off toggle stays lit.
-    let body = col()
-        .key("eq-body")
-        .w_full()
-        .gap(space::MD)
-        .child(preamp_row)
-        .child(crate::views::eq_graph::eq_graph(s, p, cx))
-        .child(eq_band_editor(s, p));
-    let body = if on { body } else { body.opacity(fx::DISABLED) };
-    // The reorderable list of EQ units (the DSP chain) sits above the active unit's
-    // editor. The header toggle + editor operate on the active (open) unit.
-    let has_units = !s.dsp_units.is_empty();
-    let card = card("sp-stage-dsp", p)
-        .child(stage_header(
-            if shaping { p.accent } else { p.primary },
-            &icons::SETTINGS,
-            t!("player.signalPath.dsp").to_string(),
-            None,
-            has_units.then_some(toggle),
-            false,
-            p,
-        ))
-        .child(dsp_unit_list(s, p));
-    if has_units { card.child(body) } else { card }
-}
-
-/// Approximate height of one unit row (points) — maps a reorder drag's vertical
-/// travel to a target slot, à la the queue.
-const DSP_ROW_H: f32 = 34.0;
-
-/// Where a dragged unit lands: its index plus one slot per [`DSP_ROW_H`] of travel.
-fn dsp_drop_index(from: usize, dy: f32, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    let steps = (dy / DSP_ROW_H).round() as i64;
-    (from as i64 + steps).clamp(0, len as i64 - 1) as usize
-}
-
-/// The DSP chain as a reorderable list of EQ-unit rows + an "Add EQ" button.
-fn dsp_unit_list(s: &State, p: &Palette) -> El {
-    let n = s.dsp_units.len();
-    let target = s.dsp_drag.map(|(_, to)| to);
-    let dragging_from = s.dsp_drag.map(|(from, _)| from);
-    let mut list = col().key("dsp-units").w_full().gap(space::XXS);
-    for i in 0..n {
-        // A drop line marks where a dragged unit will land.
-        if target == Some(i) && dragging_from != Some(i) {
-            list = list.child(
-                el().key("dsp-drop")
-                    .w_full()
-                    .h(2.0)
-                    .radius(1.0)
-                    .fill(p.accent),
-            );
-        }
-        list = list.child(dsp_unit_row(i, s, p, dragging_from == Some(i)));
-    }
-    let add = chip_btn(
-        "dsp-add-unit".into(),
-        "+ Add EQ".into(),
-        p.primary.alpha(0.16),
-        p.primary,
-        add_dsp_unit,
-    );
-    list.child(row().w_full().child(add))
-}
-
-/// One unit row: grip (drag-reorder) · "EQ n" · enable · remove. Clicking the row
-/// makes it the active (open) unit.
-fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
-    let unit = &s.dsp_units[i];
-    let active = i == s.dsp_active;
-    let on = unit.enabled;
+    // Drag-reorder grip. Cards vary wildly in height (an expanded card is many times
+    // a collapsed one), so a fixed row-height → slot mapping lands way off. Instead
+    // snap the drop target to whichever card the pointer is actually over, via
+    // `Tx::element_at_in` — exact regardless of card heights.
     let grip = el()
         .key(format!("dsp-grip-{i}"))
         .role("button")
@@ -1436,13 +1629,22 @@ fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
         .cursor(Cursor::Pointer)
         .child(icon(&icons::GRIP, 12.0).color(p.text_secondary.alpha(0.6)))
         .on_drag(
-            move |st: &mut State, d: &mut rune::Drag, _tx| match d.phase {
+            move |st: &mut State, d: &mut rune::Drag, tx: &mut Tx| match d.phase {
                 rune::Phase::Down => st.dsp_drag = Some((i, i)),
                 rune::Phase::Move => {
-                    if let Some((from, _)) = st.dsp_drag {
-                        let to = dsp_drop_index(from, d.dy, st.dsp_units.len());
+                    let [px, py] = d.window_point();
+                    tx.element_at_in("sp-stage-dsp", px, py, |st: &mut State, picked, _tx| {
+                        let Some((from, cur)) = st.dsp_drag else {
+                            return;
+                        };
+                        // Snap to the card under the pointer; keep the current
+                        // target when the pointer is off the cards (gaps/edges).
+                        let to = picked
+                            .as_ref()
+                            .and_then(dsp_card_index_from_pick)
+                            .unwrap_or(cur);
                         st.dsp_drag = Some((from, to));
-                    }
+                    });
                 }
                 rune::Phase::Up => {
                     if let Some((from, to)) = st.dsp_drag.take() {
@@ -1451,17 +1653,18 @@ fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
                 }
             },
         );
-    let (en_fill, en_fg) = if on {
+    // Per-unit enable chip (the old header On/Off styling).
+    let (en_fill, en_fg) = if enabled {
         (p.primary.alpha(0.16), p.primary)
     } else {
         (p.muted, p.text_secondary)
     };
     let enable = chip_btn(
         format!("dsp-en-{i}"),
-        if on { "On" } else { "Off" }.into(),
+        if enabled { "On" } else { "Off" }.into(),
         en_fill,
         en_fg,
-        move |st| set_dsp_unit_enabled(st, i, !on),
+        move |st| set_dsp_unit_enabled(st, i, !enabled),
     );
     let remove = chip_btn(
         format!("dsp-rm-{i}"),
@@ -1470,35 +1673,138 @@ fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
         p.text_secondary,
         move |st| remove_dsp_unit(st, i),
     );
-    // The clickable "select" label (content-width, a sibling of grip/enable/remove
-    // — a row-wide or grow button would shadow the child chips' hit areas).
-    let select = text(format!("EQ {}", i + 1))
-        .font(type_::ITEM_STRONG)
-        .py(space::XS)
-        .color(if active { p.fg } else { p.text_secondary })
-        .key(format!("dsp-unit-{i}"))
-        .role("button")
-        .focusable(true)
-        .cursor(Cursor::Pointer)
-        .on_press(move |st: &mut State| select_dsp_unit(st, i));
-    let r = row()
-        .key(format!("dsp-unit-row-{i}"))
+    let header = row()
         .w_full()
         .center_y()
         .gap(space::SM)
-        .pr(space::SM)
-        .radius(radius::SM)
-        .fill(if active {
-            p.primary.alpha(0.12)
-        } else {
-            p.card
-        })
         .child(grip)
-        .child(select)
+        .child(chevron)
+        .child(label)
         .child(el().grow(1.0))
         .child(enable)
         .child(remove);
-    if dragged { r.opacity(0.4) } else { r }
+    let mut unit_card = col()
+        .key(format!("dsp-card-{i}"))
+        .w_full()
+        .gap(space::SM)
+        // A bordered inset panel on the page surface, so each unit reads as its own
+        // card within the DSP stage card.
+        .fill(p.bg)
+        .radius(radius::MD)
+        .border_sides([1.0; 4], p.border)
+        .padding(space::MD)
+        .child(header);
+    if expanded {
+        // Preamp slider (same ± range as a band; commits live), keyed per unit.
+        let preamp = unit_preamp(s, i);
+        let apply_preamp = move |st: &mut State, v: f32| set_eq_preamp(st, i, slider_to_db(v));
+        let slider_key = format!("eq-preamp-{i}");
+        let dragging = s.dragging_slider.as_deref() == Some(slider_key.as_str());
+        let preamp_row = col()
+            .key(format!("eq-preamp-row-{i}"))
+            .w_full()
+            .gap(space::XS)
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .child(
+                        text(t!("settings.preamp").to_string())
+                            .color(p.text_secondary)
+                            .grow(1.0)
+                            .shrink(),
+                    )
+                    .child(text(format!("{preamp:+.1} dB")).color(p.text_secondary)),
+            )
+            .child(row().w_full().child(slider(
+                &slider_key,
+                db_to_slider(preamp),
+                dragging,
+                cx,
+                p,
+                apply_preamp,
+                apply_preamp,
+            )));
+        // Body: preamp + parametric response-curve graph + band table. Dimmed when
+        // this unit is disabled.
+        let body = col()
+            .key(format!("eq-body-{i}"))
+            .w_full()
+            .gap(space::MD)
+            .child(preamp_row)
+            .child(crate::views::eq_graph::eq_graph(i, s, p, cx))
+            .child(eq_band_editor(i, s, p));
+        let body = if enabled {
+            body
+        } else {
+            body.opacity(fx::DISABLED)
+        };
+        unit_card = unit_card.child(body);
+    }
+    if dragged {
+        unit_card.opacity(0.4)
+    } else {
+        unit_card
+    }
+}
+
+/// Height of the reorder grip (points) — just the grip's own hit area, no longer a
+/// slot-mapping unit (the drop target comes from the card under the pointer).
+const DSP_ROW_H: f32 = 34.0;
+
+/// The DSP-card index a [`Picked`](rune::Picked) element sits in, read off its key
+/// path (cards are keyed `dsp-card-{i}`). `None` when the pick is outside any card —
+/// e.g. the pointer is in a gap between cards or past the chain's edges.
+fn dsp_card_index_from_pick(picked: &rune::Picked) -> Option<usize> {
+    picked.path().split('/').find_map(|seg| {
+        seg.strip_prefix("dsp-card-")
+            .and_then(|n| n.parse::<usize>().ok())
+    })
+}
+
+/// The key identifying the add-DSP menu (its open state + panel anchor).
+const ADD_DSP_MENU: &str = "dsp-add";
+
+/// The DSP-type choices the add menu offers. One entry (EQ) today — built as a
+/// dropdown so more unit types slot in later without reworking the control.
+fn dsp_type_options() -> Vec<(String, String)> {
+    vec![("eq".to_string(), "EQ".to_string())]
+}
+
+/// The "+ Add DSP" control: opens the shared [`dropdown`] of DSP types
+/// ([`add_dsp_menu`], mounted at the window root). (The dropdown is now light-dismiss
+/// — an outside press / scroll / Escape closes it — so it behaves even anchored deep
+/// in the settings scroll.)
+fn add_dsp_control(p: &Palette) -> El {
+    // A touch taller than a row chip (py SM vs XXS) so the add action reads as the
+    // chain's primary control.
+    text(t!("settings.addDsp").to_string())
+        .font(type_::LABEL)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .key(ADD_DSP_MENU)
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .fill(p.primary.alpha(0.16))
+        .color(p.primary)
+        .on_press(move |st: &mut State| crate::toggle_dropdown(st, ADD_DSP_MENU))
+}
+
+/// The add-DSP dropdown panel — **mount at the window root** via
+/// [`settings_overlays`]. Picking a type appends that unit (EQ today) and opens its
+/// card; a trailing greyed "more DSP solutions coming soon" row teases what's next.
+fn add_dsp_menu(p: &Palette) -> El {
+    dropdown::panel(
+        ADD_DSP_MENU,
+        &dsp_type_options(),
+        "",
+        None,
+        |st: &mut State, _id: &str| add_dsp_unit(st),
+        Some(t!("settings.moreDspSoon").as_ref()),
+        p,
+    )
 }
 
 /// A compact label for a band's shape (editor type chip).
@@ -1556,26 +1862,26 @@ fn chip_btn_tx(
         .on_press_tx(move |st: &mut State, tx: &mut Tx| on(st, tx))
 }
 
-/// The expandable per-band editor under the graph: a header with the band count,
-/// an Add button, and (when open) a row per band to retype / nudge gain & Q /
-/// bypass / remove it.
-fn eq_band_editor(s: &State, p: &Palette) -> El {
-    let n = s.eq_bands.len();
-    let open = s.eq_editor_open;
-    let chevron = if open { "▾" } else { "▸" };
-    let toggle = row()
-        .key("eq-editor-toggle")
+/// Unit `unit`'s per-band editor: a header with the band count + Import / Export /
+/// Add buttons, then a row per band to retype / nudge gain & Q / bypass / remove
+/// it. The table shows directly (the card's own expand is the one level of
+/// collapse — there is no inner "Bands" toggle).
+fn eq_band_editor(unit: usize, s: &State, p: &Palette) -> El {
+    let n = unit_bands(s, unit).len();
+    let bands_open = s.eq_bands_expanded.get(unit).copied().unwrap_or(true);
+    let count = row()
         .center_y()
-        .gap(space::XS)
-        .role("button")
-        .focusable(true)
-        .cursor(Cursor::Pointer)
-        .on_press(toggle_eq_editor)
-        .child(text(chevron.to_string()).color(p.text_secondary))
+        .gap(space::XXS)
+        .child(expand_chevron(
+            bands_open,
+            format!("eq-bands-expand-{unit}"),
+            p,
+            move |st| toggle_eq_bands_expanded(st, unit),
+        ))
         .child(text(format!("Bands ({n})")).font(type_::LABEL).color(p.fg));
     let can_add = n < soul_player_host::MAX_BANDS;
     let add = chip_btn(
-        "eq-add-band".into(),
+        format!("eq-add-band-{unit}"),
         "+ Add band".into(),
         if can_add {
             p.primary.alpha(0.16)
@@ -1585,58 +1891,73 @@ fn eq_band_editor(s: &State, p: &Palette) -> El {
         if can_add { p.primary } else { p.text_secondary },
         move |st| {
             // Add a bell in the mid-band (1 kHz, flat) — the user then drags it.
-            add_eq_band(st, 1000.0, 0.0);
+            add_eq_band(st, unit, 1000.0, 0.0);
         },
     );
     // Import / export AutoEQ (Equalizer-APO ParametricEQ) profiles via a native
-    // file dialog — load headphone-correction profiles or share presets.
-    let import = chip_btn_tx("eq-import".into(), "Import".into(), p, |_s, tx| {
-        tx.open_file(
-            FileDialogOptions {
-                title: "Import EQ profile".into(),
-                ..Default::default()
-            }
-            .filter("ParametricEQ (*.txt)", &["txt"]),
-            |s: &mut State, result, _tx| {
-                if let Ok(Some(path)) = result {
-                    import_eq(s, &path);
+    // file dialog — load headphone-correction profiles or share presets. Each acts
+    // on THIS card's unit.
+    let import = chip_btn_tx(
+        format!("eq-import-{unit}"),
+        "Import".into(),
+        p,
+        move |_s, tx| {
+            tx.open_file(
+                FileDialogOptions {
+                    title: "Import EQ profile".into(),
+                    ..Default::default()
                 }
-            },
-        );
-    });
-    let export = chip_btn_tx("eq-export".into(), "Export".into(), p, |_s, tx| {
-        tx.save_file(
-            FileDialogOptions {
-                title: "Export EQ profile".into(),
-                file_name: Some("ParametricEQ.txt".into()),
-                ..Default::default()
-            }
-            .filter("ParametricEQ (*.txt)", &["txt"]),
-            |s: &mut State, result, _tx| {
-                if let Ok(Some(path)) = result {
-                    export_eq(s, &path);
+                .filter("ParametricEQ (*.txt)", &["txt"]),
+                move |s: &mut State, result, _tx| {
+                    if let Ok(Some(path)) = result {
+                        import_eq(s, unit, &path);
+                    }
+                },
+            );
+        },
+    );
+    let export = chip_btn_tx(
+        format!("eq-export-{unit}"),
+        "Export".into(),
+        p,
+        move |_s, tx| {
+            tx.save_file(
+                FileDialogOptions {
+                    title: "Export EQ profile".into(),
+                    file_name: Some("ParametricEQ.txt".into()),
+                    ..Default::default()
                 }
-            },
-        );
-    });
+                .filter("ParametricEQ (*.txt)", &["txt"]),
+                move |s: &mut State, result, _tx| {
+                    if let Ok(Some(path)) = result {
+                        export_eq(s, unit, &path);
+                    }
+                },
+            );
+        },
+    );
     let header = row()
         .w_full()
         .center_y()
         .gap(space::XS)
-        .child(toggle)
+        .child(count)
         .child(el().grow(1.0))
         .child(import)
         .child(export)
         .child(add);
-    let mut panel = col().key("eq-editor").w_full().gap(space::SM).child(header);
-    if open {
+    let mut editor = col()
+        .key(format!("eq-editor-{unit}"))
+        .w_full()
+        .gap(space::SM)
+        .child(header);
+    if bands_open {
         let mut list = col().w_full().gap(space::XS);
         for i in 0..n {
-            list = list.child(eq_band_row(i, s, p));
+            list = list.child(eq_band_row(unit, i, s, p));
         }
-        panel = panel.child(list);
+        editor = editor.child(list);
     }
-    panel
+    editor
 }
 
 /// The key-slug for a band number's column (keeps the test keys stable).
@@ -1648,22 +1969,24 @@ fn field_slug(field: NumField) -> &'static str {
     }
 }
 
-/// An Ableton-style number box for band `i`'s `field`: the value `num` drawn mono +
-/// right-aligned in a fixed `num_w` column (so a column's decimals line up), with an
-/// optional `unit` label to its right. Drag it vertically or scroll on it to change
-/// the value; double-click to type one. While that number is being typed, the box
-/// becomes an inline text field bound to the shared edit buffer.
+/// An Ableton-style number box for unit `unit`'s band `i` `field`: the value `num`
+/// drawn mono + right-aligned in a fixed `num_w` column (so a column's decimals line
+/// up), with an optional `suffix` label to its right. Drag it vertically or scroll on
+/// it to change the value; double-click to type one. While that number is being
+/// typed, the box becomes an inline text field bound to the shared edit buffer.
+#[allow(clippy::too_many_arguments)]
 fn num_field(
+    unit: usize,
     i: usize,
     field: NumField,
     num: String,
-    unit: &str,
+    suffix: &str,
     num_w: f32,
     s: &State,
     p: &Palette,
 ) -> El {
-    let key = format!("eq-num-{}-{i}", field_slug(field));
-    let editing = s.eq_edit == Some((i, field));
+    let key = format!("eq-num-{}-{unit}-{i}", field_slug(field));
+    let editing = s.eq_edit == Some((unit, i, field));
     // Frequency reads as a secondary value; gain and Q are primary foreground.
     let color = match field {
         NumField::Freq => p.text_secondary,
@@ -1695,9 +2018,9 @@ fn num_field(
             .role("button")
             .focusable(true)
             .cursor(Cursor::ResizeRow)
-            .on_double_press(move |st: &mut State| eq_edit_start(st, i, field))
+            .on_double_press(move |st: &mut State| eq_edit_start(st, unit, i, field))
             .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
-                Phase::Down => eq_num_drag_start(st, i, field),
+                Phase::Down => eq_num_drag_start(st, unit, i, field),
                 Phase::Move => eq_num_drag_move(st, d.dy),
                 Phase::Up => eq_num_drag_end(st),
             })
@@ -1721,19 +2044,19 @@ fn num_field(
                     let up = steps < 0.0;
                     let count = (steps.abs() as i32).min(8); // guard a giant delta
                     for _ in 0..count {
-                        eq_num_scroll(st, i, field, up, fine);
+                        eq_num_scroll(st, unit, i, field, up, fine);
                     }
                 } else {
                     st.eq_wheel_accum = 0.0; // a real detent drops any partial travel
-                    eq_num_scroll(st, i, field, raw < 0.0, fine);
+                    eq_num_scroll(st, unit, i, field, raw < 0.0, fine);
                 }
                 true
             })
     };
     let mut cell = row().center_y().gap(space::XXS).child(value);
-    if !unit.is_empty() {
+    if !suffix.is_empty() {
         cell = cell.child(
-            text(unit.to_string())
+            text(suffix.to_string())
                 .font(type_::CAPTION)
                 .color(p.text_secondary)
                 .w(24.0),
@@ -1745,8 +2068,8 @@ fn num_field(
 /// One editor row: type chip · frequency · gain · Q · bypass · remove. The three
 /// numbers are Ableton-style boxes (drag / scroll / double-click to type), mono and
 /// right-aligned so each column's decimals line up.
-fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
-    let band = s.eq_bands[i];
+fn eq_band_row(unit: usize, i: usize, s: &State, p: &Palette) -> El {
+    let band = unit_bands(s, unit)[i];
     let gains = band.kind.uses_gain();
     // Frequency: whole Hz under 1 kHz, one-decimal kHz above.
     let (freq_num, freq_unit) = if band.freq >= 1000.0 {
@@ -1754,11 +2077,12 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
     } else {
         (format!("{:.0}", band.freq), "Hz")
     };
-    let freq = num_field(i, NumField::Freq, freq_num, freq_unit, 40.0, s, p);
+    let freq = num_field(unit, i, NumField::Freq, freq_num, freq_unit, 40.0, s, p);
     // Gain: an editable box for shapes that use gain; a static dash (same column
     // metrics) for the cuts / notch that don't.
     let gain = if gains {
         num_field(
+            unit,
             i,
             NumField::Gain,
             format!("{:+.1}", band.gain_db),
@@ -1795,6 +2119,7 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
                 .color(p.text_secondary),
         )
         .child(num_field(
+            unit,
             i,
             NumField::Q,
             format!("{:.2}", band.q),
@@ -1810,36 +2135,39 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
     };
     let enabled = band.enabled;
     row()
-        .key(format!("eq-band-row-{i}"))
+        .key(format!("eq-band-row-{unit}-{i}"))
         .w_full()
         .center_y()
         .gap(space::SM)
+        // Wrap the trailing controls onto a second line when the card is too narrow
+        // for the whole row (e.g. a narrow window) rather than overflowing it.
+        .flex_wrap()
         // Fixed-width type column so the row doesn't reshuffle when the shape
         // label changes width (e.g. "Bell" → "Hi shelf").
         .child(row().w(84.0).center_y().child(chip_btn(
-            format!("eq-band-type-{i}"),
+            format!("eq-band-type-{unit}-{i}"),
             kind_chip_label(band.kind).to_string(),
             p.muted,
             p.fg,
-            move |st| cycle_eq_band_kind(st, i),
+            move |st| cycle_eq_band_kind(st, unit, i),
         )))
         .child(freq)
         .child(gain)
         .child(q)
         .child(el().grow(1.0))
         .child(chip_btn(
-            format!("eq-band-en-{i}"),
+            format!("eq-band-en-{unit}-{i}"),
             if enabled { "On" } else { "Off" }.into(),
             en_fill,
             en_fg,
-            move |st| set_eq_band_enabled(st, i, !enabled),
+            move |st| set_eq_band_enabled(st, unit, i, !enabled),
         ))
         .child(chip_btn(
-            format!("eq-band-rm-{i}"),
+            format!("eq-band-rm-{unit}-{i}"),
             "✕".into(),
             p.muted,
             p.text_secondary,
-            move |st| remove_eq_band(st, i),
+            move |st| remove_eq_band(st, unit, i),
         ))
 }
 
@@ -2105,7 +2433,12 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     // card; the bottom margin travels with the content). The top inset is `LG` —
     // the same as the category rail and the main sidebar's nav — so the first card
     // lines up with the first rail item and the first nav item.
-    let inner = content.w_full().px(space::XL).pt(space::LG).pb(space::XXL);
+    let inner = content
+        .w_full()
+        .max_w(CONTENT_MAX_W)
+        .px(space::XL)
+        .pt(space::LG)
+        .pb(space::XXL);
     // One Live carries the thumb geometry from the viewport's scroll callback to
     // the thumb element in the same frame.
     let thumb = SETTINGS_SCROLL_THUMB.with(|t| t.clone());
@@ -2115,11 +2448,11 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .min_h(0.0)
         .child(category_nav(s, p))
         .child(
-            // `grow` lets the column claim the body width so every tab's cards
-            // fill one consistent width and share a left edge (this engine splits
-            // free space evenly across grow children, so flanking spacers would
-            // only ever leave the column a third-width and drifting); `max_w`
-            // caps it on wide windows — the original's `max-w-4xl` column.
+            // The scroll VIEWPORT fills the whole body (so its scrollbar sits at the
+            // window's far-right edge, not floating at the content column's edge);
+            // `items_center` centers the `max_w`-capped content column within it, so
+            // every tab's cards share one consistent width and a centered position
+            // even when the window is wider than the column.
             row()
                 .key("settings-body")
                 .grow(1.0)
@@ -2128,8 +2461,8 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                     col()
                         .key("settings-scroll")
                         .grow(1.0)
-                        .max_w(CONTENT_MAX_W)
                         .min_h(0.0)
+                        .items_center()
                         .scroll(ScrollSpec {
                             stick_bottom: false,
                         })
@@ -2356,11 +2689,33 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
             &s.locale_pref,
             width,
             |s: &mut State, id: &str| set_locale_pref(s, id),
+            None,
             p,
         ));
     }
     if dropdown::is_open(s, ADD_SOURCE_MENU) {
         overlays.push(add_source_menu(s, p));
+    }
+    if dropdown::is_open(s, ADD_DSP_MENU) {
+        overlays.push(add_dsp_menu(p));
+    }
+    if dropdown::is_open(s, PROFILE_PICKER) {
+        // Match the panel width to the trigger; the active profile is pre-selected.
+        let width = cx.layout_size(PROFILE_PICKER).map(|wh| wh[0]);
+        let active = s.active_profile.to_string();
+        overlays.push(dropdown::panel(
+            PROFILE_PICKER,
+            &profile_options(s),
+            &active,
+            width,
+            |s: &mut State, id: &str| {
+                if let Ok(i) = id.parse::<usize>() {
+                    switch_profile(s, i);
+                }
+            },
+            None,
+            p,
+        ));
     }
     if dropdown::is_open(s, MANAGED_TEMPLATE) {
         // Match the panel width to the trigger (once it has a committed layout).
@@ -2371,6 +2726,7 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
             &s.managed_template,
             width,
             |s: &mut State, id: &str| set_managed_template(s, id),
+            None,
             p,
         ));
     }
