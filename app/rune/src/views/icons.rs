@@ -126,6 +126,34 @@ pub static GRIP: Icon = Icon {
 /// lucide `x` — the per-row remove-from-queue affordance.
 pub static X: Icon = stroke_icon!("x", r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#);
 
+// --- Windows caption glyphs ------------------------------------------------
+// Drawn over the (hidden) native `_ [] X` buttons, so they're tuned to match
+// Windows 11's own symbols: a ~10 px mark with a thin, square-capped stroke
+// (not lucide's rounded 2 px). Sized by `GLYPH_SIZE` in `titlebar.rs` so the
+// 16-unit marks land near 10 px. `stroke-width` is deliberately light here.
+
+/// Windows caption minimize glyph: a single thin horizontal rule.
+pub static CAPTION_MIN: Icon = Icon {
+    name: "caption-min",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><path d="M4 12h16"/></g>"#,
+};
+
+/// Windows caption maximize glyph: a near-square outline (hair of a corner
+/// radius, as Windows 11 draws it).
+pub static CAPTION_MAX: Icon = Icon {
+    name: "caption-max",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4.5" y="4.5" width="15" height="15" rx="0.5"/></g>"#,
+};
+
+/// Windows caption close glyph: a thin, square-capped cross.
+pub static CAPTION_CLOSE: Icon = Icon {
+    name: "caption-close",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><path d="M5 5 19 19M19 5 5 19"/></g>"#,
+};
+
 pub static SEARCH: Icon = stroke_icon!(
     "search",
     r#"<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>"#
