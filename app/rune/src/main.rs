@@ -2906,12 +2906,10 @@ mod tests {
         assert_eq!(label_for(None), "EQ");
     }
 
-    /// With a single DSP type, "+ Add DSP" appends a unit DIRECTLY on press (no
-    /// dropdown) and opens its card — a one-item picker is pointless, and a portaled
-    /// modal dropdown opened from deep in the settings scroll fights the scroll. The
-    /// themed type picker returns once there are two or more DSP types.
+    /// "+ Add DSP" opens the themed type dropdown — EQ selectable plus a disabled
+    /// "coming soon" teaser row; picking EQ appends a unit and opens its card.
     #[test]
-    fn add_dsp_control_adds_a_unit_directly() {
+    fn add_dsp_menu_offers_eq_and_a_coming_soon_row() {
         let _guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -2925,17 +2923,21 @@ mod tests {
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 2200.0), env);
         rt.frame(0.0);
+        // Open the dropdown, settle its enter animation.
         click_key(&mut rt, "dsp-add");
+        rt.settle_all();
         rt.frame(0.0);
-        assert_eq!(
-            rt.state.dsp_units.len(),
-            2,
-            "pressing + Add DSP appends a unit"
+        assert_eq!(rt.state.open_dropdown.as_deref(), Some("dsp-add"));
+        assert!(rt.find("dsp-add-opt-eq").is_some(), "EQ is listed");
+        assert!(
+            rt.find("dsp-add-opt-soon").is_some(),
+            "a 'more DSP coming soon' teaser row is shown"
         );
-        assert_eq!(
-            rt.state.open_dropdown, None,
-            "a single type opens no dropdown (nothing to scroll/lock)"
-        );
+        // Pick EQ → appends a unit + opens its card + closes the menu.
+        click_key(&mut rt, "dsp-add-opt-eq");
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_units.len(), 2, "picking EQ appends a unit");
+        assert_eq!(rt.state.open_dropdown, None, "picking closes the menu");
         assert_eq!(
             rt.state.dsp_expanded,
             vec![false, true],

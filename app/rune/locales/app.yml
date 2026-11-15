@@ -462,6 +462,13 @@ settings.addDsp:
   zh: '+ 添加 DSP'
   cs: '+ Přidat DSP'
   ja: '+ DSPを追加'
+settings.moreDspSoon:
+  en: 'More DSP solutions coming soon'
+  de: 'Weitere DSP-Lösungen folgen bald'
+  es: 'Más soluciones DSP próximamente'
+  zh: '更多 DSP 功能即将推出'
+  cs: 'Další DSP řešení již brzy'
+  ja: 'その他のDSPは近日公開'
 settings.addFolderDialog:
   en: 'Add a music folder'
   de: 'Musikordner hinzufügen'
