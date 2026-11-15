@@ -122,10 +122,52 @@ struct Config {
     /// Library "indexing speed": `auto` | `max` | `gentle`. Controls how much
     /// parallelism the scanner uses; `auto` follows live CPU load.
     indexing_mode: String,
+    /// Saved audio profiles — each a named snapshot of the whole DSP chain. The
+    /// *active* profile's chain is the live one (and is mirrored into `eq_units`
+    /// above for backward-compat). Empty in configs written before profiles existed
+    /// → migrated to one `"Default"` profile from `eq_units` on load.
+    profiles: Vec<ProfileCfg>,
+    /// Index of the active profile within `profiles` (clamped on load).
+    active_profile: usize,
     /// Last window geometry, restored on the next launch. Absent on a fresh
     /// install → the window opens at its default placement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window: Option<WindowGeometry>,
+}
+
+/// One persisted audio profile: a name plus the whole DSP chain. The TOML-friendly
+/// mirror of a live [`Profile`]; reuses [`DspUnitCfg`] so there's no new chain
+/// serialization. Also the shape of an exported `.json` profile file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ProfileCfg {
+    name: String,
+    chain: Vec<DspUnitCfg>,
+}
+
+/// A live audio profile: a name plus a decoded DSP chain. Owned here (not in the app)
+/// because this module already holds the [`DspUnit`] ⇄ [`DspUnitCfg`] conversion.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Profile {
+    pub name: String,
+    pub chain: Vec<DspUnit>,
+}
+
+impl ProfileCfg {
+    /// Decode to a live [`Profile`], skipping unknown-kind units (forward-compat).
+    fn to_profile(&self) -> Profile {
+        Profile {
+            name: self.name.clone(),
+            chain: self.chain.iter().filter_map(DspUnitCfg::to_unit).collect(),
+        }
+    }
+
+    /// Encode a live [`Profile`] for persistence / export.
+    fn from_profile(p: &Profile) -> Self {
+        Self {
+            name: p.name.clone(),
+            chain: p.chain.iter().map(DspUnitCfg::from).collect(),
+        }
+    }
 }
 
 /// A persisted window rectangle (outer position + content size) and maximized
@@ -395,6 +437,8 @@ impl Default for Config {
             eq_preamp: 0.0,
             eq_bands: Vec::new(),
             indexing_mode: "auto".into(),
+            profiles: Vec::new(),
+            active_profile: 0,
             window: None,
         }
     }
@@ -798,10 +842,63 @@ pub fn load_dsp_chain() -> Vec<DspUnit> {
     })]
 }
 
-/// Persist the DSP chain (load-modify-write the one config file).
+/// Persist just the legacy `eq_units` chain (load-modify-write). Superseded in
+/// production by [`save_profiles`] (which mirrors the active chain into `eq_units`);
+/// kept as a test helper for the legacy-chain migration path that [`load_dsp_chain`]
+/// still reads.
+#[cfg(test)]
 pub fn save_dsp_chain(units: &[DspUnit]) {
     let mut cfg = load();
     cfg.eq_units = units.iter().map(DspUnitCfg::from).collect();
+    save(&cfg);
+}
+
+/// The saved audio profiles and the active index. Always returns **at least one**
+/// profile: a config written before profiles existed (no `profiles`, just `eq_units`)
+/// migrates to a single `"Default"` profile from the existing chain. The active index
+/// is clamped into range.
+pub fn load_profiles() -> (Vec<Profile>, usize) {
+    let cfg = load();
+    if !cfg.profiles.is_empty() {
+        let profiles: Vec<Profile> = cfg.profiles.iter().map(ProfileCfg::to_profile).collect();
+        let active = cfg.active_profile.min(profiles.len() - 1);
+        return (profiles, active);
+    }
+    // Migrate: one "Default" profile from the legacy chain (handles `eq_units` + the
+    // pre-chain single-EQ fields, and falls back to one default unit).
+    (
+        vec![Profile {
+            name: "Default".into(),
+            chain: load_dsp_chain(),
+        }],
+        0,
+    )
+}
+
+/// Serialize a profile to the portable JSON used by exported `.json` files (and read by
+/// the future DAP): `{ "name": ..., "chain": [ <tagged DspUnitCfg> ] }`.
+pub fn profile_to_json(p: &Profile) -> Result<String, serde_json::Error> {
+    serde_json::to_string_pretty(&ProfileCfg::from_profile(p))
+}
+
+/// Parse a profile from the portable JSON. Unknown-kind units are skipped (so a file
+/// from a newer build still imports what this build understands).
+pub fn profile_from_json(text: &str) -> Result<Profile, serde_json::Error> {
+    Ok(serde_json::from_str::<ProfileCfg>(text)?.to_profile())
+}
+
+/// Persist the audio profiles + active index. Also mirrors the active profile's chain
+/// into the legacy `eq_units` key, so a rollback to a pre-profiles build still loads
+/// the right live chain.
+pub fn save_profiles(profiles: &[Profile], active: usize) {
+    let mut cfg = load();
+    let active = active.min(profiles.len().saturating_sub(1));
+    cfg.profiles = profiles.iter().map(ProfileCfg::from_profile).collect();
+    cfg.active_profile = active;
+    cfg.eq_units = profiles
+        .get(active)
+        .map(|p| p.chain.iter().map(DspUnitCfg::from).collect())
+        .unwrap_or_default();
     save(&cfg);
 }
 
@@ -1083,6 +1180,17 @@ mod tests {
                 enabled: true,
             }],
             indexing_mode: "gentle".into(),
+            profiles: vec![ProfileCfg {
+                name: "Studio".into(),
+                chain: vec![DspUnitCfg {
+                    kind: "eq".into(),
+                    name: None,
+                    enabled: true,
+                    preamp: 1.0,
+                    bands: Vec::new(),
+                }],
+            }],
+            active_profile: 0,
             window: Some(WindowGeometry {
                 x: 100,
                 y: 80,
@@ -1107,6 +1215,57 @@ mod tests {
         assert_eq!(back.managed_library_path, "/music/managed");
         assert_eq!(back.managed_library_template, "flat");
         assert_eq!(back.managed_library_strategy, "move");
+        assert_eq!(back.profiles, cfg.profiles);
+        assert_eq!(back.active_profile, 0);
+    }
+
+    #[test]
+    fn profiles_roundtrip_migrate_default_and_mirror_the_active_chain() {
+        let _g = use_test_config_dir();
+        // No profiles saved yet, but a legacy chain exists → one "Default" profile
+        // carrying that chain.
+        save_dsp_chain(&[DspUnit::Eq(EqUnit {
+            preamp_db: -4.0,
+            ..EqUnit::default()
+        })]);
+        let (migrated, active) = load_profiles();
+        assert_eq!(active, 0);
+        assert_eq!(migrated.len(), 1, "a lone Default profile is synthesized");
+        assert_eq!(migrated[0].name, "Default");
+        assert_eq!(migrated[0].chain[0].as_eq().unwrap().preamp_db, -4.0);
+
+        // Two explicit profiles with active = 1 reload with their names, chains and
+        // the active index intact.
+        let studio = Profile {
+            name: "Studio".into(),
+            chain: vec![DspUnit::Eq(EqUnit {
+                preamp_db: -2.0,
+                ..EqUnit::default()
+            })],
+        };
+        let bass = Profile {
+            name: "Bass".into(),
+            chain: vec![DspUnit::Eq(EqUnit {
+                preamp_db: 3.0,
+                ..EqUnit::default()
+            })],
+        };
+        save_profiles(&[studio.clone(), bass.clone()], 1);
+        let (back, active) = load_profiles();
+        assert_eq!(active, 1);
+        assert_eq!(back, vec![studio.clone(), bass.clone()]);
+
+        // The active profile's chain mirrors into the legacy `eq_units`, so an older
+        // build (load_dsp_chain) still loads the right live chain.
+        assert_eq!(
+            load_dsp_chain()[0].as_eq().unwrap().preamp_db,
+            3.0,
+            "eq_units mirrors the active profile"
+        );
+
+        // An out-of-range active index clamps to the last profile.
+        save_profiles(std::slice::from_ref(&studio), 9);
+        assert_eq!(load_profiles().1, 0, "the active index clamps into range");
     }
 
     #[test]
