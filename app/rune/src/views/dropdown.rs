@@ -77,10 +77,6 @@ where
     let mut menu = col()
         .key(format!("{anchor_key}-menu"))
         .anchored_fit(anchor_key, Side::Bottom, Align::Start, GAP)
-        // Fade in on mount, so the first frame — before `anchored_fit` has resolved
-        // the trigger's rect and the panel may lay out at the overlay's full size —
-        // is invisible instead of a brief fullscreen flash.
-        .group_opacity(0.0, 1.0)
         .focus_group()
         .focus_return(anchor_key.to_string())
         .fill(p.card)
