@@ -1894,8 +1894,8 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
 
 /// A quiet, bordered action button for the About card (`p.bg` fill against the
 /// card's `p.card` so it reads as a secondary action beside the primary update
-/// button).
-fn support_button(key: &'static str, label: String, p: &Palette) -> El {
+/// button), with a leading glyph.
+fn support_button(key: &'static str, label: String, glyph: &'static Icon, p: &Palette) -> El {
     el().key(key)
         .role("button")
         .label(label.clone())
@@ -1906,7 +1906,13 @@ fn support_button(key: &'static str, label: String, p: &Palette) -> El {
         .border(1.0, p.border)
         .center()
         .cursor(Cursor::Pointer)
-        .child(text(label).color(p.fg))
+        .child(
+            row()
+                .gap(space::SM)
+                .center_y()
+                .child(icon(glyph, 16.0).color(p.fg))
+                .child(text(label).color(p.fg)),
+        )
 }
 
 /// The About card's support actions: reveal the log folder, or open a pre-filled
@@ -1920,29 +1926,50 @@ fn support_row(p: &Palette) -> El {
         // overflowing the card width.
         .flex_wrap()
         .child(
-            support_button("open-logs", t!("settings.openLogs").to_string(), p).on_press(
-                |_s: &mut State| {
-                    std::thread::spawn(|| match crate::logging::log_dir() {
-                        Some(dir) => {
-                            if let Err(e) = open::that(&dir) {
-                                tracing::error!("open logs folder failed: {e}");
-                            }
+            support_button(
+                "open-logs",
+                t!("settings.openLogs").to_string(),
+                &icons::FOLDER,
+                p,
+            )
+            .on_press(|_s: &mut State| {
+                std::thread::spawn(|| match crate::logging::log_dir() {
+                    Some(dir) => {
+                        if let Err(e) = open::that(&dir) {
+                            tracing::error!("open logs folder failed: {e}");
                         }
-                        None => tracing::warn!("no log directory to open"),
-                    });
-                },
-            ),
+                    }
+                    None => tracing::warn!("no log directory to open"),
+                });
+            }),
         )
         .child(
             support_button(
                 "report-problem",
                 t!("settings.reportProblem").to_string(),
+                &icons::GITHUB,
                 p,
             )
             .on_press(|s: &mut State| {
                 // Read state now; do the file read + browser launch off-thread.
                 let device = s.output_device.clone();
                 std::thread::spawn(move || crate::report::open_issue(device));
+            }),
+        )
+        .child(
+            support_button(
+                "star-repo",
+                t!("settings.starRepo").to_string(),
+                &icons::STAR,
+                p,
+            )
+            .on_press(|_s: &mut State| {
+                std::thread::spawn(|| {
+                    let url = format!("https://github.com/{}", crate::report::ISSUE_REPO);
+                    if let Err(e) = open::that(&url) {
+                        tracing::error!("open repository failed: {e}");
+                    }
+                });
             }),
         )
 }
