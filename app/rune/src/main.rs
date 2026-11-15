@@ -803,7 +803,13 @@ pub(crate) fn eq_num_scroll(s: &mut State, i: usize, field: NumField, up: bool) 
     let cur = band_field(&b, field);
     let value = match field {
         NumField::Gain => cur + if up { GAIN_SCROLL_DB } else { -GAIN_SCROLL_DB },
-        NumField::Freq => cur * if up { FREQ_SCROLL_STEP } else { 1.0 / FREQ_SCROLL_STEP },
+        NumField::Freq => {
+            cur * if up {
+                FREQ_SCROLL_STEP
+            } else {
+                1.0 / FREQ_SCROLL_STEP
+            }
+        }
         NumField::Q => cur * if up { 1.15 } else { 1.0 / 1.15 },
     };
     set_eq_band_field(s, i, field, value);
@@ -2417,7 +2423,10 @@ mod tests {
         assert!(s.eq_bands[0].q > q0, "scroll up raised Q");
         eq_num_scroll(&mut s, 0, NumField::Q, false);
         eq_num_scroll(&mut s, 0, NumField::Q, false);
-        assert!(s.eq_bands[0].q < q0, "two notches down lowered it below start");
+        assert!(
+            s.eq_bands[0].q < q0,
+            "two notches down lowered it below start"
+        );
     }
 
     /// Double-clicking a band number opens an inline text field; typing a value and
@@ -2439,7 +2448,9 @@ mod tests {
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
-        let (x, y) = rt.find("eq-num-freq-1").expect("band 1's freq number renders");
+        let (x, y) = rt
+            .find("eq-num-freq-1")
+            .expect("band 1's freq number renders");
         // Double-click the frequency to open the editor.
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
@@ -2447,7 +2458,10 @@ mod tests {
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(0.0);
-        assert!(rt.state.eq_edit.is_some(), "double-click opens the inline editor");
+        assert!(
+            rt.state.eq_edit.is_some(),
+            "double-click opens the inline editor"
+        );
         // Type a new frequency and commit with Return.
         rt.ime(rune::Ime::Commit("5000".into()));
         rt.frame(0.0);
