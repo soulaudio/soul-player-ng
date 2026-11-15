@@ -46,29 +46,50 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     cx.caption_color(p.fg.alpha(0.0));
     cx.titlebar_height(HEIGHT);
 
-    // The window's committed width (previous frame) — the activity widget's
-    // width-responsive variants key off it, the same measure `view` uses for mobile.
+    // The window's committed width (previous frame) — the same measure `view` uses
+    // for mobile; recomputed each frame, so the bar reflows on resize.
     let window_w = cx
         .layout_size("app-root")
         .map(|size| size[0])
         .filter(|w| *w > 0.0)
         .unwrap_or(1100.0);
+    // The header content area's width — the band minus the leading pad and the
+    // trailing caption gutter (`chrome.trailing` is the width the window controls
+    // occupy: nonzero on Windows where `_ [] X` are trailing, 0 on macOS where the
+    // traffic lights are leading). Used only to pick the activity widget's responsive
+    // variant; the content row itself `grow`s to fill the same space (which already
+    // reserves the caption gutter), so it adapts when the controls' side/width change.
+    let content_w = (window_w - space::MD - chrome.trailing).max(0.0);
 
-    // The flexible header slot. While a scan runs it carries the right-aligned
-    // activity widget — a leading grow spacer pushes it to the trailing edge, just
-    // left of the window controls; otherwise it's the empty draggable gap.
-    let mut content = row()
+    // The header content area (a `grow` row that reserves the trailing caption
+    // gutter). `justify_between` docks the leading group at the left edge and the
+    // trailing group at the right (just inside the controls); future header
+    // components slot into whichever group fits — the bar is the shared home for
+    // title-bar widgets, not just the scan indicator.
+    let leading = row()
+        .key("titlebar-leading")
+        .h_full()
+        .items_center()
+        .gap(space::MD);
+    let mut trailing = row()
+        .key("titlebar-trailing")
+        .h_full()
+        .items_center()
+        .gap(space::MD);
+    if let Some(prog) = &s.scan_progress {
+        trailing = trailing.child(scan_activity(prog, s.scan_anim, p, content_w));
+    }
+    let content = row()
         .key("titlebar-content")
         .grow(1.0)
         .min_w(0.0)
         .h_full()
-        .items_center();
-    if let Some(prog) = &s.scan_progress {
-        content = content
-            .child(el().grow(1.0))
-            .child(scan_activity(prog, s.scan_anim, p, window_w))
-            .pr(space::SM);
-    }
+        .items_center()
+        .justify_between()
+        // A small gap so the trailing group doesn't butt against the controls.
+        .pr(space::SM)
+        .child(leading)
+        .child(trailing);
 
     let strip = row()
         .key("titlebar")
@@ -142,12 +163,12 @@ fn caption_glyph(
         .child(icon(glyph, GLYPH_SIZE).color(p.fg))
 }
 
-/// Width-responsive thresholds (window width, pt) for the scan-activity widget: at
-/// or above each, one more element joins the icon. Below the narrowest, only the
-/// pulsing icon shows (the `smallest width → just the animated icon` case).
-const SCAN_WIDE: f32 = 820.0; // + phase label
-const SCAN_MED: f32 = 560.0; // + progress bar
-const SCAN_NARROW: f32 = 430.0; // + done/total count
+/// Width-responsive thresholds (available header width, pt) for the scan-activity
+/// widget: at or above each, one more element joins the icon. Below the narrowest,
+/// only the pulsing icon shows (the `smallest width → just the animated icon` case).
+const SCAN_WIDE: f32 = 760.0; // + phase label
+const SCAN_MED: f32 = 480.0; // + progress bar
+const SCAN_NARROW: f32 = 360.0; // + done/total count
 
 /// Activity-icon size and progress-bar geometry (pt).
 const SCAN_ICON: f32 = 14.0;
@@ -156,12 +177,13 @@ const SCAN_BAR_H: f32 = 4.0;
 /// Pulse rate (rad/s) of the activity icon's opacity "breathing".
 const SCAN_PULSE_SPEED: f32 = 4.2;
 
-/// The title-bar scan-activity widget: a pulsing activity icon plus — as the window
-/// widens — the phase label, a determinate progress bar, and the `done / total`
-/// count. Rendered right-aligned in the header slot while a scan runs. `anim` is the
-/// free-running pulse phase (seconds) the poll advances; `window_w` picks the
-/// responsive variant.
-fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> El {
+/// The title-bar scan-activity widget: a pulsing activity icon plus — as space
+/// allows — the phase label, a determinate progress bar, and the `done / total`
+/// count. Rendered while a scan runs, inside the header content area (which already
+/// clears the window controls). `anim` is the free-running pulse phase (seconds) the
+/// poll advances; `avail` is the available header width that picks the responsive
+/// variant.
+fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, avail: f32) -> El {
     // Breathing opacity in [0.5, 1.0] so the icon reads as "working" even between
     // progress ticks (the determinate bar carries the exact amount).
     let icon_op = 0.5 + 0.5 * (0.5 + 0.5 * (anim * SCAN_PULSE_SPEED).sin());
@@ -177,7 +199,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> 
         );
 
     // Phase label (widest only).
-    if window_w >= SCAN_WIDE {
+    if avail >= SCAN_WIDE {
         let label = match prog.phase {
             ScanPhase::Discovering => t!("titlebar.scanning"),
             ScanPhase::Extracting => t!("titlebar.indexing"),
@@ -192,7 +214,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> 
     }
 
     // Determinate progress bar (medium and up).
-    if window_w >= SCAN_MED {
+    if avail >= SCAN_MED {
         let frac = if prog.total > 0 {
             (prog.done as f32 / prog.total as f32).clamp(0.0, 1.0)
         } else {
@@ -214,7 +236,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> 
     }
 
     // done / total count (narrow and up).
-    if window_w >= SCAN_NARROW {
+    if avail >= SCAN_NARROW {
         let count = format!(
             "{} / {}",
             group_thousands(prog.done),

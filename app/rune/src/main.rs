@@ -430,7 +430,14 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
             removal_notice: None,
-            scan_progress: None,
+            // Dev-only: `SOUL_DEMO_SCAN=1` forces the title-bar activity widget on
+            // (a fixed sample) so its placement/animation can be inspected without
+            // catching a real scan mid-flight. Off in normal runs.
+            scan_progress: std::env::var_os("SOUL_DEMO_SCAN").map(|_| ScanProgress {
+                phase: soul_player_host::ScanPhase::Extracting,
+                done: 1024,
+                total: 1210,
+            }),
             scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
             // Restore the persisted device choice (None = system default); the
@@ -572,6 +579,35 @@ pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
     // caches); persist them so the next launch stays warm, with this add/remove/
     // toggle already folded in.
     config::save_scan_caches(&s.host.caches_snapshot());
+}
+
+/// Run a library-rescanning host op **off the UI thread**, then apply its result
+/// back on the UI thread. The old synchronous Sources handlers ran the whole scan
+/// inline, freezing the window; this keeps the UI responsive AND lets the title-bar
+/// activity widget animate — the host broadcasts scan progress from the scanning
+/// thread, and `on_scan_progress` marshals it onto the UI. Falls back to a
+/// synchronous call when there is no `app_handle` (headless tests), so behaviour
+/// there is unchanged.
+pub(crate) fn scan_in_background(
+    s: &mut State,
+    op: impl FnOnce(&PlayerHandle) -> anyhow::Result<WatchUpdate> + Send + 'static,
+    apply: fn(&mut State, WatchUpdate),
+) {
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                if let Ok(up) = op(&host) {
+                    handle.update(move |s: &mut State, _tx: &mut Tx| apply(s, up));
+                }
+            });
+        }
+        None => {
+            if let Ok(up) = op(&s.host) {
+                apply(s, up);
+            }
+        }
+    }
 }
 
 /// Resolve the effective dark/light mode from the user's preference.

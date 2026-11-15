@@ -31,10 +31,11 @@ use crate::{
     apply_and_save, apply_watch, close_dropdown, commit_eq_edit, cycle_eq_band_kind, eq_edit_start,
     eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, import_eq,
     organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
-    remove_eq_band, reorder_dsp_units, select_dsp_unit, set_dsp_unit_enabled, set_eq_band_enabled,
-    set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest,
-    set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
-    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor,
+    remove_eq_band, reorder_dsp_units, scan_in_background, select_dsp_unit, set_dsp_unit_enabled,
+    set_eq_band_enabled, set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref,
+    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
+    set_theme_pref, toggle_eq_editor,
 };
 use soul_player_host::IndexingMode;
 
@@ -262,10 +263,8 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
                     ..Default::default()
                 },
                 |s: &mut State, result, _tx| {
-                    if let Ok(Some(path)) = result
-                        && let Ok(up) = s.host.add_folder(&path)
-                    {
-                        apply_and_save(s, up);
+                    if let Ok(Some(path)) = result {
+                        scan_in_background(s, move |h| h.add_folder(&path), apply_and_save);
                     }
                 },
             );
@@ -419,9 +418,10 @@ fn rescan_button(p: &Palette) -> El {
             // source's enabled flag), re-aggregating files/roots that changed on
             // disk. The set itself is unchanged, so no save (apply_watch).
             let roots: Vec<std::path::PathBuf> = s.sources.iter().map(|x| x.path.clone()).collect();
-            if let Ok(up) = s.host.set_folders(&roots) {
-                apply_watch(s, up);
-            }
+            // Off the UI thread: a reconcile of a big library must not freeze the
+            // window, and running it in the background lets the title-bar activity
+            // widget animate while it scans.
+            scan_in_background(s, move |h| h.set_folders(&roots), apply_watch);
         })
 }
 
@@ -462,9 +462,12 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
         .cursor(Cursor::Pointer)
         .fill(if enabled { p.primary } else { p.muted })
         .on_press(move |st: &mut State| {
-            if let Ok(up) = st.host.set_folder_enabled(&toggle_for, !enabled) {
-                apply_and_save(st, up);
-            }
+            let toggle_for = toggle_for.clone();
+            scan_in_background(
+                st,
+                move |h| h.set_folder_enabled(&toggle_for, !enabled),
+                apply_and_save,
+            );
         });
     if enabled {
         toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
@@ -526,9 +529,8 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
             .cursor(Cursor::Pointer)
             .child(text("✕").color(p.text_secondary))
             .on_press(move |st: &mut State| {
-                if let Ok(up) = st.host.remove_folder(&remove_for) {
-                    apply_and_save(st, up);
-                }
+                let remove_for = remove_for.clone();
+                scan_in_background(st, move |h| h.remove_folder(&remove_for), apply_and_save);
             }),
     )
 }
