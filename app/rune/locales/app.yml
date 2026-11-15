@@ -750,6 +750,20 @@ tray.quit:
   zh: '退出'
   cs: 'Ukončit'
   ja: '終了'
+notify.updateTitle:
+  en: 'Update available'
+  de: 'Update verfügbar'
+  es: 'Actualización disponible'
+  zh: '有可用更新'
+  cs: 'Dostupná aktualizace'
+  ja: 'アップデートがあります'
+notify.updateBody:
+  en: 'Soul Player %{version} is ready to install.'
+  de: 'Soul Player %{version} kann installiert werden.'
+  es: 'Soul Player %{version} está listo para instalarse.'
+  zh: 'Soul Player %{version} 已可安装。'
+  cs: 'Soul Player %{version} je připraven k instalaci.'
+  ja: 'Soul Player %{version} をインストールできます。'
 settings.updateAvailable:
   en: 'Version %{version} is available.'
   de: 'Version %{version} ist verfügbar.'
