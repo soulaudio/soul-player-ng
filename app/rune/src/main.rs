@@ -2403,6 +2403,62 @@ mod tests {
         s
     }
 
+    /// End-to-end feed pipeline: as the player's now-playing state changes, the
+    /// media session receives the right `Update`s over its channel — track
+    /// metadata (resolved from the library) on a track change, playback on a
+    /// play/pause flip, and `stopped` when nothing is playing.
+    #[test]
+    fn media_session_feed_publishes_track_then_playback_on_change() {
+        let mut s = populated_state();
+        let id = s
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("the test library has tracks");
+        let expected = s.track(id).cloned().expect("the track resolves");
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.media_tx = Some(tx);
+
+        // A track starts playing → a Track update then a Playback update.
+        s.now_playing_id = Some(id);
+        s.playing = true;
+        s.position_secs = 12.0;
+        s.duration_secs = 200.0;
+        feed_media_session(&mut s);
+
+        match rx.try_recv().expect("a track-metadata update") {
+            media_session::Update::Track(meta) => {
+                assert_eq!(meta.title, expected.title.clone().unwrap_or_default());
+                assert_eq!(meta.duration_secs, expected.duration_secs);
+            }
+            media_session::Update::Playback(_) => panic!("expected a Track update first"),
+        }
+        match rx.try_recv().expect("a playback update") {
+            media_session::Update::Playback(pb) => {
+                assert!(pb.playing && !pb.stopped);
+                assert_eq!(pb.position_secs, 12.0);
+            }
+            media_session::Update::Track(_) => panic!("expected a Playback update"),
+        }
+
+        // Pausing the same track pushes only a playback update.
+        s.playing = false;
+        feed_media_session(&mut s);
+        match rx.try_recv().expect("a playback update on pause") {
+            media_session::Update::Playback(pb) => assert!(!pb.playing),
+            media_session::Update::Track(_) => panic!("expected Playback on pause"),
+        }
+
+        // Stopping (no track loaded) reports stopped.
+        s.now_playing_id = None;
+        feed_media_session(&mut s);
+        match rx.try_recv().expect("a playback update on stop") {
+            media_session::Update::Playback(pb) => assert!(pb.stopped),
+            media_session::Update::Track(_) => panic!("expected Playback on stop"),
+        }
+        assert!(rx.try_recv().is_err(), "no extra updates queued");
+    }
+
     /// The same contain-itself invariant as settings, but swept across the whole
     /// app — Library, Albums and a populated queue/now-playing panel — in every
     /// locale at two widths. This is the general i18n-overflow net; new views get
