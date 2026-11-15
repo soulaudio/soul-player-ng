@@ -2164,11 +2164,10 @@ fn main() -> anyhow::Result<()> {
     let media_ah_cell = std::sync::Arc::new(std::sync::OnceLock::<rune::AppHandle<State>>::new());
     let mut builder = App::new(spec);
     // Restore the last window geometry (outer position, content size, maximized)
-    // so the app reopens where the user left it. Absent on a fresh install → the
-    // window opens at Rune's default placement. The off-screen case (e.g. an
-    // unplugged monitor) isn't clamped yet — that needs a runtime monitor
-    // accessor Rune doesn't expose publicly (see issue #64).
-    if let Some(g) = config::load_window_geometry() {
+    // so the app reopens where the user left it, clamped onto a currently-
+    // connected display (recovering from an unplugged monitor or resolution
+    // change). Absent on a fresh install → Rune's default placement.
+    if let Some(g) = config::restore_window_geometry() {
         let wo = rune::WindowOptions {
             position: Some((g.x, g.y)),
             physical_size: Some((g.w, g.h)),

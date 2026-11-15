@@ -177,6 +177,76 @@ fn geometry_to_save(
     }
 }
 
+/// A connected display's bounds in physical desktop pixels (origins may be
+/// negative on multi-monitor layouts). `primary` marks the fallback display used
+/// when a restored window overlaps none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DisplayBounds {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub primary: bool,
+}
+
+/// Adjust a restored window rect so it stays visible on a currently-connected
+/// display. Picks the display with the largest overlap and clamps the window
+/// fully inside it; if the saved rect overlaps NONE (e.g. an external monitor was
+/// unplugged, or the resolution shrank), it is centered on the primary display.
+/// With no display info (enumeration failed / headless), the geometry is returned
+/// unchanged — better to trust the saved position than to force-move the window.
+fn clamp_to_displays(geom: WindowGeometry, displays: &[DisplayBounds]) -> WindowGeometry {
+    if displays.is_empty() {
+        return geom;
+    }
+    // The display the window mostly sits on; ties resolve to any max (all equal).
+    let best = displays
+        .iter()
+        .max_by_key(|d| overlap_area(&geom, d))
+        .expect("displays is non-empty");
+    if overlap_area(&geom, best) > 0 {
+        fit_into(geom, best)
+    } else {
+        // Overlaps nothing (unplugged monitor / resolution change) → recenter.
+        let primary = displays.iter().find(|d| d.primary).unwrap_or(&displays[0]);
+        center_on(geom, primary)
+    }
+}
+
+/// Area (physical px²) the window rect and a display share; 0 if disjoint. Widened
+/// to i64 so a 4K-scale rect can't overflow.
+fn overlap_area(g: &WindowGeometry, d: &DisplayBounds) -> i64 {
+    let (gx, gy) = (i64::from(g.x), i64::from(g.y));
+    let (dx, dy) = (i64::from(d.x), i64::from(d.y));
+    let ix = (gx + i64::from(g.w)).min(dx + i64::from(d.w)) - gx.max(dx);
+    let iy = (gy + i64::from(g.h)).min(dy + i64::from(d.h)) - gy.max(dy);
+    ix.max(0) * iy.max(0)
+}
+
+/// Shrink the window to the display if larger, then slide it fully inside.
+fn fit_into(g: WindowGeometry, d: &DisplayBounds) -> WindowGeometry {
+    let (w, h) = (g.w.min(d.w), g.h.min(d.h));
+    WindowGeometry {
+        x: g.x.clamp(d.x, d.x + (d.w - w) as i32),
+        y: g.y.clamp(d.y, d.y + (d.h - h) as i32),
+        w,
+        h,
+        maximized: g.maximized,
+    }
+}
+
+/// Center the window on the display (shrinking to fit first).
+fn center_on(g: WindowGeometry, d: &DisplayBounds) -> WindowGeometry {
+    let (w, h) = (g.w.min(d.w), g.h.min(d.h));
+    WindowGeometry {
+        x: d.x + ((d.w - w) / 2) as i32,
+        y: d.y + ((d.h - h) / 2) as i32,
+        w,
+        h,
+        maximized: g.maximized,
+    }
+}
+
 /// The stable on-disk tag for an EQ unit's `kind`. A config written before the DSP
 /// chain grew beyond EQ has no `kind` field, so it defaults to this (= still EQ).
 fn default_dsp_kind() -> String {
@@ -474,6 +544,37 @@ pub fn save_indexing_mode(mode: &str) {
 /// The saved window geometry to restore on launch, or `None` on a fresh install.
 pub fn load_window_geometry() -> Option<WindowGeometry> {
     load().window
+}
+
+/// Enumerate connected displays in physical-pixel desktop coordinates, for the
+/// off-screen clamp. Stateless (`DisplayInfo::all()` — no winit event loop). Empty
+/// on failure (the clamp then trusts the saved geometry) and in tests (hardware is
+/// never touched; [`clamp_to_displays`] is unit-tested directly).
+#[cfg(not(test))]
+fn displays() -> Vec<DisplayBounds> {
+    display_info::DisplayInfo::all()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|d| DisplayBounds {
+            x: d.x,
+            y: d.y,
+            w: d.width,
+            h: d.height,
+            primary: d.is_primary,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn displays() -> Vec<DisplayBounds> {
+    Vec::new()
+}
+
+/// The window geometry to restore on launch: the saved rect, clamped so it's
+/// visible on a currently-connected display (recovering from an unplugged monitor
+/// or a resolution change). `None` on a fresh install.
+pub fn restore_window_geometry() -> Option<WindowGeometry> {
+    Some(clamp_to_displays(load_window_geometry()?, &displays()))
 }
 
 /// Persist the window geometry derived from the current placement: pass the outer
@@ -1210,6 +1311,143 @@ mod tests {
                 maximized: true
             })
         );
+    }
+
+    // A primary 1920x1080 at origin and a secondary 2560x1440 to its right.
+    fn two_monitors() -> Vec<DisplayBounds> {
+        vec![
+            DisplayBounds {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                primary: true,
+            },
+            DisplayBounds {
+                x: 1920,
+                y: 0,
+                w: 2560,
+                h: 1440,
+                primary: false,
+            },
+        ]
+    }
+
+    #[test]
+    fn clamp_window_fully_on_a_monitor_is_unchanged() {
+        let g = WindowGeometry {
+            x: 100,
+            y: 100,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        assert_eq!(clamp_to_displays(g, &two_monitors()), g);
+    }
+
+    #[test]
+    fn clamp_window_on_the_secondary_monitor_stays_there() {
+        // Fully inside the secondary (1920..4480, 0..1440) → untouched.
+        let g = WindowGeometry {
+            x: 2000,
+            y: 100,
+            w: 1000,
+            h: 800,
+            maximized: false,
+        };
+        assert_eq!(clamp_to_displays(g, &two_monitors()), g);
+    }
+
+    #[test]
+    fn clamp_window_hanging_off_an_edge_is_pulled_fully_onto_its_monitor() {
+        // Mostly on the primary but spilling past its right edge (1600+800 > 1920).
+        let g = WindowGeometry {
+            x: 1600,
+            y: 100,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        let only_primary = &two_monitors()[..1];
+        assert_eq!(
+            clamp_to_displays(g, only_primary),
+            WindowGeometry {
+                x: 1120,
+                y: 100,
+                w: 800,
+                h: 600,
+                maximized: false
+            }
+        );
+    }
+
+    #[test]
+    fn clamp_window_on_a_disconnected_monitor_centers_on_primary() {
+        // Saved far away (an unplugged external) → overlaps nothing → centered on
+        // the primary: x = (1920-800)/2 = 560, y = (1080-600)/2 = 240.
+        let g = WindowGeometry {
+            x: 5000,
+            y: 5000,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        assert_eq!(
+            clamp_to_displays(g, &two_monitors()),
+            WindowGeometry {
+                x: 560,
+                y: 240,
+                w: 800,
+                h: 600,
+                maximized: false
+            }
+        );
+    }
+
+    #[test]
+    fn clamp_window_larger_than_its_monitor_shrinks_to_fit() {
+        let g = WindowGeometry {
+            x: 0,
+            y: 0,
+            w: 3000,
+            h: 2000,
+            maximized: false,
+        };
+        let only_primary = &two_monitors()[..1];
+        assert_eq!(
+            clamp_to_displays(g, only_primary),
+            WindowGeometry {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                maximized: false
+            }
+        );
+    }
+
+    #[test]
+    fn clamp_with_no_display_info_trusts_the_saved_geometry() {
+        let g = WindowGeometry {
+            x: -4000,
+            y: -4000,
+            w: 800,
+            h: 600,
+            maximized: false,
+        };
+        assert_eq!(clamp_to_displays(g, &[]), g);
+    }
+
+    #[test]
+    fn clamp_preserves_the_maximized_flag() {
+        let g = WindowGeometry {
+            x: 5000,
+            y: 5000,
+            w: 800,
+            h: 600,
+            maximized: true,
+        };
+        assert!(clamp_to_displays(g, &two_monitors()).maximized);
     }
 
     #[test]
