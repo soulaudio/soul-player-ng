@@ -36,6 +36,7 @@ mod logging;
 mod media_session;
 mod organize_job;
 mod report;
+mod systray;
 mod theme;
 mod ui;
 mod update;
@@ -2016,9 +2017,11 @@ fn main() -> anyhow::Result<()> {
             s
         })
         .on_ready({
-            // Start the OS media session once the window (and its HWND, for Windows
-            // SMTC) exists. `on_ready` may fire more than once — guard it.
+            // Start the OS media session + system tray once the window (and its
+            // HWND, for Windows SMTC) exists. `on_ready` may fire more than once —
+            // guard it so we don't spawn duplicates.
             let cell = media_ah_cell.clone();
+            let tray_host = host.clone();
             let mut started = false;
             move |wh: &rune::WindowHandle| {
                 if started {
@@ -2031,6 +2034,11 @@ fn main() -> anyhow::Result<()> {
                 let hwnd = window_hwnd(wh);
                 if let Some(tx) = media_session::spawn(ah.clone(), hwnd) {
                     ah.update(move |s: &mut State, _tx: &mut Tx| s.media_tx = Some(tx));
+                }
+                // The tray must stay alive for the app's lifetime (dropping it
+                // removes the icon); it's an app-lifetime singleton, so leak it.
+                if let Some(tray) = systray::create(tray_host.clone(), ah.clone()) {
+                    std::mem::forget(tray);
                 }
             }
         });

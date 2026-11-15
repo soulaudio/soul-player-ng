@@ -85,6 +85,8 @@ os_info = "3"
 # we pull from Rune via `WindowHandle::with_raw_handle` using `raw-window-handle`.
 souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
 raw-window-handle = "0.6"
+# Decode the bundled app icon (PNG) to RGBA for the system-tray icon.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
 # installer today (SmartScreen nags); the signed updater + OS code-signing +
