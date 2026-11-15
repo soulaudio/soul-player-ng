@@ -1639,6 +1639,12 @@ pub(crate) fn set_titlebar_controls_always(s: &mut State, always: bool) {
     config::save_titlebar_controls_always(always);
 }
 
+/// The window handle, captured in `on_ready`, so `flush_on_exit` can read the
+/// final geometry (`placement()`). A static because the exit hooks receive only
+/// `&mut State`, and set synchronously there (a queued `ah.update` may not run
+/// before exit). `None` in headless tests.
+static WINDOW: std::sync::Mutex<Option<rune::WindowHandle>> = std::sync::Mutex::new(None);
+
 /// Final best-effort flush on app exit — window close, Quit, or OS logout — run
 /// once even if both `on_close` and `on_quit` fire. Config is already persisted
 /// on change; this captures the warm-startup scan caches updated this session and
@@ -1650,6 +1656,15 @@ fn flush_on_exit(s: &mut State) {
         return;
     }
     config::save_scan_caches(&s.host.caches_snapshot());
+    // Persist the window geometry so the next launch reopens where we left off.
+    // `placement()` reads the live window, so it must happen before teardown.
+    if let Some(p) = WINDOW
+        .lock()
+        .ok()
+        .and_then(|w| w.as_ref().and_then(|w| w.placement()))
+    {
+        config::save_window_geometry(p.position, p.content_size, p.maximized, p.minimized);
+    }
     logging::end_session();
     tracing::info!("Soul Player exiting");
 }
@@ -2147,7 +2162,21 @@ fn main() -> anyhow::Result<()> {
     // its HWND exist) can reach an `AppHandle` — which only exists after the app is
     // built. Set just below, before `run`.
     let media_ah_cell = std::sync::Arc::new(std::sync::OnceLock::<rune::AppHandle<State>>::new());
-    let app = App::new(spec)
+    let mut builder = App::new(spec);
+    // Restore the last window geometry (outer position, content size, maximized)
+    // so the app reopens where the user left it. Absent on a fresh install → the
+    // window opens at Rune's default placement. The off-screen case (e.g. an
+    // unplugged monitor) isn't clamped yet — that needs a runtime monitor
+    // accessor Rune doesn't expose publicly (see issue #64).
+    if let Some(g) = config::load_window_geometry() {
+        let wo = rune::WindowOptions {
+            position: Some((g.x, g.y)),
+            physical_size: Some((g.w, g.h)),
+            ..Default::default()
+        };
+        builder = builder.configured_options(wo.into()).maximized(g.maximized);
+    }
+    let app = builder
         .titlebar(Titlebar::new(views::titlebar::HEIGHT).traffic_lights(
             views::titlebar::TRAFFIC_LIGHTS.0,
             views::titlebar::TRAFFIC_LIGHTS.1,
@@ -2189,6 +2218,13 @@ fn main() -> anyhow::Result<()> {
                     return;
                 };
                 started = true;
+                // Keep the handle so `flush_on_exit` can read the final geometry.
+                // Set it synchronously (a queued `ah.update` from `on_ready` may not
+                // apply before exit), via a static since the exit hooks get only
+                // `&mut State`.
+                if let Ok(mut w) = WINDOW.lock() {
+                    *w = Some(wh.clone());
+                }
                 let hwnd = window_hwnd(wh);
                 if let Some(tx) = media_session::spawn(ah.clone(), hwnd) {
                     ah.update(move |s: &mut State, _tx: &mut Tx| s.media_tx = Some(tx));
