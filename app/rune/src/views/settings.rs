@@ -12,8 +12,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Color, Cursor, Cx, El, FileDialogOptions, Icon, Live, ScrollSpec, Side, Tx, col, el,
-    icon, row, text,
+    Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Side, Tx,
+    WheelEvent, col, el, icon, row, text, text_input,
 };
 use soul_player_host::organize;
 use soul_player_host::{BandKind, GAIN_LIMIT_DB, ReplayGainMode};
@@ -27,17 +27,24 @@ use crate::views::scrollbar;
 use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
-    OrganizePhase, SettingsTab, State, ThemePref, add_eq_band, apply_and_save, apply_watch,
-    bump_eq_band_gain, bump_eq_band_q, close_dropdown, cycle_eq_band_kind, export_eq, import_eq,
-    organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_eq_band,
-    set_eq_band_enabled, set_eq_enabled, set_eq_preamp, set_locale_pref, set_managed_dest,
+    NumField, OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band,
+    apply_and_save, apply_watch, close_dropdown, commit_eq_edit, cycle_eq_band_kind, eq_edit_start,
+    eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, import_eq,
+    organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
+    remove_eq_band, reorder_dsp_units, select_dsp_unit, set_dsp_unit_enabled, set_eq_band_enabled,
+    set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest,
     set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
     set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor,
 };
+use soul_player_host::IndexingMode;
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
 const RG_PREAMP_MIN: f32 = -15.0;
 const RG_PREAMP_MAX: f32 = 15.0;
+
+/// Points of trackpad `precise` wheel travel that make one discrete number-box step,
+/// so a fine two-finger scroll accumulates into steps instead of flying or stalling.
+const WHEEL_NOTCH_PX: f32 = 16.0;
 
 /// Width of the category rail (the original's narrow settings `aside`, widened
 /// to seat an icon + label per row).
@@ -616,6 +623,74 @@ fn rg_mode_button(label: String, key: &str, mode: ReplayGainMode, active: bool, 
         .on_press(move |s: &mut State| set_replaygain_mode(s, mode))
 }
 
+/// One indexing-speed choice; the active mode is filled with the primary color
+/// (mirrors [`rg_mode_button`]). Selecting it applies + persists via
+/// [`set_indexing_mode`].
+fn indexing_mode_button(
+    label: String,
+    key: &str,
+    mode: IndexingMode,
+    active: bool,
+    p: &Palette,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_indexing_mode(s, mode))
+}
+
+/// The "Indexing speed" control for the Sources page: a heading whose description
+/// is the *selected* mode's plain-language explanation, plus the three mode
+/// buttons. Built idiot-proof — every option is visible and the help text tells
+/// you exactly what the current choice does.
+fn indexing_section(s: &State, p: &Palette) -> El {
+    let mode = s.indexing_mode;
+    let desc = match mode {
+        IndexingMode::Automatic => t!("settings.indexingAutoDesc"),
+        IndexingMode::Maximum => t!("settings.indexingMaxDesc"),
+        IndexingMode::Gentle => t!("settings.indexingGentleDesc"),
+    };
+    col()
+        .gap(space::SM)
+        .child(heading(
+            t!("settings.indexing").to_string(),
+            desc.to_string(),
+            p,
+        ))
+        .child(
+            row()
+                .gap(space::XS)
+                .flex_wrap()
+                .child(indexing_mode_button(
+                    t!("settings.indexingModeAuto").to_string(),
+                    "indexing-auto",
+                    IndexingMode::Automatic,
+                    mode == IndexingMode::Automatic,
+                    p,
+                ))
+                .child(indexing_mode_button(
+                    t!("settings.indexingModeMax").to_string(),
+                    "indexing-max",
+                    IndexingMode::Maximum,
+                    mode == IndexingMode::Maximum,
+                    p,
+                ))
+                .child(indexing_mode_button(
+                    t!("settings.indexingModeGentle").to_string(),
+                    "indexing-gentle",
+                    IndexingMode::Gentle,
+                    mode == IndexingMode::Gentle,
+                    p,
+                )),
+        )
+}
+
 // ── Cards (one per settings group) ───────────────────────────────────────────
 
 /// Appearance: a System / Light / Dark theme override.
@@ -761,7 +836,8 @@ fn music_data_card(s: &State, p: &Palette) -> El {
             c = c.child(source_row(s, p, i));
         }
     }
-    c
+    // How hard the scanner may work when indexing these sources.
+    c.child(indexing_section(s, p))
 }
 
 // ── Managed Library (the write-path organizer: configure half) ───────────────
@@ -1244,17 +1320,143 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(crate::views::eq_graph::eq_graph(s, p, cx))
         .child(eq_band_editor(s, p));
     let body = if on { body } else { body.opacity(fx::DISABLED) };
-    card("sp-stage-dsp", p)
+    // The reorderable list of EQ units (the DSP chain) sits above the active unit's
+    // editor. The header toggle + editor operate on the active (open) unit.
+    let has_units = !s.dsp_units.is_empty();
+    let card = card("sp-stage-dsp", p)
         .child(stage_header(
             if shaping { p.accent } else { p.primary },
             &icons::SETTINGS,
             t!("player.signalPath.dsp").to_string(),
             None,
-            Some(toggle),
+            has_units.then_some(toggle),
             false,
             p,
         ))
-        .child(body)
+        .child(dsp_unit_list(s, p));
+    if has_units { card.child(body) } else { card }
+}
+
+/// Approximate height of one unit row (points) — maps a reorder drag's vertical
+/// travel to a target slot, à la the queue.
+const DSP_ROW_H: f32 = 34.0;
+
+/// Where a dragged unit lands: its index plus one slot per [`DSP_ROW_H`] of travel.
+fn dsp_drop_index(from: usize, dy: f32, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let steps = (dy / DSP_ROW_H).round() as i64;
+    (from as i64 + steps).clamp(0, len as i64 - 1) as usize
+}
+
+/// The DSP chain as a reorderable list of EQ-unit rows + an "Add EQ" button.
+fn dsp_unit_list(s: &State, p: &Palette) -> El {
+    let n = s.dsp_units.len();
+    let target = s.dsp_drag.map(|(_, to)| to);
+    let dragging_from = s.dsp_drag.map(|(from, _)| from);
+    let mut list = col().key("dsp-units").w_full().gap(space::XXS);
+    for i in 0..n {
+        // A drop line marks where a dragged unit will land.
+        if target == Some(i) && dragging_from != Some(i) {
+            list = list.child(
+                el().key("dsp-drop")
+                    .w_full()
+                    .h(2.0)
+                    .radius(1.0)
+                    .fill(p.accent),
+            );
+        }
+        list = list.child(dsp_unit_row(i, s, p, dragging_from == Some(i)));
+    }
+    let add = chip_btn(
+        "dsp-add-unit".into(),
+        "+ Add EQ".into(),
+        p.primary.alpha(0.16),
+        p.primary,
+        add_dsp_unit,
+    );
+    list.child(row().w_full().child(add))
+}
+
+/// One unit row: grip (drag-reorder) · "EQ n" · enable · remove. Clicking the row
+/// makes it the active (open) unit.
+fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
+    let unit = &s.dsp_units[i];
+    let active = i == s.dsp_active;
+    let on = unit.enabled;
+    let grip = el()
+        .key(format!("dsp-grip-{i}"))
+        .role("button")
+        .size(space::MD, DSP_ROW_H)
+        .center()
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .child(icon(&icons::GRIP, 12.0).color(p.text_secondary.alpha(0.6)))
+        .on_drag(
+            move |st: &mut State, d: &mut rune::Drag, _tx| match d.phase {
+                rune::Phase::Down => st.dsp_drag = Some((i, i)),
+                rune::Phase::Move => {
+                    if let Some((from, _)) = st.dsp_drag {
+                        let to = dsp_drop_index(from, d.dy, st.dsp_units.len());
+                        st.dsp_drag = Some((from, to));
+                    }
+                }
+                rune::Phase::Up => {
+                    if let Some((from, to)) = st.dsp_drag.take() {
+                        reorder_dsp_units(st, from, to);
+                    }
+                }
+            },
+        );
+    let (en_fill, en_fg) = if on {
+        (p.primary.alpha(0.16), p.primary)
+    } else {
+        (p.muted, p.text_secondary)
+    };
+    let enable = chip_btn(
+        format!("dsp-en-{i}"),
+        if on { "On" } else { "Off" }.into(),
+        en_fill,
+        en_fg,
+        move |st| set_dsp_unit_enabled(st, i, !on),
+    );
+    let remove = chip_btn(
+        format!("dsp-rm-{i}"),
+        "✕".into(),
+        p.muted,
+        p.text_secondary,
+        move |st| remove_dsp_unit(st, i),
+    );
+    // The clickable "select" label (content-width, a sibling of grip/enable/remove
+    // — a row-wide or grow button would shadow the child chips' hit areas).
+    let select = text(format!("EQ {}", i + 1))
+        .font(type_::ITEM_STRONG)
+        .py(space::XS)
+        .color(if active { p.fg } else { p.text_secondary })
+        .key(format!("dsp-unit-{i}"))
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .on_press(move |st: &mut State| select_dsp_unit(st, i));
+    let r = row()
+        .key(format!("dsp-unit-row-{i}"))
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .pr(space::SM)
+        .radius(radius::SM)
+        .fill(if active {
+            p.primary.alpha(0.12)
+        } else {
+            p.card
+        })
+        .child(grip)
+        .child(select)
+        .child(el().grow(1.0))
+        .child(enable)
+        .child(remove);
+    if dragged { r.opacity(0.4) } else { r }
 }
 
 /// A compact label for a band's shape (editor type chip).
@@ -1266,14 +1468,6 @@ fn kind_chip_label(kind: BandKind) -> &'static str {
         BandKind::LowCut => "Lo cut",
         BandKind::HighCut => "Hi cut",
         BandKind::Notch => "Notch",
-    }
-}
-
-fn hz_label(f: f32) -> String {
-    if f >= 1000.0 {
-        format!("{:.1} kHz", f / 1000.0)
-    } else {
-        format!("{f:.0} Hz")
     }
 }
 
@@ -1403,35 +1597,154 @@ fn eq_band_editor(s: &State, p: &Palette) -> El {
     panel
 }
 
-/// One editor row: type chip · frequency · gain ± · Q ± · bypass · remove.
+/// The key-slug for a band number's column (keeps the test keys stable).
+fn field_slug(field: NumField) -> &'static str {
+    match field {
+        NumField::Freq => "freq",
+        NumField::Gain => "gain",
+        NumField::Q => "q",
+    }
+}
+
+/// An Ableton-style number box for band `i`'s `field`: the value `num` drawn mono +
+/// right-aligned in a fixed `num_w` column (so a column's decimals line up), with an
+/// optional `unit` label to its right. Drag it vertically or scroll on it to change
+/// the value; double-click to type one. While that number is being typed, the box
+/// becomes an inline text field bound to the shared edit buffer.
+fn num_field(
+    i: usize,
+    field: NumField,
+    num: String,
+    unit: &str,
+    num_w: f32,
+    s: &State,
+    p: &Palette,
+) -> El {
+    let key = format!("eq-num-{}-{i}", field_slug(field));
+    let editing = s.eq_edit == Some((i, field));
+    // Frequency reads as a secondary value; gain and Q are primary foreground.
+    let color = match field {
+        NumField::Freq => p.text_secondary,
+        NumField::Gain | NumField::Q => p.fg,
+    };
+    let value: El = if editing {
+        text_input(&s.eq_edit_buf, type_::CAPTION.mono())
+            .key(key)
+            .single_line()
+            // Right-align the field so the digits sit exactly where the static value
+            // did — no horizontal jump when the box opens for editing.
+            .align(Align::End)
+            .w(num_w)
+            .px(space::XXS)
+            .radius(radius::SM)
+            .fill(p.primary.alpha(0.16))
+            .color(p.fg)
+            .on_edit(|st: &mut State| &mut st.eq_edit_buf)
+            .on_submit(|st: &mut State, _tx| commit_eq_edit(st))
+    } else {
+        text(num)
+            .font(type_::CAPTION.mono())
+            .color(color)
+            .align(Align::End)
+            .w(num_w)
+            .px(space::XXS)
+            .radius(radius::SM)
+            .key(key)
+            .role("button")
+            .focusable(true)
+            .cursor(Cursor::ResizeRow)
+            .on_double_press(move |st: &mut State| eq_edit_start(st, i, field))
+            .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
+                Phase::Down => eq_num_drag_start(st, i, field),
+                Phase::Move => eq_num_drag_move(st, d.dy),
+                Phase::Up => eq_num_drag_end(st),
+            })
+            .on_wheel(move |st: &mut State, ev: WheelEvent, _tx| {
+                // Windows turns Shift+wheel into a HORIZONTAL wheel: the delta then
+                // arrives in `dx` with `dy == 0`, so read whichever axis carries it
+                // (otherwise Shift+scroll — the fine-tune gesture — does nothing).
+                // Then mirror the volume wheel: ignore trackpad coasting, step once
+                // per detent, and accumulate a trackpad's fine `precise` deltas so a
+                // slow scroll still steps in BOTH directions. Negative delta = scroll
+                // up = raise the value; Shift fine-tunes.
+                let raw = if ev.dy != 0.0 { ev.dy } else { ev.dx };
+                if ev.momentum || raw == 0.0 {
+                    return true;
+                }
+                let fine = ev.mods.shift;
+                if ev.precise {
+                    st.eq_wheel_accum += raw;
+                    let steps = (st.eq_wheel_accum / WHEEL_NOTCH_PX).trunc();
+                    st.eq_wheel_accum -= steps * WHEEL_NOTCH_PX;
+                    let up = steps < 0.0;
+                    let count = (steps.abs() as i32).min(8); // guard a giant delta
+                    for _ in 0..count {
+                        eq_num_scroll(st, i, field, up, fine);
+                    }
+                } else {
+                    st.eq_wheel_accum = 0.0; // a real detent drops any partial travel
+                    eq_num_scroll(st, i, field, raw < 0.0, fine);
+                }
+                true
+            })
+    };
+    let mut cell = row().center_y().gap(space::XXS).child(value);
+    if !unit.is_empty() {
+        cell = cell.child(
+            text(unit.to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .w(24.0),
+        );
+    }
+    cell
+}
+
+/// One editor row: type chip · frequency · gain · Q · bypass · remove. The three
+/// numbers are Ableton-style boxes (drag / scroll / double-click to type), mono and
+/// right-aligned so each column's decimals line up.
 fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
     let band = s.eq_bands[i];
     let gains = band.kind.uses_gain();
-    let gain_color = if gains { p.fg } else { p.muted };
-    let gain_group = row()
-        .center_y()
-        .gap(space::XXS)
-        .child(chip_btn(
-            format!("eq-band-gdn-{i}"),
-            "−".into(),
-            p.muted,
-            p.fg,
-            move |st| bump_eq_band_gain(st, i, -1.0),
-        ))
-        .child(
-            text(format!("{:+.1} dB", band.gain_db))
-                .font(type_::CAPTION)
-                .color(gain_color)
-                .w(58.0),
+    // Frequency: whole Hz under 1 kHz, one-decimal kHz above.
+    let (freq_num, freq_unit) = if band.freq >= 1000.0 {
+        (format!("{:.1}", band.freq / 1000.0), "kHz")
+    } else {
+        (format!("{:.0}", band.freq), "Hz")
+    };
+    let freq = num_field(i, NumField::Freq, freq_num, freq_unit, 40.0, s, p);
+    // Gain: an editable box for shapes that use gain; a static dash (same column
+    // metrics) for the cuts / notch that don't.
+    let gain = if gains {
+        num_field(
+            i,
+            NumField::Gain,
+            format!("{:+.1}", band.gain_db),
+            "dB",
+            46.0,
+            s,
+            p,
         )
-        .child(chip_btn(
-            format!("eq-band-gup-{i}"),
-            "+".into(),
-            p.muted,
-            p.fg,
-            move |st| bump_eq_band_gain(st, i, 1.0),
-        ));
-    let q_group = row()
+    } else {
+        row()
+            .center_y()
+            .gap(space::XXS)
+            .child(
+                text("—".to_string())
+                    .font(type_::CAPTION.mono())
+                    .color(p.muted)
+                    .align(Align::End)
+                    .px(space::XXS)
+                    .w(46.0),
+            )
+            .child(
+                text("dB".to_string())
+                    .font(type_::CAPTION)
+                    .color(p.muted)
+                    .w(24.0),
+            )
+    };
+    let q = row()
         .center_y()
         .gap(space::XXS)
         .child(
@@ -1439,25 +1752,14 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
         )
-        .child(chip_btn(
-            format!("eq-band-qdn-{i}"),
-            "−".into(),
-            p.muted,
-            p.fg,
-            move |st| bump_eq_band_q(st, i, false),
-        ))
-        .child(
-            text(format!("{:.2}", band.q))
-                .font(type_::CAPTION)
-                .color(p.fg)
-                .w(36.0),
-        )
-        .child(chip_btn(
-            format!("eq-band-qup-{i}"),
-            "+".into(),
-            p.muted,
-            p.fg,
-            move |st| bump_eq_band_q(st, i, true),
+        .child(num_field(
+            i,
+            NumField::Q,
+            format!("{:.2}", band.q),
+            "",
+            44.0,
+            s,
+            p,
         ));
     let (en_fill, en_fg) = if band.enabled {
         (p.primary.alpha(0.16), p.primary)
@@ -1470,21 +1772,18 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
         .w_full()
         .center_y()
         .gap(space::SM)
-        .child(chip_btn(
+        // Fixed-width type column so the row doesn't reshuffle when the shape
+        // label changes width (e.g. "Bell" → "Hi shelf").
+        .child(row().w(84.0).center_y().child(chip_btn(
             format!("eq-band-type-{i}"),
             kind_chip_label(band.kind).to_string(),
             p.muted,
             p.fg,
             move |st| cycle_eq_band_kind(st, i),
-        ))
-        .child(
-            text(hz_label(band.freq))
-                .font(type_::CAPTION)
-                .color(p.text_secondary)
-                .w(64.0),
-        )
-        .child(gain_group)
-        .child(q_group)
+        )))
+        .child(freq)
+        .child(gain)
+        .child(q)
         .child(el().grow(1.0))
         .child(chip_btn(
             format!("eq-band-en-{i}"),
@@ -1593,9 +1892,66 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(preamp_row)
 }
 
-/// About: the running version and, when the launch-time check (`update::available`)
-/// found a newer signed release, an "Install & Restart" button. Install runs off
-/// the UI thread because `update::install` blocks on the download and relaunches.
+/// A quiet, bordered action button for the About card (`p.bg` fill against the
+/// card's `p.card` so it reads as a secondary action beside the primary update
+/// button).
+fn support_button(key: &'static str, label: String, p: &Palette) -> El {
+    el().key(key)
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::MD)
+        .radius(radius::MD)
+        .fill(p.bg)
+        .border(1.0, p.border)
+        .center()
+        .cursor(Cursor::Pointer)
+        .child(text(label).color(p.fg))
+}
+
+/// The About card's support actions: reveal the log folder, or open a pre-filled
+/// GitHub issue carrying version + OS + a redacted recent-log tail. Both run off
+/// the UI thread — launching the file manager or browser can block briefly — and
+/// nothing is sent until the user submits GitHub's web form.
+fn support_row(p: &Palette) -> El {
+    row()
+        .gap(space::SM)
+        // Wrap to a second line in longer locales (e.g. Spanish) instead of
+        // overflowing the card width.
+        .flex_wrap()
+        .child(
+            support_button("open-logs", t!("settings.openLogs").to_string(), p).on_press(
+                |_s: &mut State| {
+                    std::thread::spawn(|| match crate::logging::log_dir() {
+                        Some(dir) => {
+                            if let Err(e) = open::that(&dir) {
+                                tracing::error!("open logs folder failed: {e}");
+                            }
+                        }
+                        None => tracing::warn!("no log directory to open"),
+                    });
+                },
+            ),
+        )
+        .child(
+            support_button(
+                "report-problem",
+                t!("settings.reportProblem").to_string(),
+                p,
+            )
+            .on_press(|s: &mut State| {
+                // Read state now; do the file read + browser launch off-thread.
+                let device = s.output_device.clone();
+                std::thread::spawn(move || crate::report::open_issue(device));
+            }),
+        )
+}
+
+/// About: the running version, support actions (report a problem / open logs),
+/// and, when the launch-time check (`update::available`) found a newer signed
+/// release, an "Install & Restart" button. Install and the support actions run
+/// off the UI thread because they block (download/relaunch, or launching a
+/// browser/file manager).
 fn about_card(s: &State, p: &Palette) -> El {
     let mut c = card("updates", p)
         .child(heading(
@@ -1606,7 +1962,8 @@ fn about_card(s: &State, p: &Palette) -> El {
         .child(
             text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
                 .color(p.text_secondary),
-        );
+        )
+        .child(support_row(p));
     if let Some(version) = &s.update_available {
         c = c.child(
             row()
@@ -1631,7 +1988,7 @@ fn about_card(s: &State, p: &Palette) -> El {
                         .on_press(|_s: &mut State| {
                             std::thread::spawn(|| {
                                 if let Err(e) = crate::update::install() {
-                                    eprintln!("[updater] install failed: {e}");
+                                    tracing::error!("update install failed: {e}");
                                 }
                             });
                         }),

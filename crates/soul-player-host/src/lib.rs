@@ -9,14 +9,20 @@ mod sink;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
+use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
+use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
+use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
-    Band, BandKind, EqConfig, EqShared, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN,
-    band_magnitude_db, default_bands, eq_magnitude_db, format_autoeq, parse_autoeq,
+    Band, BandKind, DspChain, DspShared, EqUnit, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS,
+    Q_MAX, Q_MIN, band_magnitude_db, default_bands, eq_magnitude_db, format_autoeq, parse_autoeq,
 };
 pub use sink::SinkMode;
 /// The write-path "managed library" organizer (stateless `plan`/`apply` into a
@@ -29,6 +35,18 @@ pub use soul_player_backend::{
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
+/// A handler for a background (watcher-triggered) library refresh (see
+/// [`PlayerHandle::on_watch_update`]).
+type WatchSubscriber = Box<dyn Fn(WatchUpdate) + Send>;
+/// Deletions from one rescan: `(root, removed file paths)` for each root that lost
+/// files since its prior cache.
+type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
+
+/// Debounce window for the live filesystem watcher: filesystem events for one
+/// logical change (an editor's write-rename, an album copy's many files) are
+/// coalesced into a single rescan this long after the last event in the burst.
+/// Long enough to collapse a burst, short enough to feel live.
+const WATCH_DEBOUNCE: Duration = Duration::from_millis(600);
 
 /// The per-source status of one configured folder, as of the last scan.
 ///
@@ -65,6 +83,156 @@ pub struct WatchUpdate {
     pub sources: Vec<SourceStatus>,
 }
 
+/// How hard the library scanner may work — the user-facing "indexing speed"
+/// knob. Resolves to an extraction thread count ([`resolve_threads`](IndexingMode::resolve_threads))
+/// each scan, so [`Automatic`](IndexingMode::Automatic) can follow the machine's
+/// live CPU load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IndexingMode {
+    /// Follow the machine: scan fast when the CPU is idle, ease off when it's busy.
+    /// Reads current CPU load (a brief sample) and scales parallelism to the idle
+    /// headroom — the recommended default a UI should offer.
+    #[default]
+    Automatic,
+    /// Always oversubscribe for the quickest scan (best for a big first import);
+    /// may briefly load the machine.
+    Maximum,
+    /// Bounded, low parallelism — gentle on an older machine or a network share
+    /// (a NAS), where firing many concurrent reads is counter-productive.
+    Gentle,
+}
+
+impl IndexingMode {
+    /// The config token persisted for this mode (stable across releases).
+    #[must_use]
+    pub fn as_config(self) -> &'static str {
+        match self {
+            IndexingMode::Automatic => "auto",
+            IndexingMode::Maximum => "max",
+            IndexingMode::Gentle => "gentle",
+        }
+    }
+
+    /// Parse a persisted token back to a mode, defaulting to
+    /// [`Automatic`](IndexingMode::Automatic) for anything unknown/missing.
+    #[must_use]
+    pub fn from_config(s: &str) -> Self {
+        match s {
+            "max" => IndexingMode::Maximum,
+            "gentle" => IndexingMode::Gentle,
+            _ => IndexingMode::Automatic,
+        }
+    }
+
+    /// The extraction thread count to **start** a scan with for this mode *right
+    /// now*. `Maximum` oversubscribes the cores (hiding I/O latency); `Gentle` stays
+    /// low; `Automatic` samples the current CPU load and scales between the two. For
+    /// `Automatic` this is only the *initial* `target` — a [`LoadSampler`] then keeps
+    /// it tracking load for the rest of the scan (see [`ceiling`](Self::ceiling)).
+    #[must_use]
+    pub fn resolve_threads(self) -> usize {
+        match self {
+            IndexingMode::Maximum => self.ceiling(),
+            IndexingMode::Gentle => 2,
+            // Idle machine → up to 4× cores; busy → ~0.25× cores. "Mostly idle"
+            // fallback if the load can't be read.
+            IndexingMode::Automatic => {
+                threads_for_idle(cores(), cpu_idle_fraction().unwrap_or(0.75))
+            }
+        }
+    }
+
+    /// The worker **ceiling** for this mode — how many extraction threads the pool
+    /// may spawn. `Automatic` shares `Maximum`'s ceiling; its live `target` varies
+    /// underneath (down to 2 on a busy machine, up to here when idle).
+    #[must_use]
+    pub fn ceiling(self) -> usize {
+        match self {
+            IndexingMode::Gentle => 2,
+            IndexingMode::Maximum | IndexingMode::Automatic => {
+                (cores() * 4).clamp(4, MAX_SCAN_THREADS)
+            }
+        }
+    }
+}
+
+/// Oversubscription cap for extraction parallelism: the I/O-bound small reads scale
+/// with concurrency, but a huge core count shouldn't spawn an unreasonable pool.
+const MAX_SCAN_THREADS: usize = 32;
+
+/// Logical CPU count (≥1), defaulting to 4 if the platform won't say.
+fn cores() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
+/// Extraction threads for a given CPU idle `fraction` (0.0 = pegged, 1.0 = idle):
+/// scales `0.25×…4×` cores, clamped to `[2, MAX_SCAN_THREADS]`. Pure — both the
+/// initial [`resolve_threads`](IndexingMode::resolve_threads) and the mid-scan
+/// [`LoadSampler`] go through this, so they stay consistent.
+fn threads_for_idle(cores: usize, fraction: f32) -> usize {
+    let factor = 0.25 + 3.75 * fraction.clamp(0.0, 1.0);
+    ((cores.max(1) as f32 * factor).round() as usize).clamp(2, MAX_SCAN_THREADS)
+}
+
+/// A background thread that re-samples CPU load (~every [`MINIMUM_CPU_UPDATE_INTERVAL`])
+/// and writes an updated extraction `target`, so an `Automatic` scan adapts **while
+/// it runs**. Dropping it stops and joins the thread.
+struct LoadSampler {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl LoadSampler {
+    /// Spawn a sampler that keeps `target` tracking the idle headroom, never above
+    /// `ceiling`. Runs until dropped (which stops + joins it, within one sample).
+    fn spawn(target: Arc<AtomicUsize>, ceiling: usize) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&stop);
+        let cores = cores();
+        let handle = std::thread::spawn(move || {
+            while !flag.load(Ordering::Relaxed) {
+                // ~200 ms per sample; loop to keep tracking the live load.
+                if let Some(idle) = cpu_idle_fraction() {
+                    target.store(
+                        threads_for_idle(cores, idle).min(ceiling),
+                        Ordering::Relaxed,
+                    );
+                }
+            }
+        });
+        LoadSampler {
+            stop,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for LoadSampler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+/// The fraction of CPU that is idle right now (0.0 = pegged, 1.0 = idle), or
+/// `None` if it can't be sampled. Takes two CPU readings a short interval apart
+/// (sysinfo needs the gap to compute a percentage), so it costs ~one
+/// [`MINIMUM_CPU_UPDATE_INTERVAL`] (~200 ms) — only paid in `Automatic` mode.
+fn cpu_idle_fraction() -> Option<f32> {
+    let mut sys = System::new();
+    sys.refresh_cpu_usage();
+    std::thread::sleep(MINIMUM_CPU_UPDATE_INTERVAL);
+    sys.refresh_cpu_usage();
+    let usage = sys.global_cpu_usage();
+    usage
+        .is_finite()
+        .then(|| (1.0 - usage / 100.0).clamp(0.0, 1.0))
+}
+
 /// One configured source: a root path plus whether the user has it enabled.
 /// Stored (deduped, in order) so an enabled flag — like an unavailable root —
 /// survives re-scans and reconciliation.
@@ -96,6 +264,22 @@ struct Inner {
     /// a cold full read. A configured-but-unscanned root (disabled / offline) keeps
     /// its cache for when it returns; a de-configured root's cache is pruned.
     caches: Mutex<HashMap<PathBuf, ScanCache>>,
+    /// Subscribers for a background (watcher-triggered) rescan's [`WatchUpdate`], so
+    /// the UI refreshes its library/sources when files change on disk while the app
+    /// is open. Registered via [`on_watch_update`](PlayerHandle::on_watch_update);
+    /// distinct from `subscribers` (backend playback events) because a `WatchUpdate`
+    /// carries the host's own [`SourceStatus`], not a backend [`Event`].
+    watch_subscribers: Mutex<Vec<WatchSubscriber>>,
+    /// The live filesystem watcher ([`start_watching`](PlayerHandle::start_watching)),
+    /// kept alive here so its debounce thread runs; `None` until started. Replaced
+    /// (re-armed over the new root set) whenever the configured sources change.
+    watcher: Mutex<Option<Debouncer<RecommendedWatcher>>>,
+    /// The library-scan "indexing speed" mode, resolved to a thread count each scan
+    /// (so [`IndexingMode::Automatic`] follows live CPU load). Defaults to
+    /// [`Maximum`](IndexingMode::Maximum) here — no CPU sampling until the app sets
+    /// the user's persisted choice ([`set_indexing_mode`](PlayerHandle::set_indexing_mode),
+    /// whose own default is `Automatic`) — which also keeps the test suite fast.
+    indexing_mode: Mutex<IndexingMode>,
     /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
     /// or `None` for the system default. Read when the actor is (re)spawned and
     /// passed to the sink factory; a change applies to the NEXT spawn, not the
@@ -117,11 +301,11 @@ struct Inner {
     /// here instead of driving the actor, so a head's command wiring can be
     /// asserted headlessly. `None` (the default) in every real handle.
     recorder: Mutex<Option<Vec<Command>>>,
-    /// The live parametric-EQ settings. Shared with the device sink's [`eq::EqSink`]
-    /// (created per spawn) so a change applies to the LIVE stream at its next block
-    /// — like ReplayGain, not the output device. Persists across actor respawns
-    /// (device changes) because the same `Arc` is handed to each new sink.
-    eq: EqShared,
+    /// The live DSP chain. Shared with the device sink's [`eq::DspSink`] (created
+    /// per spawn) so a change applies to the LIVE stream at its next block — like
+    /// ReplayGain, not the output device. Persists across actor respawns (device
+    /// changes) because the same `Arc` is handed to each new sink.
+    dsp: DspShared,
     /// The latest spectrum-analyzer snapshot, written by the sink (pump thread) and
     /// polled by the UI. The same `Arc` is handed to each new sink across respawns.
     spectrum: SpectrumShared,
@@ -189,11 +373,14 @@ impl PlayerHandle {
                 folders: Mutex::new(Vec::new()),
                 last_sources: Mutex::new(Vec::new()),
                 caches: Mutex::new(HashMap::new()),
+                watch_subscribers: Mutex::new(Vec::new()),
+                watcher: Mutex::new(None),
+                indexing_mode: Mutex::new(IndexingMode::Maximum),
                 output_device: Mutex::new(None),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
                 recorder: Mutex::new(None),
-                eq: Arc::new(Mutex::new(EqConfig::default())),
+                dsp: Arc::new(Mutex::new(DspChain::default())),
                 spectrum: Arc::new(Mutex::new(SpectrumFrame::default())),
             }),
         }
@@ -230,6 +417,34 @@ impl PlayerHandle {
     /// Either way it lists with a 0 `track_count`. An empty / all-disabled /
     /// all-unavailable set yields an empty library, not an error.
     fn rescan(&self) -> anyhow::Result<WatchUpdate> {
+        let (up, removed) = self.rescan_compute()?;
+        // Warn about genuine deletions after the scan: each scanned (hence
+        // available) root reports files gone since its prior cache. An offline root
+        // was never scanned, so it contributes nothing (no mass-removal when a drive
+        // is unplugged). The live watcher emits these AFTER broadcasting the library
+        // refresh (see [`start_watching`]), so the deletion warning always lands
+        // once the list already reflects the removal.
+        for (root, gone) in &removed {
+            self.emit(Event::TracksRemoved {
+                root: root.clone(),
+                count: gone.len(),
+            });
+        }
+        // A user source change (set_sources / set_folders / toggle) funnels through
+        // here; re-arm the live watcher over the new root set if it is running. The
+        // watcher's own background rescans call `rescan_compute`, not this, so they
+        // never re-arm (and never recurse).
+        self.rearm_watcher();
+        Ok(up)
+    }
+
+    /// The scan itself, **without emitting any event**: scan the enabled + reachable
+    /// roots incrementally, swap in the aggregated library, refresh the per-source
+    /// caches, and build the [`WatchUpdate`] plus the per-root deletions
+    /// (`(root, removed paths)`). Split out from [`rescan`](Self::rescan) so the live
+    /// watcher can broadcast the library refresh *before* the deletion warning (the
+    /// synchronous path emits inline right after, ordering the same way).
+    fn rescan_compute(&self) -> anyhow::Result<(WatchUpdate, Deletions)> {
         let cfg = self.inner.folders.lock().expect("folders mutex").clone();
         // Only enabled, reachable roots are scanned — checked at the ROOT so a
         // transient outage is skipped, never purged file-by-file.
@@ -247,21 +462,28 @@ impl PlayerHandle {
                 .map(|r| caches.get(r).cloned().unwrap_or_default())
                 .collect()
         };
+        // Resolve the extraction parallelism for the current indexing mode. Copy the
+        // mode out of the lock first: the initial sample can sleep ~200 ms and we
+        // don't want to block a concurrent mode change.
+        let mode = *self
+            .inner
+            .indexing_mode
+            .lock()
+            .expect("indexing_mode mutex");
+        let ceiling = mode.ceiling();
+        // A shared, live concurrency target the extractor re-reads per file. For
+        // Automatic, a sampler keeps it tracking CPU load FOR THE DURATION of the
+        // scan — a scan that starts idle but hits load mid-run throttles itself (and
+        // vice-versa). Fixed modes leave it constant (no sampler).
+        let target = Arc::new(AtomicUsize::new(mode.resolve_threads().min(ceiling)));
+        let sampler = matches!(mode, IndexingMode::Automatic)
+            .then(|| LoadSampler::spawn(Arc::clone(&target), ceiling));
         let IncrementalBuild {
             library,
             caches: fresh,
             removed,
-        } = Library::scan_many_incremental(&to_scan, &priors)?;
-        // Warn about genuine deletions: each scanned (hence available) root reports
-        // files gone since its prior cache. Emitted per root so a UI can surface
-        // "N tracks removed from <folder>"; an offline root was never scanned, so it
-        // contributes nothing here (no mass-removal when a drive is unplugged).
-        for (root, gone) in &removed {
-            self.emit(Event::TracksRemoved {
-                root: root.clone(),
-                count: gone.len(),
-            });
-        }
+        } = Library::scan_many_incremental(&to_scan, &priors, ceiling, &target)?;
+        drop(sampler); // stop the sampler as soon as the scan is done
         // Refresh the scanned roots' caches; keep configured-but-unscanned roots
         // warm (a disabled / offline source re-aggregates from its cache when it
         // returns); prune caches for roots no longer configured.
@@ -304,7 +526,7 @@ impl PlayerHandle {
         // Cache the computed status (with real counts) so `sources()` — the
         // startup UI seed — reports true counts, not a 0 placeholder.
         *self.inner.last_sources.lock().expect("last_sources mutex") = sources.clone();
-        Ok(WatchUpdate { views, sources })
+        Ok((WatchUpdate { views, sources }, removed))
     }
 
     /// Seed the configured-source set from `(path, enabled)` pairs, replacing any
@@ -347,6 +569,28 @@ impl PlayerHandle {
     #[must_use]
     pub fn caches_snapshot(&self) -> HashMap<PathBuf, ScanCache> {
         self.inner.caches.lock().expect("caches mutex").clone()
+    }
+
+    /// Set the library-scan [`IndexingMode`] (the "indexing speed" the user picks in
+    /// Settings). Applies to the **next** scan — current scans keep their resolved
+    /// thread count. The app restores the persisted choice at startup; call before
+    /// (or any time after) the first scan.
+    pub fn set_indexing_mode(&self, mode: IndexingMode) {
+        *self
+            .inner
+            .indexing_mode
+            .lock()
+            .expect("indexing_mode mutex") = mode;
+    }
+
+    /// The current [`IndexingMode`] (for seeding the Settings UI).
+    #[must_use]
+    pub fn indexing_mode(&self) -> IndexingMode {
+        *self
+            .inner
+            .indexing_mode
+            .lock()
+            .expect("indexing_mode mutex")
     }
 
     /// Reconcile the configured-source set to exactly `roots` (deduped, preserving
@@ -497,18 +741,19 @@ impl PlayerHandle {
         }
     }
 
-    /// Set the parametric-EQ bands, the preamp, and the master enable. Like
+    /// Set the whole DSP chain (its ordered EQ units). Like
     /// [`set_replay_gain`](Self::set_replay_gain), it applies to the LIVE stream at
-    /// its next block — the device sink reads the shared settings each block — and
-    /// is remembered for the next spawn, without ever spawning an actor just to set
-    /// it. A disabled or all-flat EQ is a bit-exact passthrough.
-    pub fn set_eq(&self, mut bands: Vec<eq::Band>, preamp_db: f32, enabled: bool) {
-        bands.truncate(eq::MAX_BANDS);
-        let mut cfg = self.inner.eq.lock().expect("eq mutex");
-        cfg.bands = bands;
-        cfg.preamp_db = preamp_db;
-        cfg.enabled = enabled;
-        cfg.generation = cfg.generation.wrapping_add(1);
+    /// its next block — the device sink reads the shared chain each block — and is
+    /// remembered for the next spawn, without ever spawning an actor just to set it.
+    /// An empty / disabled / all-flat chain is a bit-exact passthrough. Each unit's
+    /// bands are truncated to [`MAX_BANDS`](eq::MAX_BANDS).
+    pub fn set_dsp_chain(&self, mut units: Vec<eq::EqUnit>) {
+        for unit in &mut units {
+            unit.bands.truncate(eq::MAX_BANDS);
+        }
+        let mut chain = self.inner.dsp.lock().expect("dsp chain mutex");
+        chain.units = units;
+        chain.generation = chain.generation.wrapping_add(1);
     }
 
     /// The latest spectrum-analyzer snapshot `(seq, columns)`: `seq` bumps each FFT
@@ -563,6 +808,88 @@ impl PlayerHandle {
             .iter()
         {
             sub(ev.clone());
+        }
+    }
+
+    /// Register a handler for background (watcher-triggered) library refreshes. The
+    /// app applies the [`WatchUpdate`] on its UI thread (library + Sources list), so
+    /// on-disk changes show up live. See [`start_watching`](Self::start_watching).
+    pub fn on_watch_update(&self, on_update: impl Fn(WatchUpdate) + Send + 'static) {
+        self.inner
+            .watch_subscribers
+            .lock()
+            .expect("watch_subscribers mutex")
+            .push(Box::new(on_update));
+    }
+
+    /// Fan a background rescan's [`WatchUpdate`] out to the watch subscribers.
+    fn broadcast_watch(&self, up: WatchUpdate) {
+        for sub in self
+            .inner
+            .watch_subscribers
+            .lock()
+            .expect("watch_subscribers mutex")
+            .iter()
+        {
+            sub(up.clone());
+        }
+    }
+
+    /// Start — or re-arm — the live filesystem watcher over the currently enabled
+    /// and reachable roots. A debounced change (an album copy coalesces to one
+    /// callback) triggers a background incremental rescan; its [`WatchUpdate`] is
+    /// broadcast to [`on_watch_update`](Self::on_watch_update) subscribers so the UI
+    /// refreshes, and any deletions are emitted right after (so the list updates
+    /// before the "N removed" warning). Idempotent — replaces any existing watcher,
+    /// which is how a source add/remove re-arms it. A watcher that fails to start
+    /// degrades silently (no live reindex; manual Rescan still works).
+    pub fn start_watching(&self) {
+        let roots: Vec<PathBuf> = self
+            .inner
+            .folders
+            .lock()
+            .expect("folders mutex")
+            .iter()
+            .filter(|f| f.enabled && f.path.is_dir())
+            .map(|f| f.path.clone())
+            .collect();
+        let weak = Arc::downgrade(&self.inner);
+        let mut debouncer = match new_debouncer(WATCH_DEBOUNCE, move |res: DebounceEventResult| {
+            if res.is_err() {
+                return; // watch-backend hiccup — ignore; the next event re-triggers
+            }
+            let Some(inner) = weak.upgrade() else {
+                return; // the handle (and app) is gone
+            };
+            let handle = PlayerHandle { inner };
+            // Broadcast the library refresh BEFORE the deletion warning, so the list
+            // already reflects the removal when the "N removed" notice arrives.
+            if let Ok((up, removed)) = handle.rescan_compute() {
+                handle.broadcast_watch(up);
+                for (root, gone) in removed {
+                    handle.emit(Event::TracksRemoved {
+                        root,
+                        count: gone.len(),
+                    });
+                }
+            }
+        }) {
+            Ok(d) => d,
+            Err(_) => return, // no watcher backend available → no live reindex
+        };
+        for root in &roots {
+            let _ = debouncer.watcher().watch(root, RecursiveMode::Recursive);
+        }
+        *self.inner.watcher.lock().expect("watcher mutex") = Some(debouncer);
+    }
+
+    /// Re-arm the watcher over the current roots, but only if it is already running —
+    /// called after a source-set change so a newly added folder is watched (and a
+    /// removed one dropped) without the app re-requesting it.
+    fn rearm_watcher(&self) {
+        let active = self.inner.watcher.lock().expect("watcher mutex").is_some();
+        if active {
+            self.start_watching();
         }
     }
 
@@ -685,7 +1012,7 @@ impl PlayerHandle {
         let actor = sink::build_actor(
             self.inner.mode,
             device,
-            self.inner.eq.clone(),
+            self.inner.dsp.clone(),
             self.inner.spectrum.clone(),
             lib,
             forward,
@@ -1092,6 +1419,178 @@ mod tests {
             vec![(aroot, 1)],
             "exactly one deletion warning, carrying the right root and count"
         );
+    }
+
+    #[test]
+    fn watcher_reindexes_and_broadcasts_on_a_new_file() {
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let dir = folder_with("watch_live", &["a.wav"]);
+        let root = dir.path().to_path_buf();
+        let h = PlayerHandle::offline();
+        let (tx, rx) = mpsc::channel();
+        h.on_watch_update(move |up| {
+            let _ = tx.send(up.views.len());
+        });
+        h.set_sources(&[(root.clone(), true)]).unwrap();
+        assert_eq!(h.views().len(), 1, "one track before the change");
+
+        h.start_watching();
+        // Let the platform watcher arm (FSEvents/inotify setup) before the change,
+        // so the create event isn't dropped on the floor.
+        std::thread::sleep(Duration::from_millis(300));
+        std::fs::write(root.join("b.wav"), wav(48_000, 96_000)).unwrap();
+
+        // The debounced watcher should rescan and broadcast a 2-track library. Drain
+        // any intermediate broadcast until the final count arrives (or time out).
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "watcher did not broadcast the new file within 20s"
+            );
+            match rx.recv_timeout(remaining) {
+                Ok(2) => break,
+                Ok(_) => continue, // an earlier broadcast in the burst — keep waiting
+                Err(mpsc::RecvTimeoutError::Timeout) => panic!("watcher broadcast timed out"),
+                Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watch channel closed"),
+            }
+        }
+        assert_eq!(h.views().len(), 2, "the live library now has both tracks");
+    }
+
+    #[test]
+    fn start_watching_is_safe_with_no_or_unavailable_sources() {
+        let h = PlayerHandle::offline();
+        h.start_watching(); // no sources configured — must not panic
+        let missing =
+            std::env::temp_dir().join(format!("sas_watch_missing_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        h.set_sources(&[(missing, true)]).unwrap();
+        h.start_watching(); // an unavailable root — nothing to watch, must not panic
+    }
+
+    #[test]
+    fn indexing_mode_resolves_bounded_thread_counts() {
+        assert_eq!(
+            IndexingMode::Gentle.resolve_threads(),
+            2,
+            "gentle is minimal parallelism"
+        );
+        let max = IndexingMode::Maximum.resolve_threads();
+        assert!(
+            (4..=32).contains(&max),
+            "maximum oversubscribes but stays capped: {max}"
+        );
+        // Automatic samples live CPU load; whatever the load, it stays in range and
+        // never above its ceiling.
+        let auto = IndexingMode::Automatic.resolve_threads();
+        assert!(
+            (2..=32).contains(&auto),
+            "automatic stays in [2, 32]: {auto}"
+        );
+        assert!(auto <= IndexingMode::Automatic.ceiling());
+        assert_eq!(IndexingMode::Gentle.ceiling(), 2);
+        assert!((4..=32).contains(&IndexingMode::Maximum.ceiling()));
+    }
+
+    #[test]
+    fn threads_for_idle_is_bounded_and_monotonic() {
+        // Always in [2, MAX_SCAN_THREADS], whatever the inputs (incl. out-of-range).
+        for &cores in &[1usize, 2, 4, 8, 16, 64] {
+            for &idle in &[-1.0_f32, 0.0, 0.25, 0.5, 0.75, 1.0, 2.0] {
+                let t = threads_for_idle(cores, idle);
+                assert!(
+                    (2..=MAX_SCAN_THREADS).contains(&t),
+                    "cores={cores} idle={idle} -> {t}"
+                );
+            }
+        }
+        // More idle headroom never means FEWER threads (monotonic non-decreasing).
+        let busy = threads_for_idle(8, 0.0);
+        let mid = threads_for_idle(8, 0.5);
+        let idle = threads_for_idle(8, 1.0);
+        assert!(
+            busy <= mid && mid <= idle,
+            "busy={busy} mid={mid} idle={idle}"
+        );
+        assert!(
+            idle > busy,
+            "a fully idle machine runs more threads than a pegged one"
+        );
+    }
+
+    #[test]
+    fn load_sampler_updates_the_target_then_stops_on_drop() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Instant;
+        let ceiling = 16;
+        let target = Arc::new(AtomicUsize::new(999)); // deliberately out-of-range
+        {
+            let _sampler = LoadSampler::spawn(Arc::clone(&target), ceiling);
+            // Poll for the first real write: the ~200 ms sample interval plus thread
+            // scheduling under parallel-test CPU load make a fixed sleep flaky, a
+            // generous deadline doesn't.
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let t = loop {
+                let v = target.load(Ordering::Relaxed);
+                if v != 999 {
+                    break v;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the sampler never updated the target within 5s"
+                );
+                std::thread::sleep(Duration::from_millis(25));
+            };
+            assert!(
+                (2..=ceiling).contains(&t),
+                "the sampler wrote a bounded live target (<= ceiling), got {t}"
+            );
+        } // dropped here → stops + joins
+        // After the sampler is gone the value is frozen (no further writes).
+        let frozen = target.load(Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            target.load(Ordering::Relaxed),
+            frozen,
+            "a dropped sampler stops writing the target"
+        );
+    }
+
+    #[test]
+    fn indexing_mode_config_tokens_round_trip() {
+        for m in [
+            IndexingMode::Automatic,
+            IndexingMode::Maximum,
+            IndexingMode::Gentle,
+        ] {
+            assert_eq!(
+                IndexingMode::from_config(m.as_config()),
+                m,
+                "{m:?} round-trips"
+            );
+        }
+        assert_eq!(
+            IndexingMode::from_config("nonsense"),
+            IndexingMode::Automatic,
+            "an unknown/missing token defaults to Automatic"
+        );
+        assert_eq!(IndexingMode::default(), IndexingMode::Automatic);
+    }
+
+    #[test]
+    fn set_indexing_mode_round_trips_on_the_handle() {
+        let h = PlayerHandle::offline();
+        assert_eq!(
+            h.indexing_mode(),
+            IndexingMode::Maximum,
+            "the handle's own default is Maximum until the app restores the user's choice"
+        );
+        h.set_indexing_mode(IndexingMode::Gentle);
+        assert_eq!(h.indexing_mode(), IndexingMode::Gentle);
     }
 
     #[test]

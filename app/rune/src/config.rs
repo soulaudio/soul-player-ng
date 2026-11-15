@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use soul_player_host::{
-    Band, BandKind, MAX_BANDS, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, default_bands,
+    Band, BandKind, EqUnit, MAX_BANDS, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, default_bands,
 };
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
@@ -103,14 +103,59 @@ struct Config {
     managed_library_template: String,
     /// Managed-library file strategy: `"copy"` (keep the source) or `"move"`.
     managed_library_strategy: String,
-    /// Parametric-EQ master enable.
+    /// The DSP chain: an ordered list of EQ units the signal flows through. A
+    /// future "audio profile" can bundle this whole list. Empty + legacy EQ fields
+    /// present → migrated to a single unit on load.
+    eq_units: Vec<EqUnitCfg>,
+    /// Legacy single-EQ fields (pre-chain), kept for one-time migration into
+    /// `eq_units`. New saves leave them at defaults.
     eq_enabled: bool,
-    /// Parametric-EQ preamp in dB.
     eq_preamp: f32,
-    /// Parametric-EQ bands. A short or absent list fills the remaining slots from
-    /// the default layout; extra entries are ignored (so changing the band count
-    /// never corrupts a saved file).
     eq_bands: Vec<BandCfg>,
+    /// Library "indexing speed": `auto` | `max` | `gentle`. Controls how much
+    /// parallelism the scanner uses; `auto` follows live CPU load.
+    indexing_mode: String,
+}
+
+/// One persisted EQ unit: its enable, preamp and bands. TOML-friendly mirror of
+/// [`soul_player_host::EqUnit`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct EqUnitCfg {
+    enabled: bool,
+    preamp: f32,
+    bands: Vec<BandCfg>,
+}
+
+impl From<&EqUnit> for EqUnitCfg {
+    fn from(u: &EqUnit) -> Self {
+        Self {
+            enabled: u.enabled,
+            preamp: u.preamp_db,
+            bands: u.bands.iter().map(BandCfg::from).collect(),
+        }
+    }
+}
+
+impl EqUnitCfg {
+    fn to_unit(&self) -> EqUnit {
+        let fallback = Band {
+            kind: BandKind::Peaking,
+            freq: 1000.0,
+            gain_db: 0.0,
+            q: 1.0,
+            enabled: true,
+        };
+        EqUnit {
+            bands: self
+                .bands
+                .iter()
+                .take(MAX_BANDS)
+                .map(|b| b.to_band(&fallback))
+                .collect(),
+            preamp_db: self.preamp,
+            enabled: self.enabled,
+        }
+    }
 }
 
 /// One persisted parametric band. A plain, TOML-friendly mirror of
@@ -185,9 +230,11 @@ impl Default for Config {
             managed_library_path: String::new(),
             managed_library_template: "artist-album".into(),
             managed_library_strategy: "copy".into(),
+            eq_units: Vec::new(),
             eq_enabled: false,
             eq_preamp: 0.0,
             eq_bands: Vec::new(),
+            indexing_mode: "auto".into(),
         }
     }
 }
@@ -316,6 +363,20 @@ pub fn load_theme_pref() -> Option<String> {
 pub fn save_theme_pref(pref: &str) {
     let mut cfg = load();
     cfg.theme = pref.to_string();
+    save(&cfg);
+}
+
+/// The persisted library indexing-speed token (`auto` | `max` | `gentle`);
+/// defaults to `auto`. Map it through [`soul_player_host::IndexingMode::from_config`].
+pub fn load_indexing_mode() -> String {
+    load().indexing_mode
+}
+
+/// Persist the library indexing-speed token (from
+/// [`soul_player_host::IndexingMode::as_config`]).
+pub fn save_indexing_mode(mode: &str) {
+    let mut cfg = load();
+    cfg.indexing_mode = mode.to_string();
     save(&cfg);
 }
 
@@ -479,37 +540,41 @@ pub fn save_replaygain(mode: ReplayGainMode, preamp_db: f32) {
     }
 }
 
-/// The saved parametric-EQ `(enabled, bands, preamp dB)`, defaulting to off / the
-/// default layout / 0 dB. An absent band list loads the default layout; a saved
-/// one is used as-is (capped at [`MAX_BANDS`]).
-pub fn load_eq() -> (bool, Vec<Band>, f32) {
+/// The saved DSP chain (ordered EQ units), defaulting to a single off/flat unit.
+/// Migrates the pre-chain single-EQ fields into one unit when `eq_units` is absent.
+pub fn load_dsp_chain() -> Vec<EqUnit> {
     let cfg = load();
-    let bands = if cfg.eq_bands.is_empty() {
+    if !cfg.eq_units.is_empty() {
+        return cfg.eq_units.iter().map(EqUnitCfg::to_unit).collect();
+    }
+    // Migrate a legacy single EQ, or fall back to one default (off) unit.
+    let fallback = Band {
+        kind: BandKind::Peaking,
+        freq: 1000.0,
+        gain_db: 0.0,
+        q: 1.0,
+        enabled: true,
+    };
+    let bands: Vec<Band> = if cfg.eq_bands.is_empty() {
         default_bands().to_vec()
     } else {
-        // Fall back to a plain bell for an unknown persisted kind token.
-        let fallback = Band {
-            kind: BandKind::Peaking,
-            freq: 1000.0,
-            gain_db: 0.0,
-            q: 1.0,
-            enabled: true,
-        };
         cfg.eq_bands
             .iter()
             .take(MAX_BANDS)
             .map(|b| b.to_band(&fallback))
             .collect()
     };
-    (cfg.eq_enabled, bands, cfg.eq_preamp)
+    vec![EqUnit {
+        bands,
+        preamp_db: cfg.eq_preamp,
+        enabled: cfg.eq_enabled,
+    }]
 }
 
-/// Persist the parametric-EQ settings (load-modify-write the one config file).
-pub fn save_eq(enabled: bool, bands: &[Band], preamp_db: f32) {
+/// Persist the DSP chain (load-modify-write the one config file).
+pub fn save_dsp_chain(units: &[EqUnit]) {
     let mut cfg = load();
-    cfg.eq_enabled = enabled;
-    cfg.eq_preamp = preamp_db;
-    cfg.eq_bands = bands.iter().map(BandCfg::from).collect();
+    cfg.eq_units = units.iter().map(EqUnitCfg::from).collect();
     save(&cfg);
 }
 
@@ -767,6 +832,17 @@ mod tests {
             managed_library_path: "/music/managed".into(),
             managed_library_template: "flat".into(),
             managed_library_strategy: "move".into(),
+            eq_units: vec![EqUnitCfg {
+                enabled: true,
+                preamp: -2.0,
+                bands: vec![BandCfg {
+                    kind: "low_shelf".into(),
+                    freq: 90.0,
+                    gain: 4.5,
+                    q: 0.7,
+                    enabled: true,
+                }],
+            }],
             eq_enabled: true,
             eq_preamp: -3.0,
             eq_bands: vec![BandCfg {
@@ -776,6 +852,7 @@ mod tests {
                 q: 0.7,
                 enabled: true,
             }],
+            indexing_mode: "gentle".into(),
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -787,6 +864,7 @@ mod tests {
         assert!(back.eq_enabled);
         assert_eq!(back.eq_preamp, -3.0);
         assert_eq!(back.eq_bands, cfg.eq_bands);
+        assert_eq!(back.eq_units, cfg.eq_units);
         assert_eq!(back.nav_hidden, vec!["home".to_string()]);
         assert_eq!(back.managed_library_path, "/music/managed");
         assert_eq!(back.managed_library_template, "flat");
@@ -1077,5 +1155,15 @@ mod tests {
             load_scan_caches_from(Path::new("/no/such/soul-player/scan_caches.bin")).is_empty(),
             "a missing cache file loads as an empty (cold) cache"
         );
+    }
+
+    #[test]
+    fn indexing_mode_persists() {
+        let _g = use_test_config_dir();
+        assert_eq!(load_indexing_mode(), "auto", "defaults to auto");
+        save_indexing_mode("gentle");
+        assert_eq!(load_indexing_mode(), "gentle");
+        save_indexing_mode("max");
+        assert_eq!(load_indexing_mode(), "max");
     }
 }
