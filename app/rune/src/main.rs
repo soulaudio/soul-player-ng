@@ -253,6 +253,25 @@ struct State {
     /// The band whose handle is selected/focused (shows its per-band curve + a
     /// readout). `None` when nothing is selected.
     eq_selected: Option<usize>,
+    /// In-flight Ableton-style number-box drag in the band table: `(band index,
+    /// which number, the value at the press)`, so the vertical drag applies
+    /// absolutely from the press point. `None` when not dragging a number.
+    eq_num_drag: Option<(usize, NumField, f32)>,
+    /// Which band-table number is being typed into (double-click a value to open an
+    /// inline text field): `(band index, which number)`, or `None`. The buffer it
+    /// edits is `eq_edit_buf` (kept separate so the field's `on_edit` accessor always
+    /// has a live `TextEdit` to return, even the frame the edit closes).
+    eq_edit: Option<(usize, NumField)>,
+    /// The text buffer the inline number editor draws and the user types into. Reset
+    /// to the current value when an edit opens; ignored while `eq_edit` is `None`.
+    eq_edit_buf: rune::TextEdit,
+    /// Accumulated wheel travel over a band-table number box, so a trackpad's many
+    /// small `precise` deltas add up to discrete steps (a notched mouse wheel still
+    /// steps once per detent). Self-draining; no reset needed.
+    eq_wheel_accum: f32,
+    /// Whether Shift is held (tracked via `Key::Modifier`), so a number drag can
+    /// fine-tune — the `Drag` event carries no modifiers, unlike the wheel's.
+    shift_held: bool,
     /// The latest spectrum-analyzer columns (smoothed dBFS, 20 Hz…20 kHz log) the
     /// EQ graph draws behind the curve. Empty when not playing / tab hidden. Pulled
     /// from the host by `spectrum_poll` at frame rate.
@@ -399,6 +418,11 @@ impl State {
             eq_preamp,
             eq_drag: None,
             eq_selected: None,
+            eq_num_drag: None,
+            eq_edit: None,
+            eq_edit_buf: rune::TextEdit::new(""),
+            eq_wheel_accum: 0.0,
+            shift_held: false,
             spectrum: Vec::new(),
             spectrum_seq: 0,
             eq_editor_open: false,
@@ -683,6 +707,170 @@ pub(crate) fn set_eq_enabled(s: &mut State, on: bool) {
     apply_eq(s);
 }
 
+/// Which numeric column of a band the table's Ableton-style number boxes target.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum NumField {
+    Freq,
+    Gain,
+    Q,
+}
+
+/// Drag sensitivity: a 0.1 dB gain step per vertical point dragged.
+const GAIN_DRAG_DB_PER_PX: f32 = 0.1;
+/// Drag sensitivity: dragging 48 points shifts the frequency one octave.
+const FREQ_DRAG_PX_PER_OCTAVE: f32 = 48.0;
+/// Drag sensitivity: dragging 90 points doubles (or halves) Q.
+const Q_DRAG_PX_PER_DOUBLE: f32 = 90.0;
+/// Wheel step: one notch nudges gain 0.5 dB.
+const GAIN_SCROLL_DB: f32 = 0.5;
+/// Wheel step: one notch shifts the frequency a sixth of an octave (~12%, ≈2^(1/6)).
+const FREQ_SCROLL_STEP: f32 = 1.1225;
+/// Fine wheel step (Shift held): a 24th of an octave (~3%, ≈2^(1/24)).
+const FREQ_SCROLL_STEP_FINE: f32 = 1.0293;
+
+/// Read a band's `field` value (frequency Hz, gain dB, or Q).
+fn band_field(b: &Band, field: NumField) -> f32 {
+    match field {
+        NumField::Freq => b.freq,
+        NumField::Gain => b.gain_db,
+        NumField::Q => b.q,
+    }
+}
+
+/// Apply a value to band `i`'s `field` through the right clamped setter.
+fn set_eq_band_field(s: &mut State, i: usize, field: NumField, value: f32) {
+    match field {
+        NumField::Freq => set_eq_band_freq(s, i, value),
+        NumField::Gain => set_eq_band_gain(s, i, value),
+        NumField::Q => set_eq_band_q(s, i, value),
+    }
+}
+
+/// The raw text shown when a number opens for editing (no unit suffix): frequency
+/// as whole Hz, gain to 0.1 dB, Q to 0.01.
+fn edit_text_for(b: &Band, field: NumField) -> String {
+    match field {
+        NumField::Freq => format!("{:.0}", b.freq),
+        NumField::Gain => format!("{:.1}", b.gain_db),
+        NumField::Q => format!("{:.2}", b.q),
+    }
+}
+
+/// Set band `i`'s frequency in Hz (clamped), applying live.
+pub(crate) fn set_eq_band_freq(s: &mut State, i: usize, hz: f32) {
+    if let Some(slot) = s.eq_bands.get_mut(i) {
+        slot.freq = hz.clamp(FREQ_MIN, FREQ_MAX);
+    }
+    apply_eq(s);
+}
+
+/// Set band `i`'s gain in dB (clamped + rounded to 0.1), applying live.
+pub(crate) fn set_eq_band_gain(s: &mut State, i: usize, db: f32) {
+    if let Some(slot) = s.eq_bands.get_mut(i) {
+        slot.gain_db = (db.clamp(-GAIN_LIMIT_DB, GAIN_LIMIT_DB) * 10.0).round() / 10.0;
+    }
+    apply_eq(s);
+}
+
+/// Begin an Ableton-style vertical drag on band `i`'s `field`: caches the value at
+/// the press so the drag applies absolutely, selects the band, and closes any open
+/// inline edit.
+pub(crate) fn eq_num_drag_start(s: &mut State, i: usize, field: NumField) {
+    commit_eq_edit(s);
+    if let Some(b) = s.eq_bands.get(i) {
+        s.eq_selected = Some(i);
+        s.eq_num_drag = Some((i, field, band_field(b, field)));
+    }
+}
+
+/// How much finer a Shift-held number drag is than a plain one (a quarter the
+/// travel per point).
+const DRAG_FINE_FACTOR: f32 = 0.25;
+
+/// Continue a number drag: `dy` is the pointer's vertical travel since the press
+/// (down is positive). Up raises the value; gain is linear, frequency and Q are
+/// geometric (constant octaves / doublings per point). Holding Shift fine-tunes by
+/// scaling the travel down.
+pub(crate) fn eq_num_drag_move(s: &mut State, dy: f32) {
+    let Some((i, field, start)) = s.eq_num_drag else {
+        return;
+    };
+    let dy = if s.shift_held {
+        dy * DRAG_FINE_FACTOR
+    } else {
+        dy
+    };
+    let value = match field {
+        NumField::Gain => start - dy * GAIN_DRAG_DB_PER_PX,
+        NumField::Freq => start * 2.0f32.powf(-dy / FREQ_DRAG_PX_PER_OCTAVE),
+        NumField::Q => start * 2.0f32.powf(-dy / Q_DRAG_PX_PER_DOUBLE),
+    };
+    set_eq_band_field(s, i, field, value);
+}
+
+/// End a number drag.
+pub(crate) fn eq_num_drag_end(s: &mut State) {
+    s.eq_num_drag = None;
+}
+
+/// Nudge band `i`'s `field` one wheel notch (`up` = scroll up = increase), closing
+/// any open inline edit. `fine` (Shift held) takes a smaller step for precise tuning.
+/// Gain steps linearly; frequency and Q step geometrically.
+pub(crate) fn eq_num_scroll(s: &mut State, i: usize, field: NumField, up: bool, fine: bool) {
+    commit_eq_edit(s);
+    let Some(b) = s.eq_bands.get(i).copied() else {
+        return;
+    };
+    s.eq_selected = Some(i);
+    let cur = band_field(&b, field);
+    let value = match field {
+        NumField::Gain => {
+            let step = if fine { 0.1 } else { GAIN_SCROLL_DB };
+            cur + if up { step } else { -step }
+        }
+        NumField::Freq => {
+            let factor = if fine {
+                FREQ_SCROLL_STEP_FINE
+            } else {
+                FREQ_SCROLL_STEP
+            };
+            cur * if up { factor } else { 1.0 / factor }
+        }
+        NumField::Q => {
+            let factor = if fine { 1.03 } else { 1.15 };
+            cur * if up { factor } else { 1.0 / factor }
+        }
+    };
+    set_eq_band_field(s, i, field, value);
+}
+
+/// Open the inline editor for band `i`'s `field` (double-click a value): seeds the
+/// buffer with the current value, focuses it, and selects all so the first keystroke
+/// replaces it. Commits any already-open edit first.
+pub(crate) fn eq_edit_start(s: &mut State, i: usize, field: NumField) {
+    commit_eq_edit(s);
+    let Some(b) = s.eq_bands.get(i).copied() else {
+        return;
+    };
+    s.eq_selected = Some(i);
+    s.eq_edit_buf = rune::TextEdit::new(edit_text_for(&b, field));
+    s.eq_edit_buf.focused = true;
+    s.eq_edit_buf.anchor = 0; // select-all (caret at end, anchor at start) → typing replaces
+    s.eq_edit = Some((i, field));
+}
+
+/// Commit the open inline edit: parse the buffer and, if it is a number, apply it to
+/// the band's field. A blank or unparseable buffer just closes the editor unchanged.
+/// No-op when nothing is being edited.
+pub(crate) fn commit_eq_edit(s: &mut State) {
+    let Some((i, field)) = s.eq_edit.take() else {
+        return;
+    };
+    if let Ok(value) = s.eq_edit_buf.text.trim().parse::<f32>() {
+        set_eq_band_field(s, i, field, value);
+    }
+}
+
 /// Clamp a band's parameters into the UI's legal ranges (freq/gain/Q), rounding
 /// gain to 0.1 dB so the readout and the drag agree.
 fn clamp_band(mut b: Band) -> Band {
@@ -765,23 +953,6 @@ pub(crate) fn remove_eq_band(s: &mut State, i: usize) {
     apply_eq(s);
 }
 
-/// Nudge band `i`'s gain by `delta` dB (an editor stepper).
-pub(crate) fn bump_eq_band_gain(s: &mut State, i: usize, delta: f32) {
-    if let Some(band) = s.eq_bands.get(i).copied() {
-        let mut b = band;
-        b.gain_db += delta;
-        set_eq_band(s, i, b);
-    }
-}
-
-/// Nudge band `i`'s Q up/down one geometric step (an editor stepper).
-pub(crate) fn bump_eq_band_q(s: &mut State, i: usize, up: bool) {
-    if let Some(band) = s.eq_bands.get(i).copied() {
-        let step = 1.15f32;
-        set_eq_band_q(s, i, band.q * if up { step } else { 1.0 / step });
-    }
-}
-
 /// Toggle the per-band editor list under the EQ graph.
 pub(crate) fn toggle_eq_editor(s: &mut State) {
     s.eq_editor_open = !s.eq_editor_open;
@@ -825,6 +996,17 @@ pub(crate) fn set_eq_preamp(s: &mut State, preamp_db: f32) {
 /// frame (~60 fps). Clears the spectrum once when playback stops or the tab is
 /// hidden so the display fades out. Returns whether the view must re-render.
 fn spectrum_poll(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
+    // An open inline number editor: once it loses focus (click elsewhere, or Escape),
+    // commit what was typed and close it. Keep a slow tick alive while it is focused so
+    // that blur is noticed even when nothing is playing.
+    if s.eq_edit.is_some() {
+        if s.eq_edit_buf.focused {
+            tx.wake_after(std::time::Duration::from_millis(50));
+        } else {
+            commit_eq_edit(s);
+            return true;
+        }
+    }
     let visible = matches!(s.route, Route::Settings) && s.settings_tab == SettingsTab::Audio;
     if !(visible && s.playing) {
         if s.spectrum.is_empty() {
@@ -1180,6 +1362,10 @@ fn setup_art(s: &mut State, waker: Waker) {
 /// as `Key::Text` (`Key::Command(c)` is reserved for Cmd/Ctrl chords), so
 /// `s`/`r` are matched there.
 fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    // Track Shift (bare press/release arrives here thanks to `App::modifier_keys`;
+    // other keys carry it in `mods`) so an EQ number drag can fine-tune while held.
+    // The `Key::Modifier` event itself falls through to the `_` arms below.
+    s.shift_held = ev.mods.shift;
     if tx.key_repeat() {
         return false;
     }
@@ -1530,6 +1716,11 @@ fn main() -> anyhow::Result<()> {
         )
     };
     let app = App::new(spec)
+        // Deliver bare Shift/Ctrl/… press+release to `on_key` so the EQ number
+        // drags can fine-tune while Shift is held (the `Drag` event carries no
+        // modifiers). `handle_key` only acts on the modifier state, ignoring the
+        // keys themselves.
+        .modifier_keys()
         // System-wide transport hotkeys (fire even when the window is unfocused).
         // Dedicated hardware media keys + OS "Now Playing" controls are a separate
         // integration (souvlaki) — these are user-reachable chords in the meantime.
@@ -2195,8 +2386,7 @@ mod tests {
         );
     }
 
-    /// The expandable editor adds and removes bands, and its steppers nudge a
-    /// band's gain, Q and shape.
+    /// The expandable editor adds and removes bands and cycles a band's shape.
     #[test]
     fn the_band_editor_adds_removes_and_edits_bands() {
         let _guard = config::use_test_config_dir();
@@ -2218,16 +2408,6 @@ mod tests {
         click_key(&mut rt, "eq-add-band");
         rt.frame(0.0);
         assert_eq!(rt.state.eq_bands.len(), n0 + 1, "Add band appends a band");
-        // Nudge band 1's gain up and its Q up.
-        let (g0, q0) = (rt.state.eq_bands[1].gain_db, rt.state.eq_bands[1].q);
-        click_key(&mut rt, "eq-band-gup-1");
-        click_key(&mut rt, "eq-band-qup-1");
-        rt.frame(0.0);
-        assert!(
-            rt.state.eq_bands[1].gain_db > g0,
-            "the gain + stepper raises gain"
-        );
-        assert!(rt.state.eq_bands[1].q > q0, "the Q + stepper widens Q");
         // Cycle band 1's shape.
         let k0 = rt.state.eq_bands[1].kind;
         click_key(&mut rt, "eq-band-type-1");
@@ -2240,6 +2420,262 @@ mod tests {
         click_key(&mut rt, "eq-band-rm-0");
         rt.frame(0.0);
         assert_eq!(rt.state.eq_bands.len(), n0, "remove drops a band");
+    }
+
+    /// The band-table numbers are Ableton-style number boxes: unit-test the gesture
+    /// mutators directly — a vertical drag applies absolutely from the press value
+    /// (up raises it), the wheel nudges it one notch, and gain/freq/Q each use their
+    /// own scale (linear dB, geometric Hz, geometric Q).
+    #[test]
+    fn band_table_number_gestures_change_the_value() {
+        let _guard = config::use_test_config_dir();
+        let mut s = populated_state();
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        // Gain drag: start at band 1's gain; dragging up (negative dy) raises it,
+        // and the result is measured from the press value, not accumulated.
+        let g0 = s.eq_bands[1].gain_db;
+        eq_num_drag_start(&mut s, 1, NumField::Gain);
+        eq_num_drag_move(&mut s, -30.0); // 30 pt up ≈ +3.0 dB
+        let g_up = s.eq_bands[1].gain_db;
+        assert!(g_up > g0, "drag up raised gain ({g0} -> {g_up})");
+        eq_num_drag_move(&mut s, 0.0); // back to the press point
+        assert!(
+            (s.eq_bands[1].gain_db - g0).abs() < 0.05,
+            "drag is absolute from the press value, not cumulative"
+        );
+        eq_num_drag_end(&mut s);
+        assert_eq!(s.eq_num_drag, None, "the drag ended");
+        // Frequency drag is geometric: dragging up raises Hz.
+        let f0 = s.eq_bands[2].freq;
+        eq_num_drag_start(&mut s, 2, NumField::Freq);
+        eq_num_drag_move(&mut s, -FREQ_DRAG_PX_PER_OCTAVE); // one octave up
+        assert!(
+            (s.eq_bands[2].freq / f0 - 2.0).abs() < 0.05,
+            "one octave of drag doubled the frequency ({f0} -> {})",
+            s.eq_bands[2].freq
+        );
+        eq_num_drag_end(&mut s);
+        // Wheel: up widens/raises; here Q up = narrower (higher Q).
+        let q0 = s.eq_bands[0].q;
+        eq_num_scroll(&mut s, 0, NumField::Q, true, false);
+        assert!(s.eq_bands[0].q > q0, "scroll up raised Q");
+        eq_num_scroll(&mut s, 0, NumField::Q, false, false);
+        eq_num_scroll(&mut s, 0, NumField::Q, false, false);
+        assert!(
+            s.eq_bands[0].q < q0,
+            "two notches down lowered it below start"
+        );
+    }
+
+    /// Holding Shift while scrolling a band number makes a finer step than a plain
+    /// notch — the DAW fine-adjust gesture (the wheel handler passes `ev.mods.shift`).
+    #[test]
+    fn shift_scroll_fine_tunes_a_band_number() {
+        let _guard = config::use_test_config_dir();
+        let mut s = populated_state();
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        let g0 = s.eq_bands[0].gain_db;
+        // One coarse notch up.
+        eq_num_scroll(&mut s, 0, NumField::Gain, true, false);
+        let coarse = s.eq_bands[0].gain_db - g0;
+        // Reset, then one Shift (fine) notch up.
+        set_eq_band_gain(&mut s, 0, g0);
+        eq_num_scroll(&mut s, 0, NumField::Gain, true, true);
+        let fine = s.eq_bands[0].gain_db - g0;
+        assert!(
+            fine > 0.0 && fine < coarse,
+            "Shift makes a finer gain step (fine {fine} < coarse {coarse})"
+        );
+    }
+
+    /// Regression: scrolling a band number must step in BOTH directions — a notched
+    /// wheel up raises it and down lowers it (the bug had both directions lowering).
+    /// Drives the real `on_wheel` handler through the harness.
+    #[test]
+    fn number_box_wheel_steps_both_directions() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
+        let f0 = rt.state.eq_bands[0].freq;
+        rt.wheel_event(WheelEvent::new(0.0, -10.0).at(x, y)); // up
+        rt.frame(0.0);
+        let up = rt.state.eq_bands[0].freq;
+        assert!(up > f0, "scroll up raised the frequency ({f0} -> {up})");
+        rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y)); // down
+        rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_bands[0].freq < up,
+            "scroll down lowered it again ({up} -> {})",
+            rt.state.eq_bands[0].freq
+        );
+    }
+
+    /// A trackpad's fine `precise` wheel deltas accumulate into discrete steps and
+    /// still reverse direction (the one-direction bug was worst on precise devices).
+    #[test]
+    fn number_box_trackpad_wheel_accumulates_and_reverses() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
+        let f0 = rt.state.eq_bands[0].freq;
+        // Several small upward precise deltas sum past a notch → at least one step up.
+        for _ in 0..4 {
+            rt.wheel_event(WheelEvent::new(0.0, -8.0).at(x, y).precise(true));
+        }
+        rt.frame(0.0);
+        let up = rt.state.eq_bands[0].freq;
+        assert!(
+            up > f0,
+            "precise scroll up raised the frequency ({f0} -> {up})"
+        );
+        for _ in 0..4 {
+            rt.wheel_event(WheelEvent::new(0.0, 8.0).at(x, y).precise(true));
+        }
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_bands[0].freq < up,
+            "precise scroll down reversed it ({up} -> {})",
+            rt.state.eq_bands[0].freq
+        );
+    }
+
+    /// Windows turns Shift+wheel into a HORIZONTAL wheel: the delta arrives in `dx`
+    /// with `dy == 0`. The number box must still step (the "Shift+scroll does
+    /// nothing" bug), with the same direction convention as the vertical wheel.
+    #[test]
+    fn number_box_horizontal_wheel_steps_like_vertical() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
+        let f0 = rt.state.eq_bands[0].freq;
+        // dx < 0 (horizontal "up") raises, mirroring dy < 0.
+        rt.wheel_event(WheelEvent::new(-40.0, 0.0).at(x, y));
+        rt.frame(0.0);
+        let up = rt.state.eq_bands[0].freq;
+        assert!(
+            up > f0,
+            "horizontal (dx) scroll up raised freq ({f0} -> {up})"
+        );
+        rt.wheel_event(WheelEvent::new(40.0, 0.0).at(x, y));
+        rt.wheel_event(WheelEvent::new(40.0, 0.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_bands[0].freq < up,
+            "horizontal (dx) scroll down lowered it ({up} -> {})",
+            rt.state.eq_bands[0].freq
+        );
+    }
+
+    /// Holding Shift while dragging a band number fine-tunes it — the same drag
+    /// travel changes the value less (the drag reads `State::shift_held`, which the
+    /// key handler keeps current).
+    #[test]
+    fn shift_drag_fine_tunes_a_band_number() {
+        let _guard = config::use_test_config_dir();
+        let mut s = populated_state();
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        let g0 = s.eq_bands[1].gain_db;
+        // Plain drag up by 20 points.
+        eq_num_drag_start(&mut s, 1, NumField::Gain);
+        eq_num_drag_move(&mut s, -20.0);
+        let coarse = s.eq_bands[1].gain_db - g0;
+        eq_num_drag_end(&mut s);
+        // Same drag with Shift held — a finer change.
+        set_eq_band_gain(&mut s, 1, g0);
+        s.shift_held = true;
+        eq_num_drag_start(&mut s, 1, NumField::Gain);
+        eq_num_drag_move(&mut s, -20.0);
+        let fine = s.eq_bands[1].gain_db - g0;
+        assert!(
+            fine > 0.0 && fine < coarse,
+            "Shift+drag is finer (fine {fine} < coarse {coarse})"
+        );
+    }
+
+    /// Double-clicking a band number opens an inline text field; typing a value and
+    /// committing applies it. Drives the real widget through the harness (double
+    /// press → IME commit → Return).
+    #[test]
+    fn double_clicking_a_band_number_types_a_new_value() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt
+            .find("eq-num-freq-1")
+            .expect("band 1's freq number renders");
+        // Double-click the frequency to open the editor.
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_edit.is_some(),
+            "double-click opens the inline editor"
+        );
+        // Type a new frequency and commit with Return.
+        rt.ime(rune::Ime::Commit("5000".into()));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert!(rt.state.eq_edit.is_none(), "Return closes the editor");
+        assert!(
+            (rt.state.eq_bands[1].freq - 5000.0).abs() < 1.0,
+            "the typed frequency applied (got {})",
+            rt.state.eq_bands[1].freq
+        );
     }
 
     /// The DSP chain's unit list adds, selects, enables and removes units, and
