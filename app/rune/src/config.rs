@@ -1713,4 +1713,23 @@ mod tests {
             })
         );
     }
+
+    #[test]
+    fn restore_window_geometry_returns_the_saved_rect() {
+        let _g = use_test_config_dir();
+        save_window_geometry((42, 24), (900, 600), false, false);
+        // In a test build `displays()` is empty, so the clamp is a pass-through and
+        // restore returns exactly what was saved (the clamp itself is covered by the
+        // `clamp_*` cases above). This exercises the load → clamp restore wiring.
+        assert_eq!(
+            restore_window_geometry(),
+            Some(WindowGeometry {
+                x: 42,
+                y: 24,
+                w: 900,
+                h: 600,
+                maximized: false
+            })
+        );
+    }
 }
