@@ -772,6 +772,15 @@ impl PlayerHandle {
         chain.generation = chain.generation.wrapping_add(1);
     }
 
+    /// The live DSP chain the device sink is applying (a clone of the shared state).
+    /// Symmetric with [`set_dsp_chain`](Self::set_dsp_chain) — lets callers and tests
+    /// read back exactly what the engine will apply at its next block, including the
+    /// `generation` counter that tells the sink to re-design.
+    #[must_use]
+    pub fn dsp_chain(&self) -> eq::DspChain {
+        self.inner.dsp.lock().expect("dsp chain mutex").clone()
+    }
+
     /// The latest spectrum-analyzer snapshot `(seq, columns)`: `seq` bumps each FFT
     /// (0 if nothing has played yet), `columns` are smoothed dBFS levels on a
     /// 20 Hz…20 kHz log axis. The UI polls this at frame rate; an unchanged `seq`
