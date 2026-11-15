@@ -26,14 +26,23 @@ pub(crate) const TRAFFIC_LIGHTS: (f32, f32) = (19.0, (HEIGHT - 12.0) / 2.0);
 /// The window title bar: a full-width strip, `HEIGHT` tall. Minimal for now (a
 /// wordmark); the open centre/trailing area is where custom header components go
 /// later. Task 2 makes the gutters clear the native controls via `chrome_insets`.
-pub(crate) fn bar(_s: &State, p: &Palette, _cx: &mut Cx<State>) -> El {
+pub(crate) fn bar(_s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
+    let chrome = cx.chrome_insets();
+    // Tint the Windows caption-button symbols to the theme and keep the bar's
+    // height in sync with the app's zoom.
+    cx.caption_color(p.fg);
+    cx.titlebar_height(HEIGHT);
+
     row()
         .key("titlebar")
         .w_full()
         .h(HEIGHT)
         .fill(p.bg)
         .items_center()
-        .px(space::MD)
+        // Clear the native controls: macOS lights (leading), Windows buttons
+        // (trailing). `max(space::MD)` keeps a sane gutter where an inset is 0.
+        .pl(chrome.leading.max(space::MD))
+        .pr(chrome.trailing.max(space::MD))
         .window_drag()
         .child(
             row()

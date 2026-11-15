@@ -2230,6 +2230,41 @@ mod tests {
         );
     }
 
+    /// The bar's content keeps clear of the native window controls at both
+    /// ends: macOS traffic lights (leading) and Windows caption buttons
+    /// (trailing), as reported through `Cx::chrome_insets`.
+    #[test]
+    fn titlebar_content_stays_within_the_chrome_insets() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // Simulate macOS traffic lights (leading) + Windows caption buttons
+        // (trailing), as a native window reports them.
+        let mut insets = rune::ChromeInsets::default();
+        insets.leading = 80.0;
+        insets.trailing = 138.0;
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.frame(0.0);
+        let (content, _) = rt
+            .presented("titlebar-content")
+            .expect("the bar content area renders");
+        assert!(
+            content[0] >= 80.0 - 0.5,
+            "content clears the leading (macOS) inset, x={}",
+            content[0]
+        );
+        assert!(
+            content[0] + content[2] <= 1100.0 - 138.0 + 0.5,
+            "content clears the trailing (Windows) inset, right={}",
+            content[0] + content[2]
+        );
+    }
+
     /// The scrollbar is invisible while the list sits at rest and fades in only
     /// while the pointer is over the list container — a clean resting list.
     #[test]
