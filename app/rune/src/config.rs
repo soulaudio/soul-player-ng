@@ -14,9 +14,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use soul_player_host::{
-    Band, BandKind, DspUnit, EqUnit, MAX_BANDS, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache,
-    default_bands,
+    Band, BandKind, DspChain, DspUnit, EqUnit, MAX_BANDS, Profile, ProfileSet, ReplayGainMode,
+    SCAN_CACHE_VERSION, ScanCache, default_bands,
 };
+// The persisted profile/chain exchange format now lives in the shared `soul-audio-dsp`
+// crate (re-exported through the host), so the DAP reads the identical shapes. This
+// module keeps only the file I/O over them.
+use soul_player_host::format::{BandCfg, DspUnitCfg, ProfileCfg};
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
 
@@ -133,41 +137,6 @@ struct Config {
     /// install → the window opens at its default placement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window: Option<WindowGeometry>,
-}
-
-/// One persisted audio profile: a name plus the whole DSP chain. The TOML-friendly
-/// mirror of a live [`Profile`]; reuses [`DspUnitCfg`] so there's no new chain
-/// serialization. Also the shape of an exported `.json` profile file.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct ProfileCfg {
-    name: String,
-    chain: Vec<DspUnitCfg>,
-}
-
-/// A live audio profile: a name plus a decoded DSP chain. Owned here (not in the app)
-/// because this module already holds the [`DspUnit`] ⇄ [`DspUnitCfg`] conversion.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Profile {
-    pub name: String,
-    pub chain: Vec<DspUnit>,
-}
-
-impl ProfileCfg {
-    /// Decode to a live [`Profile`], skipping unknown-kind units (forward-compat).
-    fn to_profile(&self) -> Profile {
-        Profile {
-            name: self.name.clone(),
-            chain: self.chain.iter().filter_map(DspUnitCfg::to_unit).collect(),
-        }
-    }
-
-    /// Encode a live [`Profile`] for persistence / export.
-    fn from_profile(p: &Profile) -> Self {
-        Self {
-            name: p.name.clone(),
-            chain: p.chain.iter().map(DspUnitCfg::from).collect(),
-        }
-    }
 }
 
 /// A persisted window rectangle (outer position + content size) and maximized
@@ -287,135 +256,6 @@ fn center_on(g: WindowGeometry, d: &DisplayBounds) -> WindowGeometry {
         h,
         maximized: g.maximized,
     }
-}
-
-/// The stable on-disk tag for an EQ unit's `kind`. A config written before the DSP
-/// chain grew beyond EQ has no `kind` field, so it defaults to this (= still EQ).
-fn default_dsp_kind() -> String {
-    "eq".into()
-}
-
-/// One persisted DSP-chain unit: a `kind` tag plus the EQ fields (enable, preamp,
-/// bands). TOML-friendly mirror of [`soul_player_host::DspUnit`]. The `kind` tag
-/// makes the chain forward-compatible: today only `"eq"` is known (and is the
-/// default for an untagged legacy entry), while an unknown future kind round-trips
-/// on disk but is skipped when building the live chain.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct DspUnitCfg {
-    #[serde(default = "default_dsp_kind")]
-    kind: String,
-    /// The user-given unit name, if any. Skipped when `None` so an unnamed unit
-    /// doesn't bloat the file, and defaulted so old configs (without the field)
-    /// load as unnamed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    name: Option<String>,
-    enabled: bool,
-    preamp: f32,
-    bands: Vec<BandCfg>,
-}
-
-impl From<&DspUnit> for DspUnitCfg {
-    fn from(u: &DspUnit) -> Self {
-        match u {
-            DspUnit::Eq(eq) => Self {
-                kind: "eq".into(),
-                name: u.name().map(String::from),
-                enabled: eq.enabled,
-                preamp: eq.preamp_db,
-                bands: eq.bands.iter().map(BandCfg::from).collect(),
-            },
-        }
-    }
-}
-
-impl DspUnitCfg {
-    /// Build a host [`DspUnit`] from this persisted entry, or `None` for an unknown
-    /// `kind` (so a forward-compatible config's future units are skipped rather than
-    /// misread). A `"eq"` — or untagged legacy — entry maps to a [`DspUnit::Eq`].
-    fn to_unit(&self) -> Option<DspUnit> {
-        match self.kind.trim() {
-            "eq" => {
-                let fallback = Band {
-                    kind: BandKind::Peaking,
-                    freq: 1000.0,
-                    gain_db: 0.0,
-                    q: 1.0,
-                    enabled: true,
-                };
-                Some(DspUnit::Eq(EqUnit {
-                    bands: self
-                        .bands
-                        .iter()
-                        .take(MAX_BANDS)
-                        .map(|b| b.to_band(&fallback))
-                        .collect(),
-                    preamp_db: self.preamp,
-                    enabled: self.enabled,
-                    name: self.name.clone(),
-                }))
-            }
-            _ => None,
-        }
-    }
-}
-
-/// One persisted parametric band. A plain, TOML-friendly mirror of
-/// [`soul_player_host::Band`] (the `kind` is a stable string token).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct BandCfg {
-    kind: String,
-    freq: f32,
-    gain: f32,
-    q: f32,
-    enabled: bool,
-}
-
-impl From<&Band> for BandCfg {
-    fn from(b: &Band) -> Self {
-        Self {
-            kind: kind_as_str(b.kind).into(),
-            freq: b.freq,
-            gain: b.gain_db,
-            q: b.q,
-            enabled: b.enabled,
-        }
-    }
-}
-
-impl BandCfg {
-    /// Build a host [`Band`], falling back to `default` for an unknown kind token.
-    fn to_band(&self, default: &Band) -> Band {
-        Band {
-            kind: kind_from_str(&self.kind).unwrap_or(default.kind),
-            freq: self.freq,
-            gain_db: self.gain,
-            q: self.q,
-            enabled: self.enabled,
-        }
-    }
-}
-
-fn kind_as_str(kind: BandKind) -> &'static str {
-    match kind {
-        BandKind::LowShelf => "low_shelf",
-        BandKind::Peaking => "peaking",
-        BandKind::HighShelf => "high_shelf",
-        BandKind::LowCut => "low_cut",
-        BandKind::HighCut => "high_cut",
-        BandKind::Notch => "notch",
-    }
-}
-
-fn kind_from_str(s: &str) -> Option<BandKind> {
-    Some(match s.trim() {
-        "low_shelf" => BandKind::LowShelf,
-        "peaking" => BandKind::Peaking,
-        "high_shelf" => BandKind::HighShelf,
-        "low_cut" => BandKind::LowCut,
-        "high_cut" => BandKind::HighCut,
-        "notch" => BandKind::Notch,
-        _ => return None,
-    })
 }
 
 impl Default for Config {
@@ -853,26 +693,20 @@ pub fn save_dsp_chain(units: &[DspUnit]) {
     save(&cfg);
 }
 
-/// The saved audio profiles and the active index. Always returns **at least one**
-/// profile: a config written before profiles existed (no `profiles`, just `eq_units`)
-/// migrates to a single `"Default"` profile from the existing chain. The active index
-/// is clamped into range.
-pub fn load_profiles() -> (Vec<Profile>, usize) {
+/// The saved audio profiles as a [`ProfileSet`]. Always has **at least one** profile:
+/// a config written before profiles existed (no `profiles`, just `eq_units`) migrates
+/// to a single `"Default"` profile from the existing chain. The active index is clamped.
+pub fn load_profiles() -> ProfileSet {
     let cfg = load();
     if !cfg.profiles.is_empty() {
-        let profiles: Vec<Profile> = cfg.profiles.iter().map(ProfileCfg::to_profile).collect();
-        let active = cfg.active_profile.min(profiles.len() - 1);
-        return (profiles, active);
+        return ProfileSet::new(
+            cfg.profiles.iter().map(ProfileCfg::to_profile).collect(),
+            cfg.active_profile,
+        );
     }
     // Migrate: one "Default" profile from the legacy chain (handles `eq_units` + the
     // pre-chain single-EQ fields, and falls back to one default unit).
-    (
-        vec![Profile {
-            name: "Default".into(),
-            chain: load_dsp_chain(),
-        }],
-        0,
-    )
+    ProfileSet::single(Profile::new("Default", DspChain::new(load_dsp_chain())))
 }
 
 /// Serialize a profile to the portable JSON used by exported `.json` files (and read by
@@ -890,14 +724,17 @@ pub fn profile_from_json(text: &str) -> Result<Profile, serde_json::Error> {
 /// Persist the audio profiles + active index. Also mirrors the active profile's chain
 /// into the legacy `eq_units` key, so a rollback to a pre-profiles build still loads
 /// the right live chain.
-pub fn save_profiles(profiles: &[Profile], active: usize) {
+pub fn save_profiles(set: &ProfileSet) {
     let mut cfg = load();
-    let active = active.min(profiles.len().saturating_sub(1));
-    cfg.profiles = profiles.iter().map(ProfileCfg::from_profile).collect();
-    cfg.active_profile = active;
-    cfg.eq_units = profiles
-        .get(active)
-        .map(|p| p.chain.iter().map(DspUnitCfg::from).collect())
+    cfg.profiles = set
+        .profiles()
+        .iter()
+        .map(ProfileCfg::from_profile)
+        .collect();
+    cfg.active_profile = set.active_index();
+    cfg.eq_units = set
+        .active_chain()
+        .map(|c| c.units.iter().map(DspUnitCfg::from).collect())
         .unwrap_or_default();
     save(&cfg);
 }
@@ -1228,32 +1065,40 @@ mod tests {
             preamp_db: -4.0,
             ..EqUnit::default()
         })]);
-        let (migrated, active) = load_profiles();
-        assert_eq!(active, 0);
+        let migrated = load_profiles();
+        assert_eq!(migrated.active_index(), 0);
         assert_eq!(migrated.len(), 1, "a lone Default profile is synthesized");
-        assert_eq!(migrated[0].name, "Default");
-        assert_eq!(migrated[0].chain[0].as_eq().unwrap().preamp_db, -4.0);
+        assert_eq!(migrated.active().unwrap().name, "Default");
+        assert_eq!(
+            migrated.active_chain().unwrap().units[0]
+                .as_eq()
+                .unwrap()
+                .preamp_db,
+            -4.0
+        );
 
         // Two explicit profiles with active = 1 reload with their names, chains and
         // the active index intact.
-        let studio = Profile {
-            name: "Studio".into(),
-            chain: vec![DspUnit::Eq(EqUnit {
+        let studio = Profile::new(
+            "Studio",
+            DspChain::new(vec![DspUnit::Eq(EqUnit {
                 preamp_db: -2.0,
                 ..EqUnit::default()
-            })],
-        };
-        let bass = Profile {
-            name: "Bass".into(),
-            chain: vec![DspUnit::Eq(EqUnit {
+            })]),
+        );
+        let bass = Profile::new(
+            "Bass",
+            DspChain::new(vec![DspUnit::Eq(EqUnit {
                 preamp_db: 3.0,
                 ..EqUnit::default()
-            })],
-        };
-        save_profiles(&[studio.clone(), bass.clone()], 1);
-        let (back, active) = load_profiles();
-        assert_eq!(active, 1);
-        assert_eq!(back, vec![studio.clone(), bass.clone()]);
+            })]),
+        );
+        save_profiles(&ProfileSet::new(vec![studio.clone(), bass.clone()], 1));
+        let back = load_profiles();
+        assert_eq!(back.active_index(), 1);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back.profiles()[0], studio);
+        assert_eq!(back.profiles()[1], bass);
 
         // The active profile's chain mirrors into the legacy `eq_units`, so an older
         // build (load_dsp_chain) still loads the right live chain.
@@ -1264,8 +1109,12 @@ mod tests {
         );
 
         // An out-of-range active index clamps to the last profile.
-        save_profiles(std::slice::from_ref(&studio), 9);
-        assert_eq!(load_profiles().1, 0, "the active index clamps into range");
+        save_profiles(&ProfileSet::new(vec![studio.clone()], 9));
+        assert_eq!(
+            load_profiles().active_index(),
+            0,
+            "the active index clamps into range"
+        );
     }
 
     #[test]

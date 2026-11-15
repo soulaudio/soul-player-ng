@@ -1329,7 +1329,8 @@ const PROFILE_RENAME: &str = "profile-rename-field";
 /// The `(id, label)` choices for the profile switcher dropdown — one per saved
 /// profile, keyed by index so picking one calls `switch_profile`.
 fn profile_options(s: &State) -> Vec<(String, String)> {
-    s.profiles
+    s.profile_set
+        .profiles()
         .iter()
         .enumerate()
         .map(|(i, p)| (i.to_string(), p.name.clone()))
@@ -1411,13 +1412,13 @@ fn profile_bar(s: &State, p: &Palette) -> El {
             .on_submit(|st: &mut State, _tx| commit_profile_rename(st))
     } else {
         let name = s
-            .profiles
-            .get(s.active_profile)
+            .profile_set
+            .active()
             .map(|pr| pr.name.clone())
             .unwrap_or_default();
         dropdown::trigger(PROFILE_PICKER, name, p).grow(1.0)
     };
-    let can_delete = s.profiles.len() > 1;
+    let can_delete = s.profile_set.len() > 1;
     row()
         .key("profile-bar")
         .w_full()
@@ -2701,7 +2702,7 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
     if dropdown::is_open(s, PROFILE_PICKER) {
         // Match the panel width to the trigger; the active profile is pre-selected.
         let width = cx.layout_size(PROFILE_PICKER).map(|wh| wh[0]);
-        let active = s.active_profile.to_string();
+        let active = s.profile_set.active_index().to_string();
         overlays.push(dropdown::panel(
             PROFILE_PICKER,
             &profile_options(s),
