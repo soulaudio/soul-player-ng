@@ -573,6 +573,10 @@ pub(crate) fn close_signal_path(s: &mut State) {
 /// and tells the host — which applies it to the NEXT playback session (a live
 /// device switch mid-playback is a follow-up).
 pub(crate) fn set_output_device(s: &mut State, name: Option<String>) {
+    tracing::info!(
+        device = name.as_deref().unwrap_or("system default"),
+        "output device selected"
+    );
     s.output_device = name.clone();
     config::save_output_device(s.output_device.as_deref());
     s.host.set_output_device(name);
@@ -1496,6 +1500,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         let saved = config::load_sources_with_enabled();
         if !saved.is_empty() {
+            tracing::info!(count = saved.len(), "restoring saved sources");
             let _ = host.set_sources(&saved);
             // Persist the refreshed caches so the next launch stays warm (adds /
             // edits since last run are now folded in).
@@ -1574,12 +1579,14 @@ fn main() -> anyhow::Result<()> {
     // the actual "Install & Restart" so we never yank a playing track away.
     if update::enabled() {
         let uh = app.handle();
-        std::thread::spawn(move || {
-            if let Some(version) = update::available() {
+        std::thread::spawn(move || match update::available() {
+            Some(version) => {
+                tracing::info!(version, "update available");
                 uh.update(move |s: &mut State, _tx: &mut Tx| {
                     s.update_available = Some(version);
                 });
             }
+            None => tracing::debug!("no update available"),
         });
     }
     host.subscribe(move |ev: Event| {
@@ -1613,6 +1620,10 @@ fn main() -> anyhow::Result<()> {
         tracing::warn!("set_app_icon failed: {e}");
     }
     app.run();
+    // The run loop returned: the window closed cleanly. This line (paired with the
+    // startup banner) brackets a session in the log — a session that ends without
+    // it ended in a crash/kill.
+    tracing::info!("Soul Player exiting");
     Ok(())
 }
 
