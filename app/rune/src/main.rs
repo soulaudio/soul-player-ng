@@ -17,7 +17,7 @@ i18n!("locales", fallback = "en");
 
 use std::path::PathBuf;
 
-use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
+use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Titlebar, Tx, Waker, col, el, row};
 // Linked only to union parley_engine's `complex-scripts` feature on (see
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
@@ -1248,22 +1248,42 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .unwrap_or(1100.0);
     let mobile = window_w < views::sidebar::MOBILE_BREAKPOINT;
 
-    // The shell keeps the stable `"app-root"` key that `window_w` measures above
-    // (a `col`/`row` reports its laid-out width back reliably).
+    // The window shell. `app-root` keeps the key `window_w`/mobile detection
+    // measure (a row or col reports its laid-out width identically).
     let shell = if mobile {
-        // Mobile single-pane (the old app's `isMobile`): the sidebar is the
-        // full-width "menu" home view; a nav tap flips to full-screen content
-        // with a back bar. Collapse and the resize handle are desktop-only.
-        let root = col().key("app-root").w_full().h_full().fill(p.bg);
-        if s.mobile_show_content {
-            root.child(views::sidebar::mobile_top_bar(mobile_title(s), &p))
+        // Mobile single-pane (the old app's `isMobile`): the title-bar band spans
+        // the top, the mobile layout (menu home, or content with a back bar) below.
+        let body = if s.mobile_show_content {
+            col()
+                .key("shell")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .fill(p.bg)
+                .child(views::sidebar::mobile_top_bar(mobile_title(s), &p))
                 .child(content_pane(s, &p, cx, scale))
         } else {
-            root.child(views::sidebar::sidebar(s, &p, cx, scale, true))
-        }
+            col()
+                .key("shell")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .fill(p.bg)
+                .child(views::sidebar::sidebar(s, &p, cx, scale, true, 0.0))
+        };
+        col()
+            .key("app-root")
+            .w_full()
+            .h_full()
+            .fill(p.bg)
+            .child(views::titlebar::bar(s, &p, cx))
+            .child(body)
     } else {
-        // The old app's desktop shell: a fixed-width left sidebar (nav label,
-        // queue, player panel) plus the main content filling the rest.
+        // Desktop: the left sidebar's fill runs to the very top, but its content is
+        // inset by the band height so it lines up with the content pane below the
+        // band — one clean title strip across the whole window. On macOS that same
+        // inset is where the traffic lights sit (top-left, over the sidebar).
+        let sidebar_top = views::titlebar::HEIGHT;
         row()
             .key("app-root")
             .w_full()
@@ -1275,10 +1295,17 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 // swap. The handle itself renders the visible rail.
                 col().key("sidebar-slot").w(0.0).h_full()
             } else {
-                views::sidebar::sidebar(s, &p, cx, scale, false)
+                views::sidebar::sidebar(s, &p, cx, scale, false, sidebar_top)
             })
             .child(views::sidebar::resize_handle(s.sidebar_collapsed, &p))
-            .child(content_pane(s, &p, cx, scale))
+            .child(
+                col()
+                    .key("shell")
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .child(views::titlebar::bar(s, &p, cx))
+                    .child(content_pane(s, &p, cx, scale)),
+            )
     };
 
     // Overlay layer: the shell, plus any open dropdown's panel (Settings →
@@ -1806,6 +1833,10 @@ fn main() -> anyhow::Result<()> {
         )
     };
     let app = App::new(spec)
+        .titlebar(Titlebar::new(views::titlebar::HEIGHT).traffic_lights(
+            views::titlebar::TRAFFIC_LIGHTS.0,
+            views::titlebar::TRAFFIC_LIGHTS.1,
+        ))
         // Deliver bare Shift/Ctrl/… press+release to `on_key` so the EQ number
         // drags can fine-tune while Shift is held (the `Drag` event carries no
         // modifiers). `handle_key` only acts on the modifier state, ignoring the
@@ -3076,6 +3107,147 @@ mod tests {
         assert!(
             thumb[3] > 0.0,
             "the thumb has height when content overflows, got {thumb:?}"
+        );
+    }
+
+    /// The title-bar band sits at the top, `HEIGHT` tall, over the content only —
+    /// to the right of the sidebar, reaching the window's right edge (where the
+    /// Windows caption buttons live).
+    #[test]
+    fn titlebar_band_renders_over_the_content() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (bar, _) = rt
+            .presented("titlebar")
+            .expect("the title-bar band renders");
+        assert!(bar[1].abs() < 1.0, "band sits at the top, got y={}", bar[1]);
+        assert!(
+            (bar[3] - views::titlebar::HEIGHT).abs() < 1.0,
+            "band is HEIGHT tall, got h={}",
+            bar[3]
+        );
+        assert!(
+            bar[0] > 1.0,
+            "band starts right of the sidebar, got x={}",
+            bar[0]
+        );
+        assert!(
+            (bar[0] + bar[2] - 1100.0).abs() < 1.0,
+            "band reaches the window's right edge, got right={}",
+            bar[0] + bar[2]
+        );
+    }
+
+    /// The band's open content area keeps clear of the Windows caption buttons at
+    /// the trailing edge, as reported through `Cx::chrome_insets`.
+    #[test]
+    fn titlebar_content_clears_the_trailing_controls() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        let mut insets = rune::ChromeInsets::default();
+        insets.trailing = 138.0; // Windows caption buttons
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.frame(0.0);
+        let (content, _) = rt
+            .presented("titlebar-content")
+            .expect("the band content area renders");
+        assert!(
+            content[0] + content[2] <= 1100.0 - 138.0 + 0.5,
+            "content clears the trailing (Windows) controls, right={}",
+            content[0] + content[2]
+        );
+    }
+
+    /// On Windows (trailing inset > 0) the band draws its own `_ [] X` glyphs over
+    /// the native caption buttons: invisible while the top bar rests, faded in only
+    /// while the pointer is over the band — a clean strip until it's reached.
+    #[test]
+    fn windows_caption_glyphs_hidden_at_rest_and_revealed_on_hover() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        let mut insets = rune::ChromeInsets::default();
+        insets.trailing = 138.0; // three Windows caption buttons
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        let (close, rest_op) = rt
+            .presented("caption-close")
+            .expect("the close glyph renders over the native button");
+        // It sits in the trailing gutter, hard against the window's right edge.
+        assert!(
+            (close[0] + close[2] - 1100.0).abs() < 2.0,
+            "close glyph sits at the right edge, got right={}",
+            close[0] + close[2]
+        );
+        assert!(
+            rest_op < 0.05,
+            "caption glyphs are hidden at rest, opacity {rest_op}"
+        );
+
+        // Hover the band (over the close glyph); the glyphs fade in over a handful
+        // of frames (the `hover_motion` spring).
+        let cx = close[0] + close[2] / 2.0;
+        let cy = close[1] + close[3] / 2.0;
+        rt.pointer_move(cx, cy);
+        for _ in 0..40 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (_c2, hover_op) = rt
+            .presented("caption-close")
+            .expect("the close glyph renders while hovering");
+        assert!(
+            hover_op > 0.9,
+            "caption glyphs are revealed while hovering the band, opacity {hover_op}"
+        );
+    }
+
+    /// The left sidebar runs to the very top of the window (no strip above it),
+    /// and `"app-root"` still spans the window width that mobile detection reads.
+    #[test]
+    fn sidebar_runs_to_the_top() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (root, _) = rt.presented("app-root").expect("app-root renders");
+        let (sidebar, _) = rt.presented("sidebar").expect("the sidebar renders");
+        assert!(
+            (root[2] - 1100.0).abs() < 1.0,
+            "app-root is window-width, got {}",
+            root[2]
+        );
+        assert!(
+            sidebar[1].abs() < 1.0,
+            "sidebar runs to the top, got y={}",
+            sidebar[1]
+        );
+        assert!(
+            sidebar[0].abs() < 1.0,
+            "sidebar starts at the left edge, got x={}",
+            sidebar[0]
         );
     }
 
