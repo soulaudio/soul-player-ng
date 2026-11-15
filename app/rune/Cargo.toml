@@ -79,6 +79,12 @@ open = "5"
 urlencoding = "2"
 # OS name/version for the bug-report diagnostics block.
 os_info = "3"
+# OS "Now Playing" / media-session integration (hardware media keys + lock-screen
+# / SMTC / MPRIS transport). `use_zbus` gives a pure-Rust MPRIS backend on Linux
+# (no libdbus system dep). The Windows SMTC backend needs the window's HWND, which
+# we pull from Rune via `WindowHandle::with_raw_handle` using `raw-window-handle`.
+souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
+raw-window-handle = "0.6"
 
 # cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
 # installer today (SmartScreen nags); the signed updater + OS code-signing +
