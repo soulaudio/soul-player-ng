@@ -175,8 +175,18 @@ pub fn mobile_top_bar(title: String, p: &Palette) -> El {
 /// The left sidebar. On desktop it is a fixed, resizable `s.sidebar_width`
 /// column with a right border; on mobile (`full_width`) it spans the whole
 /// window with no border — the old app's `w-full border-r-0` menu view.
-pub fn sidebar(s: &State, p: &Palette, cx: &Cx<State>, scale: f32, full_width: bool) -> El {
-    let shell = col().key("sidebar").h_full().fill(p.card);
+pub fn sidebar(
+    s: &State,
+    p: &Palette,
+    cx: &Cx<State>,
+    scale: f32,
+    full_width: bool,
+    top_inset: f32,
+) -> El {
+    // `top_inset` reserves the title-bar band at the very top on macOS, where the
+    // traffic lights sit over the sidebar's leading edge; it is 0 on Windows/Linux.
+    // The `p.card` fill still reaches the top — the padding only pushes content down.
+    let shell = col().key("sidebar").h_full().fill(p.card).pt(top_inset);
     let shell = if full_width {
         shell.w_full()
     } else {

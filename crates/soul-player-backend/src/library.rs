@@ -18,7 +18,7 @@ use std::sync::atomic::AtomicUsize;
 
 use embedded_io_adapters::std::FromStd;
 use soul_audio_catalog::{BrowseAxis, Catalog, StrRef};
-use soul_audio_import::ScanCache;
+use soul_audio_import::{ScanCache, ScanProgress};
 use soul_audio_index::IndexReader;
 use soul_audio_multicatalog::{MultiCatalog, unpack};
 
@@ -103,11 +103,17 @@ impl Library {
     /// deletions detected per root (for a removal warning). A missing or short
     /// `priors` entry (`priors.get(i)` is `None`) is treated as an empty cache (a
     /// cold scan of that root). Errors if any root fails to scan.
+    ///
+    /// `progress` is forwarded per root to the underlying scan — each root reports a
+    /// monotonic `done/total` within its own [`ScanPhase`], so with multiple roots
+    /// the count restarts at each one (fine for the single-root common case; a
+    /// coarse "root i of n" is a future refinement).
     pub fn scan_many_incremental(
         roots: &[PathBuf],
         priors: &[ScanCache],
         max_threads: usize,
         target: &AtomicUsize,
+        progress: &mut dyn FnMut(ScanProgress),
     ) -> anyhow::Result<IncrementalBuild> {
         let max_threads = max_threads.max(1);
         let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(roots.len());
@@ -121,7 +127,7 @@ impl Library {
                 &prior,
                 max_threads,
                 target,
-                &mut |_| {},
+                progress,
             )?;
             let bytes = soul_audio_index::build::write_index(&outcome.input);
             let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(bytes)));
@@ -281,6 +287,7 @@ fn real_name(s: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use soul_audio_import::ScanPhase;
 
     /// A minimal valid PCM WAV of `frames` stereo frames at `rate` (silence).
     fn wav(rate: u32, frames: u32) -> Vec<u8> {
@@ -665,6 +672,7 @@ mod tests {
             &[ScanCache::default()],
             4,
             &AtomicUsize::new(4),
+            &mut |_| {},
         )
         .unwrap();
         assert_eq!(build.library.len(), 2);
@@ -680,21 +688,75 @@ mod tests {
 
         // Warm rescan reusing the prior cache: an added file is reflected.
         std::fs::write(root.join("c.wav"), wav(48_000, 48_000)).unwrap();
-        let build2 =
-            Library::scan_many_incremental(&roots, &build.caches, 4, &AtomicUsize::new(4)).unwrap();
+        let build2 = Library::scan_many_incremental(
+            &roots,
+            &build.caches,
+            4,
+            &AtomicUsize::new(4),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(build2.library.len(), 3, "added file appears");
         assert!(build2.removed.is_empty());
 
         // Deletions are reported per root (an available root — genuine removals).
         std::fs::remove_file(root.join("a.wav")).unwrap();
         std::fs::remove_file(root.join("b.wav")).unwrap();
-        let build3 =
-            Library::scan_many_incremental(&roots, &build2.caches, 4, &AtomicUsize::new(4))
-                .unwrap();
+        let build3 = Library::scan_many_incremental(
+            &roots,
+            &build2.caches,
+            4,
+            &AtomicUsize::new(4),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(build3.library.len(), 1, "only c.wav remains");
         assert_eq!(build3.removed.len(), 1, "one root reported deletions");
         assert_eq!(build3.removed[0].0, root);
         assert_eq!(build3.removed[0].1.len(), 2, "two files removed");
+    }
+
+    #[test]
+    fn scan_many_incremental_reports_determinate_progress() {
+        // A cold scan of three files emits Extracting progress whose `done` climbs
+        // monotonically to `total` == the file count — the determinate signal the
+        // titlebar pill renders.
+        let root = tmpdir("progress");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(root.join("b.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(root.join("c.wav"), wav(48_000, 48_000)).unwrap();
+        let roots = vec![root.clone()];
+
+        let mut ticks: Vec<ScanProgress> = Vec::new();
+        let build = Library::scan_many_incremental(
+            &roots,
+            &[ScanCache::default()],
+            4,
+            &AtomicUsize::new(4),
+            &mut |p| ticks.push(p),
+        )
+        .unwrap();
+        assert_eq!(build.library.len(), 3);
+
+        let extracting: Vec<&ScanProgress> = ticks
+            .iter()
+            .filter(|p| p.phase == ScanPhase::Extracting)
+            .collect();
+        assert!(
+            !extracting.is_empty(),
+            "a cold scan reports Extracting progress"
+        );
+        // `done` never exceeds `total`, and `total` is the file count throughout.
+        for p in &extracting {
+            assert!(p.done <= p.total, "done {} <= total {}", p.done, p.total);
+            assert_eq!(p.total, 3, "total is the extract count");
+        }
+        // The final Extracting tick completes (done == total).
+        assert_eq!(
+            extracting.last().map(|p| p.done),
+            Some(3),
+            "extraction finishes at done == total"
+        );
     }
 
     #[cfg(unix)]

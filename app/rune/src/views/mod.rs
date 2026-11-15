@@ -16,3 +16,4 @@ pub mod settings;
 pub mod sidebar;
 pub mod signal_path;
 pub mod slider;
+pub mod titlebar;

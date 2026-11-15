@@ -32,7 +32,7 @@ pub use library::{IncrementalBuild, Library};
 pub use soul_audio_catalog::BrowseAxis;
 /// The importer's reusable scan cache + its version tag, surfaced so the host can
 /// persist it (warm startup) through the one backend contract.
-pub use soul_audio_import::{SCAN_CACHE_VERSION, ScanCache};
+pub use soul_audio_import::{SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress};
 pub use types::{
     Command, Event, PlayState, QueueState, RepeatMode, ReplayGainMode, SignalPath, SourceCodec,
     SourceFormat, Tick, TrackView,

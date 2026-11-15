@@ -33,6 +33,10 @@ pub static SHUFFLE: Icon = stroke_icon!(
     r#"<polyline points="16 3 21 3 21 8"/><line x1="4" x2="21" y1="20" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" x2="21" y1="15" y2="21"/><line x1="4" x2="9" y1="4" y2="9"/>"#
 );
 
+/// Lucide "activity" — the heart-rate pulse line. The title-bar scan-activity
+/// indicator; it pulses (opacity) while a library scan runs.
+pub static ACTIVITY: Icon = stroke_icon!("activity", r#"<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>"#);
+
 pub static SKIP_BACK: Icon = stroke_icon!(
     "skip-back",
     r#"<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/>"#
@@ -109,6 +113,20 @@ pub static SERVER: Icon = stroke_icon!(
     r#"<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>"#
 );
 
+/// lucide `github` — on the About page's "Report a problem" button (it files a
+/// GitHub issue). Source: lucide.dev/icons/github.
+pub static GITHUB: Icon = stroke_icon!(
+    "github",
+    r#"<path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/>"#
+);
+
+/// lucide `star` — on the About page's "Star this repository" button.
+/// Source: lucide.dev/icons/star.
+pub static STAR: Icon = stroke_icon!(
+    "star",
+    r#"<polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>"#
+);
+
 /// lucide `chevron-down` — the disclosure caret on the language dropdown.
 pub static CHEVRON_DOWN: Icon = stroke_icon!("chevron-down", r#"<path d="m6 9 6 6 6-6"/>"#);
 
@@ -125,6 +143,34 @@ pub static GRIP: Icon = Icon {
 
 /// lucide `x` — the per-row remove-from-queue affordance.
 pub static X: Icon = stroke_icon!("x", r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#);
+
+// --- Windows caption glyphs ------------------------------------------------
+// Drawn over the (hidden) native `_ [] X` buttons, so they're tuned to match
+// Windows 11's own symbols: a ~10 px mark with a thin, square-capped stroke
+// (not lucide's rounded 2 px). Sized by `GLYPH_SIZE` in `titlebar.rs` so the
+// 16-unit marks land near 10 px. `stroke-width` is deliberately light here.
+
+/// Windows caption minimize glyph: a single thin horizontal rule.
+pub static CAPTION_MIN: Icon = Icon {
+    name: "caption-min",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><path d="M4 12h16"/></g>"#,
+};
+
+/// Windows caption maximize glyph: a near-square outline (hair of a corner
+/// radius, as Windows 11 draws it).
+pub static CAPTION_MAX: Icon = Icon {
+    name: "caption-max",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4.5" y="4.5" width="15" height="15" rx="0.5"/></g>"#,
+};
+
+/// Windows caption close glyph: a thin, square-capped cross.
+pub static CAPTION_CLOSE: Icon = Icon {
+    name: "caption-close",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="square"><path d="M5 5 19 19M19 5 5 19"/></g>"#,
+};
 
 pub static SEARCH: Icon = stroke_icon!(
     "search",

@@ -719,9 +719,35 @@ fn nav_toggle(id: &'static str, visible: bool, p: &Palette) -> El {
         .on_press(move |s: &mut State| set_nav_visible(s, id, !s.nav_visible(id)))
 }
 
+/// The window-controls visibility toggle: flips between "always show" and the
+/// default hover-reveal for the custom `_ [] X` buttons. Mirrors `nav_toggle`.
+fn window_controls_toggle(always: bool, p: &Palette) -> El {
+    el().key("window-controls-toggle")
+        .role("button")
+        .label(t!("settings.windowControls").to_string())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if always { p.primary } else { p.muted })
+        .child(
+            text(if always {
+                t!("settings.controlsAlways").to_string()
+            } else {
+                t!("settings.controlsHover").to_string()
+            })
+            .color(if always { p.bg } else { p.fg }),
+        )
+        .on_press(move |s: &mut State| {
+            crate::set_titlebar_controls_always(s, !s.titlebar_controls_always)
+        })
+}
+
 /// Navigation: one show/hide toggle per primary sidebar item, so the user
-/// decides which pages appear (the original's configurable nav).
-fn navigation_card(s: &State, p: &Palette) -> El {
+/// decides which pages appear (the original's configurable nav). On platforms
+/// where the app draws its own window buttons (`show_window_controls`), a final
+/// row toggles whether those stay visible or reveal on hover.
+fn navigation_card(s: &State, p: &Palette, show_window_controls: bool) -> El {
     let mut c = card("navigation", p).child(heading(
         t!("settings.navigation").to_string(),
         t!("settings.navigationDesc").to_string(),
@@ -739,6 +765,20 @@ fn navigation_card(s: &State, p: &Palette) -> El {
                         .grow(1.0),
                 )
                 .child(nav_toggle(def.id, s.nav_visible(def.id), p)),
+        );
+    }
+    if show_window_controls {
+        c = c.child(
+            row()
+                .key("window-controls-row")
+                .center_y()
+                .child(
+                    text(t!("settings.windowControls").to_string())
+                        .font(type_::ITEM)
+                        .color(p.fg)
+                        .grow(1.0),
+                )
+                .child(window_controls_toggle(s.titlebar_controls_always, p)),
         );
     }
     c
@@ -2013,9 +2053,93 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(preamp_row)
 }
 
-/// About: the running version and, when the launch-time check (`update::available`)
-/// found a newer signed release, an "Install & Restart" button. Install runs off
-/// the UI thread because `update::install` blocks on the download and relaunches.
+/// A quiet, bordered action button for the About card (`p.bg` fill against the
+/// card's `p.card` so it reads as a secondary action beside the primary update
+/// button), with a leading glyph.
+fn support_button(key: &'static str, label: String, glyph: &'static Icon, p: &Palette) -> El {
+    el().key(key)
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::MD)
+        .radius(radius::MD)
+        .fill(p.bg)
+        .border(1.0, p.border)
+        .center()
+        .cursor(Cursor::Pointer)
+        .child(
+            row()
+                .gap(space::SM)
+                .center_y()
+                .child(icon(glyph, 16.0).color(p.fg))
+                .child(text(label).color(p.fg)),
+        )
+}
+
+/// The About card's support actions: reveal the log folder, or open a pre-filled
+/// GitHub issue carrying version + OS + a redacted recent-log tail. Both run off
+/// the UI thread — launching the file manager or browser can block briefly — and
+/// nothing is sent until the user submits GitHub's web form.
+fn support_row(p: &Palette) -> El {
+    row()
+        .gap(space::SM)
+        // Wrap to a second line in longer locales (e.g. Spanish) instead of
+        // overflowing the card width.
+        .flex_wrap()
+        .child(
+            support_button(
+                "open-logs",
+                t!("settings.openLogs").to_string(),
+                &icons::FOLDER,
+                p,
+            )
+            .on_press(|_s: &mut State| {
+                std::thread::spawn(|| match crate::logging::log_dir() {
+                    Some(dir) => {
+                        if let Err(e) = open::that(&dir) {
+                            tracing::error!("open logs folder failed: {e}");
+                        }
+                    }
+                    None => tracing::warn!("no log directory to open"),
+                });
+            }),
+        )
+        .child(
+            support_button(
+                "report-problem",
+                t!("settings.reportProblem").to_string(),
+                &icons::GITHUB,
+                p,
+            )
+            .on_press(|s: &mut State| {
+                // Read state now; do the file read + browser launch off-thread.
+                let device = s.output_device.clone();
+                std::thread::spawn(move || crate::report::open_issue(device));
+            }),
+        )
+        .child(
+            support_button(
+                "star-repo",
+                t!("settings.starRepo").to_string(),
+                &icons::STAR,
+                p,
+            )
+            .on_press(|_s: &mut State| {
+                std::thread::spawn(|| {
+                    let url = format!("https://github.com/{}", crate::report::ISSUE_REPO);
+                    if let Err(e) = open::that(&url) {
+                        tracing::error!("open repository failed: {e}");
+                    }
+                });
+            }),
+        )
+}
+
+/// About: the running version, support actions (report a problem / open logs),
+/// and, when the launch-time check (`update::available`) found a newer signed
+/// release, an "Install & Restart" button. Install and the support actions run
+/// off the UI thread because they block (download/relaunch, or launching a
+/// browser/file manager).
 fn about_card(s: &State, p: &Palette) -> El {
     let mut c = card("updates", p)
         .child(heading(
@@ -2026,7 +2150,8 @@ fn about_card(s: &State, p: &Palette) -> El {
         .child(
             text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
                 .color(p.text_secondary),
-        );
+        )
+        .child(support_row(p));
     if let Some(version) = &s.update_available {
         c = c.child(
             row()
@@ -2051,7 +2176,7 @@ fn about_card(s: &State, p: &Palette) -> El {
                         .on_press(|_s: &mut State| {
                             std::thread::spawn(|| {
                                 if let Err(e) = crate::update::install() {
-                                    eprintln!("[updater] install failed: {e}");
+                                    tracing::error!("update install failed: {e}");
                                 }
                             });
                         }),
@@ -2080,7 +2205,9 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .key("settings-content")
             .gap(space::LG)
             .child(appearance_card(s, p))
-            .child(navigation_card(s, p))
+            // The window-controls toggle only applies where the app draws its own
+            // controls (Windows) — gate it on the trailing chrome inset.
+            .child(navigation_card(s, p, cx.chrome_insets().trailing > 0.0))
             .child(language_card(s, p)),
         SettingsTab::MusicData => col()
             .key("settings-content")

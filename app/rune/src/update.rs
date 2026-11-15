@@ -69,7 +69,7 @@ fn available_at(endpoint: &str) -> Option<String> {
     match try_available(endpoint) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("[updater] check skipped: {e}");
+            tracing::info!("update check skipped: {e}");
             None
         }
     }

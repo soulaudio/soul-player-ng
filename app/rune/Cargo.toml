@@ -66,6 +66,27 @@ sys-locale = "0.3"
 # The updater's own key (independent of OS code-signing) verifies each update.
 cargo-packager-updater = "0.2"
 semver = "1"
+# Structured logging to a rolling per-OS log file. The non-blocking writer moves
+# disk I/O off the calling thread so the audio/GPU hot paths never block on a log
+# write; panics are routed into the same file via a hook.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+tracing-panic = "0.1"
+# "Report a problem" / "Open logs folder": open the browser + file manager, and
+# percent-encode the pre-filled GitHub issue URL.
+open = "5"
+urlencoding = "2"
+# OS name/version for the bug-report diagnostics block.
+os_info = "3"
+# OS "Now Playing" / media-session integration (hardware media keys + lock-screen
+# / SMTC / MPRIS transport). `use_zbus` gives a pure-Rust MPRIS backend on Linux
+# (no libdbus system dep). The Windows SMTC backend needs the window's HWND, which
+# we pull from Rune via `WindowHandle::with_raw_handle` using `raw-window-handle`.
+souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
+raw-window-handle = "0.6"
+# Decode the bundled app icon (PNG) to RGBA for the system-tray icon.
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
 # installer today (SmartScreen nags); the signed updater + OS code-signing +
