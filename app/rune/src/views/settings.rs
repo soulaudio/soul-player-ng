@@ -16,7 +16,7 @@ use rune::{
     WheelEvent, col, el, icon, row, text, text_input,
 };
 use soul_player_host::organize;
-use soul_player_host::{BandKind, GAIN_LIMIT_DB, ReplayGainMode};
+use soul_player_host::{BandKind, DspUnit, GAIN_LIMIT_DB, ReplayGainMode};
 
 use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
@@ -28,14 +28,14 @@ use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
     NumField, OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band,
-    apply_and_save, apply_watch, close_dropdown, commit_eq_edit, cycle_eq_band_kind, eq_edit_start,
-    eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, import_eq,
-    organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
-    remove_eq_band, reorder_dsp_units, set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp,
-    set_indexing_mode, set_locale_pref, set_managed_dest, set_managed_strategy,
-    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_dsp_expanded,
-    toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
+    apply_and_save, apply_watch, close_dropdown, commit_dsp_rename, commit_eq_edit,
+    cycle_eq_band_kind, eq_edit_start, eq_num_drag_end, eq_num_drag_move, eq_num_drag_start,
+    eq_num_scroll, export_eq, import_eq, organize_begin, organize_confirm, organize_dismiss,
+    organize_ready, remove_dsp_unit, remove_eq_band, reorder_dsp_units, set_dsp_unit_enabled,
+    set_eq_band_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest,
+    set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, start_dsp_rename,
+    toggle_dsp_expanded, toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
@@ -1338,10 +1338,35 @@ fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let chevron = expand_chevron(expanded, format!("dsp-expand-{i}"), p, move |st| {
         toggle_dsp_expanded(st, i)
     });
-    // The unit type label (EQ is the only kind today).
-    let label = text("EQ".to_string())
-        .font(type_::ITEM_STRONG)
-        .color(if enabled { p.fg } else { p.text_secondary });
+    // The unit title: "<name> (EQ)" when the user has named it, else just its type
+    // ("EQ"). Double-click it to rename the unit; while renaming it becomes an inline
+    // text field bound to the shared rename buffer (mirrors the number editor).
+    let name_key = format!("dsp-name-{i}");
+    let label: El = if s.dsp_rename == Some(i) {
+        text_input(&s.dsp_rename_buf, type_::ITEM_STRONG)
+            .key(name_key)
+            .single_line()
+            .min_w(96.0)
+            .px(space::XXS)
+            .radius(radius::SM)
+            .fill(p.primary.alpha(0.16))
+            .color(p.fg)
+            .on_edit(|st: &mut State| &mut st.dsp_rename_buf)
+            .on_submit(|st: &mut State, _tx| commit_dsp_rename(st))
+    } else {
+        let label_text = match s.dsp_units.get(i).and_then(DspUnit::name) {
+            Some(n) => format!("{n} (EQ)"),
+            None => "EQ".to_string(),
+        };
+        text(label_text)
+            .font(type_::ITEM_STRONG)
+            .color(if enabled { p.fg } else { p.text_secondary })
+            .key(name_key)
+            .role("button")
+            .focusable(true)
+            .cursor(Cursor::Pointer)
+            .on_double_press(move |st: &mut State| start_dsp_rename(st, i))
+    };
     // Drag-reorder grip — same dy→slot mapping as the queue (via `dsp_drop_index`).
     let grip = el()
         .key(format!("dsp-grip-{i}"))
@@ -1490,7 +1515,7 @@ fn dsp_type_options() -> Vec<(String, String)> {
 fn add_dsp_control(p: &Palette) -> El {
     // A touch taller than a row chip (py SM vs XXS) so the add action reads as the
     // chain's primary control.
-    text("+ Add DSP".to_string())
+    text(t!("settings.addDsp").to_string())
         .font(type_::LABEL)
         .px(space::MD)
         .py(space::SM)
