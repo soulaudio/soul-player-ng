@@ -2791,6 +2791,49 @@ mod tests {
         );
     }
 
+    /// The reorder drop line marks the correct GAP for the drag direction: dragging
+    /// the top card down to the bottom shows the line BELOW the last card (not above
+    /// it), and dragging the bottom card up shows it ABOVE the first.
+    #[test]
+    fn the_drop_line_follows_the_drag_direction() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let drag_scene = |drag: (usize, usize)| {
+            let mut s = populated_state();
+            s.route = Route::Settings;
+            s.settings_tab = SettingsTab::Audio;
+            s.dsp_units = vec![
+                DspUnit::Eq(EqUnit::default()),
+                DspUnit::Eq(EqUnit::default()),
+                DspUnit::Eq(EqUnit::default()),
+            ];
+            s.dsp_expanded = vec![false, false, false];
+            s.dsp_drag = Some(drag);
+            apply_locale("en");
+            let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
+            rt.frame(0.0);
+            let (_, drop) = rt.find("dsp-drop").expect("the drop line renders");
+            let (_, first) = rt.find("dsp-card-0").expect("the first card renders");
+            let (_, last) = rt.find("dsp-card-2").expect("the last card renders");
+            (drop, first, last)
+        };
+        // Dragging card 0 down onto slot 2 → the line lands below the last card.
+        let (drop_down, _, last_card) = drag_scene((0, 2));
+        assert!(
+            drop_down > last_card,
+            "dragging down, the line is below the last card ({drop_down} > {last_card})"
+        );
+        // Dragging card 2 up onto slot 0 → the line lands above the first card.
+        let (drop_up, first_card, _) = drag_scene((2, 0));
+        assert!(
+            drop_up < first_card,
+            "dragging up, the line is above the first card ({drop_up} < {first_card})"
+        );
+    }
+
     /// Per-card chips + grip: a card's enable chip toggles only its unit, the grip
     /// reorders the chain (carrying the expand flag), and the remove chip drops it.
     #[test]
