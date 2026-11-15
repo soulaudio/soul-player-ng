@@ -659,13 +659,6 @@ settings.starRepo:
   zh: '为此仓库点星'
   cs: 'Ohvězdičkovat repozitář'
   ja: 'リポジトリにスターを付ける'
-crash.title:
-  en: 'Soul Player closed unexpectedly'
-  de: 'Soul Player wurde unerwartet beendet'
-  es: 'Soul Player se cerró inesperadamente'
-  zh: 'Soul Player 意外关闭'
-  cs: 'Soul Player se neočekávaně ukončil'
-  ja: 'Soul Player が予期せず終了しました'
 crash.body:
   en: 'The last session ended without closing normally. Open a pre-filled bug report? Your recent log is included — you can review it before sending.'
   de: 'Die letzte Sitzung wurde nicht normal beendet. Einen vorausgefüllten Fehlerbericht öffnen? Ihr aktuelles Protokoll ist enthalten – Sie können es vor dem Senden prüfen.'
