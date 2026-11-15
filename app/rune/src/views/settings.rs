@@ -1656,8 +1656,9 @@ fn num_field(
                 Phase::Up => eq_num_drag_end(st),
             })
             .on_wheel(move |st: &mut State, ev: WheelEvent, _tx| {
-                // Scroll up (negative dy) raises the value, as on the graph.
-                eq_num_scroll(st, i, field, ev.dy < 0.0);
+                // Scroll up (negative dy) raises the value; Shift fine-tunes, as on
+                // the graph's wheel-over-Q gesture.
+                eq_num_scroll(st, i, field, ev.dy < 0.0, ev.mods.shift);
                 true
             })
     };
