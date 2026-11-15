@@ -2900,10 +2900,12 @@ mod tests {
         assert_eq!(label_for(None), "EQ");
     }
 
-    /// The "+ Add DSP" control opens the themed type dropdown; picking **EQ**
-    /// appends a unit and opens its card (its expand flag becomes `true`).
+    /// With a single DSP type, "+ Add DSP" appends a unit DIRECTLY on press (no
+    /// dropdown) and opens its card — a one-item picker is pointless, and a portaled
+    /// modal dropdown opened from deep in the settings scroll fights the scroll. The
+    /// themed type picker returns once there are two or more DSP types.
     #[test]
-    fn add_dsp_menu_appends_and_opens_a_card() {
+    fn add_dsp_control_adds_a_unit_directly() {
         let _guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -2913,25 +2915,21 @@ mod tests {
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
         s.dsp_units = vec![DspUnit::Eq(EqUnit::default())];
-        // Collapse the only card so the whole stage (and the Add control) stays
-        // short enough to lay out within the window.
         s.dsp_expanded = vec![false];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 2200.0), env);
         rt.frame(0.0);
-        // Open the dropdown, settle its enter animation, then pick EQ.
         click_key(&mut rt, "dsp-add");
-        rt.settle_all();
         rt.frame(0.0);
-        assert_eq!(rt.state.open_dropdown.as_deref(), Some("dsp-add"));
-        assert!(
-            rt.find("dsp-add-opt-eq").is_some(),
-            "the menu lists the EQ type"
+        assert_eq!(
+            rt.state.dsp_units.len(),
+            2,
+            "pressing + Add DSP appends a unit"
         );
-        click_key(&mut rt, "dsp-add-opt-eq");
-        rt.frame(0.0);
-        assert_eq!(rt.state.dsp_units.len(), 2, "picking EQ appends a unit");
-        assert_eq!(rt.state.open_dropdown, None, "picking closes the menu");
+        assert_eq!(
+            rt.state.open_dropdown, None,
+            "a single type opens no dropdown (nothing to scroll/lock)"
+        );
         assert_eq!(
             rt.state.dsp_expanded,
             vec![false, true],
