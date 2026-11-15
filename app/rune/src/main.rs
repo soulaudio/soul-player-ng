@@ -6532,8 +6532,11 @@ mod tests {
         );
     }
 
+    /// A hidden nav item stays mounted but folds to nothing — zero height, faded
+    /// out — so toggling it later springs open/shut instead of snapping (and the
+    /// queue below never overlaps a fading full-height ghost).
     #[test]
-    fn a_hidden_nav_item_is_absent_from_the_sidebar() {
+    fn a_hidden_nav_item_folds_away_in_the_sidebar() {
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.nav_hidden = vec!["artists".into(), "home".into()];
@@ -6547,13 +6550,27 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        assert!(
-            rt.find("nav-artists").is_none(),
-            "a hidden item leaves the nav"
+        rt.settle_all();
+        rt.frame(0.0);
+        // Folded = faded to nothing and zero height; open = visible with height.
+        let folded = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .map(|e| e.opacity < 0.01 && e.rect[3] < 1.0)
+        };
+        assert_eq!(
+            folded(&rt, "nav-artists"),
+            Some(true),
+            "a hidden item folds away"
         );
-        assert!(rt.find("nav-home").is_none());
-        assert!(rt.find("nav-albums").is_some(), "non-hidden items remain");
-        assert!(rt.find("nav-library").is_some());
+        assert_eq!(folded(&rt, "nav-home"), Some(true));
+        assert_eq!(
+            folded(&rt, "nav-albums"),
+            Some(false),
+            "shown items stay open"
+        );
+        assert_eq!(folded(&rt, "nav-library"), Some(false));
     }
 
     #[test]
@@ -6564,6 +6581,9 @@ mod tests {
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.route = Route::Settings;
+        // Start from a known nav state — the shared test config may carry a leaked
+        // `nav_hidden` from another test (we assert the default, then the toggle).
+        s.nav_hidden.clear();
         let mut rt = Runtime::new(
             s,
             view,
@@ -6578,14 +6598,67 @@ mod tests {
         assert!(rt.find("nav-albums").is_some());
         click(&mut rt, "nav-toggle-albums");
         assert!(!rt.state.nav_visible("albums"), "the toggle hides albums");
-        assert!(
-            rt.find("nav-albums").is_none(),
-            "the hidden item leaves the sidebar immediately"
-        );
+        // Read the persisted choice right after the click — before `settle_all`
+        // steps the fold animation — to keep the load-modify-write window small.
         assert!(
             config::load_nav_hidden().iter().any(|h| h == "albums"),
             "the choice persists to (the test) config"
         );
+        // The item folds away (height + opacity spring to 0) rather than vanishing
+        // instantly, so the sidebar glides shut.
+        rt.settle_all();
+        rt.frame(0.0);
+        let folded = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("nav-albums"))
+            .map(|e| e.opacity < 0.01 && e.rect[3] < 1.0);
+        assert_eq!(folded, Some(true), "the hidden item folds to nothing");
+    }
+
+    /// Hiding a nav item folds it shut *smoothly*: a couple of frames into the
+    /// animated commit its height is partway between open and zero (not snapped,
+    /// and not a full-height fading ghost), then it settles to nothing.
+    #[test]
+    fn hiding_a_nav_item_folds_smoothly_not_instantly() {
+        // Drive visibility through `State` directly (not `set_nav_visible`, which
+        // persists to the shared test config) so this test neither reads a leaked
+        // value nor leaves one — the fold is purely a render-state effect.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.nav_hidden.clear();
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        let height = |rt: &Runtime<State>| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("nav-albums"))
+                .map(|e| e.rect[3])
+                .unwrap_or(0.0)
+        };
+        let open = height(&rt);
+        assert!(open > 20.0, "albums starts open to full height, got {open}");
+        rt.update(|s, _tx| s.nav_hidden = vec!["albums".into()]);
+        rt.frame(1.0 / 60.0);
+        rt.frame(1.0 / 60.0);
+        let mid = height(&rt);
+        assert!(
+            mid > 1.0 && mid < open,
+            "folds partway after two frames, got {mid} (open {open})"
+        );
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(height(&rt) < 1.0, "settles fully shut, got {}", height(&rt));
     }
 
     #[test]
