@@ -144,23 +144,72 @@ Two related capabilities, built in sequence:
 
 ---
 
-## Phase 2 — audio profiles (sketch; detailed later)
+## Phase 2 — audio profiles (concrete design, approved 2026-11-15)
 
-- A **profile** = `{ name, chain: Vec<DspUnitCfg> }`. `State` holds `profiles`
-  (ordered) + `active_profile`. **Auto-save**: edits to the live chain write through
-  to the active profile.
-- **UI**: a profile picker at the **top of the DSP chain card** — a switch dropdown
-  (themed) + **New / Duplicate / Rename / Delete** + **Import / Export** (native file
-  dialog, reusing `tx.open_file`/`save_file` as the EQ import/export does).
-- **Storage**: profiles persist in config (a `[[profiles]]` table + `active_profile`
-  id). The live chain is the active profile's chain.
-- **Format**: import/export writes a portable file — the same tagged
-  `DspUnitCfg` serialization wrapped as `{ name, chain: [...] }`. The **DAP**
-  (no_std + `alloc` + serde, reusing `soul-audio-eq`) reads this exact format, so
-  "export for DAP" is this file. A dedicated DAP transport (USB/network) is deferred
-  until the DAP head exists.
-- **Non-goals (Phase 2)**: no cloud sync, no per-track/auto profile switching, no
-  bundling ReplayGain/output device (profiles stay DSP-chain-only).
+Built on the merged Phase 1 (PR #162). Its own PR off `main`.
+
+### A. Data model & persistence (`config.rs`)
+
+- Runtime `Profile { name: String, chain: Vec<DspUnit> }` lives in `config.rs`
+  (which already owns the `DspUnit` ⇄ `DspUnitCfg` conversion). Serde form
+  `ProfileCfg { name: String, chain: Vec<DspUnitCfg> }` (reuses the Phase 1
+  `DspUnitCfg`, so no new serialization code).
+- `Config` gains `profiles: Vec<ProfileCfg>` and `active_profile: usize`
+  (`#[serde(default)]`, clamped on load). The existing `eq_units` key is kept and
+  **mirrored to the active profile's chain on every save**, so a rollback to a
+  pre-profiles build still loads the right chain.
+- `load_profiles() -> (Vec<Profile>, usize)`: if `profiles` is present, map it
+  (filtering unknown unit kinds) and clamp the active index. Otherwise **migrate**:
+  one `"Default"` profile from the existing `load_dsp_chain()` (which already handles
+  `eq_units` + the pre-#154 legacy fields). Always returns ≥1 profile.
+- `save_profiles(&[Profile], active: usize)`: writes `profiles` + `active_profile`
+  and `eq_units = profiles[active].chain`.
+
+### B. State & mutators (`main.rs`)
+
+- `State` gains `profiles: Vec<config::Profile>`, `active_profile: usize`, and an
+  inline-rename pair `profile_rename: Option<usize>` + `profile_rename_buf: TextEdit`
+  (mirrors `dsp_rename`). Startup loads via `load_profiles()`; `dsp_units` is seeded
+  from the active profile's chain.
+- **Auto-save** is `apply_dsp`: it first writes the live `dsp_units` back into
+  `profiles[active_profile].chain`, then `save_profiles(..)` + `host.set_dsp_chain(..)`.
+  Every existing DSP mutator already funnels through `apply_dsp`, so they persist to
+  the active profile with no per-mutator change.
+- Mutators (each saves): `switch_profile(i)` (reloads `dsp_units` from profile `i`,
+  resets the expand vectors, clears the EQ editor, pushes to host), `new_profile`
+  (appends an empty-chain profile with a unique name, switches to it), `duplicate_profile`
+  (copies the live chain under `"<name> copy"`, switches), `delete_profile` (removes the
+  active one and switches to a neighbour — **no-op when only one profile remains**),
+  `rename_profile(i, name)` + inline `start/commit_profile_rename`. A `unique_profile_name`
+  helper disambiguates collisions.
+
+### C. Import / export (JSON)
+
+- A whole-chain profile needs its own container, so export is **JSON** (not the per-EQ
+  AutoEQ `.txt`): `{ "name": ..., "chain": [ <tagged DspUnitCfg> ] }` via `serde_json`
+  (new app dep). This is the portable format the future **DAP** (alloc + serde, reusing
+  `soul-audio-eq`) reads.
+- `export_profile(path)` writes the active profile; `import_profile(path)` parses a
+  file into a new profile (filtering unknown kinds) and switches to it. Wired through
+  the native dialogs (`tx.save_file`/`open_file`) with a `*.json` filter, exactly like
+  `export_eq`/`import_eq`.
+
+### D. UI (`settings.rs`) — **switcher + icon buttons** (chosen layout)
+
+- A `profile_bar` inserted at the **top of the DSP card**, after `stage_header` and
+  before the unit-card loop: the themed `dropdown` switcher (grows) showing the active
+  profile; when renaming it becomes an inline text field. To its right, compact icon
+  buttons: **New** (`plus`), **Duplicate** (`copy`), **Rename** (`pencil`), **Delete**
+  (`trash`, disabled at one profile), a separator, **Import** (`download`), **Export**
+  (`upload`). Five new Lucide icons added to `icons.rs`.
+- The switcher panel mounts in `settings_overlays` (a new `PROFILE_PICKER` arm);
+  picking an entry calls `switch_profile`. All labels/tooltips are new `settings.*`
+  i18n keys across the six shipped locales (the arch tests enforce both).
+
+### Non-goals (Phase 2)
+
+- No cloud sync, no per-track/auto profile switching, no bundling ReplayGain/output
+  device (profiles stay DSP-chain-only, per the brainstorm).
 
 ## Risks / notes
 
