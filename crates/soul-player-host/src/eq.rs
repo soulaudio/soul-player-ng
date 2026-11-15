@@ -38,6 +38,10 @@ pub struct EqUnit {
     pub preamp_db: f32,
     /// Whether this unit is engaged. A disabled unit is a bit-exact passthrough.
     pub enabled: bool,
+    /// An optional user-given name for this unit (shown as "<name> (EQ)" in the UI,
+    /// persisted so it travels with a future audio profile / DAP export). `None`
+    /// means the unit is unnamed and shows just its type ("EQ").
+    pub name: Option<String>,
 }
 
 impl Default for EqUnit {
@@ -46,6 +50,7 @@ impl Default for EqUnit {
             bands: default_bands().to_vec(),
             preamp_db: 0.0,
             enabled: true,
+            name: None,
         }
     }
 }
@@ -104,6 +109,22 @@ impl DspUnit {
     pub fn set_enabled(&mut self, on: bool) {
         match self {
             DspUnit::Eq(eq) => eq.enabled = on,
+        }
+    }
+
+    /// This unit's user-given name, if any (shown as "<name> (EQ)" in the UI).
+    /// `None` for an unnamed unit.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            DspUnit::Eq(eq) => eq.name.as_deref(),
+        }
+    }
+
+    /// Set (or clear, with `None`) this unit's user-given name.
+    pub fn set_name(&mut self, name: Option<String>) {
+        match self {
+            DspUnit::Eq(eq) => eq.name = name,
         }
     }
 

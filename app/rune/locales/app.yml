@@ -455,6 +455,13 @@ settings.addSource:
   zh: '+ 添加来源'
   cs: '+ Přidat zdroj'
   ja: '+ ソースを追加'
+settings.addDsp:
+  en: '+ Add DSP'
+  de: '+ DSP hinzufügen'
+  es: '+ Añadir DSP'
+  zh: '+ 添加 DSP'
+  cs: '+ Přidat DSP'
+  ja: '+ DSPを追加'
 settings.addFolderDialog:
   en: 'Add a music folder'
   de: 'Musikordner hinzufügen'

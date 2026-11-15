@@ -135,6 +135,11 @@ fn default_dsp_kind() -> String {
 struct DspUnitCfg {
     #[serde(default = "default_dsp_kind")]
     kind: String,
+    /// The user-given unit name, if any. Skipped when `None` so an unnamed unit
+    /// doesn't bloat the file, and defaulted so old configs (without the field)
+    /// load as unnamed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
     enabled: bool,
     preamp: f32,
     bands: Vec<BandCfg>,
@@ -145,6 +150,7 @@ impl From<&DspUnit> for DspUnitCfg {
         match u {
             DspUnit::Eq(eq) => Self {
                 kind: "eq".into(),
+                name: u.name().map(String::from),
                 enabled: eq.enabled,
                 preamp: eq.preamp_db,
                 bands: eq.bands.iter().map(BandCfg::from).collect(),
@@ -176,6 +182,7 @@ impl DspUnitCfg {
                         .collect(),
                     preamp_db: self.preamp,
                     enabled: self.enabled,
+                    name: self.name.clone(),
                 }))
             }
             _ => None,
@@ -598,6 +605,7 @@ pub fn load_dsp_chain() -> Vec<DspUnit> {
         bands,
         preamp_db: cfg.eq_preamp,
         enabled: cfg.eq_enabled,
+        name: None,
     })]
 }
 
@@ -864,6 +872,7 @@ mod tests {
             managed_library_strategy: "move".into(),
             eq_units: vec![DspUnitCfg {
                 kind: "eq".into(),
+                name: Some("my-name".into()),
                 enabled: true,
                 preamp: -2.0,
                 bands: vec![BandCfg {
@@ -917,15 +926,31 @@ mod tests {
             }],
             preamp_db: -2.0,
             enabled: true,
+            name: Some("my-name".into()),
         });
         save_dsp_chain(std::slice::from_ref(&unit));
         let back = load_dsp_chain();
         assert_eq!(back.len(), 1, "the saved unit reloads");
+        assert_eq!(
+            back[0].name(),
+            Some("my-name"),
+            "the user-given name reloads"
+        );
         let eq = back[0].as_eq().expect("round-trips as an EQ unit");
         assert!(eq.enabled);
         assert_eq!(eq.preamp_db, -2.0);
         assert_eq!(eq.bands.len(), 1);
         assert_eq!(eq.bands[0].kind, BandKind::LowShelf);
+
+        // An unnamed unit stays unnamed (the field is skipped on disk, defaulted on
+        // load) rather than reloading as an empty string.
+        let unnamed = DspUnit::Eq(EqUnit::default());
+        save_dsp_chain(std::slice::from_ref(&unnamed));
+        assert_eq!(
+            load_dsp_chain()[0].name(),
+            None,
+            "an unnamed unit reloads as unnamed"
+        );
 
         // An OLD entry written before the `kind` tag existed (no `kind` field) still
         // deserializes — defaulting to kind "eq" — and maps to a DspUnit::Eq.
@@ -943,6 +968,7 @@ mod tests {
         // An unknown future kind is skipped (forward-compatible), not misread as EQ.
         let unknown = DspUnitCfg {
             kind: "compressor".into(),
+            name: None,
             enabled: true,
             preamp: 0.0,
             bands: Vec::new(),

@@ -263,6 +263,15 @@ struct State {
     /// The text buffer the inline number editor draws and the user types into. Reset
     /// to the current value when an edit opens; ignored while `eq_edit` is `None`.
     eq_edit_buf: rune::TextEdit,
+    /// Which DSP unit's title is being renamed (double-click a card title to open an
+    /// inline text field): the unit index, or `None`. The buffer it edits is
+    /// `dsp_rename_buf` (kept separate, like `eq_edit`/`eq_edit_buf`, so the field's
+    /// `on_edit` accessor always has a live `TextEdit` even the frame the edit closes).
+    dsp_rename: Option<usize>,
+    /// The text buffer the inline rename editor draws and the user types into. Seeded
+    /// from the unit's current name when a rename opens; ignored while `dsp_rename`
+    /// is `None`.
+    dsp_rename_buf: rune::TextEdit,
     /// Accumulated wheel travel over a band-table number box, so a trackpad's many
     /// small `precise` deltas add up to discrete steps (a notched mouse wheel still
     /// steps once per detent). Self-draining; no reset needed.
@@ -417,6 +426,8 @@ impl State {
             eq_num_drag: None,
             eq_edit: None,
             eq_edit_buf: rune::TextEdit::new(""),
+            dsp_rename: None,
+            dsp_rename_buf: rune::TextEdit::new(""),
             eq_wheel_accum: 0.0,
             shift_held: false,
             spectrum: Vec::new(),
@@ -651,10 +662,13 @@ fn band_mut(s: &mut State, unit: usize, band: usize) -> Option<&mut Band> {
 }
 
 /// Clear the transient editor selection + node drag — used when the chain changes
-/// shape (add / remove / reorder), so no card points at a stale (unit, band).
+/// shape (add / remove / reorder), so no card points at a stale (unit, band). Also
+/// drops any in-flight inline rename, whose unit index would otherwise dangle onto a
+/// moved / removed card.
 fn clear_eq_editor(s: &mut State) {
     s.eq_selected = None;
     s.eq_drag = None;
+    s.dsp_rename = None;
 }
 
 /// Toggle whether unit `i`'s card is expanded (its body shown).
@@ -701,6 +715,44 @@ pub(crate) fn remove_dsp_unit(s: &mut State, i: usize) {
 pub(crate) fn set_dsp_unit_enabled(s: &mut State, i: usize, on: bool) {
     if let Some(unit) = s.dsp_units.get_mut(i) {
         unit.set_enabled(on);
+    }
+    apply_dsp(s);
+}
+
+/// Open the inline rename editor for unit `unit`'s title (double-click the title):
+/// commits any already-open rename first, seeds the buffer from the unit's current
+/// name (empty if unnamed), focuses it, and selects all so the first keystroke
+/// replaces it. Mirrors [`eq_edit_start`] for the number editor.
+pub(crate) fn start_dsp_rename(s: &mut State, unit: usize) {
+    commit_dsp_rename(s);
+    let current = s
+        .dsp_units
+        .get(unit)
+        .and_then(DspUnit::name)
+        .unwrap_or("")
+        .to_string();
+    s.dsp_rename_buf = rune::TextEdit::new(current);
+    s.dsp_rename_buf.focused = true;
+    s.dsp_rename_buf.anchor = 0; // select-all (caret at end, anchor at start) → typing replaces
+    s.dsp_rename = Some(unit);
+}
+
+/// Commit the open rename: trim the buffer and write it as the unit's name (a blank
+/// buffer clears the name, so the unit reverts to showing just its type). No-op when
+/// nothing is being renamed. Mirrors [`commit_eq_edit`].
+pub(crate) fn commit_dsp_rename(s: &mut State) {
+    let Some(unit) = s.dsp_rename.take() else {
+        return;
+    };
+    let name = s.dsp_rename_buf.text.trim().to_string();
+    set_dsp_unit_name(s, unit, (!name.is_empty()).then_some(name));
+}
+
+/// Set (or clear, with `None`) unit `unit`'s user-given name, then persist + push the
+/// chain. The name lives inside `dsp_units[unit]`, so reorder/remove carry it for free.
+pub(crate) fn set_dsp_unit_name(s: &mut State, unit: usize, name: Option<String>) {
+    if let Some(u) = s.dsp_units.get_mut(unit) {
+        u.set_name(name);
     }
     apply_dsp(s);
 }
@@ -1043,6 +1095,16 @@ fn spectrum_poll(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
             tx.wake_after(std::time::Duration::from_millis(50));
         } else {
             commit_eq_edit(s);
+            return true;
+        }
+    }
+    // Same blur-commit for the inline unit-rename editor: once its buffer loses focus
+    // (click elsewhere, or Escape), commit the typed name and close it.
+    if s.dsp_rename.is_some() {
+        if s.dsp_rename_buf.focused {
+            tx.wake_after(std::time::Duration::from_millis(50));
+        } else {
+            commit_dsp_rename(s);
             return true;
         }
     }
@@ -1485,8 +1547,13 @@ fn scene_settings_audio_eq(s: &mut State) {
             bands,
             preamp_db: -2.0,
             enabled: true,
+            name: None,
         }),
-        DspUnit::Eq(EqUnit::default()),
+        // A named unit so `--snap` shows the "<name> (EQ)" rename in a header.
+        DspUnit::Eq(EqUnit {
+            name: Some("Vocal clarity".into()),
+            ..EqUnit::default()
+        }),
         DspUnit::Eq(EqUnit {
             enabled: false,
             ..EqUnit::default()
@@ -2752,6 +2819,87 @@ mod tests {
         );
     }
 
+    /// Double-clicking a DSP card's title opens an inline rename field; typing a name
+    /// and committing applies it to the unit (and clears the rename marker). Drives the
+    /// real widget through the harness (double press → IME commit → Return), mirroring
+    /// `double_clicking_a_band_number_types_a_new_value`.
+    #[test]
+    fn double_clicking_a_dsp_title_renames_the_unit() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.dsp_units = vec![DspUnit::Eq(EqUnit::default())];
+        s.dsp_expanded = vec![true];
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("dsp-name-0").expect("the unit title renders");
+        // Double-click the title to open the rename editor.
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.dsp_rename,
+            Some(0),
+            "double-click opens the inline rename editor"
+        );
+        // Type a name and commit with Return.
+        rt.ime(rune::Ime::Commit("my-name".into()));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_rename, None, "Return closes the rename editor");
+        assert_eq!(
+            rt.state.dsp_units[0].name(),
+            Some("my-name"),
+            "the typed name applied to the unit (got {:?})",
+            rt.state.dsp_units[0].name()
+        );
+    }
+
+    /// The unit title reads "<name> (EQ)" when the unit is named, and just "EQ" when it
+    /// isn't — the rename feature's read side.
+    #[test]
+    fn a_named_unit_shows_its_name_beside_the_type() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let label_for = |name: Option<&str>| {
+            let mut s = populated_state();
+            s.route = Route::Settings;
+            s.settings_tab = SettingsTab::Audio;
+            s.dsp_units = vec![DspUnit::Eq(EqUnit {
+                name: name.map(String::from),
+                ..EqUnit::default()
+            })];
+            // Collapse the card so the whole stage lays out within the window.
+            s.dsp_expanded = vec![false];
+            apply_locale("en");
+            let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+            rt.frame(0.0);
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("dsp-name-0"))
+                .and_then(|e| e.text)
+                .expect("the unit title renders")
+        };
+        assert_eq!(label_for(Some("my-name")), "my-name (EQ)");
+        assert_eq!(label_for(None), "EQ");
+    }
+
     /// The "+ Add DSP" control opens the themed type dropdown; picking **EQ**
     /// appends a unit and opens its card (its expand flag becomes `true`).
     #[test]
@@ -2907,6 +3055,7 @@ mod tests {
             bands: soul_player_host::default_bands().to_vec(),
             preamp_db: 0.0,
             enabled: true,
+            name: None,
         })];
         s.dsp_expanded = vec![true];
         s.eq_bands_expanded = vec![true];
