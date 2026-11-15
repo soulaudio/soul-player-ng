@@ -88,6 +88,19 @@ raw-window-handle = "0.6"
 # Decode the bundled app icon (PNG) to RGBA for the system-tray icon.
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# Native toast notifications (update-available, now-playing-while-backgrounded).
+# We call the WinRT API directly on the `windows` crate souvlaki already compiled
+# for SMTC — no `notify-rust`/`rune-notify`, so no second `windows` version. The
+# explicit top-level `windows = "0.62"` also PINS the resolver: gpu-allocator has
+# a wide `>=0.53,<=0.62` range and cpal/sysinfo pull 0.54, so without this upper
+# anchor the resolver can feed gpu-allocator 0.54 and break wgpu-hal (its
+# `ID3D12Heap` must match wgpu-hal's). All WinRT + registry calls are safe (no
+# `unsafe`). `windows-registry` (0.62-family split crates, not the big `windows`)
+# writes the unpackaged-app AUMID under HKCU so Windows renders our toasts.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["UI_Notifications", "Data_Xml_Dom", "Foundation"] }
+windows-registry = "0.6"
+
 # cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
 # installer today (SmartScreen nags); the signed updater + OS code-signing +
 # release CI are the deferred half of Phase 3. Build:  cargo packager --release
