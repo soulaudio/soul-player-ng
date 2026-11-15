@@ -768,12 +768,12 @@ player.signalPath.exclusive:
   cs: 'Exkluzivni vystup'
   ja: '排他出力'
 player.signalPath.dsp:
-  en: 'DSP / EQ'
-  de: 'DSP / EQ'
-  es: 'DSP / EQ'
-  zh: 'DSP / EQ'
-  cs: 'DSP / EQ'
-  ja: 'DSP / EQ'
+  en: 'DSP'
+  de: 'DSP'
+  es: 'DSP'
+  zh: 'DSP'
+  cs: 'DSP'
+  ja: 'DSP'
 player.signalPath.rateExact:
   en: 'none - bit-exact'
   de: 'keine - bitgenau'
