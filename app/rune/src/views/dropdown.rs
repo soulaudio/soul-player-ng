@@ -15,11 +15,14 @@
 //!   flips/clamps it to the window, and lets it ignore ancestor clips.
 //!
 //! One dropdown is open at a time: `State::open_dropdown` holds the open key,
-//! `toggle_dropdown` / `close_dropdown` drive it. The panel traps focus and
-//! dismisses on Escape or an outside press (`El::modal`).
+//! `toggle_dropdown` / `close_dropdown` drive it. The panel is light-dismiss: a
+//! transparent full-window backdrop behind it closes it on an outside press OR a
+//! scroll (so the page is never scroll-locked), and the app key handler closes it on
+//! Escape. (It is deliberately NOT `El::modal`, whose inert background blocked the
+//! page scroll — wrong for a popover anchored deep in a scroll view.)
 #![forbid(unsafe_code)]
 
-use rune::{Align, Cursor, El, Side, col, icon, row, text};
+use rune::{Align, Cursor, El, Side, WheelEvent, col, el, icon, row, text};
 
 use crate::theme::Palette;
 use crate::ui::{radius, space};
@@ -61,14 +64,17 @@ pub fn trigger(key: &str, current: String, p: &Palette) -> El {
 /// positions it under the trigger and escapes the settings scroll viewport's
 /// clip; `width` (the trigger's own width, when known) lines the panel up under
 /// it. One themed row per `(id, label)` choice, the selected one tinted and
-/// checked; picking calls `on_pick(id)` and closes. Dismisses on Escape or an
-/// outside press (`El::modal`).
+/// checked; picking calls `on_pick(id)` and closes. Light-dismiss: an outside press
+/// or a scroll (via a transparent backdrop) closes it, as does Escape.
 pub fn panel<F>(
     anchor_key: &str,
     choices: &[(String, String)],
     selected: &str,
     width: Option<f32>,
     on_pick: F,
+    // An optional trailing "coming soon" row: present but greyed and NOT focusable,
+    // so it reads as a teaser the user can't pick (mirrors the add-source menu).
+    disabled_note: Option<&str>,
     p: &Palette,
 ) -> El
 where
@@ -87,8 +93,7 @@ where
         .border_sides([1.0, 1.0, 1.0, 1.0], p.border)
         .padding(space::XXS)
         .gap(2.0)
-        .min_h(0.0)
-        .modal(true, close_dropdown);
+        .min_h(0.0);
     menu = match width {
         Some(w) => menu.w(w.max(140.0)),
         None => menu.min_w(160.0),
@@ -121,5 +126,47 @@ where
             close_dropdown(s);
         }));
     }
-    menu
+    // A disabled "coming soon" row: greyed, not focusable, no handler.
+    if let Some(note) = disabled_note {
+        menu = menu.child(
+            row()
+                .key(format!("{anchor_key}-opt-soon"))
+                .role("option")
+                .w_full()
+                .center_y()
+                .px(space::MD)
+                .py(space::SM)
+                .radius(radius::SM)
+                // No truncate: let the note's natural width set the panel, so
+                // "… coming soon" shows in full rather than ellipsizing.
+                .child(text(note.to_string()).color(p.text_secondary)),
+        );
+    }
+    // Light-dismiss backdrop: a full-window, transparent catcher mounted BEHIND the
+    // panel. An outside press OR any scroll closes the dropdown — the standard popover
+    // behavior — instead of `El::modal`, whose inert background blocked the page from
+    // scrolling (so a trigger deep in the settings scroll locked the page, and opening
+    // fought the content scroll). The panel draws on top, so its options still take
+    // presses; Escape is handled by the app's key handler.
+    el().key(format!("{anchor_key}-overlay"))
+        // Out of flow + full window, so it overlays the shell (a plain el would flow
+        // below it). The backdrop fills it; the panel anchors within.
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .child(
+            el().key(format!("{anchor_key}-backdrop"))
+                .absolute(0.0, 0.0)
+                .w_full()
+                .h_full()
+                // A fill (fully transparent) so the catcher is hit-tested across the
+                // whole window — an outside press or a scroll closes the dropdown.
+                .fill(p.card.alpha(0.0))
+                .on_press(close_dropdown)
+                .on_wheel(|s: &mut State, _ev: WheelEvent, _tx| {
+                    close_dropdown(s);
+                    true
+                }),
+        )
+        .child(menu)
 }
