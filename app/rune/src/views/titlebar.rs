@@ -88,16 +88,32 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     // our three caption glyphs span the trailing gutter, one per native button.
     if chrome.trailing > 0.0 {
         let cell = chrome.trailing / 3.0;
+        // Rest opacity: fully visible when the user prefers "always show", else
+        // 0 so they fade in only on band hover.
+        let rest = if s.titlebar_controls_always { 1.0 } else { 0.0 };
         strip.child(
             row()
                 .key("caption-glyphs")
                 .h_full()
-                .child(caption_glyph("caption-min", &icons::CAPTION_MIN, cell, p))
-                .child(caption_glyph("caption-max", &icons::CAPTION_MAX, cell, p))
+                .child(caption_glyph(
+                    "caption-min",
+                    &icons::CAPTION_MIN,
+                    cell,
+                    rest,
+                    p,
+                ))
+                .child(caption_glyph(
+                    "caption-max",
+                    &icons::CAPTION_MAX,
+                    cell,
+                    rest,
+                    p,
+                ))
                 .child(caption_glyph(
                     "caption-close",
                     &icons::CAPTION_CLOSE,
                     cell,
+                    rest,
                     p,
                 )),
         )
@@ -106,15 +122,23 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     }
 }
 
-/// One caption glyph cell: `width` wide, full height, glyph centred, invisible at
-/// rest and opaque while the band is hovered (a smooth fade via the band's
-/// `hover_motion`). Purely visual — the native button underneath takes the click.
-fn caption_glyph(key: &'static str, glyph: &'static Icon, width: f32, p: &Palette) -> El {
+/// One caption glyph cell: `width` wide, full height, glyph centred. Its `rest`
+/// opacity is 0 for the default hover-reveal (fades in with the band's
+/// `hover_motion`) or 1 when the user keeps the controls always visible; either
+/// way it reaches full opacity on hover. Purely visual — the native button
+/// underneath takes the click.
+fn caption_glyph(
+    key: &'static str,
+    glyph: &'static Icon,
+    width: f32,
+    rest: f32,
+    p: &Palette,
+) -> El {
     el().key(key)
         .w(width)
         .h_full()
         .center()
-        .group_opacity(0.0, 1.0)
+        .group_opacity(rest, 1.0)
         .child(icon(glyph, GLYPH_SIZE).color(p.fg))
 }
 
