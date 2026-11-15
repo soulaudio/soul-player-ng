@@ -17,22 +17,26 @@ i18n!("locales", fallback = "en");
 
 use std::path::PathBuf;
 
-use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
+use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Titlebar, Tx, Waker, col, el, row};
 // Linked only to union parley_engine's `complex-scripts` feature on (see
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
     Band, BandKind, BrowseAxis, Command, DspUnit, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
     IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
-    SPECTRUM_COLS, SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate,
-    default_bands,
+    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView,
+    WatchUpdate, default_bands,
     organize::{self, Strategy},
 };
 
 mod config;
 #[cfg(test)]
 mod i18n_tests;
+mod logging;
+mod media_session;
 mod organize_job;
+mod report;
+mod systray;
 mod theme;
 mod ui;
 mod update;
@@ -216,6 +220,15 @@ struct State {
     /// The library indexing-speed mode (persisted), rendered by Settings → Sources.
     /// Drives how much parallelism the scanner uses; `Automatic` follows CPU load.
     indexing_mode: IndexingMode,
+    /// Live progress of a running library scan (from the host's `on_scan_progress`),
+    /// rendered as the title-bar activity widget. `None` when no scan is in flight;
+    /// set per tick while an off-UI-thread scan runs and cleared on the completing
+    /// [`apply_watch`]. Only off-thread scans (the live watcher, a threaded add)
+    /// animate it — a scan that blocks the UI thread fills it in one step at the end.
+    scan_progress: Option<ScanProgress>,
+    /// Free-running phase (seconds) advancing while `scan_progress` is `Some`, driven
+    /// by the per-frame poll; the activity icon's pulse is a function of it.
+    scan_anim: f32,
     /// The chosen output device (persisted), rendered by Settings → Output;
     /// `None` = follow the system default. Applies to the next playback session.
     output_device: Option<String>,
@@ -306,6 +319,15 @@ struct State {
     /// back onto the main thread via `AppHandle::update`. `None` in headless tests
     /// (and until `main` sets it), where the organize transitions stay pure.
     app_handle: Option<rune::AppHandle<State>>,
+    /// Channel to the OS media-session thread (`media_session::spawn`), set once
+    /// the window is ready (`main`'s `on_ready`). `None` in headless tests / where
+    /// the OS session couldn't start; feeding it is then a no-op.
+    media_tx: Option<std::sync::mpsc::Sender<media_session::Update>>,
+    /// Last now-playing id / play-state / push time pushed to the media session,
+    /// for change detection + the periodic refresh (`media_session::decide_push`).
+    media_last_id: Option<u32>,
+    media_last_playing: bool,
+    media_last_push: Option<std::time::Instant>,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -313,6 +335,9 @@ struct State {
     /// check (`update::available`); `Some` makes Settings surface "Install &
     /// Restart". `None` = up to date (or the check hasn't run / failed).
     update_available: Option<String>,
+    /// Set at startup (`logging::begin_session`) when the previous session ended
+    /// without a clean exit — surfaces the dismissible "report this crash" banner.
+    crashed_last_session: bool,
     /// Library filter query (case-insensitive substring over title/artist/album);
     /// empty = no filter. Rune has no text widget yet, so it's typed into via the
     /// key handler (`/` to start), not a focused input field.
@@ -326,6 +351,9 @@ struct State {
     /// and driven by the drag handle in `views::sidebar`.
     sidebar_width: f32,
     sidebar_collapsed: bool,
+    /// Whether the custom window controls (`_ [] X`) stay visible instead of
+    /// revealing on title-bar hover (Windows; persisted). Read by `titlebar::bar`.
+    titlebar_controls_always: bool,
     /// Mobile (narrow window) single-pane state: `false` shows the sidebar
     /// (nav + queue + player), `true` shows the content page with a back bar —
     /// the old app's `mobileShowContent`. Ignored on desktop (both panes show).
@@ -410,6 +438,8 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
             removal_notice: None,
+            scan_progress: None,
+            scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
             // Restore the persisted device choice (None = system default); the
             // enumerated list came from `host` just above.
@@ -438,12 +468,19 @@ impl State {
             organize: None,
             // Set once in `main` (a self-posting update); stays `None` in tests.
             app_handle: None,
+            media_tx: None,
+            media_last_id: None,
+            media_last_playing: false,
+            media_last_push: None,
             art: ArtCache::new(),
             update_available: None,
+            // Set from `logging::begin_session()` in `main`; `false` in tests.
+            crashed_last_session: false,
             search: String::new(),
             searching: false,
             sidebar_width,
             sidebar_collapsed,
+            titlebar_controls_always: config::load_titlebar_controls_always(),
             // The menu is the mobile home view; a nav tap flips this true.
             mobile_show_content: false,
             nav_hidden: config::load_nav_hidden(),
@@ -523,6 +560,8 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     // any) is applied right after and re-sets it, so the notice always reflects the
     // most recent scan rather than lingering.
     s.removal_notice = None;
+    // A WatchUpdate marks a scan complete — retire the title-bar activity widget.
+    s.scan_progress = None;
 }
 
 /// Apply a `WatchUpdate` and persist the new source set (with each source's
@@ -601,6 +640,10 @@ pub(crate) fn close_signal_path(s: &mut State) {
 /// and tells the host — which applies it to the NEXT playback session (a live
 /// device switch mid-playback is a follow-up).
 pub(crate) fn set_output_device(s: &mut State, name: Option<String>) {
+    tracing::info!(
+        device = name.as_deref().unwrap_or("system default"),
+        "output device selected"
+    );
     s.output_device = name.clone();
     config::save_output_device(s.output_device.as_deref());
     s.host.set_output_device(name);
@@ -1081,12 +1124,25 @@ pub(crate) fn set_eq_preamp(s: &mut State, unit: usize, preamp_db: f32) {
     apply_dsp(s);
 }
 
-/// Per-frame poll (wired as `AppSpec::poll`) that drives the live EQ spectrum
-/// analyzer: while the Audio settings tab is open and a track is playing, pull the
-/// latest spectrum columns from the host into `State` and keep asking for the next
-/// frame (~60 fps). Clears the spectrum once when playback stops or the tab is
-/// hidden so the display fades out. Returns whether the view must re-render.
-fn spectrum_poll(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
+/// Per-frame poll (wired as `AppSpec::poll`). Drives the title-bar scan-activity
+/// pulse (while a scan runs) *and* the live EQ spectrum analyzer. Returns whether
+/// the view must re-render.
+fn spectrum_poll(s: &mut State, dt: f64, tx: &mut Tx) -> bool {
+    // Title-bar activity: while a library scan is in flight, keep the frame clock
+    // ticking and advance the icon's pulse phase — independent of the spectrum, so
+    // the pill animates even when nothing is playing. Bounded modulo to stay finite
+    // over a long scan.
+    let scanning = s.scan_progress.is_some();
+    if scanning {
+        s.scan_anim = (s.scan_anim + dt as f32) % 1000.0;
+        tx.wake_after(std::time::Duration::from_millis(16));
+    }
+    spectrum_poll_inner(s, dt, tx) || scanning
+}
+
+/// The EQ spectrum half of [`spectrum_poll`] (kept separate so the scan-activity
+/// pulse composes cleanly with its several early returns).
+fn spectrum_poll_inner(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
     // An open inline number editor: once it loses focus (click elsewhere, or Escape),
     // commit what was typed and close it. Keep a slow tick alive while it is focused so
     // that blur is noticed even when nothing is playing.
@@ -1338,22 +1394,42 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
         .unwrap_or(1100.0);
     let mobile = window_w < views::sidebar::MOBILE_BREAKPOINT;
 
-    // The shell keeps the stable `"app-root"` key that `window_w` measures above
-    // (a `col`/`row` reports its laid-out width back reliably).
+    // The window shell. `app-root` keeps the key `window_w`/mobile detection
+    // measure (a row or col reports its laid-out width identically).
     let shell = if mobile {
-        // Mobile single-pane (the old app's `isMobile`): the sidebar is the
-        // full-width "menu" home view; a nav tap flips to full-screen content
-        // with a back bar. Collapse and the resize handle are desktop-only.
-        let root = col().key("app-root").w_full().h_full().fill(p.bg);
-        if s.mobile_show_content {
-            root.child(views::sidebar::mobile_top_bar(mobile_title(s), &p))
+        // Mobile single-pane (the old app's `isMobile`): the title-bar band spans
+        // the top, the mobile layout (menu home, or content with a back bar) below.
+        let body = if s.mobile_show_content {
+            col()
+                .key("shell")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .fill(p.bg)
+                .child(views::sidebar::mobile_top_bar(mobile_title(s), &p))
                 .child(content_pane(s, &p, cx, scale))
         } else {
-            root.child(views::sidebar::sidebar(s, &p, cx, scale, true))
-        }
+            col()
+                .key("shell")
+                .w_full()
+                .grow(1.0)
+                .min_h(0.0)
+                .fill(p.bg)
+                .child(views::sidebar::sidebar(s, &p, cx, scale, true, 0.0))
+        };
+        col()
+            .key("app-root")
+            .w_full()
+            .h_full()
+            .fill(p.bg)
+            .child(views::titlebar::bar(s, &p, cx))
+            .child(body)
     } else {
-        // The old app's desktop shell: a fixed-width left sidebar (nav label,
-        // queue, player panel) plus the main content filling the rest.
+        // Desktop: the left sidebar's fill runs to the very top, but its content is
+        // inset by the band height so it lines up with the content pane below the
+        // band — one clean title strip across the whole window. On macOS that same
+        // inset is where the traffic lights sit (top-left, over the sidebar).
+        let sidebar_top = views::titlebar::HEIGHT;
         row()
             .key("app-root")
             .w_full()
@@ -1365,10 +1441,17 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                 // swap. The handle itself renders the visible rail.
                 col().key("sidebar-slot").w(0.0).h_full()
             } else {
-                views::sidebar::sidebar(s, &p, cx, scale, false)
+                views::sidebar::sidebar(s, &p, cx, scale, false, sidebar_top)
             })
             .child(views::sidebar::resize_handle(s.sidebar_collapsed, &p))
-            .child(content_pane(s, &p, cx, scale))
+            .child(
+                col()
+                    .key("shell")
+                    .grow(1.0)
+                    .min_h(0.0)
+                    .child(views::titlebar::bar(s, &p, cx))
+                    .child(content_pane(s, &p, cx, scale)),
+            )
     };
 
     // Overlay layer: the shell, plus any open dropdown's panel (Settings →
@@ -1384,6 +1467,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // identity — and thus its offset — stable whether or not an overlay is open.
     let mut overlays = views::settings::settings_overlays(s, &p, cx);
     overlays.extend(views::signal_path::overlay(s, &p));
+    // The crash-report modal draws over everything, on any route — last, so it
+    // stacks above any panel still mounted beneath it.
+    if let Some(dialog) = crash_overlay(s, &p) {
+        overlays.push(dialog);
+    }
     el().key("overlay-root")
         .w_full()
         .h_full()
@@ -1409,6 +1497,90 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
             Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
             Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
         })
+}
+
+/// Hide the crash prompt for this session — also the modal's Escape / outside-press
+/// dismiss handler.
+fn dismiss_crash(s: &mut State) {
+    s.crashed_last_session = false;
+}
+
+/// The crash-report **modal**, mounted on the overlay layer (over any route) when
+/// the previous session ended abnormally (`logging::begin_session`): a centered
+/// card over a dim scrim. Dismisses on Escape or an outside press (`El::modal`),
+/// the same as its Dismiss button.
+fn crash_overlay(s: &State, p: &theme::Palette) -> Option<El> {
+    if !s.crashed_last_session {
+        return None;
+    }
+    Some(
+        col()
+            .key("crash-modal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(rune::Color::BLACK.alpha(0.45))
+            .child(crash_dialog(p).modal(true, dismiss_crash)),
+    )
+}
+
+/// The centered crash-report dialog card: title, a short message, and Dismiss /
+/// Report actions. Report opens the same pre-filled GitHub issue as Settings →
+/// About and closes the dialog.
+fn crash_dialog(p: &theme::Palette) -> El {
+    use crate::ui::{radius, space};
+    col()
+        .key("crash-dialog")
+        .w(380.0)
+        .fill(p.card)
+        .radius(radius::LG)
+        .border(1.0, p.border)
+        .padding(space::LG)
+        .gap(space::MD)
+        .child(rune::text(t!("crash.body").to_string()).color(p.fg).wrap())
+        .child(
+            row()
+                .gap(space::SM)
+                .justify_end()
+                .child(
+                    el().key("crash-dismiss")
+                        .role("button")
+                        .label(t!("crash.dismiss").to_string())
+                        .focusable(true)
+                        .padding(space::MD)
+                        .radius(radius::MD)
+                        .fill(p.bg)
+                        .border(1.0, p.border)
+                        .center()
+                        .cursor(rune::Cursor::Pointer)
+                        .child(rune::text(t!("crash.dismiss").to_string()).color(p.fg))
+                        .on_press(dismiss_crash),
+                )
+                .child(
+                    el().key("crash-report")
+                        .role("button")
+                        .label(t!("crash.report").to_string())
+                        .focusable(true)
+                        .padding(space::MD)
+                        .radius(radius::MD)
+                        .fill(p.primary)
+                        .center()
+                        .cursor(rune::Cursor::Pointer)
+                        .child(
+                            row()
+                                .gap(space::SM)
+                                .center_y()
+                                .child(rune::icon(&views::icons::GITHUB, 16.0).color(p.bg))
+                                .child(rune::text(t!("crash.report").to_string()).color(p.bg)),
+                        )
+                        .on_press(|s: &mut State| {
+                            let device = s.output_device.clone();
+                            dismiss_crash(s);
+                            std::thread::spawn(move || crate::report::open_issue(device));
+                        }),
+                ),
+        )
 }
 
 /// The current page's title, shown in the mobile back bar.
@@ -1449,6 +1621,84 @@ pub(crate) fn set_nav_visible(s: &mut State, id: &str, visible: bool) {
         s.nav_hidden.push(id.to_string());
     }
     config::save_nav_hidden(&s.nav_hidden);
+}
+
+/// Set + persist whether the custom window controls stay visible (vs. reveal on
+/// hover). `titlebar::bar` reads the flag on the next frame.
+pub(crate) fn set_titlebar_controls_always(s: &mut State, always: bool) {
+    s.titlebar_controls_always = always;
+    config::save_titlebar_controls_always(always);
+}
+
+/// Dispatch an OS media-control event (routed from the media-session thread onto
+/// the main thread), resolving relative seeks against the live playback position.
+pub(crate) fn apply_media_event(s: &mut State, tx: &mut Tx, event: souvlaki::MediaControlEvent) {
+    use media_session::SessionAction;
+    match media_session::map_event(event, s.position_secs, s.duration_secs) {
+        Some(SessionAction::Command(cmd)) => s.host.send(cmd),
+        Some(SessionAction::Quit) => tx.quit(),
+        // Raising the window from the OS widget is a follow-up.
+        Some(SessionAction::Raise) | None => {}
+    }
+}
+
+/// Push now-playing changes to the OS media session after each event is folded
+/// into `State`. No-op until the session is up (`media_tx`).
+fn feed_media_session(s: &mut State) {
+    let Some(tx) = s.media_tx.clone() else {
+        return;
+    };
+    let prev = media_session::Snapshot {
+        id: s.media_last_id,
+        playing: s.media_last_playing,
+    };
+    let cur = media_session::Snapshot {
+        id: s.now_playing_id,
+        playing: s.playing,
+    };
+    let since = s
+        .media_last_push
+        .map(|t| t.elapsed())
+        .unwrap_or(std::time::Duration::from_secs(3600));
+    let push = media_session::decide_push(&prev, &cur, since);
+
+    if push == media_session::Push::TrackAndPlayback
+        && let Some(track) = s.now_playing_id.and_then(|id| s.track(id))
+    {
+        let _ = tx.send(media_session::Update::Track(media_session::TrackMeta {
+            title: track.title.clone().unwrap_or_default(),
+            artist: track.artist.clone().unwrap_or_default(),
+            album: track.album.clone().unwrap_or_default(),
+            duration_secs: track.duration_secs,
+        }));
+    }
+    if push != media_session::Push::Nothing {
+        let _ = tx.send(media_session::Update::Playback(media_session::Playback {
+            playing: s.playing,
+            stopped: s.now_playing_id.is_none(),
+            position_secs: s.position_secs,
+        }));
+        s.media_last_push = Some(std::time::Instant::now());
+    }
+    s.media_last_id = s.now_playing_id;
+    s.media_last_playing = s.playing;
+}
+
+/// The window's native handle as an `isize` (Windows HWND) for the media session's
+/// SMTC; `None` on macOS/Linux, where souvlaki needs no handle.
+#[cfg(target_os = "windows")]
+fn window_hwnd(wh: &rune::WindowHandle) -> Option<isize> {
+    wh.with_raw_handle(|handle| match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    })
+    .ok()
+    .flatten()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn window_hwnd(_wh: &rune::WindowHandle) -> Option<isize> {
+    None
 }
 
 /// `AppSpec::setup`: wires the app's `Waker` into the cover-art cache
@@ -1745,6 +1995,25 @@ fn scene_organize_confirm(s: &mut State) {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Start file logging before anything else, so startup, every subsystem, and
+    // any panic are recorded. The guard must outlive the process — binding it to
+    // a named local keeps the non-blocking writer thread alive until `main` ends.
+    let _log_guard = logging::init();
+    let os = os_info::get();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        os = %os,
+        arch = std::env::consts::ARCH,
+        cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        "Soul Player starting",
+    );
+    // Whether the previous session ended without a clean exit (and mark this one
+    // running). Handed to `State` below so the UI can offer to report the crash.
+    let crashed_last_session = logging::begin_session();
+    if crashed_last_session {
+        tracing::warn!("previous session did not exit cleanly");
+    }
+
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
     // `on_open_url`) instead of opening a duplicate that would fight over the
@@ -1786,6 +2055,7 @@ fn main() -> anyhow::Result<()> {
     } else {
         let saved = config::load_sources_with_enabled();
         if !saved.is_empty() {
+            tracing::info!(count = saved.len(), "restoring saved sources");
             let _ = host.set_sources(&saved);
             // Persist the refreshed caches so the next launch stays warm (adds /
             // edits since last run are now folded in).
@@ -1834,7 +2104,15 @@ fn main() -> anyhow::Result<()> {
             view,
         )
     };
+    // A shared cell so `on_ready` (which fires during `run`, when the window and
+    // its HWND exist) can reach an `AppHandle` — which only exists after the app is
+    // built. Set just below, before `run`.
+    let media_ah_cell = std::sync::Arc::new(std::sync::OnceLock::<rune::AppHandle<State>>::new());
     let app = App::new(spec)
+        .titlebar(Titlebar::new(views::titlebar::HEIGHT).traffic_lights(
+            views::titlebar::TRAFFIC_LIGHTS.0,
+            views::titlebar::TRAFFIC_LIGHTS.1,
+        ))
         // Deliver bare Shift/Ctrl/… press+release to `on_key` so the EQ number
         // drags can fine-tune while Shift is held (the `Drag` event carries no
         // modifiers). `handle_key` only acts on the modifier state, ignoring the
@@ -1852,8 +2130,39 @@ fn main() -> anyhow::Result<()> {
         .global_shortcut("ctrl+alt+left", |s: &mut State, _: &mut Tx| {
             s.host.send(Command::Prev)
         })
-        .init(move || State::new(init_host.clone()));
+        .init(move || {
+            let mut s = State::new(init_host.clone());
+            s.crashed_last_session = crashed_last_session;
+            s
+        })
+        .on_ready({
+            // Start the OS media session + system tray once the window (and its
+            // HWND, for Windows SMTC) exists. `on_ready` may fire more than once —
+            // guard it so we don't spawn duplicates.
+            let cell = media_ah_cell.clone();
+            let tray_host = host.clone();
+            let mut started = false;
+            move |wh: &rune::WindowHandle| {
+                if started {
+                    return;
+                }
+                let Some(ah) = cell.get().cloned() else {
+                    return;
+                };
+                started = true;
+                let hwnd = window_hwnd(wh);
+                if let Some(tx) = media_session::spawn(ah.clone(), hwnd) {
+                    ah.update(move |s: &mut State, _tx: &mut Tx| s.media_tx = Some(tx));
+                }
+                // The tray must stay alive for the app's lifetime (dropping it
+                // removes the icon); it's an app-lifetime singleton, so leak it.
+                if let Some(tray) = systray::create(tray_host.clone(), ah.clone()) {
+                    std::mem::forget(tray);
+                }
+            }
+        });
     let ah = app.handle();
+    let _ = media_ah_cell.set(app.handle());
     // Stash a self-handle in State (once, on the main thread) so the managed-library
     // organize flow can post plan/apply progress back from its worker threads. This
     // self-posting update runs on the first frame; `update` only borrows `ah`, so it
@@ -1869,12 +2178,14 @@ fn main() -> anyhow::Result<()> {
     // the actual "Install & Restart" so we never yank a playing track away.
     if update::enabled() {
         let uh = app.handle();
-        std::thread::spawn(move || {
-            if let Some(version) = update::available() {
+        std::thread::spawn(move || match update::available() {
+            Some(version) => {
+                tracing::info!(version, "update available");
                 uh.update(move |s: &mut State, _tx: &mut Tx| {
                     s.update_available = Some(version);
                 });
             }
+            None => tracing::debug!("no update available"),
         });
     }
     host.subscribe(move |ev: Event| {
@@ -1886,6 +2197,7 @@ fn main() -> anyhow::Result<()> {
         }
         ah.update(move |s: &mut State, tx: &mut Tx| {
             s.apply(&ev);
+            feed_media_session(s); // publish now-playing changes to the OS session
             tx.instant(); // don't animate fast-moving numeric fields
         });
     });
@@ -1900,14 +2212,29 @@ fn main() -> anyhow::Result<()> {
                 apply_watch(s, up);
             });
         });
+        // Live scan progress → the title-bar activity widget. Fires per tick while an
+        // off-UI-thread scan runs (the watcher, a threaded add); the completing
+        // WatchUpdate above clears it. Registered before `start_watching` so the
+        // first watcher-triggered rescan is already observed.
+        let sph = app.handle();
+        host.on_scan_progress(move |p: ScanProgress| {
+            sph.update(move |s: &mut State, _tx: &mut Tx| {
+                s.scan_progress = Some(p);
+            });
+        });
         host.start_watching();
     }
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
     // installer uses the same icons via [package.metadata.packager]).
     if let Err(e) = rune::set_app_icon(include_bytes!("../icons/icon.png").to_vec()) {
-        eprintln!("[icon] set_app_icon failed: {e}");
+        tracing::warn!("set_app_icon failed: {e}");
     }
     app.run();
+    // The run loop returned: the window closed cleanly. Remove the session sentinel
+    // so the next launch knows this exit was clean, and log the bracketing line
+    // (paired with the startup banner) — a session that ends without it crashed.
+    logging::end_session();
+    tracing::info!("Soul Player exiting");
     Ok(())
 }
 
@@ -1953,6 +2280,94 @@ mod tests {
         assert!(
             rt.find("open-folder").is_none(),
             "the single-folder Open Folder button is gone"
+        );
+    }
+
+    /// A running scan paints the title-bar activity widget; a wide window shows the
+    /// full set (icon + label + bar + count).
+    #[test]
+    fn scan_progress_shows_the_titlebar_activity_widget() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 1024,
+            total: 1210,
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_some(),
+            "the activity widget shows while a scan runs"
+        );
+        assert!(rt.find("titlebar-scan-icon").is_some(), "icon present");
+        assert!(
+            rt.find("titlebar-scan-label").is_some(),
+            "wide window shows the phase label"
+        );
+        assert!(
+            rt.find("titlebar-scan-bar").is_some(),
+            "progress bar present"
+        );
+        assert!(
+            rt.find("titlebar-scan-count").is_some(),
+            "done/total count present"
+        );
+    }
+
+    /// With no scan in flight the widget is absent (the title bar is the plain band).
+    #[test]
+    fn no_scan_hides_the_titlebar_activity_widget() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = State::new(PlayerHandle::offline()); // scan_progress defaults to None
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_none(),
+            "no activity widget when nothing is scanning"
+        );
+    }
+
+    /// At the smallest widths the widget collapses to just the animated icon — the
+    /// label, bar, and count drop as the window narrows.
+    #[test]
+    fn narrow_window_collapses_activity_to_icon_only() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 10,
+            total: 100,
+        });
+        let mut rt = Runtime::new(s, view, (360.0, 720.0), env);
+        // Two frames: the second reads the first's committed app-root width, so the
+        // width-responsive branch sees the real (narrow) window, not the fallback.
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan-icon").is_some(),
+            "the pulsing icon survives at the smallest width"
+        );
+        assert!(
+            rt.find("titlebar-scan-label").is_none(),
+            "the label drops when narrow"
+        );
+        assert!(
+            rt.find("titlebar-scan-bar").is_none(),
+            "the bar drops when narrow"
+        );
+        assert!(
+            rt.find("titlebar-scan-count").is_none(),
+            "the count drops at the smallest width"
         );
     }
 
@@ -2127,6 +2542,62 @@ mod tests {
         s.dsp_units[0].as_eq_mut().unwrap()
     }
 
+    /// End-to-end feed pipeline: as the player's now-playing state changes, the
+    /// media session receives the right `Update`s over its channel — track
+    /// metadata (resolved from the library) on a track change, playback on a
+    /// play/pause flip, and `stopped` when nothing is playing.
+    #[test]
+    fn media_session_feed_publishes_track_then_playback_on_change() {
+        let mut s = populated_state();
+        let id = s
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("the test library has tracks");
+        let expected = s.track(id).cloned().expect("the track resolves");
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.media_tx = Some(tx);
+
+        // A track starts playing → a Track update then a Playback update.
+        s.now_playing_id = Some(id);
+        s.playing = true;
+        s.position_secs = 12.0;
+        s.duration_secs = 200.0;
+        feed_media_session(&mut s);
+
+        match rx.try_recv().expect("a track-metadata update") {
+            media_session::Update::Track(meta) => {
+                assert_eq!(meta.title, expected.title.clone().unwrap_or_default());
+                assert_eq!(meta.duration_secs, expected.duration_secs);
+            }
+            media_session::Update::Playback(_) => panic!("expected a Track update first"),
+        }
+        match rx.try_recv().expect("a playback update") {
+            media_session::Update::Playback(pb) => {
+                assert!(pb.playing && !pb.stopped);
+                assert_eq!(pb.position_secs, 12.0);
+            }
+            media_session::Update::Track(_) => panic!("expected a Playback update"),
+        }
+
+        // Pausing the same track pushes only a playback update.
+        s.playing = false;
+        feed_media_session(&mut s);
+        match rx.try_recv().expect("a playback update on pause") {
+            media_session::Update::Playback(pb) => assert!(!pb.playing),
+            media_session::Update::Track(_) => panic!("expected Playback on pause"),
+        }
+
+        // Stopping (no track loaded) reports stopped.
+        s.now_playing_id = None;
+        feed_media_session(&mut s);
+        match rx.try_recv().expect("a playback update on stop") {
+            media_session::Update::Playback(pb) => assert!(pb.stopped),
+            media_session::Update::Track(_) => panic!("expected Playback on stop"),
+        }
+        assert!(rx.try_recv().is_err(), "no extra updates queued");
+    }
+
     /// The same contain-itself invariant as settings, but swept across the whole
     /// app — Library, Albums and a populated queue/now-playing panel — in every
     /// locale at two widths. This is the general i18n-overflow net; new views get
@@ -2243,6 +2714,39 @@ mod tests {
         assert!(
             rt2.find("removal-notice").is_none(),
             "no warning when there were no deletions"
+        );
+    }
+
+    #[test]
+    fn crash_dialog_shows_only_after_an_unclean_exit() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+
+        // A clean start shows no dialog.
+        let mut clean = populated_state();
+        clean.crashed_last_session = false;
+        let mut rt = Runtime::new(clean, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("crash-dialog").is_none(),
+            "no crash dialog on a clean start"
+        );
+
+        // After an unclean exit the modal dialog and its report button render.
+        let mut crashed = populated_state();
+        crashed.crashed_last_session = true;
+        let mut rt2 = Runtime::new(crashed, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("crash-dialog").is_some(),
+            "crash dialog shows after an unclean exit"
+        );
+        assert!(
+            rt2.find("crash-report").is_some(),
+            "the report button is offered"
         );
     }
 
@@ -3474,6 +3978,223 @@ mod tests {
         assert!(
             thumb[3] > 0.0,
             "the thumb has height when content overflows, got {thumb:?}"
+        );
+    }
+
+    /// The title-bar band sits at the top, `HEIGHT` tall, over the content only —
+    /// to the right of the sidebar, reaching the window's right edge (where the
+    /// Windows caption buttons live).
+    #[test]
+    fn titlebar_band_renders_over_the_content() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (bar, _) = rt
+            .presented("titlebar")
+            .expect("the title-bar band renders");
+        assert!(bar[1].abs() < 1.0, "band sits at the top, got y={}", bar[1]);
+        assert!(
+            (bar[3] - views::titlebar::HEIGHT).abs() < 1.0,
+            "band is HEIGHT tall, got h={}",
+            bar[3]
+        );
+        assert!(
+            bar[0] > 1.0,
+            "band starts right of the sidebar, got x={}",
+            bar[0]
+        );
+        assert!(
+            (bar[0] + bar[2] - 1100.0).abs() < 1.0,
+            "band reaches the window's right edge, got right={}",
+            bar[0] + bar[2]
+        );
+    }
+
+    /// The band's open content area keeps clear of the Windows caption buttons at
+    /// the trailing edge, as reported through `Cx::chrome_insets`.
+    #[test]
+    fn titlebar_content_clears_the_trailing_controls() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        let mut insets = rune::ChromeInsets::default();
+        insets.trailing = 138.0; // Windows caption buttons
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.frame(0.0);
+        let (content, _) = rt
+            .presented("titlebar-content")
+            .expect("the band content area renders");
+        assert!(
+            content[0] + content[2] <= 1100.0 - 138.0 + 0.5,
+            "content clears the trailing (Windows) controls, right={}",
+            content[0] + content[2]
+        );
+    }
+
+    /// On Windows (trailing inset > 0) the band draws its own `_ [] X` glyphs over
+    /// the native caption buttons: invisible while the top bar rests, faded in only
+    /// while the pointer is over the band — a clean strip until it's reached.
+    #[test]
+    fn windows_caption_glyphs_hidden_at_rest_and_revealed_on_hover() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        let mut insets = rune::ChromeInsets::default();
+        insets.trailing = 138.0; // three Windows caption buttons
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        let (close, rest_op) = rt
+            .presented("caption-close")
+            .expect("the close glyph renders over the native button");
+        // It sits in the trailing gutter, hard against the window's right edge.
+        assert!(
+            (close[0] + close[2] - 1100.0).abs() < 2.0,
+            "close glyph sits at the right edge, got right={}",
+            close[0] + close[2]
+        );
+        assert!(
+            rest_op < 0.05,
+            "caption glyphs are hidden at rest, opacity {rest_op}"
+        );
+
+        // Hover the band (over the close glyph); the glyphs fade in over a handful
+        // of frames (the `hover_motion` spring).
+        let cx = close[0] + close[2] / 2.0;
+        let cy = close[1] + close[3] / 2.0;
+        rt.pointer_move(cx, cy);
+        for _ in 0..40 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (_c2, hover_op) = rt
+            .presented("caption-close")
+            .expect("the close glyph renders while hovering");
+        assert!(
+            hover_op > 0.9,
+            "caption glyphs are revealed while hovering the band, opacity {hover_op}"
+        );
+    }
+
+    /// With "always show" enabled the custom controls stay fully visible at rest —
+    /// no hover needed — the user's preference over the default hover-reveal.
+    #[test]
+    fn windows_caption_glyphs_always_show_when_enabled() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.titlebar_controls_always = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        let mut insets = rune::ChromeInsets::default();
+        insets.trailing = 138.0;
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        let (_close, rest_op) = rt
+            .presented("caption-close")
+            .expect("the close glyph renders");
+        assert!(
+            rest_op > 0.9,
+            "caption glyphs stay visible at rest when 'always show' is on, opacity {rest_op}"
+        );
+    }
+
+    /// The Settings window-controls toggle appears only where the app draws its own
+    /// controls (trailing chrome inset > 0, i.e. Windows), not under a native frame.
+    #[test]
+    fn window_controls_toggle_only_where_the_app_draws_them() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+        let has_toggle = |rt: &Runtime<State>| {
+            rt.elements()
+                .into_iter()
+                .any(|e| e.key.as_deref() == Some("window-controls-toggle"))
+        };
+
+        // Custom controls (trailing inset set): the toggle shows in Appearance.
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Appearance;
+        let mut rt = Runtime::new(s, view, (1100.0, 900.0), env);
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        let mut insets = rune::ChromeInsets::default();
+        insets.trailing = 138.0;
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            has_toggle(&rt),
+            "the toggle shows where the app draws its own window controls"
+        );
+
+        // Native frame (default insets, trailing 0): no toggle.
+        let mut s2 = populated_state();
+        s2.route = Route::Settings;
+        s2.settings_tab = SettingsTab::Appearance;
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 900.0), env);
+        rt2.set_live_waker(std::sync::Arc::new(|| {}));
+        rt2.frame(0.0);
+        rt2.settle_all();
+        rt2.frame(0.0);
+        assert!(
+            !has_toggle(&rt2),
+            "no toggle where the native frame draws the controls"
+        );
+    }
+
+    /// The left sidebar runs to the very top of the window (no strip above it),
+    /// and `"app-root"` still spans the window width that mobile detection reads.
+    #[test]
+    fn sidebar_runs_to_the_top() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (root, _) = rt.presented("app-root").expect("app-root renders");
+        let (sidebar, _) = rt.presented("sidebar").expect("the sidebar renders");
+        assert!(
+            (root[2] - 1100.0).abs() < 1.0,
+            "app-root is window-width, got {}",
+            root[2]
+        );
+        assert!(
+            sidebar[1].abs() < 1.0,
+            "sidebar runs to the top, got y={}",
+            sidebar[1]
+        );
+        assert!(
+            sidebar[0].abs() < 1.0,
+            "sidebar starts at the left edge, got x={}",
+            sidebar[0]
         );
     }
 
