@@ -32,7 +32,9 @@ use soul_player_host::{
 mod config;
 #[cfg(test)]
 mod i18n_tests;
+mod logging;
 mod organize_job;
+mod report;
 mod theme;
 mod ui;
 mod update;
@@ -1440,6 +1442,19 @@ fn scene_organize_confirm(s: &mut State) {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Start file logging before anything else, so startup, every subsystem, and
+    // any panic are recorded. The guard must outlive the process — binding it to
+    // a named local keeps the non-blocking writer thread alive until `main` ends.
+    let _log_guard = logging::init();
+    let os = os_info::get();
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        os = %os,
+        arch = std::env::consts::ARCH,
+        cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        "Soul Player starting",
+    );
+
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
     // `on_open_url`) instead of opening a duplicate that would fight over the
@@ -1595,7 +1610,7 @@ fn main() -> anyhow::Result<()> {
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
     // installer uses the same icons via [package.metadata.packager]).
     if let Err(e) = rune::set_app_icon(include_bytes!("../icons/icon.png").to_vec()) {
-        eprintln!("[icon] set_app_icon failed: {e}");
+        tracing::warn!("set_app_icon failed: {e}");
     }
     app.run();
     Ok(())

@@ -623,6 +623,20 @@ settings.version:
   zh: '版本 %{version}'
   cs: 'Verze %{version}'
   ja: 'バージョン %{version}'
+settings.reportProblem:
+  en: 'Report a problem'
+  de: 'Problem melden'
+  es: 'Informar de un problema'
+  zh: '报告问题'
+  cs: 'Nahlásit problém'
+  ja: '問題を報告'
+settings.openLogs:
+  en: 'Open logs folder'
+  de: 'Protokollordner öffnen'
+  es: 'Abrir carpeta de registros'
+  zh: '打开日志文件夹'
+  cs: 'Otevřít složku protokolů'
+  ja: 'ログフォルダーを開く'
 settings.updateAvailable:
   en: 'Version %{version} is available.'
   de: 'Version %{version} ist verfügbar.'
