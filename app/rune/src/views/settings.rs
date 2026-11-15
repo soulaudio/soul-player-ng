@@ -1384,7 +1384,7 @@ fn dsp_unit_list(s: &State, p: &Palette) -> El {
 fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
     let unit = &s.dsp_units[i];
     let active = i == s.dsp_active;
-    let on = unit.enabled;
+    let on = unit.enabled();
     let grip = el()
         .key(format!("dsp-grip-{i}"))
         .role("button")
