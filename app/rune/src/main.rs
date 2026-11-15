@@ -3928,6 +3928,114 @@ mod tests {
         );
     }
 
+    /// Exporting the active profile to a real file and importing it back reproduces the
+    /// whole chain (name disambiguated) and the imported profile goes live on the engine.
+    #[test]
+    fn profile_export_then_import_round_trips_through_a_file_and_goes_live() {
+        let _g = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.profiles = vec![config::Profile {
+            name: "Mastering".into(),
+            chain: vec![
+                DspUnit::Eq(EqUnit {
+                    preamp_db: -3.5,
+                    name: Some("low".into()),
+                    ..EqUnit::default()
+                }),
+                DspUnit::Eq(EqUnit {
+                    preamp_db: 1.0,
+                    ..EqUnit::default()
+                }),
+            ],
+        }];
+        s.active_profile = 0;
+        s.dsp_units = s.profiles[0].chain.clone();
+        let original = s.profiles[0].chain.clone();
+
+        let path =
+            std::env::temp_dir().join(format!("soul-profile-rt-{}.json", std::process::id()));
+        export_profile(&s, &path);
+        assert!(path.exists(), "export wrote the file");
+
+        import_profile(&mut s, &path);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(s.profiles.len(), 2, "import appended a profile");
+        assert_eq!(s.active_profile, 1, "and switched to it");
+        assert_eq!(
+            s.profiles[1].name, "Mastering 2",
+            "the re-imported name is disambiguated"
+        );
+        assert_eq!(
+            s.profiles[1].chain, original,
+            "the whole chain survives export → file → import"
+        );
+        assert_eq!(
+            s.host.dsp_chain().units,
+            original,
+            "the imported profile is live on the engine"
+        );
+    }
+
+    /// Switching profiles while playback is live reloads the chain AND pushes it to the
+    /// engine with a `generation` bump (what makes the device sink re-apply mid-stream);
+    /// playback keeps running across the switch.
+    #[test]
+    fn switching_profiles_while_playing_pushes_the_new_chain_to_the_engine() {
+        let _g = config::use_test_config_dir();
+        let mut s = populated_state();
+        s.profiles = vec![
+            config::Profile {
+                name: "Flat".into(),
+                chain: vec![DspUnit::Eq(EqUnit {
+                    preamp_db: 0.0,
+                    enabled: false,
+                    ..EqUnit::default()
+                })],
+            },
+            config::Profile {
+                name: "Loud".into(),
+                chain: vec![DspUnit::Eq(EqUnit {
+                    preamp_db: 9.0,
+                    enabled: true,
+                    ..EqUnit::default()
+                })],
+            },
+        ];
+        s.active_profile = 0;
+        s.dsp_units = s.profiles[0].chain.clone();
+        apply_dsp(&mut s); // seed the engine with the active (Flat) chain
+
+        // Simulate live playback.
+        s.playing = true;
+        s.now_playing_id = s.library.first().map(|t| t.id);
+
+        assert_eq!(
+            s.host.dsp_chain().units,
+            s.profiles[0].chain,
+            "the engine holds the active (Flat) chain"
+        );
+        let gen_before = s.host.dsp_chain().generation;
+
+        switch_profile(&mut s, 1);
+
+        assert!(s.playing, "playback keeps running across the switch");
+        assert_eq!(s.active_profile, 1);
+        assert_eq!(
+            s.dsp_units, s.profiles[1].chain,
+            "the live chain is now Loud"
+        );
+        let live = s.host.dsp_chain();
+        assert_eq!(
+            live.units, s.profiles[1].chain,
+            "the engine received the switched chain"
+        );
+        assert!(
+            live.generation > gen_before,
+            "a generation bump tells the sink to re-apply live"
+        );
+    }
+
     /// The profile bar renders its switcher + action buttons; switching via the dropdown
     /// makes the chosen profile's chain live; and Rename opens the inline field.
     #[test]
