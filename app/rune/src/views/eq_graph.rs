@@ -259,19 +259,20 @@ fn graph_shape(
     sh.stroke(curve, 2.0, p.primary)
 }
 
-/// A slim readout bar shown ABOVE the graph (so it never covers the top bands):
-/// the selected band's shape · frequency · gain · Q and a per-band bypass toggle,
-/// or a hint when nothing is selected. Fixed height, so selecting doesn't jump the
-/// layout.
-fn readout_bar(s: &State, p: &Palette) -> El {
+/// A slim readout bar shown ABOVE unit `unit`'s graph (so it never covers the top
+/// bands): the selected band's shape · frequency · gain · Q and a per-band bypass
+/// toggle, or a hint when nothing in THIS unit is selected. Fixed height, so
+/// selecting doesn't jump the layout.
+fn readout_bar(unit: usize, s: &State, p: &Palette) -> El {
     let bar = row()
-        .key("eq-readout")
+        .key(format!("eq-readout-{unit}"))
         .w_full()
         .h(20.0)
         .center_y()
         .gap(space::SM);
     let Some((u, i, band)) = s
         .eq_selected
+        .filter(|(u, _)| *u == unit)
         .and_then(|(u, i)| unit_bands(s, u).get(i).map(|b| (u, i, *b)))
     else {
         return bar.child(
@@ -302,7 +303,7 @@ fn readout_bar(s: &State, p: &Palette) -> El {
         .px(space::SM)
         .py(space::XXS)
         .radius(radius::SM)
-        .key("eq-band-bypass")
+        .key(format!("eq-band-bypass-{unit}"))
         .role("button")
         .focusable(true)
         .cursor(Cursor::Pointer)
@@ -320,17 +321,17 @@ fn readout_bar(s: &State, p: &Palette) -> El {
 /// The response-curve graph: the `canvas`, axis labels, and a draggable handle per
 /// band. All gestures live on the container; `cx` gives its laid-out size so the
 /// handles sit on the curve.
-pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
-    let [gw, gh] = cx.layout_size("eq-graph").unwrap_or([FALLBACK_W, GRAPH_H]);
-    // The single editor body operates on the active unit; its gestures capture that
-    // index and pass it to the unit-indexed mutators.
-    let unit = s.dsp_active;
+pub(crate) fn eq_graph(unit: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let graph_key = format!("eq-graph-{unit}");
+    let [gw, gh] = cx.layout_size(&graph_key).unwrap_or([FALLBACK_W, GRAPH_H]);
+    // This card's graph operates on unit `unit`; its gestures capture that index
+    // (Copy) and pass it to the unit-indexed mutators.
     let bands = unit_bands(s, unit);
     let preamp = unit_preamp(s, unit);
     // The selected band index, but only when the selection belongs to this unit.
     let selected = s.eq_selected.and_then(|(u, i)| (u == unit).then_some(i));
     let mut graph = col()
-        .key("eq-graph")
+        .key(graph_key)
         .w_full()
         .h(GRAPH_H)
         .child(
@@ -439,7 +440,7 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             p.primary
         };
         let node = el()
-            .key(format!("eq-node-{i}"))
+            .key(format!("eq-node-{unit}-{i}"))
             .absolute(node_x, node_y)
             .size(NODE_D, NODE_D)
             .radius(NODE_D / 2.0)
@@ -451,10 +452,10 @@ pub(crate) fn eq_graph(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     }
     // The readout sits ABOVE the plot so it never blocks the top bands.
     col()
-        .key("eq-graph-wrap")
+        .key(format!("eq-graph-wrap-{unit}"))
         .w_full()
         .gap(space::XS)
-        .child(readout_bar(s, p))
+        .child(readout_bar(unit, s, p))
         .child(graph)
 }
 
