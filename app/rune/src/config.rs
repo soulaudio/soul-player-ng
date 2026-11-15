@@ -122,6 +122,59 @@ struct Config {
     /// Library "indexing speed": `auto` | `max` | `gentle`. Controls how much
     /// parallelism the scanner uses; `auto` follows live CPU load.
     indexing_mode: String,
+    /// Last window geometry, restored on the next launch. Absent on a fresh
+    /// install → the window opens at its default placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    window: Option<WindowGeometry>,
+}
+
+/// A persisted window rectangle (outer position + content size) and maximized
+/// state, so the app reopens where and how the user left it. Physical desktop
+/// pixels, matching Rune's `WindowPlacement` / `WindowOptions`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WindowGeometry {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    #[serde(default)]
+    pub maximized: bool,
+}
+
+/// Decide the geometry to persist from the current window placement plus whatever
+/// was saved before. Pure so it can be unit-tested without a live window.
+///
+/// - Minimized: return `None` — a minimized rect would poison the saved "normal"
+///   geometry, and there's nothing useful to restore to.
+/// - Maximized: keep the previously-saved *normal* rect (un-maximize returns
+///   there) and only flip the `maximized` flag; if nothing was saved yet, fall
+///   back to the current rect.
+/// - Normal: store the current rect with `maximized = false`.
+fn geometry_to_save(
+    pos: (i32, i32),
+    size: (u32, u32),
+    maximized: bool,
+    minimized: bool,
+    prev: Option<WindowGeometry>,
+) -> Option<WindowGeometry> {
+    if minimized {
+        return None;
+    }
+    let current = WindowGeometry {
+        x: pos.0,
+        y: pos.1,
+        w: size.0,
+        h: size.1,
+        maximized: false,
+    };
+    if maximized {
+        Some(WindowGeometry {
+            maximized: true,
+            ..prev.unwrap_or(current)
+        })
+    } else {
+        Some(current)
+    }
 }
 
 /// The stable on-disk tag for an EQ unit's `kind`. A config written before the DSP
@@ -272,6 +325,7 @@ impl Default for Config {
             eq_preamp: 0.0,
             eq_bands: Vec::new(),
             indexing_mode: "auto".into(),
+            window: None,
         }
     }
 }
@@ -415,6 +469,23 @@ pub fn save_indexing_mode(mode: &str) {
     let mut cfg = load();
     cfg.indexing_mode = mode.to_string();
     save(&cfg);
+}
+
+/// The saved window geometry to restore on launch, or `None` on a fresh install.
+pub fn load_window_geometry() -> Option<WindowGeometry> {
+    load().window
+}
+
+/// Persist the window geometry derived from the current placement: pass the outer
+/// position, content size, and maximized/minimized flags (e.g. from Rune's
+/// `WindowPlacement`). A minimized window is skipped so it never overwrites the
+/// stored normal rect.
+pub fn save_window_geometry(pos: (i32, i32), size: (u32, u32), maximized: bool, minimized: bool) {
+    let mut cfg = load();
+    if let Some(g) = geometry_to_save(pos, size, maximized, minimized, cfg.window) {
+        cfg.window = Some(g);
+        save(&cfg);
+    }
 }
 
 /// Restore the sidebar geometry `(width, collapsed)`; width is clamped to the
@@ -911,11 +982,19 @@ mod tests {
                 enabled: true,
             }],
             indexing_mode: "gentle".into(),
+            window: Some(WindowGeometry {
+                x: 100,
+                y: 80,
+                w: 1280,
+                h: 800,
+                maximized: true,
+            }),
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
         assert_eq!(back.sources, cfg.sources);
         assert_eq!(back.theme, "dark");
+        assert_eq!(back.window, cfg.window);
         assert_eq!(back.sidebar_width, 300.0);
         assert!(back.sidebar_collapsed);
         assert_eq!(back.locale, "de");
@@ -1065,6 +1144,72 @@ mod tests {
             ..Config::default()
         };
         assert_eq!(wide.sidebar_width.clamp(MIN_WIDTH, MAX_WIDTH), MAX_WIDTH);
+    }
+
+    #[test]
+    fn geometry_normal_window_stores_current_rect() {
+        let g = geometry_to_save((50, 60), (1000, 700), false, false, None);
+        assert_eq!(
+            g,
+            Some(WindowGeometry {
+                x: 50,
+                y: 60,
+                w: 1000,
+                h: 700,
+                maximized: false
+            })
+        );
+    }
+
+    #[test]
+    fn geometry_minimized_is_not_saved() {
+        let prev = Some(WindowGeometry {
+            x: 1,
+            y: 2,
+            w: 800,
+            h: 600,
+            maximized: false,
+        });
+        assert_eq!(geometry_to_save((0, 0), (0, 0), false, true, prev), None);
+    }
+
+    #[test]
+    fn geometry_maximized_keeps_previous_normal_rect() {
+        // When quitting maximized, the stored rect must stay the last *normal* one
+        // so un-maximize returns there — only the flag flips.
+        let prev = Some(WindowGeometry {
+            x: 50,
+            y: 60,
+            w: 1000,
+            h: 700,
+            maximized: false,
+        });
+        let g = geometry_to_save((0, 0), (3840, 2160), true, false, prev);
+        assert_eq!(
+            g,
+            Some(WindowGeometry {
+                x: 50,
+                y: 60,
+                w: 1000,
+                h: 700,
+                maximized: true
+            })
+        );
+    }
+
+    #[test]
+    fn geometry_maximized_with_no_history_falls_back_to_current() {
+        let g = geometry_to_save((0, 0), (3840, 2160), true, false, None);
+        assert_eq!(
+            g,
+            Some(WindowGeometry {
+                x: 0,
+                y: 0,
+                w: 3840,
+                h: 2160,
+                maximized: true
+            })
+        );
     }
 
     #[test]
@@ -1288,5 +1433,46 @@ mod tests {
         assert_eq!(load_indexing_mode(), "gentle");
         save_indexing_mode("max");
         assert_eq!(load_indexing_mode(), "max");
+    }
+
+    #[test]
+    fn window_geometry_persists_through_the_config_file() {
+        let _g = use_test_config_dir();
+        // A normal window persists its exact rect.
+        save_window_geometry((120, 90), (1200, 760), false, false);
+        assert_eq!(
+            load_window_geometry(),
+            Some(WindowGeometry {
+                x: 120,
+                y: 90,
+                w: 1200,
+                h: 760,
+                maximized: false
+            })
+        );
+        // Quitting maximized keeps the stored normal rect, only flipping the flag.
+        save_window_geometry((0, 0), (3840, 2160), true, false);
+        assert_eq!(
+            load_window_geometry(),
+            Some(WindowGeometry {
+                x: 120,
+                y: 90,
+                w: 1200,
+                h: 760,
+                maximized: true
+            })
+        );
+        // A minimized window must not overwrite the saved rect.
+        save_window_geometry((7, 7), (50, 50), false, true);
+        assert_eq!(
+            load_window_geometry(),
+            Some(WindowGeometry {
+                x: 120,
+                y: 90,
+                w: 1200,
+                h: 760,
+                maximized: true
+            })
+        );
     }
 }
