@@ -59,13 +59,87 @@ impl EqUnit {
     }
 }
 
+/// The type tag of a [`DspUnit`] — what kind of processor a chain entry is. The UI
+/// type-picker and the serialization key off this; EQ is the only kind today, but
+/// the chain is built to grow (compressor / limiter / … are future variants).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DspKind {
+    /// A parametric-EQ unit ([`EqUnit`]).
+    Eq,
+}
+
+/// One **typed** unit in the DSP chain. EQ is the only variant for now; the enum
+/// exists so the chain generalizes beyond EQ without reshaping the apply engine —
+/// [`DspSink`] matches the variant and an unknown kind is a no-op passthrough.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DspUnit {
+    /// A parametric-EQ unit.
+    Eq(EqUnit),
+}
+
+impl DspUnit {
+    /// Convenience constructor for an EQ unit.
+    #[must_use]
+    pub fn eq(unit: EqUnit) -> Self {
+        DspUnit::Eq(unit)
+    }
+
+    /// This unit's [`DspKind`] tag.
+    #[must_use]
+    pub fn kind(&self) -> DspKind {
+        match self {
+            DspUnit::Eq(_) => DspKind::Eq,
+        }
+    }
+
+    /// Whether this unit is engaged. A disabled unit is a bit-exact passthrough.
+    #[must_use]
+    pub fn enabled(&self) -> bool {
+        match self {
+            DspUnit::Eq(eq) => eq.enabled,
+        }
+    }
+
+    /// Enable or disable this unit (per-unit bypass, independent of the stage).
+    pub fn set_enabled(&mut self, on: bool) {
+        match self {
+            DspUnit::Eq(eq) => eq.enabled = on,
+        }
+    }
+
+    /// The inner [`EqUnit`] if this is an EQ unit, else `None`.
+    #[must_use]
+    pub fn as_eq(&self) -> Option<&EqUnit> {
+        match self {
+            DspUnit::Eq(eq) => Some(eq),
+        }
+    }
+
+    /// The inner [`EqUnit`] mutably if this is an EQ unit, else `None`.
+    #[must_use]
+    pub fn as_eq_mut(&mut self) -> Option<&mut EqUnit> {
+        match self {
+            DspUnit::Eq(eq) => Some(eq),
+        }
+    }
+
+    /// Whether this unit, as configured, would change the signal — delegates to the
+    /// variant's own `affects` (an unknown future kind that does nothing is `false`).
+    #[must_use]
+    pub fn affects(&self) -> bool {
+        match self {
+            DspUnit::Eq(eq) => eq.affects(),
+        }
+    }
+}
+
 /// The live DSP chain the UI writes and the [`DspSink`] reads: an ordered list of
-/// EQ units (signal flows through them in order) plus a `generation` counter the
-/// sink watches to know when to redesign its filters.
+/// typed DSP units (signal flows through them in order) plus a `generation` counter
+/// the sink watches to know when to redesign its filters.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DspChain {
-    /// The EQ units, applied front-to-back. Reordering changes processing order.
-    pub units: Vec<EqUnit>,
+    /// The DSP units, applied front-to-back. Reordering changes processing order.
+    pub units: Vec<DspUnit>,
     /// Bumped on every change so the sink knows to redesign.
     pub generation: u64,
 }
@@ -75,7 +149,7 @@ impl DspChain {
     /// frames through untouched (bit-exact).
     #[must_use]
     pub fn is_active(&self) -> bool {
-        self.units.iter().any(EqUnit::affects)
+        self.units.iter().any(DspUnit::affects)
     }
 }
 
@@ -139,20 +213,24 @@ impl<K: Sink> DspSink<K> {
             self.units.resize_with(chain.units.len(), Equalizer::new);
             self.preamps.resize(chain.units.len(), 1.0);
             for (i, unit) in chain.units.iter().enumerate() {
-                for b in 0..MAX_BANDS {
-                    let filter = match unit.bands.get(b) {
-                        Some(band) => design(band, self.rate as f32),
-                        None => Biquad::bypass(),
-                    };
-                    self.units[i].set_band(b, filter);
+                match unit {
+                    DspUnit::Eq(eq) => {
+                        for b in 0..MAX_BANDS {
+                            let filter = match eq.bands.get(b) {
+                                Some(band) => design(band, self.rate as f32),
+                                None => Biquad::bypass(),
+                            };
+                            self.units[i].set_band(b, filter);
+                        }
+                        self.units[i].set_enabled(eq.enabled);
+                        // A disabled unit is a full passthrough — no preamp either.
+                        self.preamps[i] = if eq.enabled {
+                            db_to_lin(eq.preamp_db)
+                        } else {
+                            1.0
+                        };
+                    }
                 }
-                self.units[i].set_enabled(unit.enabled);
-                // A disabled unit is a full passthrough — no preamp either.
-                self.preamps[i] = if unit.enabled {
-                    db_to_lin(unit.preamp_db)
-                } else {
-                    1.0
-                };
             }
         }
         chain.is_active()
@@ -281,17 +359,48 @@ mod tests {
         )
     }
 
-    /// A one-unit chain (the unit enabled); `edit` tweaks that unit.
+    /// A one-unit chain (the EQ unit enabled); `edit` tweaks that unit.
     fn chain_with(edit: impl FnOnce(&mut EqUnit)) -> DspShared {
         let mut unit = EqUnit::default();
         edit(&mut unit);
         Arc::new(Mutex::new(DspChain {
-            units: vec![unit],
+            units: vec![DspUnit::Eq(unit)],
             generation: 1,
         }))
     }
 
     // ---- DspSink behaviour ----------------------------------------------------
+
+    #[test]
+    fn a_dsp_unit_eq_applies_the_same_gain_as_the_bare_eq_unit() {
+        // The typed-unit wrapper must be behaviour-identical to the old EQ-only
+        // chain: a `DspUnit::Eq` built from the same `EqUnit` boosts its band by the
+        // same gain. Guards the enum generalization against a regression.
+        let n = 24_000; // 0.5 s
+        let amp = 3_000_000.0; // ~0.36 FS — headroom for a +6 dB boost
+        let mut unit = EqUnit::default();
+        unit.bands[3] = bell(1000.0, 6.0, 1.0);
+        let shared = Arc::new(Mutex::new(DspChain {
+            units: vec![DspUnit::Eq(unit)],
+            generation: 1,
+        }));
+        let mut sink = dsp_sink(
+            Capture {
+                info: info(48_000, 1),
+                out: Vec::new(),
+            },
+            shared,
+        );
+        let input = sine(1000.0, FS, n, amp);
+        let in_peak = tail_peak(&input);
+        sink.write(&input).unwrap();
+        let gain = tail_peak(&sink.inner.out) / in_peak;
+        let want = db_to_lin(6.0); // ≈1.995×
+        assert!(
+            (gain / want - 1.0).abs() < 0.08,
+            "a DspUnit::Eq +6 dB band should ~double the 1 kHz amplitude: gain {gain:.3}, want {want:.3}"
+        );
+    }
 
     #[test]
     fn disabled_or_flat_is_a_bit_exact_passthrough() {
@@ -420,7 +529,7 @@ mod tests {
             let mut c = shared.lock().unwrap();
             let mut unit = EqUnit::default();
             unit.bands[3] = bell(1000.0, 6.0, 1.0);
-            c.units = vec![unit];
+            c.units = vec![DspUnit::Eq(unit)];
             c.generation += 1;
         }
         sink.inner.out.clear();
@@ -447,7 +556,7 @@ mod tests {
             u
         };
         let shared = Arc::new(Mutex::new(DspChain {
-            units: vec![a, b],
+            units: vec![DspUnit::Eq(a), DspUnit::Eq(b)],
             generation: 1,
         }));
         let mut sink = dsp_sink(
@@ -486,7 +595,7 @@ mod tests {
             u
         };
         let shared = Arc::new(Mutex::new(DspChain {
-            units: vec![on, off],
+            units: vec![DspUnit::Eq(on), DspUnit::Eq(off)],
             generation: 1,
         }));
         let mut sink = dsp_sink(
