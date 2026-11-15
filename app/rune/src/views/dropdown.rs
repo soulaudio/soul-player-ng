@@ -72,6 +72,9 @@ pub fn panel<F>(
     selected: &str,
     width: Option<f32>,
     on_pick: F,
+    // An optional trailing "coming soon" row: present but greyed and NOT focusable,
+    // so it reads as a teaser the user can't pick (mirrors the add-source menu).
+    disabled_note: Option<&str>,
     p: &Palette,
 ) -> El
 where
@@ -122,6 +125,22 @@ where
             pick(s, &id_owned);
             close_dropdown(s);
         }));
+    }
+    // A disabled "coming soon" row: greyed, not focusable, no handler.
+    if let Some(note) = disabled_note {
+        menu = menu.child(
+            row()
+                .key(format!("{anchor_key}-opt-soon"))
+                .role("option")
+                .w_full()
+                .center_y()
+                .px(space::MD)
+                .py(space::SM)
+                .radius(radius::SM)
+                // No truncate: let the note's natural width set the panel, so
+                // "… coming soon" shows in full rather than ellipsizing.
+                .child(text(note.to_string()).color(p.text_secondary)),
+        );
     }
     // Light-dismiss backdrop: a full-window, transparent catcher mounted BEHIND the
     // panel. An outside press OR any scroll closes the dropdown — the standard popover

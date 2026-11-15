@@ -1509,15 +1509,14 @@ fn dsp_type_options() -> Vec<(String, String)> {
     vec![("eq".to_string(), "EQ".to_string())]
 }
 
-/// The "+ Add DSP" control. With a single DSP type it ADDS that type directly on
-/// press — a one-item picker is pointless, and a portaled, focus-grabbing dropdown
-/// opened from deep in the settings scroll fights the scroll (jumps + locks it). With
-/// two or more types it opens the shared [`dropdown`] of types ([`add_dsp_menu`],
-/// mounted at the window root) to choose. The dropdown path is kept ready for that.
+/// The "+ Add DSP" control: opens the shared [`dropdown`] of DSP types
+/// ([`add_dsp_menu`], mounted at the window root). (The dropdown is now light-dismiss
+/// — an outside press / scroll / Escape closes it — so it behaves even anchored deep
+/// in the settings scroll.)
 fn add_dsp_control(p: &Palette) -> El {
     // A touch taller than a row chip (py SM vs XXS) so the add action reads as the
     // chain's primary control.
-    let btn = text(t!("settings.addDsp").to_string())
+    text(t!("settings.addDsp").to_string())
         .font(type_::LABEL)
         .px(space::MD)
         .py(space::SM)
@@ -1527,17 +1526,13 @@ fn add_dsp_control(p: &Palette) -> El {
         .focusable(true)
         .cursor(Cursor::Pointer)
         .fill(p.primary.alpha(0.16))
-        .color(p.primary);
-    if dsp_type_options().len() <= 1 {
-        btn.on_press(move |st: &mut State| add_dsp_unit(st))
-    } else {
-        btn.on_press(move |st: &mut State| crate::toggle_dropdown(st, ADD_DSP_MENU))
-    }
+        .color(p.primary)
+        .on_press(move |st: &mut State| crate::toggle_dropdown(st, ADD_DSP_MENU))
 }
 
 /// The add-DSP dropdown panel — **mount at the window root** via
-/// [`settings_overlays`]. Picking a type appends that unit (EQ today) and opens
-/// its card. Nothing is pre-selected (it's an action menu, not a value picker).
+/// [`settings_overlays`]. Picking a type appends that unit (EQ today) and opens its
+/// card; a trailing greyed "more DSP solutions coming soon" row teases what's next.
 fn add_dsp_menu(p: &Palette) -> El {
     dropdown::panel(
         ADD_DSP_MENU,
@@ -1545,6 +1540,7 @@ fn add_dsp_menu(p: &Palette) -> El {
         "",
         None,
         |st: &mut State, _id: &str| add_dsp_unit(st),
+        Some(t!("settings.moreDspSoon").as_ref()),
         p,
     )
 }
@@ -2344,6 +2340,7 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
             &s.locale_pref,
             width,
             |s: &mut State, id: &str| set_locale_pref(s, id),
+            None,
             p,
         ));
     }
@@ -2362,6 +2359,7 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
             &s.managed_template,
             width,
             |s: &mut State, id: &str| set_managed_template(s, id),
+            None,
             p,
         ));
     }
