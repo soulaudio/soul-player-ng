@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use soul_player_host::{
-    Band, BandKind, EqUnit, MAX_BANDS, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, default_bands,
+    Band, BandKind, DspUnit, EqUnit, MAX_BANDS, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache,
+    default_bands,
 };
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
@@ -103,10 +104,12 @@ struct Config {
     managed_library_template: String,
     /// Managed-library file strategy: `"copy"` (keep the source) or `"move"`.
     managed_library_strategy: String,
-    /// The DSP chain: an ordered list of EQ units the signal flows through. A
-    /// future "audio profile" can bundle this whole list. Empty + legacy EQ fields
-    /// present → migrated to a single unit on load.
-    eq_units: Vec<EqUnitCfg>,
+    /// The DSP chain: an ordered list of typed DSP units the signal flows through
+    /// (EQ is the only kind today). A future "audio profile" can bundle this whole
+    /// list. Empty + legacy EQ fields present → migrated to a single unit on load.
+    /// Kept under the on-disk key `eq_units` so configs from before the typed-unit
+    /// migration load unchanged.
+    eq_units: Vec<DspUnitCfg>,
     /// Legacy single-EQ fields (pre-chain), kept for one-time migration into
     /// `eq_units`. New saves leave them at defaults.
     eq_enabled: bool,
@@ -117,43 +120,65 @@ struct Config {
     indexing_mode: String,
 }
 
-/// One persisted EQ unit: its enable, preamp and bands. TOML-friendly mirror of
-/// [`soul_player_host::EqUnit`].
+/// The stable on-disk tag for an EQ unit's `kind`. A config written before the DSP
+/// chain grew beyond EQ has no `kind` field, so it defaults to this (= still EQ).
+fn default_dsp_kind() -> String {
+    "eq".into()
+}
+
+/// One persisted DSP-chain unit: a `kind` tag plus the EQ fields (enable, preamp,
+/// bands). TOML-friendly mirror of [`soul_player_host::DspUnit`]. The `kind` tag
+/// makes the chain forward-compatible: today only `"eq"` is known (and is the
+/// default for an untagged legacy entry), while an unknown future kind round-trips
+/// on disk but is skipped when building the live chain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct EqUnitCfg {
+struct DspUnitCfg {
+    #[serde(default = "default_dsp_kind")]
+    kind: String,
     enabled: bool,
     preamp: f32,
     bands: Vec<BandCfg>,
 }
 
-impl From<&EqUnit> for EqUnitCfg {
-    fn from(u: &EqUnit) -> Self {
-        Self {
-            enabled: u.enabled,
-            preamp: u.preamp_db,
-            bands: u.bands.iter().map(BandCfg::from).collect(),
+impl From<&DspUnit> for DspUnitCfg {
+    fn from(u: &DspUnit) -> Self {
+        match u {
+            DspUnit::Eq(eq) => Self {
+                kind: "eq".into(),
+                enabled: eq.enabled,
+                preamp: eq.preamp_db,
+                bands: eq.bands.iter().map(BandCfg::from).collect(),
+            },
         }
     }
 }
 
-impl EqUnitCfg {
-    fn to_unit(&self) -> EqUnit {
-        let fallback = Band {
-            kind: BandKind::Peaking,
-            freq: 1000.0,
-            gain_db: 0.0,
-            q: 1.0,
-            enabled: true,
-        };
-        EqUnit {
-            bands: self
-                .bands
-                .iter()
-                .take(MAX_BANDS)
-                .map(|b| b.to_band(&fallback))
-                .collect(),
-            preamp_db: self.preamp,
-            enabled: self.enabled,
+impl DspUnitCfg {
+    /// Build a host [`DspUnit`] from this persisted entry, or `None` for an unknown
+    /// `kind` (so a forward-compatible config's future units are skipped rather than
+    /// misread). A `"eq"` — or untagged legacy — entry maps to a [`DspUnit::Eq`].
+    fn to_unit(&self) -> Option<DspUnit> {
+        match self.kind.trim() {
+            "eq" => {
+                let fallback = Band {
+                    kind: BandKind::Peaking,
+                    freq: 1000.0,
+                    gain_db: 0.0,
+                    q: 1.0,
+                    enabled: true,
+                };
+                Some(DspUnit::Eq(EqUnit {
+                    bands: self
+                        .bands
+                        .iter()
+                        .take(MAX_BANDS)
+                        .map(|b| b.to_band(&fallback))
+                        .collect(),
+                    preamp_db: self.preamp,
+                    enabled: self.enabled,
+                }))
+            }
+            _ => None,
         }
     }
 }
@@ -540,12 +565,17 @@ pub fn save_replaygain(mode: ReplayGainMode, preamp_db: f32) {
     }
 }
 
-/// The saved DSP chain (ordered EQ units), defaulting to a single off/flat unit.
-/// Migrates the pre-chain single-EQ fields into one unit when `eq_units` is absent.
-pub fn load_dsp_chain() -> Vec<EqUnit> {
+/// The saved DSP chain (ordered, typed DSP units), defaulting to a single off/flat
+/// EQ unit. Unknown-kind entries (a config from a newer build) are skipped. Migrates
+/// the pre-chain single-EQ fields into one EQ unit when `eq_units` is absent.
+pub fn load_dsp_chain() -> Vec<DspUnit> {
     let cfg = load();
     if !cfg.eq_units.is_empty() {
-        return cfg.eq_units.iter().map(EqUnitCfg::to_unit).collect();
+        return cfg
+            .eq_units
+            .iter()
+            .filter_map(DspUnitCfg::to_unit)
+            .collect();
     }
     // Migrate a legacy single EQ, or fall back to one default (off) unit.
     let fallback = Band {
@@ -564,17 +594,17 @@ pub fn load_dsp_chain() -> Vec<EqUnit> {
             .map(|b| b.to_band(&fallback))
             .collect()
     };
-    vec![EqUnit {
+    vec![DspUnit::Eq(EqUnit {
         bands,
         preamp_db: cfg.eq_preamp,
         enabled: cfg.eq_enabled,
-    }]
+    })]
 }
 
 /// Persist the DSP chain (load-modify-write the one config file).
-pub fn save_dsp_chain(units: &[EqUnit]) {
+pub fn save_dsp_chain(units: &[DspUnit]) {
     let mut cfg = load();
-    cfg.eq_units = units.iter().map(EqUnitCfg::from).collect();
+    cfg.eq_units = units.iter().map(DspUnitCfg::from).collect();
     save(&cfg);
 }
 
@@ -832,7 +862,8 @@ mod tests {
             managed_library_path: "/music/managed".into(),
             managed_library_template: "flat".into(),
             managed_library_strategy: "move".into(),
-            eq_units: vec![EqUnitCfg {
+            eq_units: vec![DspUnitCfg {
+                kind: "eq".into(),
                 enabled: true,
                 preamp: -2.0,
                 bands: vec![BandCfg {
@@ -869,6 +900,54 @@ mod tests {
         assert_eq!(back.managed_library_path, "/music/managed");
         assert_eq!(back.managed_library_template, "flat");
         assert_eq!(back.managed_library_strategy, "move");
+    }
+
+    #[test]
+    fn dsp_chain_roundtrips_and_an_untagged_entry_loads_as_eq() {
+        let _g = use_test_config_dir();
+        // A DspUnit::Eq survives the full save → load round-trip through the shared
+        // config file (bands, preamp and enable all reload).
+        let unit = DspUnit::Eq(EqUnit {
+            bands: vec![Band {
+                kind: BandKind::LowShelf,
+                freq: 90.0,
+                gain_db: 4.5,
+                q: 0.7,
+                enabled: true,
+            }],
+            preamp_db: -2.0,
+            enabled: true,
+        });
+        save_dsp_chain(std::slice::from_ref(&unit));
+        let back = load_dsp_chain();
+        assert_eq!(back.len(), 1, "the saved unit reloads");
+        let eq = back[0].as_eq().expect("round-trips as an EQ unit");
+        assert!(eq.enabled);
+        assert_eq!(eq.preamp_db, -2.0);
+        assert_eq!(eq.bands.len(), 1);
+        assert_eq!(eq.bands[0].kind, BandKind::LowShelf);
+
+        // An OLD entry written before the `kind` tag existed (no `kind` field) still
+        // deserializes — defaulting to kind "eq" — and maps to a DspUnit::Eq.
+        let untagged: DspUnitCfg =
+            toml::from_str("enabled = true\npreamp = -1.5\nbands = []\n").unwrap();
+        assert_eq!(
+            untagged.kind, "eq",
+            "an untagged entry defaults to the EQ kind"
+        );
+        let as_unit = untagged
+            .to_unit()
+            .expect("an untagged (eq) entry builds a unit");
+        assert!(matches!(as_unit, DspUnit::Eq(_)), "untagged → DspUnit::Eq");
+
+        // An unknown future kind is skipped (forward-compatible), not misread as EQ.
+        let unknown = DspUnitCfg {
+            kind: "compressor".into(),
+            enabled: true,
+            preamp: 0.0,
+            bands: Vec::new(),
+        };
+        assert!(unknown.to_unit().is_none(), "an unknown kind is skipped");
     }
 
     #[test]
