@@ -100,7 +100,19 @@ fn nav_active(route: Route, def: &NavDef) -> bool {
 /// A clickable nav entry that switches `State::route`. A large semibold label
 /// with a trailing status dot — filled with the primary colour when active, a
 /// faint ring otherwise — mirroring the old app's sidebar nav.
-fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -> El {
+/// One primary nav row. `visible` is the user's Settings → Navigation choice: a
+/// hidden item stays mounted (stable key) but folds to zero height, faded and
+/// inert, so toggling it in Settings makes Rune spring the height + opacity — the
+/// sidebar glides open/shut instead of snapping, and the queue below never
+/// overlaps a fading full-height ghost.
+fn nav_item(
+    key: &str,
+    label: String,
+    route: Route,
+    active: bool,
+    visible: bool,
+    p: &Palette,
+) -> El {
     let dot = el()
         .key(format!("{key}-dot"))
         .w(8.0)
@@ -111,9 +123,33 @@ fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -
     } else {
         dot.border_sides([1.0, 1.0, 1.0, 1.0], p.border)
     };
+    let content = row()
+        .w_full()
+        .center_y()
+        .child(
+            text(label.clone())
+                .font(type_::NAV)
+                .color(if active { p.primary } else { p.text_secondary })
+                .grow(1.0),
+        )
+        .child(dot);
+
+    if !visible {
+        // Folded away: zero height (Rune springs it from its open size), faded out,
+        // content clipped to the shrinking box, and inert — no role/focus/press so
+        // a hidden page isn't reachable or announced.
+        return el()
+            .key(key.to_string())
+            .w_full()
+            .h(0.0)
+            .opacity(0.0)
+            .clip_rounded(radius::SM)
+            .child(content);
+    }
+
     el().key(key.to_string())
         .role("button")
-        .label(label.clone())
+        .label(label)
         .focusable(true)
         .w_full()
         .px(space::MD)
@@ -122,18 +158,7 @@ fn nav_item(key: &str, label: String, route: Route, active: bool, p: &Palette) -
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
-        .child(
-            row()
-                .w_full()
-                .center_y()
-                .child(
-                    text(label)
-                        .font(type_::NAV)
-                        .color(if active { p.primary } else { p.text_secondary })
-                        .grow(1.0),
-                )
-                .child(dot),
-        )
+        .child(content)
         // Switch pages and, on mobile, flip to the content pane (the old app's
         // NavBar: `navigate(path); if (isMobile) setMobileShowContent(true)`).
         // Harmless on desktop, where `mobile_show_content` is ignored.
@@ -204,17 +229,20 @@ pub fn sidebar(
             // Settings rail — so the first nav item's box lines up with the first
             // row of whatever page is open (and the footer hugs the bottom with
             // less padding below).
+            // Render EVERY nav item, folding the hidden ones to zero height (see
+            // `nav_item`). Keeping them mounted with a stable key lets Rune spring the
+            // height + fade when the user toggles one in Settings, so the sidebar
+            // glides instead of snapping (and the queue below never overlaps a ghost).
             let mut nav = col().key("nav").px(space::LG).pt(space::LG).pb(space::LG);
             for def in NAV_DEFS {
-                if s.nav_visible(def.id) {
-                    nav = nav.child(nav_item(
-                        def.key,
-                        nav_label(def.id),
-                        def.route,
-                        nav_active(s.route, def),
-                        p,
-                    ));
-                }
+                nav = nav.child(nav_item(
+                    def.key,
+                    nav_label(def.id),
+                    def.route,
+                    nav_active(s.route, def),
+                    s.nav_visible(def.id),
+                    p,
+                ));
             }
             nav
         })
