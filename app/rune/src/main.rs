@@ -22,7 +22,7 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Titlebar, Tx, Waker, col, el, ro
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
 use soul_player_host::{
-    Band, BandKind, BrowseAxis, Command, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
+    Band, BandKind, BrowseAxis, Command, DspUnit, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
     IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
     SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView,
     WatchUpdate, default_bands,
@@ -241,43 +241,50 @@ struct State {
     /// ReplayGain preamp in dB (persisted), a constant offset on top of the mode's
     /// gain. Rendered as a slider in Settings → ReplayGain.
     replaygain_preamp: f32,
-    /// The DSP chain (persisted): an ordered list of EQ units; the signal flows
-    /// through them in order. A future "audio profile" can bundle this whole list.
-    /// Rendered as the reorderable unit list in the Settings → Audio DSP/EQ card.
-    dsp_units: Vec<EqUnit>,
-    /// Which unit's editor (graph + bands) is open. The `eq_*` fields below mirror
-    /// this unit's working copy, so the graph/editor code reads them directly;
-    /// `apply_eq` syncs the mirror back into `dsp_units[dsp_active]`.
-    dsp_active: usize,
+    /// The DSP chain (persisted): an ordered list of typed DSP units (EQ is the only
+    /// kind today); the signal flows through them in order. A future "audio profile"
+    /// can bundle this whole list. Rendered as the reorderable unit list in the
+    /// Settings → Audio DSP/EQ card.
+    dsp_units: Vec<DspUnit>,
+    /// Per-unit card expand/collapse flags, parallel to `dsp_units` (same length,
+    /// same order). `true` = that unit's card is open (its preamp + response graph +
+    /// band table show). Every `dsp_units` mutator keeps it in sync; the first card
+    /// starts open. Every EQ mutator takes an explicit unit index — each card passes
+    /// its own position `i`.
+    dsp_expanded: Vec<bool>,
+    /// Per-unit band-table expand flags, parallel to `dsp_units`. `true` = the band
+    /// list under that unit's graph is shown; `false` collapses it to just its header.
+    /// Kept in sync alongside `dsp_expanded`; defaults open.
+    eq_bands_expanded: Vec<bool>,
     /// In-flight unit-list reorder drag: `(from, to)` indices, or `None`.
     dsp_drag: Option<(usize, usize)>,
-    /// Active unit's enable (mirror of `dsp_units[dsp_active].enabled`). When off,
-    /// its editor dims. Rendered as the DSP/EQ card header toggle.
-    eq_enabled: bool,
-    /// Active unit's parametric bands (mirror, 0..=`MAX_BANDS`): each has its own
-    /// shape, frequency, gain and Q. Drawn + dragged in the DSP/EQ graph; bands can
-    /// be added/removed from the editor.
-    eq_bands: Vec<Band>,
-    /// Active unit's preamp in dB (mirror) — headroom so band boosts don't clip.
-    eq_preamp: f32,
-    /// In-flight EQ-graph node drag: `(band index, band state at press)`, so the
+    /// In-flight EQ-graph node drag: `(unit, band, band state at press)`, so the
     /// drag applies absolutely from the press point. `None` when not dragging.
-    eq_drag: Option<(usize, Band)>,
-    /// The band whose handle is selected/focused (shows its per-band curve + a
-    /// readout). `None` when nothing is selected.
-    eq_selected: Option<usize>,
-    /// In-flight Ableton-style number-box drag in the band table: `(band index,
+    eq_drag: Option<(usize, usize, Band)>,
+    /// The `(unit, band)` whose handle is selected/focused (shows its per-band curve
+    /// + a readout). `None` when nothing is selected.
+    eq_selected: Option<(usize, usize)>,
+    /// In-flight Ableton-style number-box drag in the band table: `(unit, band,
     /// which number, the value at the press)`, so the vertical drag applies
     /// absolutely from the press point. `None` when not dragging a number.
-    eq_num_drag: Option<(usize, NumField, f32)>,
+    eq_num_drag: Option<(usize, usize, NumField, f32)>,
     /// Which band-table number is being typed into (double-click a value to open an
-    /// inline text field): `(band index, which number)`, or `None`. The buffer it
+    /// inline text field): `(unit, band, which number)`, or `None`. The buffer it
     /// edits is `eq_edit_buf` (kept separate so the field's `on_edit` accessor always
     /// has a live `TextEdit` to return, even the frame the edit closes).
-    eq_edit: Option<(usize, NumField)>,
+    eq_edit: Option<(usize, usize, NumField)>,
     /// The text buffer the inline number editor draws and the user types into. Reset
     /// to the current value when an edit opens; ignored while `eq_edit` is `None`.
     eq_edit_buf: rune::TextEdit,
+    /// Which DSP unit's title is being renamed (double-click a card title to open an
+    /// inline text field): the unit index, or `None`. The buffer it edits is
+    /// `dsp_rename_buf` (kept separate, like `eq_edit`/`eq_edit_buf`, so the field's
+    /// `on_edit` accessor always has a live `TextEdit` even the frame the edit closes).
+    dsp_rename: Option<usize>,
+    /// The text buffer the inline rename editor draws and the user types into. Seeded
+    /// from the unit's current name when a rename opens; ignored while `dsp_rename`
+    /// is `None`.
+    dsp_rename_buf: rune::TextEdit,
     /// Accumulated wheel travel over a band-table number box, so a trackpad's many
     /// small `precise` deltas add up to discrete steps (a notched mouse wheel still
     /// steps once per detent). Self-draining; no reset needed.
@@ -292,8 +299,6 @@ struct State {
     /// The sequence of the last spectrum frame copied into `spectrum`, so the poll
     /// only re-renders on a genuinely new FFT.
     spectrum_seq: u64,
-    /// Whether the per-band editor list under the EQ graph is expanded.
-    eq_editor_open: bool,
     /// Managed-library destination folder (persisted; `None` = unset), where the
     /// write-path organizer will copy / move added music. Set in Settings → Music
     /// Data. Configuring only — the "Add music…" apply flow is separate.
@@ -386,11 +391,13 @@ impl State {
         // has already pushed the same value to the host before the first spawn.
         let (replaygain_mode, replaygain_preamp) = config::load_replaygain();
         // Restore the persisted DSP chain (defaults: one off, flat unit); main() has
-        // already pushed the same chain to the host before the first spawn. The
-        // `eq_*` fields mirror the active (first) unit.
+        // already pushed the same chain to the host before the first spawn. Each
+        // card edits `dsp_units[i]` directly (no mirror).
         let dsp_units = config::load_dsp_chain();
-        let active = dsp_units.first().cloned().unwrap_or_default();
-        let (eq_enabled, eq_bands, eq_preamp) = (active.enabled, active.bands, active.preamp_db);
+        // One expand flag per unit; the first card starts open, the rest collapsed.
+        let dsp_expanded: Vec<bool> = (0..dsp_units.len()).map(|i| i == 0).collect();
+        // Band tables default open within an expanded card.
+        let eq_bands_expanded: Vec<bool> = vec![true; dsp_units.len()];
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
         let locale_pref = config::load_locale();
         apply_locale(&locale_pref);
@@ -441,21 +448,20 @@ impl State {
             replaygain_mode,
             replaygain_preamp,
             dsp_units,
-            dsp_active: 0,
+            dsp_expanded,
+            eq_bands_expanded,
             dsp_drag: None,
-            eq_enabled,
-            eq_bands,
-            eq_preamp,
             eq_drag: None,
             eq_selected: None,
             eq_num_drag: None,
             eq_edit: None,
             eq_edit_buf: rune::TextEdit::new(""),
+            dsp_rename: None,
+            dsp_rename_buf: rune::TextEdit::new(""),
             eq_wheel_accum: 0.0,
             shift_held: false,
             spectrum: Vec::new(),
             spectrum_seq: 0,
-            eq_editor_open: false,
             managed_dest,
             managed_template,
             managed_strategy,
@@ -660,70 +666,142 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
     s.host.set_replay_gain(s.replaygain_mode, preamp_db);
 }
 
-/// Sync the active-unit mirror (`eq_bands`/`eq_preamp`/`eq_enabled`) back into the
-/// chain, then persist it and push the whole chain to the live stream (the device
-/// sink reads it each block). Shared by every EQ edit.
-fn apply_eq(s: &mut State) {
-    if let Some(unit) = s.dsp_units.get_mut(s.dsp_active) {
-        unit.bands = s.eq_bands.clone();
-        unit.preamp_db = s.eq_preamp;
-        unit.enabled = s.eq_enabled;
-    }
+/// Persist the DSP chain and push the whole chain to the live stream (the device
+/// sink reads it each block and bumps its own `generation`). Shared by every EQ
+/// edit — the mutators write `dsp_units` directly, so this only saves + pushes.
+fn apply_dsp(s: &mut State) {
     config::save_dsp_chain(&s.dsp_units);
     s.host.set_dsp_chain(s.dsp_units.clone());
 }
 
-/// Load unit `i` into the active-unit mirror (its graph/editor read the mirror).
-fn load_active_unit(s: &mut State) {
-    if let Some(unit) = s.dsp_units.get(s.dsp_active) {
-        s.eq_bands = unit.bands.clone();
-        s.eq_preamp = unit.preamp_db;
-        s.eq_enabled = unit.enabled;
+/// The bands of the EQ unit at `unit` (empty if the index is out of range or the
+/// unit isn't an EQ) — the graph/editor read through this.
+pub(crate) fn unit_bands(s: &State, unit: usize) -> &[Band] {
+    match s.dsp_units.get(unit).and_then(DspUnit::as_eq) {
+        Some(eq) => &eq.bands,
+        None => &[],
     }
+}
+
+/// The preamp (dB) of the EQ unit at `unit` (0 if out of range / not an EQ).
+pub(crate) fn unit_preamp(s: &State, unit: usize) -> f32 {
+    s.dsp_units
+        .get(unit)
+        .and_then(DspUnit::as_eq)
+        .map_or(0.0, |eq| eq.preamp_db)
+}
+
+/// Whether the DSP unit at `unit` is enabled (false if the index is out of range).
+pub(crate) fn unit_enabled(s: &State, unit: usize) -> bool {
+    s.dsp_units.get(unit).is_some_and(DspUnit::enabled)
+}
+
+/// A mutable handle to band `band` of the EQ unit at `unit`, if both exist.
+fn band_mut(s: &mut State, unit: usize, band: usize) -> Option<&mut Band> {
+    s.dsp_units
+        .get_mut(unit)
+        .and_then(DspUnit::as_eq_mut)
+        .and_then(|eq| eq.bands.get_mut(band))
+}
+
+/// Clear the transient editor selection + node drag — used when the chain changes
+/// shape (add / remove / reorder), so no card points at a stale (unit, band). Also
+/// drops any in-flight inline rename, whose unit index would otherwise dangle onto a
+/// moved / removed card.
+fn clear_eq_editor(s: &mut State) {
     s.eq_selected = None;
     s.eq_drag = None;
+    s.dsp_rename = None;
 }
 
-/// Make unit `i` the active (open) one in the editor.
-pub(crate) fn select_dsp_unit(s: &mut State, i: usize) {
-    if i < s.dsp_units.len() && i != s.dsp_active {
-        s.dsp_active = i;
-        load_active_unit(s);
+/// Toggle whether unit `i`'s card is expanded (its body shown).
+pub(crate) fn toggle_dsp_expanded(s: &mut State, i: usize) {
+    if let Some(open) = s.dsp_expanded.get_mut(i) {
+        *open = !*open;
     }
 }
 
-/// Append a new EQ unit (enabled, default bands) and make it active.
-pub(crate) fn add_dsp_unit(s: &mut State) {
-    s.dsp_units.push(EqUnit::default());
-    s.dsp_active = s.dsp_units.len() - 1;
-    load_active_unit(s);
-    apply_eq(s);
+/// Toggle whether unit `i`'s band table is expanded (within its open card).
+pub(crate) fn toggle_eq_bands_expanded(s: &mut State, i: usize) {
+    if let Some(open) = s.eq_bands_expanded.get_mut(i) {
+        *open = !*open;
+    }
 }
 
-/// Remove EQ unit `i`; keeps the active selection valid (clamped).
+/// Append a new EQ unit (enabled, default bands) and open its card.
+pub(crate) fn add_dsp_unit(s: &mut State) {
+    s.dsp_units.push(DspUnit::Eq(EqUnit::default()));
+    s.dsp_expanded.push(true);
+    s.eq_bands_expanded.push(true);
+    clear_eq_editor(s);
+    apply_dsp(s);
+}
+
+/// Remove EQ unit `i`, dropping its expand flags with it.
 pub(crate) fn remove_dsp_unit(s: &mut State, i: usize) {
     if i >= s.dsp_units.len() {
         return;
     }
     s.dsp_units.remove(i);
-    s.dsp_active = s.dsp_active.min(s.dsp_units.len().saturating_sub(1));
-    load_active_unit(s);
-    apply_eq(s);
+    if i < s.dsp_expanded.len() {
+        s.dsp_expanded.remove(i);
+    }
+    if i < s.eq_bands_expanded.len() {
+        s.eq_bands_expanded.remove(i);
+    }
+    clear_eq_editor(s);
+    apply_dsp(s);
 }
 
-/// Enable/disable unit `i` from its list row (any unit, not just the active one).
+/// Enable/disable unit `i` from its own card header (any unit — there is no master
+/// toggle, each card owns its enable).
 pub(crate) fn set_dsp_unit_enabled(s: &mut State, i: usize, on: bool) {
     if let Some(unit) = s.dsp_units.get_mut(i) {
-        unit.enabled = on;
+        unit.set_enabled(on);
     }
-    if i == s.dsp_active {
-        s.eq_enabled = on;
-    }
-    apply_eq(s);
+    apply_dsp(s);
 }
 
-/// Move unit `from` to position `to` (the list drag-reorder), keeping the active
-/// unit selected as it moves.
+/// Open the inline rename editor for unit `unit`'s title (double-click the title):
+/// commits any already-open rename first, seeds the buffer from the unit's current
+/// name (empty if unnamed), focuses it, and selects all so the first keystroke
+/// replaces it. Mirrors [`eq_edit_start`] for the number editor.
+pub(crate) fn start_dsp_rename(s: &mut State, unit: usize) {
+    commit_dsp_rename(s);
+    let current = s
+        .dsp_units
+        .get(unit)
+        .and_then(DspUnit::name)
+        .unwrap_or("")
+        .to_string();
+    s.dsp_rename_buf = rune::TextEdit::new(current);
+    s.dsp_rename_buf.focused = true;
+    s.dsp_rename_buf.anchor = 0; // select-all (caret at end, anchor at start) → typing replaces
+    s.dsp_rename = Some(unit);
+}
+
+/// Commit the open rename: trim the buffer and write it as the unit's name (a blank
+/// buffer clears the name, so the unit reverts to showing just its type). No-op when
+/// nothing is being renamed. Mirrors [`commit_eq_edit`].
+pub(crate) fn commit_dsp_rename(s: &mut State) {
+    let Some(unit) = s.dsp_rename.take() else {
+        return;
+    };
+    let name = s.dsp_rename_buf.text.trim().to_string();
+    set_dsp_unit_name(s, unit, (!name.is_empty()).then_some(name));
+}
+
+/// Set (or clear, with `None`) unit `unit`'s user-given name, then persist + push the
+/// chain. The name lives inside `dsp_units[unit]`, so reorder/remove carry it for free.
+pub(crate) fn set_dsp_unit_name(s: &mut State, unit: usize, name: Option<String>) {
+    if let Some(u) = s.dsp_units.get_mut(unit) {
+        u.set_name(name);
+    }
+    apply_dsp(s);
+}
+
+/// Move unit `from` to position `to` (the card drag-reorder), carrying its expand
+/// flag along so the card stays open/closed as it moves.
 pub(crate) fn reorder_dsp_units(s: &mut State, from: usize, to: usize) {
     let n = s.dsp_units.len();
     if from >= n || to >= n || from == to {
@@ -731,23 +809,17 @@ pub(crate) fn reorder_dsp_units(s: &mut State, from: usize, to: usize) {
     }
     let unit = s.dsp_units.remove(from);
     s.dsp_units.insert(to, unit);
-    // Track the active unit through the move.
-    s.dsp_active = if s.dsp_active == from {
-        to
-    } else if from < s.dsp_active && s.dsp_active <= to {
-        s.dsp_active - 1
-    } else if to <= s.dsp_active && s.dsp_active < from {
-        s.dsp_active + 1
-    } else {
-        s.dsp_active
-    };
-    apply_eq(s);
-}
-
-/// Toggle the EQ master enable.
-pub(crate) fn set_eq_enabled(s: &mut State, on: bool) {
-    s.eq_enabled = on;
-    apply_eq(s);
+    if from < s.dsp_expanded.len() {
+        let open = s.dsp_expanded.remove(from);
+        s.dsp_expanded.insert(to.min(s.dsp_expanded.len()), open);
+    }
+    if from < s.eq_bands_expanded.len() {
+        let open = s.eq_bands_expanded.remove(from);
+        s.eq_bands_expanded
+            .insert(to.min(s.eq_bands_expanded.len()), open);
+    }
+    clear_eq_editor(s);
+    apply_dsp(s);
 }
 
 /// Which numeric column of a band the table's Ableton-style number boxes target.
@@ -780,12 +852,12 @@ fn band_field(b: &Band, field: NumField) -> f32 {
     }
 }
 
-/// Apply a value to band `i`'s `field` through the right clamped setter.
-fn set_eq_band_field(s: &mut State, i: usize, field: NumField, value: f32) {
+/// Apply a value to unit `unit`'s band `band` `field` through the right clamped setter.
+fn set_eq_band_field(s: &mut State, unit: usize, band: usize, field: NumField, value: f32) {
     match field {
-        NumField::Freq => set_eq_band_freq(s, i, value),
-        NumField::Gain => set_eq_band_gain(s, i, value),
-        NumField::Q => set_eq_band_q(s, i, value),
+        NumField::Freq => set_eq_band_freq(s, unit, band, value),
+        NumField::Gain => set_eq_band_gain(s, unit, band, value),
+        NumField::Q => set_eq_band_q(s, unit, band, value),
     }
 }
 
@@ -799,30 +871,30 @@ fn edit_text_for(b: &Band, field: NumField) -> String {
     }
 }
 
-/// Set band `i`'s frequency in Hz (clamped), applying live.
-pub(crate) fn set_eq_band_freq(s: &mut State, i: usize, hz: f32) {
-    if let Some(slot) = s.eq_bands.get_mut(i) {
+/// Set unit `unit`'s band `band` frequency in Hz (clamped), applying live.
+pub(crate) fn set_eq_band_freq(s: &mut State, unit: usize, band: usize, hz: f32) {
+    if let Some(slot) = band_mut(s, unit, band) {
         slot.freq = hz.clamp(FREQ_MIN, FREQ_MAX);
     }
-    apply_eq(s);
+    apply_dsp(s);
 }
 
-/// Set band `i`'s gain in dB (clamped + rounded to 0.1), applying live.
-pub(crate) fn set_eq_band_gain(s: &mut State, i: usize, db: f32) {
-    if let Some(slot) = s.eq_bands.get_mut(i) {
+/// Set unit `unit`'s band `band` gain in dB (clamped + rounded to 0.1), applying live.
+pub(crate) fn set_eq_band_gain(s: &mut State, unit: usize, band: usize, db: f32) {
+    if let Some(slot) = band_mut(s, unit, band) {
         slot.gain_db = (db.clamp(-GAIN_LIMIT_DB, GAIN_LIMIT_DB) * 10.0).round() / 10.0;
     }
-    apply_eq(s);
+    apply_dsp(s);
 }
 
 /// Begin an Ableton-style vertical drag on band `i`'s `field`: caches the value at
 /// the press so the drag applies absolutely, selects the band, and closes any open
 /// inline edit.
-pub(crate) fn eq_num_drag_start(s: &mut State, i: usize, field: NumField) {
+pub(crate) fn eq_num_drag_start(s: &mut State, unit: usize, band: usize, field: NumField) {
     commit_eq_edit(s);
-    if let Some(b) = s.eq_bands.get(i) {
-        s.eq_selected = Some(i);
-        s.eq_num_drag = Some((i, field, band_field(b, field)));
+    if let Some(b) = unit_bands(s, unit).get(band).copied() {
+        s.eq_selected = Some((unit, band));
+        s.eq_num_drag = Some((unit, band, field, band_field(&b, field)));
     }
 }
 
@@ -835,7 +907,7 @@ const DRAG_FINE_FACTOR: f32 = 0.25;
 /// geometric (constant octaves / doublings per point). Holding Shift fine-tunes by
 /// scaling the travel down.
 pub(crate) fn eq_num_drag_move(s: &mut State, dy: f32) {
-    let Some((i, field, start)) = s.eq_num_drag else {
+    let Some((unit, band, field, start)) = s.eq_num_drag else {
         return;
     };
     let dy = if s.shift_held {
@@ -848,7 +920,7 @@ pub(crate) fn eq_num_drag_move(s: &mut State, dy: f32) {
         NumField::Freq => start * 2.0f32.powf(-dy / FREQ_DRAG_PX_PER_OCTAVE),
         NumField::Q => start * 2.0f32.powf(-dy / Q_DRAG_PX_PER_DOUBLE),
     };
-    set_eq_band_field(s, i, field, value);
+    set_eq_band_field(s, unit, band, field, value);
 }
 
 /// End a number drag.
@@ -859,12 +931,19 @@ pub(crate) fn eq_num_drag_end(s: &mut State) {
 /// Nudge band `i`'s `field` one wheel notch (`up` = scroll up = increase), closing
 /// any open inline edit. `fine` (Shift held) takes a smaller step for precise tuning.
 /// Gain steps linearly; frequency and Q step geometrically.
-pub(crate) fn eq_num_scroll(s: &mut State, i: usize, field: NumField, up: bool, fine: bool) {
+pub(crate) fn eq_num_scroll(
+    s: &mut State,
+    unit: usize,
+    band: usize,
+    field: NumField,
+    up: bool,
+    fine: bool,
+) {
     commit_eq_edit(s);
-    let Some(b) = s.eq_bands.get(i).copied() else {
+    let Some(b) = unit_bands(s, unit).get(band).copied() else {
         return;
     };
-    s.eq_selected = Some(i);
+    s.eq_selected = Some((unit, band));
     let cur = band_field(&b, field);
     let value = match field {
         NumField::Gain => {
@@ -884,33 +963,33 @@ pub(crate) fn eq_num_scroll(s: &mut State, i: usize, field: NumField, up: bool, 
             cur * if up { factor } else { 1.0 / factor }
         }
     };
-    set_eq_band_field(s, i, field, value);
+    set_eq_band_field(s, unit, band, field, value);
 }
 
 /// Open the inline editor for band `i`'s `field` (double-click a value): seeds the
 /// buffer with the current value, focuses it, and selects all so the first keystroke
 /// replaces it. Commits any already-open edit first.
-pub(crate) fn eq_edit_start(s: &mut State, i: usize, field: NumField) {
+pub(crate) fn eq_edit_start(s: &mut State, unit: usize, band: usize, field: NumField) {
     commit_eq_edit(s);
-    let Some(b) = s.eq_bands.get(i).copied() else {
+    let Some(b) = unit_bands(s, unit).get(band).copied() else {
         return;
     };
-    s.eq_selected = Some(i);
+    s.eq_selected = Some((unit, band));
     s.eq_edit_buf = rune::TextEdit::new(edit_text_for(&b, field));
     s.eq_edit_buf.focused = true;
     s.eq_edit_buf.anchor = 0; // select-all (caret at end, anchor at start) → typing replaces
-    s.eq_edit = Some((i, field));
+    s.eq_edit = Some((unit, band, field));
 }
 
 /// Commit the open inline edit: parse the buffer and, if it is a number, apply it to
 /// the band's field. A blank or unparseable buffer just closes the editor unchanged.
 /// No-op when nothing is being edited.
 pub(crate) fn commit_eq_edit(s: &mut State) {
-    let Some((i, field)) = s.eq_edit.take() else {
+    let Some((unit, band, field)) = s.eq_edit.take() else {
         return;
     };
     if let Ok(value) = s.eq_edit_buf.text.trim().parse::<f32>() {
-        set_eq_band_field(s, i, field, value);
+        set_eq_band_field(s, unit, band, field, value);
     }
 }
 
@@ -923,26 +1002,26 @@ fn clamp_band(mut b: Band) -> Band {
     b
 }
 
-/// Replace band `i` wholesale (the graph drag computes frequency + gain together),
-/// clamped to the legal ranges.
-pub(crate) fn set_eq_band(s: &mut State, i: usize, band: Band) {
-    if let Some(slot) = s.eq_bands.get_mut(i) {
-        *slot = clamp_band(band);
+/// Replace unit `unit`'s band `band` wholesale (the graph drag computes frequency +
+/// gain together), clamped to the legal ranges.
+pub(crate) fn set_eq_band(s: &mut State, unit: usize, band: usize, value: Band) {
+    if let Some(slot) = band_mut(s, unit, band) {
+        *slot = clamp_band(value);
     }
-    apply_eq(s);
+    apply_dsp(s);
 }
 
-/// Set band `i`'s Q (the scroll-wheel / curvature gesture).
-pub(crate) fn set_eq_band_q(s: &mut State, i: usize, q: f32) {
-    if let Some(slot) = s.eq_bands.get_mut(i) {
+/// Set unit `unit`'s band `band` Q (the scroll-wheel / curvature gesture).
+pub(crate) fn set_eq_band_q(s: &mut State, unit: usize, band: usize, q: f32) {
+    if let Some(slot) = band_mut(s, unit, band) {
         slot.q = q.clamp(Q_MIN, Q_MAX);
     }
-    apply_eq(s);
+    apply_dsp(s);
 }
 
-/// Cycle band `i` to the next filter shape (click the handle's type chip).
-pub(crate) fn cycle_eq_band_kind(s: &mut State, i: usize) {
-    if let Some(slot) = s.eq_bands.get_mut(i) {
+/// Cycle unit `unit`'s band `band` to the next filter shape (click the handle's type chip).
+pub(crate) fn cycle_eq_band_kind(s: &mut State, unit: usize, band: usize) {
+    if let Some(slot) = band_mut(s, unit, band) {
         slot.kind = match slot.kind {
             BandKind::LowShelf => BandKind::Peaking,
             BandKind::Peaking => BandKind::HighShelf,
@@ -952,59 +1031,64 @@ pub(crate) fn cycle_eq_band_kind(s: &mut State, i: usize) {
             BandKind::Notch => BandKind::LowShelf,
         };
     }
-    apply_eq(s);
+    apply_dsp(s);
 }
 
-/// Enable/disable a single band (its handle's bypass toggle).
-pub(crate) fn set_eq_band_enabled(s: &mut State, i: usize, on: bool) {
-    if let Some(slot) = s.eq_bands.get_mut(i) {
+/// Enable/disable a single band of unit `unit` (its handle's bypass toggle).
+pub(crate) fn set_eq_band_enabled(s: &mut State, unit: usize, band: usize, on: bool) {
+    if let Some(slot) = band_mut(s, unit, band) {
         slot.enabled = on;
     }
-    apply_eq(s);
+    apply_dsp(s);
 }
 
-/// Add a new bell band at `freq` Hz / `gain_db` dB (from a double-click on the
-/// graph, or the editor's Add button). Returns the new band's index, or `None` if
-/// the cap is reached. Selects the new band.
-pub(crate) fn add_eq_band(s: &mut State, freq: f32, gain_db: f32) -> Option<usize> {
-    if s.eq_bands.len() >= MAX_BANDS {
+/// Add a new bell band at `freq` Hz / `gain_db` dB to unit `unit` (from a
+/// double-click on the graph, or the editor's Add button). Returns the new band's
+/// index, or `None` if the cap is reached (or `unit` isn't an EQ). Selects the new band.
+pub(crate) fn add_eq_band(s: &mut State, unit: usize, freq: f32, gain_db: f32) -> Option<usize> {
+    let bands = &mut s
+        .dsp_units
+        .get_mut(unit)
+        .and_then(DspUnit::as_eq_mut)?
+        .bands;
+    if bands.len() >= MAX_BANDS {
         return None;
     }
-    let band = clamp_band(Band {
+    let new = clamp_band(Band {
         kind: BandKind::Peaking,
         freq,
         gain_db,
         q: 1.0,
         enabled: true,
     });
-    let i = s.eq_bands.len();
-    s.eq_bands.push(band);
-    s.eq_selected = Some(i);
-    apply_eq(s);
+    let i = bands.len();
+    bands.push(new);
+    s.eq_selected = Some((unit, i));
+    apply_dsp(s);
     Some(i)
 }
 
-/// Remove band `i` (a double-click on its handle, or the editor's remove button).
-pub(crate) fn remove_eq_band(s: &mut State, i: usize) {
-    if i >= s.eq_bands.len() {
+/// Remove unit `unit`'s band `band` (a double-click on its handle, or the editor's
+/// remove button).
+pub(crate) fn remove_eq_band(s: &mut State, unit: usize, band: usize) {
+    let bands = match s.dsp_units.get_mut(unit).and_then(DspUnit::as_eq_mut) {
+        Some(eq) => &mut eq.bands,
+        None => return,
+    };
+    if band >= bands.len() {
         return;
     }
-    s.eq_bands.remove(i);
+    bands.remove(band);
     // Keep the selection/drag valid after the shift.
     s.eq_selected = None;
     s.eq_drag = None;
-    apply_eq(s);
+    apply_dsp(s);
 }
 
-/// Toggle the per-band editor list under the EQ graph.
-pub(crate) fn toggle_eq_editor(s: &mut State) {
-    s.eq_editor_open = !s.eq_editor_open;
-}
-
-/// Import an AutoEQ / Equalizer-APO ParametricEQ profile from `path`, replacing the
-/// bands + preamp and enabling the EQ. No-op if the file is unreadable or has no
-/// usable filters.
-pub(crate) fn import_eq(s: &mut State, path: &std::path::Path) {
+/// Import an AutoEQ / Equalizer-APO ParametricEQ profile from `path` into unit
+/// `unit`, replacing its bands + preamp and enabling it. No-op if the file is
+/// unreadable, has no usable filters, or `unit` isn't an EQ.
+pub(crate) fn import_eq(s: &mut State, unit: usize, path: &std::path::Path) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return;
     };
@@ -1012,25 +1096,32 @@ pub(crate) fn import_eq(s: &mut State, path: &std::path::Path) {
     if bands.is_empty() {
         return;
     }
-    s.eq_bands = bands.into_iter().take(MAX_BANDS).map(clamp_band).collect();
-    s.eq_preamp = ((preamp.clamp(-GAIN_LIMIT_DB, GAIN_LIMIT_DB)) * 10.0).round() / 10.0;
-    s.eq_enabled = true;
+    // Import replaces this unit's bands + preamp and enables it.
+    if let Some(eq) = s.dsp_units.get_mut(unit).and_then(DspUnit::as_eq_mut) {
+        eq.bands = bands.into_iter().take(MAX_BANDS).map(clamp_band).collect();
+        eq.preamp_db = ((preamp.clamp(-GAIN_LIMIT_DB, GAIN_LIMIT_DB)) * 10.0).round() / 10.0;
+        eq.enabled = true;
+    }
     s.eq_selected = None;
-    s.eq_editor_open = true;
-    apply_eq(s);
+    apply_dsp(s);
 }
 
-/// Export the current EQ to `path` as an AutoEQ / Equalizer-APO ParametricEQ
+/// Export EQ unit `unit` to `path` as an AutoEQ / Equalizer-APO ParametricEQ
 /// profile (shareable, re-importable here and in Equalizer APO / Peace).
-pub(crate) fn export_eq(s: &State, path: &std::path::Path) {
-    let text = soul_player_host::format_autoeq(s.eq_preamp, &s.eq_bands);
+pub(crate) fn export_eq(s: &State, unit: usize, path: &std::path::Path) {
+    let Some(eq) = s.dsp_units.get(unit).and_then(DspUnit::as_eq) else {
+        return;
+    };
+    let text = soul_player_host::format_autoeq(eq.preamp_db, &eq.bands);
     let _ = std::fs::write(path, text);
 }
 
-/// Set the EQ preamp in dB.
-pub(crate) fn set_eq_preamp(s: &mut State, preamp_db: f32) {
-    s.eq_preamp = preamp_db;
-    apply_eq(s);
+/// Set unit `unit`'s preamp in dB.
+pub(crate) fn set_eq_preamp(s: &mut State, unit: usize, preamp_db: f32) {
+    if let Some(eq) = s.dsp_units.get_mut(unit).and_then(DspUnit::as_eq_mut) {
+        eq.preamp_db = preamp_db;
+    }
+    apply_dsp(s);
 }
 
 /// Per-frame poll (wired as `AppSpec::poll`). Drives the title-bar scan-activity
@@ -1060,6 +1151,16 @@ fn spectrum_poll_inner(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
             tx.wake_after(std::time::Duration::from_millis(50));
         } else {
             commit_eq_edit(s);
+            return true;
+        }
+    }
+    // Same blur-commit for the inline unit-rename editor: once its buffer loses focus
+    // (click elsewhere, or Escape), commit the typed name and close it.
+    if s.dsp_rename.is_some() {
+        if s.dsp_rename_buf.focused {
+            tx.wake_after(std::time::Duration::from_millis(50));
+        } else {
+            commit_dsp_rename(s);
             return true;
         }
     }
@@ -1356,7 +1457,14 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // Overlay layer: the shell, plus any open dropdown's panel (Settings →
     // Language) and the expanded signal-path panel, mounted on top so they draw
     // over everything and escape the content scroll viewport's clip (see
-    // `views::dropdown`). Empty when nothing is open — then this is just the shell.
+    // `views::dropdown`).
+    //
+    // ALWAYS wrap the shell in this keyed root, even with no overlays. A conditional
+    // wrap (`shell` alone when empty, wrapped when not) moved the shell one level
+    // deeper the instant a dropdown opened — which rune read as a brand-new
+    // `settings-scroll` and reset its scroll to the top (the "opening a dropdown jumps
+    // the page to the top" bug). A constant structure keeps every scroll viewport's
+    // identity — and thus its offset — stable whether or not an overlay is open.
     let mut overlays = views::settings::settings_overlays(s, &p, cx);
     overlays.extend(views::signal_path::overlay(s, &p));
     // The crash-report modal draws over everything, on any route — last, so it
@@ -1364,11 +1472,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(dialog) = crash_overlay(s, &p) {
         overlays.push(dialog);
     }
-    if overlays.is_empty() {
-        shell
-    } else {
-        el().w_full().h_full().child(shell).children(overlays)
-    }
+    el().key("overlay-root")
+        .w_full()
+        .h_full()
+        .child(shell)
+        .children(overlays)
 }
 
 /// The routed main content area, keyed `"content"`. On desktop it fills the
@@ -1634,6 +1742,12 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if tx.key_repeat() {
         return false;
     }
+    // An open dropdown is light-dismiss (no modal): Escape closes it. Its backdrop
+    // handles the outside-press + scroll dismissals.
+    if s.open_dropdown.is_some() && matches!(ev.key, Key::Escape) {
+        close_dropdown(s);
+        return true;
+    }
     // Search-input mode: typed characters build the library filter instead of
     // driving the transport. `/` enters it; Esc clears + exits, Enter just exits
     // (keeping the filter), Backspace edits.
@@ -1698,32 +1812,36 @@ fn scene_settings_audio(s: &mut State) {
 /// response-curve graph with its bands moved (not a flat line).
 fn scene_settings_audio_eq(s: &mut State) {
     scene_settings_audio(s);
-    s.eq_enabled = true;
     // A gentle smiley: lift the lows (shelf) and highs (shelf), dip the mids.
-    s.eq_bands = default_bands().to_vec();
+    let mut bands = default_bands().to_vec();
     let gains = [6.0, 3.0, -2.0, -3.5, -2.5, 1.5, 4.0, 5.0];
-    for (band, g) in s.eq_bands.iter_mut().zip(gains) {
+    for (band, g) in bands.iter_mut().zip(gains) {
         band.gain_db = g;
     }
-    s.eq_preamp = -2.0;
     // A 3-unit DSP chain so `--snap` shows the reorderable unit list; unit 0 (the
-    // smile) is active and mirrored into the editor.
+    // smile) is active.
     s.dsp_units = vec![
-        EqUnit {
-            bands: s.eq_bands.clone(),
-            preamp_db: s.eq_preamp,
-            enabled: s.eq_enabled,
-        },
-        EqUnit::default(),
-        EqUnit {
+        DspUnit::Eq(EqUnit {
+            bands,
+            preamp_db: -2.0,
+            enabled: true,
+            name: None,
+        }),
+        // A named unit so `--snap` shows the "<name> (EQ)" rename in a header.
+        DspUnit::Eq(EqUnit {
+            name: Some("Vocal clarity".into()),
+            ..EqUnit::default()
+        }),
+        DspUnit::Eq(EqUnit {
             enabled: false,
             ..EqUnit::default()
-        },
+        }),
     ];
-    s.dsp_active = 0;
-    // Select a mid band so its per-band curve shows.
-    s.eq_selected = Some(4);
-    s.eq_editor_open = true;
+    // Open unit 0's card (the smile) so `--snap` shows its response graph; the
+    // other two stay collapsed to their header rows.
+    s.dsp_expanded = vec![true, false, false];
+    // Select a mid band (unit 0, band 4) so its per-band curve shows.
+    s.eq_selected = Some((0, 4));
     // A synthetic spectrum (pink-ish decline + a few bumps) so `--snap` shows the
     // analyzer behind the curve — there is no live audio in a headless snapshot.
     s.spectrum = (0..SPECTRUM_COLS)
@@ -1743,7 +1861,8 @@ fn scene_settings_audio_eq(s: &mut State) {
 /// shows the dimmed-when-off card (only the On/Off toggle stays lit).
 fn scene_settings_audio_eq_off(s: &mut State) {
     scene_settings_audio_eq(s);
-    s.eq_enabled = false;
+    // Unit 0 (the open card) disabled, so its body dims under the lit header toggle.
+    s.dsp_units[0].set_enabled(false);
     s.eq_selected = None;
 }
 fn scene_settings_about(s: &mut State) {
@@ -2430,6 +2549,18 @@ mod tests {
         s
     }
 
+    /// Unit 0's EQ (test convenience — every EQ test keeps unit 0 an EQ, and the
+    /// first card is the one these tests drive). Replaces the old
+    /// `eq_bands`/`eq_preamp`/`eq_enabled` mirror reads.
+    fn active_eq(s: &State) -> &EqUnit {
+        s.dsp_units[0].as_eq().unwrap()
+    }
+
+    /// Unit 0's EQ, mutable (for tests that seed bands/preamp/enable).
+    fn active_eq_mut(s: &mut State) -> &mut EqUnit {
+        s.dsp_units[0].as_eq_mut().unwrap()
+    }
+
     /// End-to-end feed pipeline: as the player's now-playing state changes, the
     /// media session receives the right `Update`s over its channel — track
     /// metadata (resolved from the library) on a track change, playback on a
@@ -2773,8 +2904,9 @@ mod tests {
         }
     }
 
-    /// The DSP/EQ stage renders the real graphic-EQ controls — an enable toggle, a
-    /// preamp, and one slider per band — instead of the old "soon" placeholder.
+    /// The DSP chain's unit card renders the real graphic-EQ controls — a per-unit
+    /// enable chip, a preamp, the graph with its nodes, and the Import/Export/Add
+    /// band controls — all namespaced to the card's position (unit 0 here).
     #[test]
     fn eq_card_renders_bands_and_enable_in_settings_audio() {
         let _guard = config::use_test_config_dir();
@@ -2786,28 +2918,31 @@ mod tests {
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
         // Set the bands explicitly so a sibling test's persisted EQ (e.g. a 1-band
-        // import) can't leak in via `populated_state()` and drop `eq-node-7`.
-        s.eq_bands = soul_player_host::default_bands().to_vec();
+        // import) can't leak in via `populated_state()` and drop `eq-node-0-7`.
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        // Card 0 open so its body (graph + bands) lays out.
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         // Tall window so every band row lays out within the scroll content.
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         for key in [
             "sp-stage-dsp",
-            "eq-enable",
-            "eq-preamp",
-            "eq-graph",
-            "eq-node-0",
-            "eq-node-7",
-            "eq-import",
-            "eq-export",
-            "eq-add-band",
+            "dsp-card-0",
+            "dsp-en-0",
+            "eq-preamp-0",
+            "eq-graph-0",
+            "eq-node-0-0",
+            "eq-node-0-7",
+            "eq-import-0",
+            "eq-export-0",
+            "eq-add-band-0",
         ] {
             assert!(rt.find(key).is_some(), "the EQ card renders {key}");
         }
     }
 
-    /// Clicking the DSP/EQ enable toggle flips the master enable.
+    /// Clicking a unit card's enable chip flips that unit's enable.
     #[test]
     fn toggling_the_eq_enable_flips_state() {
         let _guard = config::use_test_config_dir();
@@ -2820,13 +2955,19 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         // Start from a known-off state (the shared test config dir may carry an
         // `enabled` flag from another test's persisted EQ).
-        s.eq_enabled = false;
+        active_eq_mut(&mut s).enabled = false;
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
-        assert!(!rt.state.eq_enabled, "the EQ starts off for this test");
-        click_key(&mut rt, "eq-enable");
-        assert!(rt.state.eq_enabled, "clicking the toggle enables the EQ");
+        assert!(
+            !active_eq(&rt.state).enabled,
+            "the EQ starts off for this test"
+        );
+        click_key(&mut rt, "dsp-en-0");
+        assert!(
+            active_eq(&rt.state).enabled,
+            "clicking the chip enables the EQ"
+        );
     }
 
     /// Dragging a band's handle on the graph moves its frequency (x) and gain (y) —
@@ -2841,20 +2982,21 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_enabled = true;
+        active_eq_mut(&mut s).enabled = true;
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
-        let (x, y) = rt.find("eq-graph").expect("the EQ graph renders");
+        let (x, y) = rt.find("eq-graph-0").expect("the EQ graph renders");
         // Press near the centre: grabs the band nearest that frequency.
         rt.pointer_down(x, y);
         rt.frame(0.0);
-        let i = rt.state.eq_selected.expect("pressing selects a band");
-        let before = rt.state.eq_bands[i];
+        let (_, i) = rt.state.eq_selected.expect("pressing selects a band");
+        let before = active_eq(&rt.state).bands[i];
         // Drag right (higher frequency) and up (more gain).
         rt.pointer_move(x + 60.0, y - 50.0);
         rt.frame(0.0);
-        let after = rt.state.eq_bands[i];
+        let after = active_eq(&rt.state).bands[i];
         assert!(
             after.freq > before.freq,
             "drag right raised the frequency ({} -> {})",
@@ -2884,28 +3026,29 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_enabled = true;
+        active_eq_mut(&mut s).enabled = true;
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
-        let (x, y) = rt.find("eq-graph").expect("the EQ graph renders");
+        let (x, y) = rt.find("eq-graph-0").expect("the EQ graph renders");
         // Scroll up → narrower (higher Q) on the nearest band (default Q 1.0).
         rt.wheel_event(WheelEvent::new(0.0, -10.0).at(x, y));
         rt.frame(0.0);
-        let i = rt
+        let (_, i) = rt
             .state
             .eq_selected
             .expect("the wheel selects the nearest band");
-        let q_up = rt.state.eq_bands[i].q;
+        let q_up = active_eq(&rt.state).bands[i].q;
         assert!(q_up > 1.0, "scroll up narrowed the band (Q {q_up} > 1.0)");
         // Two notches down → wider again.
         rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
         rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
         rt.frame(0.0);
         assert!(
-            rt.state.eq_bands[i].q < q_up,
+            active_eq(&rt.state).bands[i].q < q_up,
             "scroll down widened it again ({} < {q_up})",
-            rt.state.eq_bands[i].q
+            active_eq(&rt.state).bands[i].q
         );
     }
 
@@ -2920,29 +3063,34 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_enabled = true;
-        s.eq_bands = soul_player_host::default_bands().to_vec();
-        s.eq_editor_open = true;
+        active_eq_mut(&mut s).enabled = true;
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
-        let n0 = rt.state.eq_bands.len();
+        let n0 = active_eq(&rt.state).bands.len();
         // Add a band.
-        click_key(&mut rt, "eq-add-band");
+        click_key(&mut rt, "eq-add-band-0");
         rt.frame(0.0);
-        assert_eq!(rt.state.eq_bands.len(), n0 + 1, "Add band appends a band");
+        assert_eq!(
+            active_eq(&rt.state).bands.len(),
+            n0 + 1,
+            "Add band appends a band"
+        );
         // Cycle band 1's shape.
-        let k0 = rt.state.eq_bands[1].kind;
-        click_key(&mut rt, "eq-band-type-1");
+        let k0 = active_eq(&rt.state).bands[1].kind;
+        click_key(&mut rt, "eq-band-type-0-1");
         rt.frame(0.0);
         assert_ne!(
-            rt.state.eq_bands[1].kind, k0,
+            active_eq(&rt.state).bands[1].kind,
+            k0,
             "the type chip cycles the shape"
         );
         // Remove band 0.
-        click_key(&mut rt, "eq-band-rm-0");
+        click_key(&mut rt, "eq-band-rm-0-0");
         rt.frame(0.0);
-        assert_eq!(rt.state.eq_bands.len(), n0, "remove drops a band");
+        assert_eq!(active_eq(&rt.state).bands.len(), n0, "remove drops a band");
     }
 
     /// The band-table numbers are Ableton-style number boxes: unit-test the gesture
@@ -2953,39 +3101,39 @@ mod tests {
     fn band_table_number_gestures_change_the_value() {
         let _guard = config::use_test_config_dir();
         let mut s = populated_state();
-        s.eq_bands = soul_player_host::default_bands().to_vec();
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         // Gain drag: start at band 1's gain; dragging up (negative dy) raises it,
         // and the result is measured from the press value, not accumulated.
-        let g0 = s.eq_bands[1].gain_db;
-        eq_num_drag_start(&mut s, 1, NumField::Gain);
+        let g0 = active_eq(&s).bands[1].gain_db;
+        eq_num_drag_start(&mut s, 0, 1, NumField::Gain);
         eq_num_drag_move(&mut s, -30.0); // 30 pt up ≈ +3.0 dB
-        let g_up = s.eq_bands[1].gain_db;
+        let g_up = active_eq(&s).bands[1].gain_db;
         assert!(g_up > g0, "drag up raised gain ({g0} -> {g_up})");
         eq_num_drag_move(&mut s, 0.0); // back to the press point
         assert!(
-            (s.eq_bands[1].gain_db - g0).abs() < 0.05,
+            (active_eq(&s).bands[1].gain_db - g0).abs() < 0.05,
             "drag is absolute from the press value, not cumulative"
         );
         eq_num_drag_end(&mut s);
         assert_eq!(s.eq_num_drag, None, "the drag ended");
         // Frequency drag is geometric: dragging up raises Hz.
-        let f0 = s.eq_bands[2].freq;
-        eq_num_drag_start(&mut s, 2, NumField::Freq);
+        let f0 = active_eq(&s).bands[2].freq;
+        eq_num_drag_start(&mut s, 0, 2, NumField::Freq);
         eq_num_drag_move(&mut s, -FREQ_DRAG_PX_PER_OCTAVE); // one octave up
         assert!(
-            (s.eq_bands[2].freq / f0 - 2.0).abs() < 0.05,
+            (active_eq(&s).bands[2].freq / f0 - 2.0).abs() < 0.05,
             "one octave of drag doubled the frequency ({f0} -> {})",
-            s.eq_bands[2].freq
+            active_eq(&s).bands[2].freq
         );
         eq_num_drag_end(&mut s);
         // Wheel: up widens/raises; here Q up = narrower (higher Q).
-        let q0 = s.eq_bands[0].q;
-        eq_num_scroll(&mut s, 0, NumField::Q, true, false);
-        assert!(s.eq_bands[0].q > q0, "scroll up raised Q");
-        eq_num_scroll(&mut s, 0, NumField::Q, false, false);
-        eq_num_scroll(&mut s, 0, NumField::Q, false, false);
+        let q0 = active_eq(&s).bands[0].q;
+        eq_num_scroll(&mut s, 0, 0, NumField::Q, true, false);
+        assert!(active_eq(&s).bands[0].q > q0, "scroll up raised Q");
+        eq_num_scroll(&mut s, 0, 0, NumField::Q, false, false);
+        eq_num_scroll(&mut s, 0, 0, NumField::Q, false, false);
         assert!(
-            s.eq_bands[0].q < q0,
+            active_eq(&s).bands[0].q < q0,
             "two notches down lowered it below start"
         );
     }
@@ -2996,15 +3144,15 @@ mod tests {
     fn shift_scroll_fine_tunes_a_band_number() {
         let _guard = config::use_test_config_dir();
         let mut s = populated_state();
-        s.eq_bands = soul_player_host::default_bands().to_vec();
-        let g0 = s.eq_bands[0].gain_db;
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        let g0 = active_eq(&s).bands[0].gain_db;
         // One coarse notch up.
-        eq_num_scroll(&mut s, 0, NumField::Gain, true, false);
-        let coarse = s.eq_bands[0].gain_db - g0;
+        eq_num_scroll(&mut s, 0, 0, NumField::Gain, true, false);
+        let coarse = active_eq(&s).bands[0].gain_db - g0;
         // Reset, then one Shift (fine) notch up.
-        set_eq_band_gain(&mut s, 0, g0);
-        eq_num_scroll(&mut s, 0, NumField::Gain, true, true);
-        let fine = s.eq_bands[0].gain_db - g0;
+        set_eq_band_gain(&mut s, 0, 0, g0);
+        eq_num_scroll(&mut s, 0, 0, NumField::Gain, true, true);
+        let fine = active_eq(&s).bands[0].gain_db - g0;
         assert!(
             fine > 0.0 && fine < coarse,
             "Shift makes a finer gain step (fine {fine} < coarse {coarse})"
@@ -3024,25 +3172,27 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_enabled = true;
-        s.eq_bands = soul_player_host::default_bands().to_vec();
-        s.eq_editor_open = true;
+        active_eq_mut(&mut s).enabled = true;
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
-        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
-        let f0 = rt.state.eq_bands[0].freq;
+        let (x, y) = rt
+            .find("eq-num-freq-0-0")
+            .expect("band 0's freq box renders");
+        let f0 = active_eq(&rt.state).bands[0].freq;
         rt.wheel_event(WheelEvent::new(0.0, -10.0).at(x, y)); // up
         rt.frame(0.0);
-        let up = rt.state.eq_bands[0].freq;
+        let up = active_eq(&rt.state).bands[0].freq;
         assert!(up > f0, "scroll up raised the frequency ({f0} -> {up})");
         rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y)); // down
         rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
         rt.frame(0.0);
         assert!(
-            rt.state.eq_bands[0].freq < up,
+            active_eq(&rt.state).bands[0].freq < up,
             "scroll down lowered it again ({up} -> {})",
-            rt.state.eq_bands[0].freq
+            active_eq(&rt.state).bands[0].freq
         );
     }
 
@@ -3058,20 +3208,22 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_enabled = true;
-        s.eq_bands = soul_player_host::default_bands().to_vec();
-        s.eq_editor_open = true;
+        active_eq_mut(&mut s).enabled = true;
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
-        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
-        let f0 = rt.state.eq_bands[0].freq;
+        let (x, y) = rt
+            .find("eq-num-freq-0-0")
+            .expect("band 0's freq box renders");
+        let f0 = active_eq(&rt.state).bands[0].freq;
         // Several small upward precise deltas sum past a notch → at least one step up.
         for _ in 0..4 {
             rt.wheel_event(WheelEvent::new(0.0, -8.0).at(x, y).precise(true));
         }
         rt.frame(0.0);
-        let up = rt.state.eq_bands[0].freq;
+        let up = active_eq(&rt.state).bands[0].freq;
         assert!(
             up > f0,
             "precise scroll up raised the frequency ({f0} -> {up})"
@@ -3081,9 +3233,9 @@ mod tests {
         }
         rt.frame(0.0);
         assert!(
-            rt.state.eq_bands[0].freq < up,
+            active_eq(&rt.state).bands[0].freq < up,
             "precise scroll down reversed it ({up} -> {})",
-            rt.state.eq_bands[0].freq
+            active_eq(&rt.state).bands[0].freq
         );
     }
 
@@ -3100,18 +3252,20 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_enabled = true;
-        s.eq_bands = soul_player_host::default_bands().to_vec();
-        s.eq_editor_open = true;
+        active_eq_mut(&mut s).enabled = true;
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
-        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
-        let f0 = rt.state.eq_bands[0].freq;
+        let (x, y) = rt
+            .find("eq-num-freq-0-0")
+            .expect("band 0's freq box renders");
+        let f0 = active_eq(&rt.state).bands[0].freq;
         // dx < 0 (horizontal "up") raises, mirroring dy < 0.
         rt.wheel_event(WheelEvent::new(-40.0, 0.0).at(x, y));
         rt.frame(0.0);
-        let up = rt.state.eq_bands[0].freq;
+        let up = active_eq(&rt.state).bands[0].freq;
         assert!(
             up > f0,
             "horizontal (dx) scroll up raised freq ({f0} -> {up})"
@@ -3120,9 +3274,9 @@ mod tests {
         rt.wheel_event(WheelEvent::new(40.0, 0.0).at(x, y));
         rt.frame(0.0);
         assert!(
-            rt.state.eq_bands[0].freq < up,
+            active_eq(&rt.state).bands[0].freq < up,
             "horizontal (dx) scroll down lowered it ({up} -> {})",
-            rt.state.eq_bands[0].freq
+            active_eq(&rt.state).bands[0].freq
         );
     }
 
@@ -3133,19 +3287,19 @@ mod tests {
     fn shift_drag_fine_tunes_a_band_number() {
         let _guard = config::use_test_config_dir();
         let mut s = populated_state();
-        s.eq_bands = soul_player_host::default_bands().to_vec();
-        let g0 = s.eq_bands[1].gain_db;
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        let g0 = active_eq(&s).bands[1].gain_db;
         // Plain drag up by 20 points.
-        eq_num_drag_start(&mut s, 1, NumField::Gain);
+        eq_num_drag_start(&mut s, 0, 1, NumField::Gain);
         eq_num_drag_move(&mut s, -20.0);
-        let coarse = s.eq_bands[1].gain_db - g0;
+        let coarse = active_eq(&s).bands[1].gain_db - g0;
         eq_num_drag_end(&mut s);
         // Same drag with Shift held — a finer change.
-        set_eq_band_gain(&mut s, 1, g0);
+        set_eq_band_gain(&mut s, 0, 1, g0);
         s.shift_held = true;
-        eq_num_drag_start(&mut s, 1, NumField::Gain);
+        eq_num_drag_start(&mut s, 0, 1, NumField::Gain);
         eq_num_drag_move(&mut s, -20.0);
-        let fine = s.eq_bands[1].gain_db - g0;
+        let fine = active_eq(&s).bands[1].gain_db - g0;
         assert!(
             fine > 0.0 && fine < coarse,
             "Shift+drag is finer (fine {fine} < coarse {coarse})"
@@ -3165,14 +3319,14 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_enabled = true;
-        s.eq_bands = soul_player_host::default_bands().to_vec();
-        s.eq_editor_open = true;
+        active_eq_mut(&mut s).enabled = true;
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
-            .find("eq-num-freq-1")
+            .find("eq-num-freq-0-1")
             .expect("band 1's freq number renders");
         // Double-click the frequency to open the editor.
         rt.pointer_down(x, y);
@@ -3195,16 +3349,18 @@ mod tests {
         rt.frame(0.0);
         assert!(rt.state.eq_edit.is_none(), "Return closes the editor");
         assert!(
-            (rt.state.eq_bands[1].freq - 5000.0).abs() < 1.0,
+            (active_eq(&rt.state).bands[1].freq - 5000.0).abs() < 1.0,
             "the typed frequency applied (got {})",
-            rt.state.eq_bands[1].freq
+            active_eq(&rt.state).bands[1].freq
         );
     }
 
-    /// The DSP chain's unit list adds, selects, enables and removes units, and
-    /// `reorder_dsp_units` moves a unit in the processing order.
+    /// Double-clicking a DSP card's title opens an inline rename field; typing a name
+    /// and committing applies it to the unit (and clears the rename marker). Drives the
+    /// real widget through the harness (double press → IME commit → Return), mirroring
+    /// `double_clicking_a_band_number_types_a_new_value`.
     #[test]
-    fn the_dsp_chain_adds_selects_enables_removes_and_reorders() {
+    fn double_clicking_a_dsp_title_renames_the_unit() {
         let _guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -3213,39 +3369,415 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.dsp_units = vec![EqUnit::default()];
-        s.dsp_active = 0;
-        // Collapse the band editor so the card is short enough that the Add button
-        // stays within the (tall) window as the unit list grows.
-        s.eq_editor_open = false;
+        s.dsp_units = vec![DspUnit::Eq(EqUnit::default())];
+        s.dsp_expanded = vec![true];
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("dsp-name-0").expect("the unit title renders");
+        // Double-click the title to open the rename editor.
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.dsp_rename,
+            Some(0),
+            "double-click opens the inline rename editor"
+        );
+        // Type a name and commit with Return.
+        rt.ime(rune::Ime::Commit("my-name".into()));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_rename, None, "Return closes the rename editor");
+        assert_eq!(
+            rt.state.dsp_units[0].name(),
+            Some("my-name"),
+            "the typed name applied to the unit (got {:?})",
+            rt.state.dsp_units[0].name()
+        );
+    }
+
+    /// The unit title reads "<name> (EQ)" when the unit is named, and just "EQ" when it
+    /// isn't — the rename feature's read side.
+    #[test]
+    fn a_named_unit_shows_its_name_beside_the_type() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let label_for = |name: Option<&str>| {
+            let mut s = populated_state();
+            s.route = Route::Settings;
+            s.settings_tab = SettingsTab::Audio;
+            s.dsp_units = vec![DspUnit::Eq(EqUnit {
+                name: name.map(String::from),
+                ..EqUnit::default()
+            })];
+            // Collapse the card so the whole stage lays out within the window.
+            s.dsp_expanded = vec![false];
+            apply_locale("en");
+            let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+            rt.frame(0.0);
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("dsp-name-0"))
+                .and_then(|e| e.text)
+                .expect("the unit title renders")
+        };
+        assert_eq!(label_for(Some("my-name")), "my-name (EQ)");
+        assert_eq!(label_for(None), "EQ");
+    }
+
+    /// Opening the "+ Add DSP" dropdown while scrolled down must NOT jump the page
+    /// to the top (the reported bug): the dropdown anchors to the button where it is.
+    #[test]
+    fn opening_add_dsp_does_not_scroll_the_page() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        // A tall chain (first card expanded) so the content overflows a short window
+        // and the Add control sits well below the fold.
+        let bands = soul_player_host::default_bands().to_vec();
+        s.dsp_units = vec![
+            DspUnit::Eq(EqUnit {
+                bands,
+                ..EqUnit::default()
+            }),
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+        ];
+        s.dsp_expanded = vec![true, false, false];
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1300.0, 640.0), env);
+        rt.frame(0.0);
+        // Scroll down until the Add control is in view.
+        for _ in 0..30 {
+            rt.wheel(900.0, 400.0, -120.0);
+        }
+        rt.frame(0.0);
+        let (ax, ay) = rt
+            .find("dsp-add")
+            .expect("Add DSP is in view after scrolling");
+        // Click it, then check the Add control stays roughly where it was (the page
+        // did not jump to the top, which would shove the control far off-screen).
+        rt.pointer_down(ax, ay);
+        rt.pointer_up(ax, ay);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.open_dropdown.as_deref(),
+            Some("dsp-add"),
+            "the dropdown opened"
+        );
+        let add_after = rt.find("dsp-add").map(|(_, y)| y);
+        assert!(
+            add_after.is_some_and(|y| (y - ay).abs() < 60.0),
+            "the Add control stayed put (was {ay}, now {add_after:?}) — the page did not jump"
+        );
+    }
+
+    /// "+ Add DSP" opens the themed type dropdown — EQ selectable plus a disabled
+    /// "coming soon" teaser row; picking EQ appends a unit and opens its card.
+    #[test]
+    fn add_dsp_menu_offers_eq_and_a_coming_soon_row() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.dsp_units = vec![DspUnit::Eq(EqUnit::default())];
+        s.dsp_expanded = vec![false];
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1500.0, 2200.0), env);
+        rt.frame(0.0);
+        // Open the dropdown, settle its enter animation.
+        click_key(&mut rt, "dsp-add");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(rt.state.open_dropdown.as_deref(), Some("dsp-add"));
+        assert!(rt.find("dsp-add-opt-eq").is_some(), "EQ is listed");
+        assert!(
+            rt.find("dsp-add-opt-soon").is_some(),
+            "a 'more DSP coming soon' teaser row is shown"
+        );
+        // Pick EQ → appends a unit + opens its card + closes the menu.
+        click_key(&mut rt, "dsp-add-opt-eq");
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_units.len(), 2, "picking EQ appends a unit");
+        assert_eq!(rt.state.open_dropdown, None, "picking closes the menu");
+        assert_eq!(
+            rt.state.dsp_expanded,
+            vec![false, true],
+            "the appended card opens, the existing one is untouched"
+        );
+    }
+
+    /// The reorder drop line marks the correct GAP for the drag direction: dragging
+    /// the top card down to the bottom shows the line BELOW the last card (not above
+    /// it), and dragging the bottom card up shows it ABOVE the first.
+    #[test]
+    fn the_drop_line_follows_the_drag_direction() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let drag_scene = |drag: (usize, usize)| {
+            let mut s = populated_state();
+            s.route = Route::Settings;
+            s.settings_tab = SettingsTab::Audio;
+            s.dsp_units = vec![
+                DspUnit::Eq(EqUnit::default()),
+                DspUnit::Eq(EqUnit::default()),
+                DspUnit::Eq(EqUnit::default()),
+            ];
+            s.dsp_expanded = vec![false, false, false];
+            s.dsp_drag = Some(drag);
+            apply_locale("en");
+            let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
+            rt.frame(0.0);
+            let (_, drop) = rt.find("dsp-drop").expect("the drop line renders");
+            let (_, first) = rt.find("dsp-card-0").expect("the first card renders");
+            let (_, last) = rt.find("dsp-card-2").expect("the last card renders");
+            (drop, first, last)
+        };
+        // Dragging card 0 down onto slot 2 → the line lands below the last card.
+        let (drop_down, _, last_card) = drag_scene((0, 2));
+        assert!(
+            drop_down > last_card,
+            "dragging down, the line is below the last card ({drop_down} > {last_card})"
+        );
+        // Dragging card 2 up onto slot 0 → the line lands above the first card.
+        let (drop_up, first_card, _) = drag_scene((2, 0));
+        assert!(
+            drop_up < first_card,
+            "dragging up, the line is above the first card ({drop_up} < {first_card})"
+        );
+    }
+
+    /// Per-card chips + grip: a card's enable chip toggles only its unit, the grip
+    /// reorders the chain (carrying the expand flag), and the remove chip drops it.
+    #[test]
+    fn per_card_toggle_remove_and_reorder() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        // Three collapsed units so every header (and its chips/grip) lays out.
+        s.dsp_units = vec![
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+        ];
+        set_dsp_unit_enabled(&mut s, 0, true);
+        set_dsp_unit_enabled(&mut s, 1, true);
+        set_dsp_unit_enabled(&mut s, 2, true);
+        // Distinct expand flags so the reorder's flag-tracking is observable.
+        s.dsp_expanded = vec![true, false, false];
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
+        rt.frame(0.0);
+        // Enable chip toggles ONLY unit 1.
+        click_key(&mut rt, "dsp-en-1");
+        rt.frame(0.0);
+        assert!(!rt.state.dsp_units[1].enabled(), "the chip disabled unit 1");
+        assert!(rt.state.dsp_units[0].enabled(), "unit 0 untouched");
+        assert!(rt.state.dsp_units[2].enabled(), "unit 2 untouched");
+        // Grip-drag unit 0 ONTO unit 1's row → it reorders to index 1, its open flag
+        // riding along. The drop target is whichever card the pointer is over (exact,
+        // height-agnostic), resolved by `element_at` — so settle a frame after the move
+        // for the pick to land before releasing.
+        let (gx, gy0) = rt.find("dsp-grip-0").expect("unit 0's grip renders");
+        let (_, gy1) = rt.find("dsp-grip-1").expect("unit 1's grip renders");
+        rt.pointer_down(gx, gy0);
+        rt.pointer_move(gx, gy1);
+        rt.frame(0.0);
+        rt.pointer_up(gx, gy1);
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.dsp_expanded,
+            vec![false, true, false],
+            "the dragged card's open flag moved with it to index 1"
+        );
+        // Remove chip drops its unit.
+        let n = rt.state.dsp_units.len();
+        click_key(&mut rt, "dsp-rm-2");
+        rt.frame(0.0);
+        assert_eq!(rt.state.dsp_units.len(), n - 1, "the chip removed a unit");
+        assert_eq!(
+            rt.state.dsp_expanded.len(),
+            n - 1,
+            "the expand flags stay parallel to the units"
+        );
+    }
+
+    /// Reorder snaps to the card UNDER the pointer, not a fixed row height: dragging a
+    /// collapsed card deep into a tall EXPANDED card lands it at that card's slot. A
+    /// fixed dy→slot mapping over-counts the expanded card's height and clamps the drop
+    /// to the chain's end instead — this is the "dragging isn't exact" bug.
+    #[test]
+    fn reorder_snaps_to_the_hovered_card_regardless_of_height() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.dsp_units = vec![
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+        ];
+        set_dsp_unit_enabled(&mut s, 0, true);
+        set_dsp_unit_enabled(&mut s, 1, true);
+        set_dsp_unit_enabled(&mut s, 2, true);
+        // Unit 1 EXPANDED (tall: preamp + graph + band table); 0 and 2 collapsed. Tag
+        // each unit with a distinct preamp so we can see where it lands post-reorder.
+        s.dsp_expanded = vec![false, true, false];
+        set_eq_preamp(&mut s, 0, -6.0);
+        set_eq_preamp(&mut s, 1, 0.0);
+        set_eq_preamp(&mut s, 2, 6.0);
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
+        rt.frame(0.0);
+        // Drag unit 0's grip DEEP into unit 1's expanded body (far past one row height).
+        let (gx, gy0) = rt.find("dsp-grip-0").expect("unit 0's grip");
+        let (_, gy1) = rt.find("dsp-grip-1").expect("unit 1's grip");
+        let into_body = gy1 + 160.0;
+        rt.pointer_down(gx, gy0);
+        rt.pointer_move(gx, into_body);
+        rt.frame(0.0);
+        rt.pointer_up(gx, into_body);
+        rt.frame(0.0);
+        // Unit 0 landed AT unit 1 (the hovered card) → order [1, 0, 2]; NOT clamped to
+        // the chain's end ([1, 2, 0]) as the old fixed-height mapping would.
+        let preamps: Vec<f32> = rt
+            .state
+            .dsp_units
+            .iter()
+            .map(|u| u.as_eq().expect("eq unit").preamp_db)
+            .collect();
+        assert_eq!(
+            preamps,
+            vec![0.0, -6.0, 6.0],
+            "the dragged card dropped onto the hovered expanded card, not past it"
+        );
+    }
+
+    /// The band table collapses within an open card: its chevron hides the band rows
+    /// while the response graph stays.
+    #[test]
+    fn the_band_table_collapses_within_a_card() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.dsp_units = vec![DspUnit::Eq(EqUnit {
+            bands: soul_player_host::default_bands().to_vec(),
+            preamp_db: 0.0,
+            enabled: true,
+            name: None,
+        })];
+        s.dsp_expanded = vec![true];
+        s.eq_bands_expanded = vec![true];
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1200.0, 2600.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("eq-band-row-0-0").is_some(),
+            "band rows show when the table is expanded"
+        );
+        // Collapse the band table via its chevron.
+        click_key(&mut rt, "eq-bands-expand-0");
+        rt.frame(0.0);
+        assert!(
+            !rt.state.eq_bands_expanded[0],
+            "the chevron collapsed the band table"
+        );
+        assert!(
+            rt.find("eq-band-row-0-0").is_none(),
+            "band rows are hidden when collapsed"
+        );
+        assert!(
+            rt.find("eq-graph-0").is_some(),
+            "the response graph stays visible"
+        );
+    }
+
+    /// Two expanded EQ cards are fully independent: editing a band in card 1 leaves
+    /// card 0's bands untouched, and both graphs render their own namespaced nodes.
+    #[test]
+    fn two_expanded_eq_cards_edit_independently() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        // Two EQ units, both enabled, both with the full default band set, both open.
+        s.dsp_units = vec![
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+        ];
+        for unit in s.dsp_units.iter_mut().take(2) {
+            let eq = unit.as_eq_mut().unwrap();
+            eq.enabled = true;
+            eq.bands = soul_player_host::default_bands().to_vec();
+        }
+        s.dsp_expanded = vec![true, true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 4200.0), env);
         rt.frame(0.0);
-        // Add a unit via the button → the newest becomes active.
-        click_key(&mut rt, "dsp-add-unit");
+        // Both graphs render their own nodes, namespaced by unit.
+        for key in ["eq-node-0-0", "eq-node-0-7", "eq-node-1-0", "eq-node-1-7"] {
+            assert!(rt.find(key).is_some(), "both graphs render {key}");
+        }
+        let u0_before = rt.state.dsp_units[0].as_eq().unwrap().bands[0].freq;
+        let u1_before = rt.state.dsp_units[1].as_eq().unwrap().bands[0].freq;
+        // Scroll card 1's band-0 frequency box up — only unit 1 changes.
+        let (x, y) = rt
+            .find("eq-num-freq-1-0")
+            .expect("card 1's band-0 freq box renders");
+        rt.wheel_event(WheelEvent::new(0.0, -10.0).at(x, y));
         rt.frame(0.0);
-        assert_eq!(rt.state.dsp_units.len(), 2, "Add EQ appends a unit");
-        assert_eq!(rt.state.dsp_active, 1, "adding selects the new unit");
-        // A second one via the mutator (keeps the test independent of the exact
-        // button hit-geometry once the list has grown).
-        add_dsp_unit(&mut rt.state);
-        rt.frame(0.0);
-        assert_eq!(rt.state.dsp_units.len(), 3);
-        assert_eq!(rt.state.dsp_active, 2, "adding selects the new unit");
-        // Click unit 0's row label → it becomes active.
-        click_key(&mut rt, "dsp-unit-0");
-        rt.frame(0.0);
-        assert_eq!(rt.state.dsp_active, 0, "clicking a row selects it");
-        // Toggle unit 1 off, reorder, and remove via the mutators (their row chips
-        // are wired identically to the band editor's; the end-to-end button path is
-        // covered by add + select above).
-        set_dsp_unit_enabled(&mut rt.state, 1, false);
-        assert!(!rt.state.dsp_units[1].enabled, "disabling a unit sticks");
-        reorder_dsp_units(&mut rt.state, 0, 2);
-        assert_eq!(rt.state.dsp_active, 2, "the active unit follows the move");
-        remove_dsp_unit(&mut rt.state, 0);
-        rt.frame(0.0);
-        assert_eq!(rt.state.dsp_units.len(), 2, "remove drops a unit");
+        let u1_after = rt.state.dsp_units[1].as_eq().unwrap().bands[0].freq;
+        let u0_after = rt.state.dsp_units[0].as_eq().unwrap().bands[0].freq;
+        assert!(
+            u1_after > u1_before,
+            "scrolling card 1 raised its own band ({u1_before} -> {u1_after})"
+        );
+        assert_eq!(
+            u0_after, u0_before,
+            "card 0's bands are untouched by editing card 1"
+        );
     }
 
     /// Importing an AutoEQ profile replaces the bands + preamp and enables the EQ;
@@ -3263,20 +3795,20 @@ mod tests {
         )
         .unwrap();
         let mut s = populated_state();
-        import_eq(&mut s, &path);
-        assert!(s.eq_enabled, "import enables the EQ");
-        assert_eq!(s.eq_bands.len(), 2, "both filters import");
+        import_eq(&mut s, 0, &path);
+        assert!(active_eq(&s).enabled, "import enables the EQ");
+        assert_eq!(active_eq(&s).bands.len(), 2, "both filters import");
         assert!(
-            (s.eq_preamp + 5.0).abs() < 0.11,
+            (active_eq(&s).preamp_db + 5.0).abs() < 0.11,
             "preamp imported: {}",
-            s.eq_preamp
+            active_eq(&s).preamp_db
         );
-        assert_eq!(s.eq_bands[0].kind, BandKind::Peaking);
-        assert!((s.eq_bands[0].freq - 120.0).abs() < 1.0);
-        assert_eq!(s.eq_bands[1].kind, BandKind::HighShelf);
+        assert_eq!(active_eq(&s).bands[0].kind, BandKind::Peaking);
+        assert!((active_eq(&s).bands[0].freq - 120.0).abs() < 1.0);
+        assert_eq!(active_eq(&s).bands[1].kind, BandKind::HighShelf);
         // Export writes a re-importable profile.
         let out = dir.join(format!("soul-eq-out-{}.txt", std::process::id()));
-        export_eq(&s, &out);
+        export_eq(&s, 0, &out);
         let txt = std::fs::read_to_string(&out).unwrap();
         assert!(
             txt.contains("Filter 1: ON PK Fc 120 Hz"),
@@ -3306,23 +3838,23 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_editor_open = true;
+        s.dsp_expanded = vec![true];
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         // Press Import → an open-file dialog is pending.
-        click_key(&mut rt, "eq-import");
+        click_key(&mut rt, "eq-import-0");
         rt.frame(0.0);
         let (kind, _opts) = rt.file_dialog().expect("Import opens a file dialog");
         assert_eq!(kind, FileDialogKind::Open);
         // Answer it with our profile; the import callback runs on the next frame.
         rt.resolve_file_dialog(Some(path.clone())).unwrap();
         rt.frame(0.0);
-        assert!(rt.state.eq_enabled, "import enabled the EQ");
-        assert_eq!(rt.state.eq_bands.len(), 1);
-        assert_eq!(rt.state.eq_bands[0].kind, BandKind::Peaking);
-        assert!((rt.state.eq_bands[0].freq - 440.0).abs() < 1.0);
-        assert!((rt.state.eq_preamp + 4.0).abs() < 0.11);
+        assert!(active_eq(&rt.state).enabled, "import enabled the EQ");
+        assert_eq!(active_eq(&rt.state).bands.len(), 1);
+        assert_eq!(active_eq(&rt.state).bands[0].kind, BandKind::Peaking);
+        assert!((active_eq(&rt.state).bands[0].freq - 440.0).abs() < 1.0);
+        assert!((active_eq(&rt.state).preamp_db + 4.0).abs() < 0.11);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -3338,14 +3870,14 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.eq_editor_open = true;
-        s.eq_bands = soul_player_host::default_bands().to_vec();
-        s.eq_bands[4].gain_db = 5.0; // the 2 kHz bell
-        s.eq_preamp = -1.0;
+        s.dsp_expanded = vec![true];
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        active_eq_mut(&mut s).bands[4].gain_db = 5.0; // the 2 kHz bell
+        active_eq_mut(&mut s).preamp_db = -1.0;
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
-        click_key(&mut rt, "eq-export");
+        click_key(&mut rt, "eq-export-0");
         rt.frame(0.0);
         let (kind, _opts) = rt.file_dialog().expect("Export opens a file dialog");
         assert_eq!(kind, FileDialogKind::Save);
@@ -4006,6 +4538,55 @@ mod tests {
         // `populated_state()` loads the persisted locale, so "de" must not leak.
         config::save_locale("en");
         apply_locale("en");
+    }
+
+    /// A dropdown is light-dismiss, NOT a scroll-locking modal: an outside scroll or
+    /// Escape closes it (so a trigger deep in a scroll never locks the page).
+    #[test]
+    fn a_dropdown_light_dismisses_on_scroll_and_escape() {
+        let _config_guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let open = |rt: &mut Runtime<State>| {
+            click_key(rt, "lang-picker");
+            rt.settle_all();
+            rt.frame(0.0);
+            assert_eq!(rt.state.open_dropdown.as_deref(), Some("lang-picker"));
+            assert!(rt.find("lang-picker-menu").is_some(), "the panel opened");
+        };
+        // Scrolling anywhere closes it (the backdrop's on_wheel).
+        {
+            let mut s = settings_state(&[], &[]);
+            s.settings_tab = SettingsTab::Appearance;
+            apply_locale("en");
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            open(&mut rt);
+            rt.wheel_event(WheelEvent::new(0.0, -20.0).at(80.0, 400.0));
+            rt.frame(0.0);
+            assert_eq!(
+                rt.state.open_dropdown, None,
+                "a scroll outside the panel closes the dropdown"
+            );
+        }
+        // Escape closes it (the app key handler — wired as the real app does).
+        {
+            let mut s = settings_state(&[], &[]);
+            s.settings_tab = SettingsTab::Appearance;
+            apply_locale("en");
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            rt.on_key = Some(handle_key);
+            rt.frame(0.0);
+            open(&mut rt);
+            rt.key(KeyEvent {
+                key: Key::Escape,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+            assert_eq!(rt.state.open_dropdown, None, "Escape closes the dropdown");
+        }
     }
 
     /// The add-source control is a themed `views::dropdown` menu: the trigger
