@@ -4,6 +4,21 @@
 # All values single-quoted so punctuation (quotes, +, /, %, CJK) stays literal.
 _version: 2
 
+titlebar.scanning:
+  en: 'Scanning'
+  de: 'Scannen'
+  es: 'Escaneando'
+  zh: '扫描中'
+  cs: 'Prohledávání'
+  ja: 'スキャン中'
+titlebar.indexing:
+  en: 'Indexing'
+  de: 'Indizieren'
+  es: 'Indexando'
+  zh: '建立索引'
+  cs: 'Indexování'
+  ja: 'インデックス作成'
+
 nav.tracks:
   en: 'Tracks'
   de: 'Titel'
