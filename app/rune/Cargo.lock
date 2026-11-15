@@ -4700,6 +4700,7 @@ dependencies = [
  "rust-i18n",
  "semver",
  "serde",
+ "serde_json",
  "soul-player-host",
  "souvlaki",
  "sys-locale",

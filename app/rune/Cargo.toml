@@ -54,6 +54,8 @@ dirs = "6"
 # dir, (de)serialised via serde — replaces the earlier scattered plain-text files.
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+# Portable JSON for exported/imported audio profiles (the format the future DAP reads).
+serde_json = "1"
 # Compact binary (de)serialisation for the per-source scan cache (warm startup).
 # TOML can't carry the cache's path-keyed map + u128 stamps; postcard is a lean,
 # pure-Rust, no-FFI format whose MIT/Apache-2.0 licence clears the policy gate.
