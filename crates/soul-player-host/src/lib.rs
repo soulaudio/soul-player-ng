@@ -44,9 +44,11 @@ type Subscriber = Box<dyn Fn(Event) + Send>;
 /// A handler for a background (watcher-triggered) library refresh (see
 /// [`PlayerHandle::on_watch_update`]).
 type WatchSubscriber = Box<dyn Fn(WatchUpdate) + Send>;
-/// A handler for live scan progress, fired per tick *during* a rescan (see
+/// A handler for live scan progress: `Some(p)` per tick *during* a rescan, then a
+/// single terminal `None` when it finishes (success or error), so the UI can show
+/// and then reliably retire a progress indicator (see
 /// [`PlayerHandle::on_scan_progress`]).
-type ScanProgressSubscriber = Box<dyn Fn(ScanProgress) + Send>;
+type ScanProgressSubscriber = Box<dyn Fn(Option<ScanProgress>) + Send>;
 /// Deletions from one rescan: `(root, removed file paths)` for each root that lost
 /// files since its prior cache.
 type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
@@ -494,13 +496,18 @@ impl PlayerHandle {
         let target = Arc::new(AtomicUsize::new(mode.resolve_threads().min(ceiling)));
         let sampler = matches!(mode, IndexingMode::Automatic)
             .then(|| LoadSampler::spawn(Arc::clone(&target), ceiling));
+        let build = Library::scan_many_incremental(&to_scan, &priors, ceiling, &target, &mut |p| {
+            self.broadcast_scan_progress(Some(p))
+        });
+        // Terminal tick: the scan is over (whether it succeeded or errored), so retire
+        // any progress indicator. Emitted on this same ordered stream *after* every
+        // `Some` tick, so the UI's show→hide can't be left stuck.
+        self.broadcast_scan_progress(None);
         let IncrementalBuild {
             library,
             caches: fresh,
             removed,
-        } = Library::scan_many_incremental(&to_scan, &priors, ceiling, &target, &mut |p| {
-            self.broadcast_scan_progress(p)
-        })?;
+        } = build?;
         drop(sampler); // stop the sampler as soon as the scan is done
         // Refresh the scanned roots' caches; keep configured-but-unscanned roots
         // warm (a disabled / offline source re-aggregates from its cache when it
@@ -864,12 +871,13 @@ impl PlayerHandle {
         }
     }
 
-    /// Register a handler for live scan progress. It fires on every [`ScanProgress`]
-    /// tick *while* a rescan runs, so the UI can drive a determinate indicator (e.g.
-    /// the title-bar activity pill). Fires on the scanning thread — the app marshals
-    /// onto its UI thread. Pair with [`on_watch_update`](Self::on_watch_update), which
-    /// delivers the final refreshed library when the scan completes.
-    pub fn on_scan_progress(&self, on_progress: impl Fn(ScanProgress) + Send + 'static) {
+    /// Register a handler for live scan progress. It fires `Some(p)` on every tick
+    /// *while* a rescan runs, then exactly one terminal `None` when the rescan ends
+    /// (success or error), so the UI can drive a determinate indicator and reliably
+    /// retire it. Fires on the scanning thread — the app marshals onto its UI thread.
+    /// The show and hide arrive on this one ordered stream, so the indicator can't be
+    /// left stuck by a late tick racing a separate "done" signal.
+    pub fn on_scan_progress(&self, on_progress: impl Fn(Option<ScanProgress>) + Send + 'static) {
         self.inner
             .scan_progress_subscribers
             .lock()
@@ -877,8 +885,8 @@ impl PlayerHandle {
             .push(Box::new(on_progress));
     }
 
-    /// Fan one [`ScanProgress`] tick out to the scan-progress subscribers.
-    fn broadcast_scan_progress(&self, p: ScanProgress) {
+    /// Fan one scan-progress update (`Some` tick / terminal `None`) out to subscribers.
+    fn broadcast_scan_progress(&self, p: Option<ScanProgress>) {
         for sub in self
             .inner
             .scan_progress_subscribers
@@ -1482,7 +1490,7 @@ mod tests {
         let root = dir.path().to_path_buf();
         let h = PlayerHandle::offline();
 
-        let ticks: Arc<Mutex<Vec<ScanProgress>>> = Arc::new(Mutex::new(Vec::new()));
+        let ticks: Arc<Mutex<Vec<Option<ScanProgress>>>> = Arc::new(Mutex::new(Vec::new()));
         {
             let t = Arc::clone(&ticks);
             h.on_scan_progress(move |p| t.lock().expect("ticks mutex").push(p));
@@ -1493,8 +1501,19 @@ mod tests {
         assert_eq!(h.views().len(), 3, "three tracks scanned");
 
         let ticks = ticks.lock().expect("ticks mutex");
-        let extracting: Vec<&ScanProgress> = ticks
+        // The stream ends with exactly one terminal `None` (scan done).
+        assert!(
+            ticks.last().expect("at least one update").is_none(),
+            "the stream ends with a terminal None"
+        );
+        assert_eq!(
+            ticks.iter().filter(|p| p.is_none()).count(),
+            1,
+            "exactly one terminal None per rescan"
+        );
+        let extracting: Vec<ScanProgress> = ticks
             .iter()
+            .filter_map(|p| *p)
             .filter(|p| p.phase == ScanPhase::Extracting)
             .collect();
         assert!(

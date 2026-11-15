@@ -609,6 +609,35 @@ pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
     config::save_scan_caches(&s.host.caches_snapshot());
 }
 
+/// Run a library-rescanning host op **off the UI thread**, then apply its result
+/// back on the UI thread. The old synchronous Sources handlers ran the whole scan
+/// inline, freezing the window; this keeps the UI responsive AND lets the title-bar
+/// activity widget animate — the host broadcasts scan progress from the scanning
+/// thread, and `on_scan_progress` marshals it onto the UI. Falls back to a
+/// synchronous call when there is no `app_handle` (headless tests), so behaviour
+/// there is unchanged.
+pub(crate) fn scan_in_background(
+    s: &mut State,
+    op: impl FnOnce(&PlayerHandle) -> anyhow::Result<WatchUpdate> + Send + 'static,
+    apply: fn(&mut State, WatchUpdate),
+) {
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                if let Ok(up) = op(&host) {
+                    handle.update(move |s: &mut State, _tx: &mut Tx| apply(s, up));
+                }
+            });
+        }
+        None => {
+            if let Ok(up) = op(&s.host) {
+                apply(s, up);
+            }
+        }
+    }
+}
+
 /// Resolve the effective dark/light mode from the user's preference.
 pub(crate) fn is_dark(pref: ThemePref, system_dark: bool) -> bool {
     match pref {
@@ -2434,14 +2463,15 @@ fn main() -> anyhow::Result<()> {
                 apply_watch(s, up);
             });
         });
-        // Live scan progress → the title-bar activity widget. Fires per tick while an
-        // off-UI-thread scan runs (the watcher, a threaded add); the completing
-        // WatchUpdate above clears it. Registered before `start_watching` so the
-        // first watcher-triggered rescan is already observed.
+        // Live scan progress → the title-bar activity widget. The host sends `Some(p)`
+        // per tick while an off-UI-thread scan runs (the watcher, a threaded add/
+        // rescan) and a terminal `None` when it ends — show and hide on one ordered
+        // stream, so the widget can't be left stuck. Registered before `start_watching`
+        // so the first watcher-triggered rescan is already observed.
         let sph = app.handle();
-        host.on_scan_progress(move |p: ScanProgress| {
+        host.on_scan_progress(move |p: Option<ScanProgress>| {
             sph.update(move |s: &mut State, _tx: &mut Tx| {
-                s.scan_progress = Some(p);
+                s.scan_progress = p;
             });
         });
         host.start_watching();
@@ -2522,6 +2552,10 @@ mod tests {
             total: 1210,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // Two frames: the second reads the band's committed width, so the
+        // responsive branch sees the real desktop band (window − sidebar), not
+        // the first-frame fallback.
+        rt.frame(0.0);
         rt.frame(0.0);
         assert!(
             rt.find("titlebar-scan").is_some(),
@@ -2573,8 +2607,9 @@ mod tests {
             total: 100,
         });
         let mut rt = Runtime::new(s, view, (360.0, 720.0), env);
-        // Two frames: the second reads the first's committed app-root width, so the
-        // width-responsive branch sees the real (narrow) window, not the fallback.
+        // Two frames: the second reads the first's committed band width, so the
+        // width-responsive branch sees the real (narrow) band, not the fallback.
+        // At 360 the window is mobile, so the band spans the whole width.
         rt.frame(0.0);
         rt.frame(0.0);
         assert!(
@@ -2593,6 +2628,103 @@ mod tests {
             rt.find("titlebar-scan-count").is_none(),
             "the count drops at the smallest width"
         );
+    }
+
+    /// A finished scan retires the widget: once the scan completes, `scan_progress`
+    /// clears (the host's terminal `None`, mirrored here by `apply_watch` — the
+    /// WatchUpdate path) and the widget, shown mid-scan, disappears. Guards the
+    /// "doesn't hide after the scan finishes" regression.
+    #[test]
+    fn a_finished_scan_retires_the_activity_widget() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 50,
+            total: 100,
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_some(),
+            "the widget shows mid-scan"
+        );
+        // The scan completes → the WatchUpdate path clears scan_progress.
+        rt.update(|s: &mut State, _tx: &mut Tx| apply_watch(s, WatchUpdate::default()));
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_none(),
+            "a finished scan retires the activity widget"
+        );
+    }
+
+    /// The scan widget docks into the title-bar band just left of the trailing
+    /// Windows caption buttons — the band's own grow-spacer right-aligns it and the
+    /// caption-glyph cells reserve the trailing gutter, so it never overlaps the
+    /// controls (nor runs off the leading edge). Swept across window widths AND
+    /// sidebar widths (the headless equivalent of resizing both): keying the dock off
+    /// the band's own width (`window − sidebar`) rather than the full window is the
+    /// whole point, so a wide or collapsed sidebar must not push the widget into the
+    /// controls. Asserts the widget stays inside the band and clears the gutter.
+    #[test]
+    fn activity_widget_clears_the_window_controls_across_widths() {
+        use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH};
+        const TRAILING: f32 = 138.0; // Windows caption buttons
+        // Narrow desktop pane → default → wide → maximized-ish, each paired with a
+        // default, a maxed-out, and a collapsed sidebar. All widths ≥ the mobile
+        // breakpoint so the desktop shell (sidebar + band) is in play.
+        for width in [760.0_f32, 1100.0, 1400.0, 1920.0] {
+            for (sidebar_width, collapsed) in [
+                (DEFAULT_WIDTH, false),
+                (MAX_WIDTH, false),
+                (DEFAULT_WIDTH, true),
+            ] {
+                let env = Env {
+                    system_dark: true,
+                    scale: 2.0,
+                };
+                let mut s = State::new(PlayerHandle::offline());
+                s.sidebar_width = sidebar_width;
+                s.sidebar_collapsed = collapsed;
+                s.scan_progress = Some(ScanProgress {
+                    phase: soul_player_host::ScanPhase::Extracting,
+                    done: 500,
+                    total: 1000,
+                });
+                let mut rt = Runtime::new(s, view, (width, 720.0), env);
+                let mut insets = rune::ChromeInsets::default();
+                insets.trailing = TRAILING;
+                insets.height = views::titlebar::HEIGHT;
+                rt.set_chrome_insets(insets);
+                rt.frame(0.0);
+                rt.frame(0.0); // settle the band width → the widget's dock
+                let ctx = format!("width={width} sidebar={sidebar_width} collapsed={collapsed}");
+                let (scan, _) = rt
+                    .presented("titlebar-scan")
+                    .unwrap_or_else(|| panic!("the activity widget renders ({ctx})"));
+                let (band, _) = rt
+                    .presented("titlebar")
+                    .unwrap_or_else(|| panic!("the title band renders ({ctx})"));
+                let band_right = band[0] + band[2];
+                let scan_right = scan[0] + scan[2];
+                // The band's right edge is the window's right edge (the shell is the
+                // trailing column); the widget must end before the caption gutter.
+                assert!(
+                    scan_right <= band_right - TRAILING + 0.5,
+                    "{ctx}: clears the trailing controls, scan_right={scan_right} band_right={band_right}"
+                );
+                // …and stay inside the band on the leading side (never over the sidebar).
+                assert!(
+                    scan[0] >= band[0] - 0.5,
+                    "{ctx}: stays inside the band, scan_left={} band_left={}",
+                    scan[0],
+                    band[0]
+                );
+            }
+        }
     }
 
     #[test]
