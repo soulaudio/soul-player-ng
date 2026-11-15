@@ -17,7 +17,7 @@ i18n!("locales", fallback = "en");
 
 use std::path::PathBuf;
 
-use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Tx, Waker, col, el, row};
+use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Titlebar, Tx, Waker, col, el, row};
 // Linked only to union parley_engine's `complex-scripts` feature on (see
 // Cargo.toml) — enables CJK text segmentation. Not called directly.
 use parley_engine as _;
@@ -1417,6 +1417,10 @@ fn main() -> anyhow::Result<()> {
         )
     };
     let app = App::new(spec)
+        .titlebar(Titlebar::new(views::titlebar::HEIGHT).traffic_lights(
+            views::titlebar::TRAFFIC_LIGHTS.0,
+            views::titlebar::TRAFFIC_LIGHTS.1,
+        ))
         // System-wide transport hotkeys (fire even when the window is unfocused).
         // Dedicated hardware media keys + OS "Now Playing" controls are a separate
         // integration (souvlaki) — these are user-reachable chords in the meantime.

@@ -19,8 +19,6 @@ pub(crate) const HEIGHT: f32 = 40.0;
 /// Where the macOS close button's top-left sits inside the bar (Electron's
 /// `trafficLightPosition`): standard left padding, vertically centred for the
 /// ~12 pt lights. `main.rs` passes this to `Titlebar::traffic_lights`.
-// Wired up in Task 3 (`App::titlebar(...).traffic_lights(...)`); unused until then.
-#[allow(dead_code)]
 pub(crate) const TRAFFIC_LIGHTS: (f32, f32) = (19.0, (HEIGHT - 12.0) / 2.0);
 
 /// The window title bar: a full-width strip, `HEIGHT` tall. Minimal for now (a
