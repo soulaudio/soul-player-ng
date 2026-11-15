@@ -31,13 +31,17 @@ pub use sink::SinkMode;
 pub use soul_audio_organize as organize;
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
-    SCAN_CACHE_VERSION, ScanCache, SignalPath, SourceCodec, SourceFormat, Tick, TrackView,
+    SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath, SourceCodec, SourceFormat,
+    Tick, TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
 /// A handler for a background (watcher-triggered) library refresh (see
 /// [`PlayerHandle::on_watch_update`]).
 type WatchSubscriber = Box<dyn Fn(WatchUpdate) + Send>;
+/// A handler for live scan progress, fired per tick *during* a rescan (see
+/// [`PlayerHandle::on_scan_progress`]).
+type ScanProgressSubscriber = Box<dyn Fn(ScanProgress) + Send>;
 /// Deletions from one rescan: `(root, removed file paths)` for each root that lost
 /// files since its prior cache.
 type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
@@ -270,6 +274,12 @@ struct Inner {
     /// distinct from `subscribers` (backend playback events) because a `WatchUpdate`
     /// carries the host's own [`SourceStatus`], not a backend [`Event`].
     watch_subscribers: Mutex<Vec<WatchSubscriber>>,
+    /// Subscribers for live scan progress, notified on every [`ScanProgress`] tick
+    /// *during* a rescan (registered via [`on_scan_progress`](PlayerHandle::on_scan_progress)).
+    /// The UI drives a progress indicator from these; they fire on the scanning
+    /// thread, so only an off-UI-thread rescan (the watcher, a threaded add) shows
+    /// live motion — a rescan that blocks the UI thread repaints only when it ends.
+    scan_progress_subscribers: Mutex<Vec<ScanProgressSubscriber>>,
     /// The live filesystem watcher ([`start_watching`](PlayerHandle::start_watching)),
     /// kept alive here so its debounce thread runs; `None` until started. Replaced
     /// (re-armed over the new root set) whenever the configured sources change.
@@ -374,6 +384,7 @@ impl PlayerHandle {
                 last_sources: Mutex::new(Vec::new()),
                 caches: Mutex::new(HashMap::new()),
                 watch_subscribers: Mutex::new(Vec::new()),
+                scan_progress_subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
                 indexing_mode: Mutex::new(IndexingMode::Maximum),
                 output_device: Mutex::new(None),
@@ -482,7 +493,9 @@ impl PlayerHandle {
             library,
             caches: fresh,
             removed,
-        } = Library::scan_many_incremental(&to_scan, &priors, ceiling, &target)?;
+        } = Library::scan_many_incremental(&to_scan, &priors, ceiling, &target, &mut |p| {
+            self.broadcast_scan_progress(p)
+        })?;
         drop(sampler); // stop the sampler as soon as the scan is done
         // Refresh the scanned roots' caches; keep configured-but-unscanned roots
         // warm (a disabled / offline source re-aggregates from its cache when it
@@ -832,6 +845,32 @@ impl PlayerHandle {
             .iter()
         {
             sub(up.clone());
+        }
+    }
+
+    /// Register a handler for live scan progress. It fires on every [`ScanProgress`]
+    /// tick *while* a rescan runs, so the UI can drive a determinate indicator (e.g.
+    /// the title-bar activity pill). Fires on the scanning thread — the app marshals
+    /// onto its UI thread. Pair with [`on_watch_update`](Self::on_watch_update), which
+    /// delivers the final refreshed library when the scan completes.
+    pub fn on_scan_progress(&self, on_progress: impl Fn(ScanProgress) + Send + 'static) {
+        self.inner
+            .scan_progress_subscribers
+            .lock()
+            .expect("scan_progress_subscribers mutex")
+            .push(Box::new(on_progress));
+    }
+
+    /// Fan one [`ScanProgress`] tick out to the scan-progress subscribers.
+    fn broadcast_scan_progress(&self, p: ScanProgress) {
+        for sub in self
+            .inner
+            .scan_progress_subscribers
+            .lock()
+            .expect("scan_progress_subscribers mutex")
+            .iter()
+        {
+            sub(p);
         }
     }
 
@@ -1418,6 +1457,42 @@ mod tests {
             removals,
             vec![(aroot, 1)],
             "exactly one deletion warning, carrying the right root and count"
+        );
+    }
+
+    #[test]
+    fn on_scan_progress_reports_determinate_ticks_during_a_rescan() {
+        let dir = folder_with("scanprog", &["a.wav", "b.wav", "c.wav"]);
+        let root = dir.path().to_path_buf();
+        let h = PlayerHandle::offline();
+
+        let ticks: Arc<Mutex<Vec<ScanProgress>>> = Arc::new(Mutex::new(Vec::new()));
+        {
+            let t = Arc::clone(&ticks);
+            h.on_scan_progress(move |p| t.lock().expect("ticks mutex").push(p));
+        }
+
+        // A synchronous cold scan: progress fires on this thread during the call.
+        h.set_sources(&[(root.clone(), true)]).unwrap();
+        assert_eq!(h.views().len(), 3, "three tracks scanned");
+
+        let ticks = ticks.lock().expect("ticks mutex");
+        let extracting: Vec<&ScanProgress> = ticks
+            .iter()
+            .filter(|p| p.phase == ScanPhase::Extracting)
+            .collect();
+        assert!(
+            !extracting.is_empty(),
+            "the rescan broadcast Extracting progress to the subscriber"
+        );
+        for p in &extracting {
+            assert!(p.done <= p.total, "done {} <= total {}", p.done, p.total);
+            assert_eq!(p.total, 3, "total is the extract count");
+        }
+        assert_eq!(
+            extracting.last().map(|p| p.done),
+            Some(3),
+            "extraction finishes at done == total"
         );
     }
 
