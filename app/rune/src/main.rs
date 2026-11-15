@@ -2269,6 +2269,35 @@ mod tests {
         );
     }
 
+    /// Regression guard: mounting the title bar atop the shell must not break
+    /// the `"app-root"` width measurement mobile detection reads, and the
+    /// shell must sit directly below the bar with no overlap or gap.
+    #[test]
+    fn titlebar_sits_above_the_shell_without_breaking_app_root() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let (root, _) = rt.presented("app-root").expect("app-root renders");
+        let (bar, _) = rt.presented("titlebar").expect("the bar renders");
+        let (shell, _) = rt.presented("shell").expect("the shell renders");
+        // app-root still spans the window width (mobile detection reads this).
+        assert!(
+            (root[2] - 1100.0).abs() < 1.0,
+            "app-root is window-width, got {}",
+            root[2]
+        );
+        // The shell sits directly below the bar (no overlap, no gap).
+        assert!(
+            (shell[1] - (bar[1] + bar[3])).abs() < 1.0,
+            "shell starts at the bar's bottom: bar={bar:?} shell={shell:?}"
+        );
+    }
+
     /// The scrollbar is invisible while the list sits at rest and fades in only
     /// while the pointer is over the list container — a clean resting list.
     #[test]
