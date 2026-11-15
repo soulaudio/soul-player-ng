@@ -1892,9 +1892,66 @@ fn replaygain_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(preamp_row)
 }
 
-/// About: the running version and, when the launch-time check (`update::available`)
-/// found a newer signed release, an "Install & Restart" button. Install runs off
-/// the UI thread because `update::install` blocks on the download and relaunches.
+/// A quiet, bordered action button for the About card (`p.bg` fill against the
+/// card's `p.card` so it reads as a secondary action beside the primary update
+/// button).
+fn support_button(key: &'static str, label: String, p: &Palette) -> El {
+    el().key(key)
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::MD)
+        .radius(radius::MD)
+        .fill(p.bg)
+        .border(1.0, p.border)
+        .center()
+        .cursor(Cursor::Pointer)
+        .child(text(label).color(p.fg))
+}
+
+/// The About card's support actions: reveal the log folder, or open a pre-filled
+/// GitHub issue carrying version + OS + a redacted recent-log tail. Both run off
+/// the UI thread — launching the file manager or browser can block briefly — and
+/// nothing is sent until the user submits GitHub's web form.
+fn support_row(p: &Palette) -> El {
+    row()
+        .gap(space::SM)
+        // Wrap to a second line in longer locales (e.g. Spanish) instead of
+        // overflowing the card width.
+        .flex_wrap()
+        .child(
+            support_button("open-logs", t!("settings.openLogs").to_string(), p).on_press(
+                |_s: &mut State| {
+                    std::thread::spawn(|| match crate::logging::log_dir() {
+                        Some(dir) => {
+                            if let Err(e) = open::that(&dir) {
+                                tracing::error!("open logs folder failed: {e}");
+                            }
+                        }
+                        None => tracing::warn!("no log directory to open"),
+                    });
+                },
+            ),
+        )
+        .child(
+            support_button(
+                "report-problem",
+                t!("settings.reportProblem").to_string(),
+                p,
+            )
+            .on_press(|s: &mut State| {
+                // Read state now; do the file read + browser launch off-thread.
+                let device = s.output_device.clone();
+                std::thread::spawn(move || crate::report::open_issue(device));
+            }),
+        )
+}
+
+/// About: the running version, support actions (report a problem / open logs),
+/// and, when the launch-time check (`update::available`) found a newer signed
+/// release, an "Install & Restart" button. Install and the support actions run
+/// off the UI thread because they block (download/relaunch, or launching a
+/// browser/file manager).
 fn about_card(s: &State, p: &Palette) -> El {
     let mut c = card("updates", p)
         .child(heading(
@@ -1905,7 +1962,8 @@ fn about_card(s: &State, p: &Palette) -> El {
         .child(
             text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
                 .color(p.text_secondary),
-        );
+        )
+        .child(support_row(p));
     if let Some(version) = &s.update_available {
         c = c.child(
             row()
@@ -1930,7 +1988,7 @@ fn about_card(s: &State, p: &Palette) -> El {
                         .on_press(|_s: &mut State| {
                             std::thread::spawn(|| {
                                 if let Err(e) = crate::update::install() {
-                                    eprintln!("[updater] install failed: {e}");
+                                    tracing::error!("update install failed: {e}");
                                 }
                             });
                         }),
