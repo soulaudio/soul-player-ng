@@ -242,13 +242,12 @@ struct State {
     /// ReplayGain preamp in dB (persisted), a constant offset on top of the mode's
     /// gain. Rendered as a slider in Settings → ReplayGain.
     replaygain_preamp: f32,
-    /// Saved audio profiles — each a named snapshot of the whole DSP chain. The
-    /// *active* one's chain is the live `dsp_units`; editing writes back through to it
-    /// (auto-save). Always at least one profile (a `"Default"` is migrated in).
-    profiles: Vec<config::Profile>,
-    /// Index of the active profile within `profiles`. Switching reloads `dsp_units`
-    /// from `profiles[active_profile].chain`.
-    active_profile: usize,
+    /// Saved audio profiles — each a named snapshot of the whole DSP chain, with one
+    /// active. The *active* one's chain is the live `dsp_units`; editing writes back
+    /// through to it (auto-save). The set, its switching and the exchange format all
+    /// live in the shared `soul-audio-dsp` crate (reused by the DAP); this holds one and
+    /// wraps each mutation with persist + engine-push. Always non-empty.
+    profile_set: soul_player_host::ProfileSet,
     /// Which profile's name is being renamed inline (the Rename button opens a text
     /// field over the switcher), or `None`. Mirrors `dsp_rename`; its buffer is
     /// `profile_rename_buf`.
@@ -414,8 +413,11 @@ impl State {
         // card edits `dsp_units[i]` directly (no mirror).
         // Load the saved profiles (always ≥1 — a "Default" is migrated from the legacy
         // chain); the active profile's chain is the live `dsp_units`.
-        let (profiles, active_profile) = config::load_profiles();
-        let dsp_units = profiles[active_profile].chain.clone();
+        let profile_set = config::load_profiles();
+        let dsp_units = profile_set
+            .active_chain()
+            .map(|c| c.units.clone())
+            .unwrap_or_default();
         // One expand flag per unit; the first card starts open, the rest collapsed.
         let dsp_expanded: Vec<bool> = (0..dsp_units.len()).map(|i| i == 0).collect();
         // Band tables default open within an expanded card.
@@ -480,8 +482,7 @@ impl State {
             eq_edit_buf: rune::TextEdit::new(""),
             dsp_rename: None,
             dsp_rename_buf: rune::TextEdit::new(""),
-            profiles,
-            active_profile,
+            profile_set,
             profile_rename: None,
             profile_rename_buf: rune::TextEdit::new(""),
             eq_wheel_accum: 0.0,
@@ -698,10 +699,10 @@ pub(crate) fn set_replaygain_preamp(s: &mut State, preamp_db: f32) {
 /// edit — the mutators write `dsp_units` directly, so this writes the live chain
 /// back into the active profile (auto-save), then saves + pushes.
 fn apply_dsp(s: &mut State) {
-    if let Some(p) = s.profiles.get_mut(s.active_profile) {
-        p.chain = s.dsp_units.clone();
-    }
-    config::save_profiles(&s.profiles, s.active_profile);
+    // Write the live chain back into the active profile (auto-save), then persist + push.
+    s.profile_set
+        .set_active_chain(soul_player_host::DspChain::new(s.dsp_units.clone()));
+    config::save_profiles(&s.profile_set);
     s.host.set_dsp_chain(s.dsp_units.clone());
 }
 
@@ -854,31 +855,20 @@ pub(crate) fn reorder_dsp_units(s: &mut State, from: usize, to: usize) {
 }
 
 // ---- Audio profiles (named snapshots of the whole DSP chain) ----
-
-/// A profile name that doesn't collide with the others: `base`, else `base 2`,
-/// `base 3`, … The profile at `ignore` (if any) is skipped, so renaming a profile to
-/// its own current name doesn't append a number.
-fn unique_profile_name(profiles: &[config::Profile], base: &str, ignore: Option<usize>) -> String {
-    let taken = |name: &str| {
-        profiles
-            .iter()
-            .enumerate()
-            .any(|(i, p)| Some(i) != ignore && p.name == name)
-    };
-    if !taken(base) {
-        return base.to_string();
-    }
-    (2..)
-        .map(|n| format!("{base} {n}"))
-        .find(|cand| !taken(cand))
-        .expect("some numeric suffix is free")
-}
+//
+// The set, its switching and the unique-naming live in `soul_player_host::ProfileSet`
+// (the shared `soul-audio-dsp` crate, reused by the DAP). These wrappers delegate to it,
+// then refresh the UI + persist + push.
 
 /// Point the live UI at the active profile: load its chain into `dsp_units`, reset the
 /// expand flags (first card open), and clear the EQ editor. Shared by every profile
 /// switch / create / delete.
 fn load_active_profile_into_ui(s: &mut State) {
-    s.dsp_units = s.profiles[s.active_profile].chain.clone();
+    s.dsp_units = s
+        .profile_set
+        .active_chain()
+        .map(|c| c.units.clone())
+        .unwrap_or_default();
     s.dsp_expanded = (0..s.dsp_units.len()).map(|k| k == 0).collect();
     s.eq_bands_expanded = vec![true; s.dsp_units.len()];
     clear_eq_editor(s);
@@ -889,10 +879,9 @@ fn load_active_profile_into_ui(s: &mut State) {
 /// is already active or out of range.
 pub(crate) fn switch_profile(s: &mut State, i: usize) {
     commit_profile_rename(s);
-    if i >= s.profiles.len() || i == s.active_profile {
+    if !s.profile_set.switch(i) {
         return;
     }
-    s.active_profile = i;
     load_active_profile_into_ui(s);
     apply_dsp(s);
 }
@@ -900,12 +889,7 @@ pub(crate) fn switch_profile(s: &mut State, i: usize) {
 /// Append a new profile with an empty chain and a unique default name, and switch to it.
 pub(crate) fn new_profile(s: &mut State) {
     commit_profile_rename(s);
-    let name = unique_profile_name(&s.profiles, "New profile", None);
-    s.profiles.push(config::Profile {
-        name,
-        chain: Vec::new(),
-    });
-    s.active_profile = s.profiles.len() - 1;
+    s.profile_set.add_empty("New profile");
     load_active_profile_into_ui(s);
     apply_dsp(s);
 }
@@ -913,11 +897,11 @@ pub(crate) fn new_profile(s: &mut State) {
 /// Duplicate the active profile (its chain) under `"<name> copy"` and switch to the copy.
 pub(crate) fn duplicate_profile(s: &mut State) {
     commit_profile_rename(s);
-    let base = format!("{} copy", s.profiles[s.active_profile].name);
-    let name = unique_profile_name(&s.profiles, &base, None);
-    let chain = s.profiles[s.active_profile].chain.clone();
-    s.profiles.push(config::Profile { name, chain });
-    s.active_profile = s.profiles.len() - 1;
+    let base = match s.profile_set.active() {
+        Some(p) => format!("{} copy", p.name),
+        None => return,
+    };
+    s.profile_set.duplicate_active(&base);
     load_active_profile_into_ui(s);
     apply_dsp(s);
 }
@@ -926,22 +910,18 @@ pub(crate) fn duplicate_profile(s: &mut State) {
 /// remains — there must always be at least one.
 pub(crate) fn delete_profile(s: &mut State) {
     commit_profile_rename(s);
-    if s.profiles.len() <= 1 {
+    if !s.profile_set.remove_active() {
         return;
     }
-    s.profiles.remove(s.active_profile);
-    s.active_profile = s.active_profile.min(s.profiles.len() - 1);
     load_active_profile_into_ui(s);
     apply_dsp(s);
 }
 
 /// Set profile `i`'s name, disambiguated against the others, and persist.
 pub(crate) fn rename_profile(s: &mut State, i: usize, name: String) {
-    if i >= s.profiles.len() {
-        return;
+    if s.profile_set.rename(i, &name) {
+        config::save_profiles(&s.profile_set);
     }
-    s.profiles[i].name = unique_profile_name(&s.profiles, &name, Some(i));
-    config::save_profiles(&s.profiles, s.active_profile);
 }
 
 /// Open the inline rename editor over the switcher for the active profile (seed the
@@ -949,14 +929,14 @@ pub(crate) fn rename_profile(s: &mut State, i: usize, name: String) {
 pub(crate) fn start_profile_rename(s: &mut State) {
     commit_profile_rename(s);
     let current = s
-        .profiles
-        .get(s.active_profile)
+        .profile_set
+        .active()
         .map(|p| p.name.clone())
         .unwrap_or_default();
     s.profile_rename_buf = rune::TextEdit::new(current);
     s.profile_rename_buf.focused = true;
     s.profile_rename_buf.anchor = 0;
-    s.profile_rename = Some(s.active_profile);
+    s.profile_rename = Some(s.profile_set.active_index());
 }
 
 /// Commit the open profile rename: trim the buffer and apply it. A blank buffer keeps
@@ -1268,7 +1248,7 @@ pub(crate) fn export_eq(s: &State, unit: usize, path: &std::path::Path) {
 /// Export the active audio profile (its name + whole DSP chain) to `path` as the
 /// portable JSON the future DAP reads. No-op if serialization or the write fails.
 pub(crate) fn export_profile(s: &State, path: &std::path::Path) {
-    let Some(profile) = s.profiles.get(s.active_profile) else {
+    let Some(profile) = s.profile_set.active() else {
         return;
     };
     if let Ok(json) = config::profile_to_json(profile) {
@@ -1283,12 +1263,11 @@ pub(crate) fn import_profile(s: &mut State, path: &std::path::Path) {
     let Ok(text) = std::fs::read_to_string(path) else {
         return;
     };
-    let Ok(mut profile) = config::profile_from_json(&text) else {
+    let Ok(profile) = config::profile_from_json(&text) else {
         return;
     };
-    profile.name = unique_profile_name(&s.profiles, &profile.name, None);
-    s.profiles.push(profile);
-    s.active_profile = s.profiles.len() - 1;
+    // Append under a disambiguated name and switch to it (ProfileSet unique-ifies).
+    s.profile_set.add_and_select(&profile.name, profile.chain);
     load_active_profile_into_ui(s);
     apply_dsp(s);
 }
@@ -2489,7 +2468,10 @@ mod tests {
     use rune::{Cursor, Env, FileDialogKind, Mods, Runtime, WheelEvent};
 
     use super::*;
+    // The profile model types are only used by the profile tests (production code
+    // reaches them through `soul_player_host::` full paths).
     use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
+    use soul_player_host::{DspChain, Profile, ProfileSet};
 
     fn testdata_dir() -> PathBuf {
         // app/rune -> repo-root/testdata
@@ -3889,17 +3871,19 @@ mod tests {
         let mut s = State::new(PlayerHandle::offline());
         // The shared test config dir may carry another test's profiles, so set a known
         // starting state explicitly (per the config-test convention).
-        s.profiles = vec![config::Profile {
-            name: "Default".into(),
-            chain: vec![DspUnit::Eq(EqUnit::default())],
-        }];
-        s.active_profile = 0;
-        s.dsp_units = s.profiles[0].chain.clone();
+        s.profile_set = ProfileSet::new(
+            vec![Profile::new(
+                "Default",
+                DspChain::new(vec![DspUnit::Eq(EqUnit::default())]),
+            )],
+            0,
+        );
+        s.dsp_units = s.profile_set.active_chain().unwrap().units.clone();
 
         // Editing the live chain auto-saves into the active profile.
         set_eq_preamp(&mut s, 0, -5.0);
         assert_eq!(
-            s.profiles[s.active_profile].chain[0]
+            s.profile_set.active_chain().unwrap().units[0]
                 .as_eq()
                 .unwrap()
                 .preamp_db,
@@ -3909,13 +3893,13 @@ mod tests {
 
         // A new profile starts empty and becomes active.
         new_profile(&mut s);
-        assert_eq!(s.profiles.len(), 2);
-        assert_eq!(s.active_profile, 1);
+        assert_eq!(s.profile_set.len(), 2);
+        assert_eq!(s.profile_set.active_index(), 1);
         assert!(s.dsp_units.is_empty(), "a new profile has an empty chain");
 
         // Switching back restores the first profile's chain.
         switch_profile(&mut s, 0);
-        assert_eq!(s.active_profile, 0);
+        assert_eq!(s.profile_set.active_index(), 0);
         assert_eq!(
             s.dsp_units[0].as_eq().unwrap().preamp_db,
             -5.0,
@@ -3925,31 +3909,43 @@ mod tests {
         // Duplicate carries the chain under "<name> copy" and switches to the copy;
         // editing the copy leaves the original untouched.
         duplicate_profile(&mut s);
-        assert_eq!(s.profiles.len(), 3);
-        let dup = s.active_profile;
-        assert!(s.profiles[dup].name.ends_with("copy"), "copy is suffixed");
+        assert_eq!(s.profile_set.len(), 3);
+        let dup = s.profile_set.active_index();
+        assert!(
+            s.profile_set.profiles()[dup].name.ends_with("copy"),
+            "copy is suffixed"
+        );
         assert_eq!(s.dsp_units[0].as_eq().unwrap().preamp_db, -5.0);
         set_eq_preamp(&mut s, 0, 2.0);
-        assert_eq!(s.profiles[dup].chain[0].as_eq().unwrap().preamp_db, 2.0);
         assert_eq!(
-            s.profiles[0].chain[0].as_eq().unwrap().preamp_db,
+            s.profile_set.profiles()[dup].chain.units[0]
+                .as_eq()
+                .unwrap()
+                .preamp_db,
+            2.0
+        );
+        assert_eq!(
+            s.profile_set.profiles()[0].chain.units[0]
+                .as_eq()
+                .unwrap()
+                .preamp_db,
             -5.0,
             "the original profile is untouched by edits to the copy"
         );
 
         // Rename the active profile (disambiguated against siblings).
         rename_profile(&mut s, dup, "Studio".into());
-        assert_eq!(s.profiles[dup].name, "Studio");
+        assert_eq!(s.profile_set.profiles()[dup].name, "Studio");
 
         // Delete drops the active and switches to a neighbour; the last can't be deleted.
-        let before = s.profiles.len();
+        let before = s.profile_set.len();
         delete_profile(&mut s);
-        assert_eq!(s.profiles.len(), before - 1);
-        while s.profiles.len() > 1 {
+        assert_eq!(s.profile_set.len(), before - 1);
+        while s.profile_set.len() > 1 {
             delete_profile(&mut s);
         }
         delete_profile(&mut s);
-        assert_eq!(s.profiles.len(), 1, "the last profile can't be deleted");
+        assert_eq!(s.profile_set.len(), 1, "the last profile can't be deleted");
     }
 
     /// A profile round-trips through the portable JSON, and importing a file appends it
@@ -3957,13 +3953,13 @@ mod tests {
     #[test]
     fn profile_json_round_trips_and_import_appends_disambiguated() {
         // Config-level: profile → JSON → profile preserves name + chain.
-        let studio = config::Profile {
-            name: "Studio".into(),
-            chain: vec![DspUnit::Eq(EqUnit {
+        let studio = Profile::new(
+            "Studio",
+            DspChain::new(vec![DspUnit::Eq(EqUnit {
                 preamp_db: -3.0,
                 ..EqUnit::default()
-            })],
-        };
+            })]),
+        );
         let json = config::profile_to_json(&studio).unwrap();
         assert_eq!(config::profile_from_json(&json).unwrap(), studio);
 
@@ -3971,20 +3967,22 @@ mod tests {
         let _g = config::use_test_config_dir();
         let mut s = State::new(PlayerHandle::offline());
         // Known starting state (the shared test config dir may carry other tests' data).
-        s.profiles = vec![config::Profile {
-            name: "Default".into(),
-            chain: vec![DspUnit::Eq(EqUnit::default())],
-        }];
-        s.active_profile = 0;
-        s.dsp_units = s.profiles[0].chain.clone();
+        s.profile_set = ProfileSet::new(
+            vec![Profile::new(
+                "Default",
+                DspChain::new(vec![DspUnit::Eq(EqUnit::default())]),
+            )],
+            0,
+        );
+        s.dsp_units = s.profile_set.active_chain().unwrap().units.clone();
 
-        let clash = config::profile_to_json(&config::Profile {
-            name: "Default".into(),
-            chain: vec![DspUnit::Eq(EqUnit {
+        let clash = config::profile_to_json(&Profile::new(
+            "Default",
+            DspChain::new(vec![DspUnit::Eq(EqUnit {
                 preamp_db: 4.0,
                 ..EqUnit::default()
-            })],
-        })
+            })]),
+        ))
         .unwrap();
         let path =
             std::env::temp_dir().join(format!("soul-profile-in-{}.json", std::process::id()));
@@ -3992,10 +3990,11 @@ mod tests {
         import_profile(&mut s, &path);
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(s.profiles.len(), 2, "import appended a profile");
-        assert_eq!(s.active_profile, 1, "and switched to it");
+        assert_eq!(s.profile_set.len(), 2, "import appended a profile");
+        assert_eq!(s.profile_set.active_index(), 1, "and switched to it");
         assert_eq!(
-            s.profiles[1].name, "Default 2",
+            s.profile_set.profiles()[1].name,
+            "Default 2",
             "the clashing name is disambiguated"
         );
         assert_eq!(
@@ -4011,23 +4010,25 @@ mod tests {
     fn profile_export_then_import_round_trips_through_a_file_and_goes_live() {
         let _g = config::use_test_config_dir();
         let mut s = State::new(PlayerHandle::offline());
-        s.profiles = vec![config::Profile {
-            name: "Mastering".into(),
-            chain: vec![
-                DspUnit::Eq(EqUnit {
-                    preamp_db: -3.5,
-                    name: Some("low".into()),
-                    ..EqUnit::default()
-                }),
-                DspUnit::Eq(EqUnit {
-                    preamp_db: 1.0,
-                    ..EqUnit::default()
-                }),
-            ],
-        }];
-        s.active_profile = 0;
-        s.dsp_units = s.profiles[0].chain.clone();
-        let original = s.profiles[0].chain.clone();
+        s.profile_set = ProfileSet::new(
+            vec![Profile::new(
+                "Mastering",
+                DspChain::new(vec![
+                    DspUnit::Eq(EqUnit {
+                        preamp_db: -3.5,
+                        name: Some("low".into()),
+                        ..EqUnit::default()
+                    }),
+                    DspUnit::Eq(EqUnit {
+                        preamp_db: 1.0,
+                        ..EqUnit::default()
+                    }),
+                ]),
+            )],
+            0,
+        );
+        s.dsp_units = s.profile_set.active_chain().unwrap().units.clone();
+        let original = s.profile_set.profiles()[0].chain.clone();
 
         let path =
             std::env::temp_dir().join(format!("soul-profile-rt-{}.json", std::process::id()));
@@ -4037,19 +4038,21 @@ mod tests {
         import_profile(&mut s, &path);
         let _ = std::fs::remove_file(&path);
 
-        assert_eq!(s.profiles.len(), 2, "import appended a profile");
-        assert_eq!(s.active_profile, 1, "and switched to it");
+        assert_eq!(s.profile_set.len(), 2, "import appended a profile");
+        assert_eq!(s.profile_set.active_index(), 1, "and switched to it");
         assert_eq!(
-            s.profiles[1].name, "Mastering 2",
+            s.profile_set.profiles()[1].name,
+            "Mastering 2",
             "the re-imported name is disambiguated"
         );
         assert_eq!(
-            s.profiles[1].chain, original,
+            s.profile_set.profiles()[1].chain,
+            original,
             "the whole chain survives export → file → import"
         );
         assert_eq!(
             s.host.dsp_chain().units,
-            original,
+            original.units,
             "the imported profile is live on the engine"
         );
     }
@@ -4061,26 +4064,28 @@ mod tests {
     fn switching_profiles_while_playing_pushes_the_new_chain_to_the_engine() {
         let _g = config::use_test_config_dir();
         let mut s = populated_state();
-        s.profiles = vec![
-            config::Profile {
-                name: "Flat".into(),
-                chain: vec![DspUnit::Eq(EqUnit {
-                    preamp_db: 0.0,
-                    enabled: false,
-                    ..EqUnit::default()
-                })],
-            },
-            config::Profile {
-                name: "Loud".into(),
-                chain: vec![DspUnit::Eq(EqUnit {
-                    preamp_db: 9.0,
-                    enabled: true,
-                    ..EqUnit::default()
-                })],
-            },
-        ];
-        s.active_profile = 0;
-        s.dsp_units = s.profiles[0].chain.clone();
+        s.profile_set = ProfileSet::new(
+            vec![
+                Profile::new(
+                    "Flat",
+                    DspChain::new(vec![DspUnit::Eq(EqUnit {
+                        preamp_db: 0.0,
+                        enabled: false,
+                        ..EqUnit::default()
+                    })]),
+                ),
+                Profile::new(
+                    "Loud",
+                    DspChain::new(vec![DspUnit::Eq(EqUnit {
+                        preamp_db: 9.0,
+                        enabled: true,
+                        ..EqUnit::default()
+                    })]),
+                ),
+            ],
+            0,
+        );
+        s.dsp_units = s.profile_set.active_chain().unwrap().units.clone();
         apply_dsp(&mut s); // seed the engine with the active (Flat) chain
 
         // Simulate live playback.
@@ -4089,7 +4094,7 @@ mod tests {
 
         assert_eq!(
             s.host.dsp_chain().units,
-            s.profiles[0].chain,
+            s.profile_set.profiles()[0].chain.units,
             "the engine holds the active (Flat) chain"
         );
         let gen_before = s.host.dsp_chain().generation;
@@ -4097,14 +4102,16 @@ mod tests {
         switch_profile(&mut s, 1);
 
         assert!(s.playing, "playback keeps running across the switch");
-        assert_eq!(s.active_profile, 1);
+        assert_eq!(s.profile_set.active_index(), 1);
         assert_eq!(
-            s.dsp_units, s.profiles[1].chain,
+            s.dsp_units,
+            s.profile_set.profiles()[1].chain.units,
             "the live chain is now Loud"
         );
         let live = s.host.dsp_chain();
         assert_eq!(
-            live.units, s.profiles[1].chain,
+            live.units,
+            s.profile_set.profiles()[1].chain.units,
             "the engine received the switched chain"
         );
         assert!(
@@ -4125,24 +4132,26 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        s.profiles = vec![
-            config::Profile {
-                name: "Studio".into(),
-                chain: vec![DspUnit::Eq(EqUnit {
-                    preamp_db: -5.0,
-                    ..EqUnit::default()
-                })],
-            },
-            config::Profile {
-                name: "Bass".into(),
-                chain: vec![DspUnit::Eq(EqUnit {
-                    preamp_db: 6.0,
-                    ..EqUnit::default()
-                })],
-            },
-        ];
-        s.active_profile = 0;
-        s.dsp_units = s.profiles[0].chain.clone();
+        s.profile_set = ProfileSet::new(
+            vec![
+                Profile::new(
+                    "Studio",
+                    DspChain::new(vec![DspUnit::Eq(EqUnit {
+                        preamp_db: -5.0,
+                        ..EqUnit::default()
+                    })]),
+                ),
+                Profile::new(
+                    "Bass",
+                    DspChain::new(vec![DspUnit::Eq(EqUnit {
+                        preamp_db: 6.0,
+                        ..EqUnit::default()
+                    })]),
+                ),
+            ],
+            0,
+        );
+        s.dsp_units = s.profile_set.active_chain().unwrap().units.clone();
         s.dsp_expanded = vec![false];
         s.eq_bands_expanded = vec![true];
         apply_locale("en");
@@ -4170,7 +4179,8 @@ mod tests {
         click_key(&mut rt, "profile-picker-opt-1");
         rt.frame(0.0);
         assert_eq!(
-            rt.state.active_profile, 1,
+            rt.state.profile_set.active_index(),
+            1,
             "picking an entry switches profile"
         );
         assert_eq!(

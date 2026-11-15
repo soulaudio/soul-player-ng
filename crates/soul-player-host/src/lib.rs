@@ -22,10 +22,14 @@ use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
     Band, BandKind, DspChain, DspKind, DspShared, DspUnit, EqUnit, FREQ_MAX, FREQ_MIN,
-    GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN, band_magnitude_db, default_bands, eq_magnitude_db,
-    format_autoeq, parse_autoeq,
+    GAIN_LIMIT_DB, MAX_BANDS, Profile, ProfileSet, Q_MAX, Q_MIN, band_magnitude_db, default_bands,
+    eq_magnitude_db, format_autoeq, parse_autoeq,
 };
 pub use sink::SinkMode;
+/// The portable audio-profile exchange format (the `*Cfg` serde structs), re-exported
+/// so a UI head reaches it through the one host contract. The desktop persists/exports
+/// through these; the DAP reads the same shapes.
+pub use soul_audio_dsp::format;
 /// The write-path "managed library" organizer (stateless `plan`/`apply` into a
 /// path-template tree), re-exported so a UI head calls it through the one host
 /// contract rather than taking its own core git dependency.

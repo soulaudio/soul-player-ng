@@ -21,6 +21,10 @@ soul-player-backend = { path = "../soul-player-backend" }
 soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 # Shared no_std parametric-EQ coefficient design (RBJ), reused by the DAP firmware.
 soul-audio-eq = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+# Shared no_std DSP-chain + audio-profile model (DspChain/DspUnit/EqUnit/ProfileSet),
+# reused by the DAP firmware. The `serde` feature carries the portable profile format
+# the desktop persists/exports and the DAP reads.
+soul-audio-dsp = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["serde"] }
 soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["playback"] }
 # Write-path "managed library" organizer (copy/move into a path-template tree),
 # re-exported so a UI head can plan/apply without a direct core git dep.

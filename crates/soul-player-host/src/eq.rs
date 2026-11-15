@@ -12,167 +12,21 @@
 use std::sync::{Arc, Mutex};
 
 use soul_audio_core::{Biquad, Equalizer, Sink, SinkError, StreamInfo};
-// The parametric-EQ *design* (RBJ coefficients + magnitude response) and the band
-// model live in the shared **no_std** `soul-audio-eq` crate, so the DAP firmware
-// reuses the exact same pipeline. This host module is the std half: the live
-// config, its shared handle, and the `Sink` decorator that applies it + feeds the
-// spectrum analyzer.
-pub use soul_audio_eq::{
-    Band, BandKind, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB, MAX_BANDS, Q_MAX, Q_MIN, band_magnitude_db,
-    default_bands, design, eq_magnitude_db, format_autoeq, parse_autoeq,
+// The DSP-chain + audio-profile model, the band model and the parametric-EQ *design*
+// all live in shared **no_std** crates (`soul-audio-dsp` over `soul-audio-eq`), so the
+// DAP firmware reuses the exact same pipeline. This host module is only the std half:
+// the shared live handle, and the `Sink` decorator that applies the chain + feeds the
+// spectrum analyzer. Re-exported here so callers keep reaching them through the host.
+pub use soul_audio_dsp::{
+    Band, BandKind, DspChain, DspKind, DspUnit, EqUnit, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
+    MAX_BANDS, Profile, ProfileSet, Q_MAX, Q_MIN, band_magnitude_db, default_bands, design,
+    eq_magnitude_db, format_autoeq, parse_autoeq,
 };
 
 use crate::analyzer::{Analyzer, SpectrumShared};
 
 /// Canonical sample bound: the deck normalises to signed 24-bit (±2²³).
 const CANONICAL_MAX: f32 = 8_388_607.0;
-
-/// One EQ unit in the DSP chain: its parametric bands, a preamp (headroom for
-/// boosts) and an enable flag. The chain can hold several, applied in order.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EqUnit {
-    /// The parametric bands (0..=[`MAX_BANDS`]), applied as a series cascade.
-    pub bands: Vec<Band>,
-    /// A pre-gain in dB applied before this unit's bands (negative to leave
-    /// headroom so boosts don't clip).
-    pub preamp_db: f32,
-    /// Whether this unit is engaged. A disabled unit is a bit-exact passthrough.
-    pub enabled: bool,
-    /// An optional user-given name for this unit (shown as "<name> (EQ)" in the UI,
-    /// persisted so it travels with a future audio profile / DAP export). `None`
-    /// means the unit is unnamed and shows just its type ("EQ").
-    pub name: Option<String>,
-}
-
-impl Default for EqUnit {
-    fn default() -> Self {
-        Self {
-            bands: default_bands().to_vec(),
-            preamp_db: 0.0,
-            enabled: true,
-            name: None,
-        }
-    }
-}
-
-impl EqUnit {
-    /// Whether this unit, as configured, would change the signal (engaged, with a
-    /// non-trivial preamp or some engaged band).
-    #[must_use]
-    pub fn affects(&self) -> bool {
-        self.enabled && (self.preamp_db.abs() > 1e-3 || self.bands.iter().any(Band::affects))
-    }
-}
-
-/// The type tag of a [`DspUnit`] — what kind of processor a chain entry is. The UI
-/// type-picker and the serialization key off this; EQ is the only kind today, but
-/// the chain is built to grow (compressor / limiter / … are future variants).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DspKind {
-    /// A parametric-EQ unit ([`EqUnit`]).
-    Eq,
-}
-
-/// One **typed** unit in the DSP chain. EQ is the only variant for now; the enum
-/// exists so the chain generalizes beyond EQ without reshaping the apply engine —
-/// [`DspSink`] matches the variant and an unknown kind is a no-op passthrough.
-#[derive(Debug, Clone, PartialEq)]
-pub enum DspUnit {
-    /// A parametric-EQ unit.
-    Eq(EqUnit),
-}
-
-impl DspUnit {
-    /// Convenience constructor for an EQ unit.
-    #[must_use]
-    pub fn eq(unit: EqUnit) -> Self {
-        DspUnit::Eq(unit)
-    }
-
-    /// This unit's [`DspKind`] tag.
-    #[must_use]
-    pub fn kind(&self) -> DspKind {
-        match self {
-            DspUnit::Eq(_) => DspKind::Eq,
-        }
-    }
-
-    /// Whether this unit is engaged. A disabled unit is a bit-exact passthrough.
-    #[must_use]
-    pub fn enabled(&self) -> bool {
-        match self {
-            DspUnit::Eq(eq) => eq.enabled,
-        }
-    }
-
-    /// Enable or disable this unit (per-unit bypass, independent of the stage).
-    pub fn set_enabled(&mut self, on: bool) {
-        match self {
-            DspUnit::Eq(eq) => eq.enabled = on,
-        }
-    }
-
-    /// This unit's user-given name, if any (shown as "<name> (EQ)" in the UI).
-    /// `None` for an unnamed unit.
-    #[must_use]
-    pub fn name(&self) -> Option<&str> {
-        match self {
-            DspUnit::Eq(eq) => eq.name.as_deref(),
-        }
-    }
-
-    /// Set (or clear, with `None`) this unit's user-given name.
-    pub fn set_name(&mut self, name: Option<String>) {
-        match self {
-            DspUnit::Eq(eq) => eq.name = name,
-        }
-    }
-
-    /// The inner [`EqUnit`] if this is an EQ unit, else `None`.
-    #[must_use]
-    pub fn as_eq(&self) -> Option<&EqUnit> {
-        match self {
-            DspUnit::Eq(eq) => Some(eq),
-        }
-    }
-
-    /// The inner [`EqUnit`] mutably if this is an EQ unit, else `None`.
-    #[must_use]
-    pub fn as_eq_mut(&mut self) -> Option<&mut EqUnit> {
-        match self {
-            DspUnit::Eq(eq) => Some(eq),
-        }
-    }
-
-    /// Whether this unit, as configured, would change the signal — delegates to the
-    /// variant's own `affects` (an unknown future kind that does nothing is `false`).
-    #[must_use]
-    pub fn affects(&self) -> bool {
-        match self {
-            DspUnit::Eq(eq) => eq.affects(),
-        }
-    }
-}
-
-/// The live DSP chain the UI writes and the [`DspSink`] reads: an ordered list of
-/// typed DSP units (signal flows through them in order) plus a `generation` counter
-/// the sink watches to know when to redesign its filters.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct DspChain {
-    /// The DSP units, applied front-to-back. Reordering changes processing order.
-    pub units: Vec<DspUnit>,
-    /// Bumped on every change so the sink knows to redesign.
-    pub generation: u64,
-}
-
-impl DspChain {
-    /// Whether any unit would change the signal. When `false` the sink passes the
-    /// frames through untouched (bit-exact).
-    #[must_use]
-    pub fn is_active(&self) -> bool {
-        self.units.iter().any(DspUnit::affects)
-    }
-}
 
 /// A shared handle to the live [`DspChain`]: the `PlayerHandle` writes it, the
 /// [`DspSink`] (on the pump thread) reads it and redesigns when `generation` moves.
