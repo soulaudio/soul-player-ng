@@ -1273,20 +1273,30 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         p,
     ));
     // One expandable unit card per position, in processing order; a drop line marks
-    // where a dragged card will land (the queue's reorder idiom).
-    let target = s.dsp_drag.map(|(_, to)| to);
-    let dragging_from = s.dsp_drag.map(|(from, _)| from);
+    // the GAP the dragged card will land in. Moving a card DOWN (to > from) it lands
+    // *after* `to`, so the line sits before `to + 1` (or at the very end); moving it
+    // UP it lands before `to`. (Drawing the line before `to` in both directions put
+    // it on the wrong side when dragging downward.)
+    let line_slot = s.dsp_drag.and_then(|(from, to)| match to.cmp(&from) {
+        std::cmp::Ordering::Equal => None,
+        std::cmp::Ordering::Greater => Some(to + 1),
+        std::cmp::Ordering::Less => Some(to),
+    });
+    let drop_line = |p: &Palette| {
+        el().key("dsp-drop")
+            .w_full()
+            .h(2.0)
+            .radius(1.0)
+            .fill(p.accent)
+    };
     for i in 0..s.dsp_units.len() {
-        if target == Some(i) && dragging_from != Some(i) {
-            card = card.child(
-                el().key("dsp-drop")
-                    .w_full()
-                    .h(2.0)
-                    .radius(1.0)
-                    .fill(p.accent),
-            );
+        if line_slot == Some(i) {
+            card = card.child(drop_line(p));
         }
         card = card.child(dsp_card(i, s, p, cx));
+    }
+    if line_slot == Some(s.dsp_units.len()) {
+        card = card.child(drop_line(p));
     }
     card.child(add_dsp_control(p))
 }
@@ -1478,13 +1488,20 @@ fn dsp_type_options() -> Vec<(String, String)> {
 /// [`dropdown`] of DSP types ([`add_dsp_menu`], mounted at the window root). The
 /// single entry still routes through the dropdown so new types extend it cleanly.
 fn add_dsp_control(p: &Palette) -> El {
-    chip_btn(
-        ADD_DSP_MENU.into(),
-        "+ Add DSP".into(),
-        p.primary.alpha(0.16),
-        p.primary,
-        move |st| crate::toggle_dropdown(st, ADD_DSP_MENU),
-    )
+    // A touch taller than a row chip (py SM vs XXS) so the add action reads as the
+    // chain's primary control.
+    text("+ Add DSP".to_string())
+        .font(type_::LABEL)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .key(ADD_DSP_MENU)
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .fill(p.primary.alpha(0.16))
+        .color(p.primary)
+        .on_press(move |st: &mut State| crate::toggle_dropdown(st, ADD_DSP_MENU))
 }
 
 /// The add-DSP dropdown panel — **mount at the window root** via
