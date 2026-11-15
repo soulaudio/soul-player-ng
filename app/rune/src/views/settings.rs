@@ -32,9 +32,10 @@ use crate::{
     eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, import_eq,
     organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
     remove_eq_band, reorder_dsp_units, select_dsp_unit, set_dsp_unit_enabled, set_eq_band_enabled,
-    set_eq_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest,
-    set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
-    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor,
+    set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest, set_managed_strategy,
+    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
+    set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor, unit_bands,
+    unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
@@ -1257,8 +1258,11 @@ fn db_to_slider(db: f32) -> f32 {
 /// EQ is off the body is dimmed and only the On/Off toggle stays lit.
 /// The quality dot goes accent when the EQ is actively shaping the signal.
 fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
-    let on = s.eq_enabled;
-    let shaping = on && (s.eq_preamp.abs() > 0.05 || s.eq_bands.iter().any(|b| b.affects()));
+    // The header toggle + preamp + editor operate on the active (open) unit.
+    let unit = s.dsp_active;
+    let on = unit_enabled(s, unit);
+    let shaping = on
+        && (unit_preamp(s, unit).abs() > 0.05 || unit_bands(s, unit).iter().any(|b| b.affects()));
     // Header enable toggle (reuses the signal-path On/Off labels).
     let toggle = {
         let label = if on {
@@ -1275,7 +1279,7 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .role("button")
             .focusable(true)
             .cursor(Cursor::Pointer)
-            .on_press(move |st: &mut State| set_eq_enabled(st, !on));
+            .on_press(move |st: &mut State| set_dsp_unit_enabled(st, unit, !on));
         if on {
             chip.fill(p.primary.alpha(0.16)).color(p.primary)
         } else {
@@ -1283,8 +1287,8 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         }
     };
     // Preamp slider (same ± range as a band; commits live).
-    let preamp = s.eq_preamp;
-    let apply_preamp = |st: &mut State, v: f32| set_eq_preamp(st, slider_to_db(v));
+    let preamp = unit_preamp(s, unit);
+    let apply_preamp = move |st: &mut State, v: f32| set_eq_preamp(st, unit, slider_to_db(v));
     let preamp_row = col()
         .key("eq-preamp-row")
         .w_full()
@@ -1518,7 +1522,9 @@ fn chip_btn_tx(
 /// an Add button, and (when open) a row per band to retype / nudge gain & Q /
 /// bypass / remove it.
 fn eq_band_editor(s: &State, p: &Palette) -> El {
-    let n = s.eq_bands.len();
+    // The editor shows the active unit's bands.
+    let unit = s.dsp_active;
+    let n = unit_bands(s, unit).len();
     let open = s.eq_editor_open;
     let chevron = if open { "▾" } else { "▸" };
     let toggle = row()
@@ -1543,7 +1549,7 @@ fn eq_band_editor(s: &State, p: &Palette) -> El {
         if can_add { p.primary } else { p.text_secondary },
         move |st| {
             // Add a bell in the mid-band (1 kHz, flat) — the user then drags it.
-            add_eq_band(st, 1000.0, 0.0);
+            add_eq_band(st, unit, 1000.0, 0.0);
         },
     );
     // Import / export AutoEQ (Equalizer-APO ParametricEQ) profiles via a native
@@ -1590,7 +1596,7 @@ fn eq_band_editor(s: &State, p: &Palette) -> El {
     if open {
         let mut list = col().w_full().gap(space::XS);
         for i in 0..n {
-            list = list.child(eq_band_row(i, s, p));
+            list = list.child(eq_band_row(unit, i, s, p));
         }
         panel = panel.child(list);
     }
@@ -1606,22 +1612,24 @@ fn field_slug(field: NumField) -> &'static str {
     }
 }
 
-/// An Ableton-style number box for band `i`'s `field`: the value `num` drawn mono +
-/// right-aligned in a fixed `num_w` column (so a column's decimals line up), with an
-/// optional `unit` label to its right. Drag it vertically or scroll on it to change
-/// the value; double-click to type one. While that number is being typed, the box
-/// becomes an inline text field bound to the shared edit buffer.
+/// An Ableton-style number box for unit `unit`'s band `i` `field`: the value `num`
+/// drawn mono + right-aligned in a fixed `num_w` column (so a column's decimals line
+/// up), with an optional `suffix` label to its right. Drag it vertically or scroll on
+/// it to change the value; double-click to type one. While that number is being
+/// typed, the box becomes an inline text field bound to the shared edit buffer.
+#[allow(clippy::too_many_arguments)]
 fn num_field(
+    unit: usize,
     i: usize,
     field: NumField,
     num: String,
-    unit: &str,
+    suffix: &str,
     num_w: f32,
     s: &State,
     p: &Palette,
 ) -> El {
     let key = format!("eq-num-{}-{i}", field_slug(field));
-    let editing = s.eq_edit == Some((i, field));
+    let editing = s.eq_edit == Some((unit, i, field));
     // Frequency reads as a secondary value; gain and Q are primary foreground.
     let color = match field {
         NumField::Freq => p.text_secondary,
@@ -1653,9 +1661,9 @@ fn num_field(
             .role("button")
             .focusable(true)
             .cursor(Cursor::ResizeRow)
-            .on_double_press(move |st: &mut State| eq_edit_start(st, i, field))
+            .on_double_press(move |st: &mut State| eq_edit_start(st, unit, i, field))
             .on_drag(move |st: &mut State, d: &mut Drag, _tx| match d.phase {
-                Phase::Down => eq_num_drag_start(st, i, field),
+                Phase::Down => eq_num_drag_start(st, unit, i, field),
                 Phase::Move => eq_num_drag_move(st, d.dy),
                 Phase::Up => eq_num_drag_end(st),
             })
@@ -1679,19 +1687,19 @@ fn num_field(
                     let up = steps < 0.0;
                     let count = (steps.abs() as i32).min(8); // guard a giant delta
                     for _ in 0..count {
-                        eq_num_scroll(st, i, field, up, fine);
+                        eq_num_scroll(st, unit, i, field, up, fine);
                     }
                 } else {
                     st.eq_wheel_accum = 0.0; // a real detent drops any partial travel
-                    eq_num_scroll(st, i, field, raw < 0.0, fine);
+                    eq_num_scroll(st, unit, i, field, raw < 0.0, fine);
                 }
                 true
             })
     };
     let mut cell = row().center_y().gap(space::XXS).child(value);
-    if !unit.is_empty() {
+    if !suffix.is_empty() {
         cell = cell.child(
-            text(unit.to_string())
+            text(suffix.to_string())
                 .font(type_::CAPTION)
                 .color(p.text_secondary)
                 .w(24.0),
@@ -1703,8 +1711,8 @@ fn num_field(
 /// One editor row: type chip · frequency · gain · Q · bypass · remove. The three
 /// numbers are Ableton-style boxes (drag / scroll / double-click to type), mono and
 /// right-aligned so each column's decimals line up.
-fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
-    let band = s.eq_bands[i];
+fn eq_band_row(unit: usize, i: usize, s: &State, p: &Palette) -> El {
+    let band = unit_bands(s, unit)[i];
     let gains = band.kind.uses_gain();
     // Frequency: whole Hz under 1 kHz, one-decimal kHz above.
     let (freq_num, freq_unit) = if band.freq >= 1000.0 {
@@ -1712,11 +1720,12 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
     } else {
         (format!("{:.0}", band.freq), "Hz")
     };
-    let freq = num_field(i, NumField::Freq, freq_num, freq_unit, 40.0, s, p);
+    let freq = num_field(unit, i, NumField::Freq, freq_num, freq_unit, 40.0, s, p);
     // Gain: an editable box for shapes that use gain; a static dash (same column
     // metrics) for the cuts / notch that don't.
     let gain = if gains {
         num_field(
+            unit,
             i,
             NumField::Gain,
             format!("{:+.1}", band.gain_db),
@@ -1753,6 +1762,7 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
                 .color(p.text_secondary),
         )
         .child(num_field(
+            unit,
             i,
             NumField::Q,
             format!("{:.2}", band.q),
@@ -1779,7 +1789,7 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
             kind_chip_label(band.kind).to_string(),
             p.muted,
             p.fg,
-            move |st| cycle_eq_band_kind(st, i),
+            move |st| cycle_eq_band_kind(st, unit, i),
         )))
         .child(freq)
         .child(gain)
@@ -1790,14 +1800,14 @@ fn eq_band_row(i: usize, s: &State, p: &Palette) -> El {
             if enabled { "On" } else { "Off" }.into(),
             en_fill,
             en_fg,
-            move |st| set_eq_band_enabled(st, i, !enabled),
+            move |st| set_eq_band_enabled(st, unit, i, !enabled),
         ))
         .child(chip_btn(
             format!("eq-band-rm-{i}"),
             "✕".into(),
             p.muted,
             p.text_secondary,
-            move |st| remove_eq_band(st, i),
+            move |st| remove_eq_band(st, unit, i),
         ))
 }
 
