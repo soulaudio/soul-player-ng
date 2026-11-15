@@ -85,6 +85,10 @@ struct Config {
     sidebar_width: f32,
     /// Whether the sidebar is collapsed to its rail.
     sidebar_collapsed: bool,
+    /// Whether the custom window controls (`_ [] X`) stay visible, vs. the default
+    /// of revealing on title-bar hover. Only affects platforms where the app draws
+    /// its own controls (Windows); a no-op where the native frame draws them.
+    titlebar_controls_always: bool,
     /// UI language preference: `system` | `en` | `de` | `es` | `zh` | `cs`.
     locale: String,
     /// Primary nav items the user has hidden (by id: `home`/`albums`/`artists`/
@@ -224,6 +228,7 @@ impl Default for Config {
             theme: "system".into(),
             sidebar_width: DEFAULT_WIDTH,
             sidebar_collapsed: false,
+            titlebar_controls_always: false,
             locale: "system".into(),
             nav_hidden: Vec::new(),
             sources_disabled: Vec::new(),
@@ -395,6 +400,18 @@ pub fn save_sidebar(width: f32, collapsed: bool) {
     let mut cfg = load();
     cfg.sidebar_width = width;
     cfg.sidebar_collapsed = collapsed;
+    save(&cfg);
+}
+
+/// Whether the custom window controls stay visible (vs. reveal on hover).
+pub fn load_titlebar_controls_always() -> bool {
+    load().titlebar_controls_always
+}
+
+/// Persist the window-controls visibility preference.
+pub fn save_titlebar_controls_always(always: bool) {
+    let mut cfg = load();
+    cfg.titlebar_controls_always = always;
     save(&cfg);
 }
 
@@ -826,6 +843,7 @@ mod tests {
             theme: "dark".into(),
             sidebar_width: 300.0,
             sidebar_collapsed: true,
+            titlebar_controls_always: true,
             locale: "de".into(),
             nav_hidden: vec!["home".into()],
             sources_disabled: Vec::new(),

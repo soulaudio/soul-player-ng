@@ -554,6 +554,27 @@ settings.navHidden:
   zh: '隐藏'
   cs: 'Skryto'
   ja: '非表示'
+settings.windowControls:
+  en: 'Window controls'
+  de: 'Fenstersteuerung'
+  es: 'Controles de ventana'
+  zh: '窗口控件'
+  cs: 'Ovládání okna'
+  ja: 'ウィンドウ操作ボタン'
+settings.controlsAlways:
+  en: 'Always show'
+  de: 'Immer anzeigen'
+  es: 'Mostrar siempre'
+  zh: '始终显示'
+  cs: 'Vždy zobrazit'
+  ja: '常に表示'
+settings.controlsHover:
+  en: 'On hover'
+  de: 'Beim Überfahren'
+  es: 'Al pasar el cursor'
+  zh: '悬停时显示'
+  cs: 'Při najetí'
+  ja: 'ホバー時'
 settings.appearance:
   en: 'Appearance'
   de: 'Darstellung'
