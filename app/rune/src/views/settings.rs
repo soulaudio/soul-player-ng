@@ -1509,13 +1509,15 @@ fn dsp_type_options() -> Vec<(String, String)> {
     vec![("eq".to_string(), "EQ".to_string())]
 }
 
-/// The "+ Add DSP" control: a compact primary button that opens the shared
-/// [`dropdown`] of DSP types ([`add_dsp_menu`], mounted at the window root). The
-/// single entry still routes through the dropdown so new types extend it cleanly.
+/// The "+ Add DSP" control. With a single DSP type it ADDS that type directly on
+/// press — a one-item picker is pointless, and a portaled, focus-grabbing dropdown
+/// opened from deep in the settings scroll fights the scroll (jumps + locks it). With
+/// two or more types it opens the shared [`dropdown`] of types ([`add_dsp_menu`],
+/// mounted at the window root) to choose. The dropdown path is kept ready for that.
 fn add_dsp_control(p: &Palette) -> El {
     // A touch taller than a row chip (py SM vs XXS) so the add action reads as the
     // chain's primary control.
-    text(t!("settings.addDsp").to_string())
+    let btn = text(t!("settings.addDsp").to_string())
         .font(type_::LABEL)
         .px(space::MD)
         .py(space::SM)
@@ -1525,8 +1527,12 @@ fn add_dsp_control(p: &Palette) -> El {
         .focusable(true)
         .cursor(Cursor::Pointer)
         .fill(p.primary.alpha(0.16))
-        .color(p.primary)
-        .on_press(move |st: &mut State| crate::toggle_dropdown(st, ADD_DSP_MENU))
+        .color(p.primary);
+    if dsp_type_options().len() <= 1 {
+        btn.on_press(move |st: &mut State| add_dsp_unit(st))
+    } else {
+        btn.on_press(move |st: &mut State| crate::toggle_dropdown(st, ADD_DSP_MENU))
+    }
 }
 
 /// The add-DSP dropdown panel — **mount at the window root** via
