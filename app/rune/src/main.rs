@@ -265,6 +265,13 @@ struct State {
     /// The text buffer the inline number editor draws and the user types into. Reset
     /// to the current value when an edit opens; ignored while `eq_edit` is `None`.
     eq_edit_buf: rune::TextEdit,
+    /// Accumulated wheel travel over a band-table number box, so a trackpad's many
+    /// small `precise` deltas add up to discrete steps (a notched mouse wheel still
+    /// steps once per detent). Self-draining; no reset needed.
+    eq_wheel_accum: f32,
+    /// Whether Shift is held (tracked via `Key::Modifier`), so a number drag can
+    /// fine-tune — the `Drag` event carries no modifiers, unlike the wheel's.
+    shift_held: bool,
     /// The latest spectrum-analyzer columns (smoothed dBFS, 20 Hz…20 kHz log) the
     /// EQ graph draws behind the curve. Empty when not playing / tab hidden. Pulled
     /// from the host by `spectrum_poll` at frame rate.
@@ -414,6 +421,8 @@ impl State {
             eq_num_drag: None,
             eq_edit: None,
             eq_edit_buf: rune::TextEdit::new(""),
+            eq_wheel_accum: 0.0,
+            shift_held: false,
             spectrum: Vec::new(),
             spectrum_seq: 0,
             eq_editor_open: false,
@@ -774,12 +783,22 @@ pub(crate) fn eq_num_drag_start(s: &mut State, i: usize, field: NumField) {
     }
 }
 
+/// How much finer a Shift-held number drag is than a plain one (a quarter the
+/// travel per point).
+const DRAG_FINE_FACTOR: f32 = 0.25;
+
 /// Continue a number drag: `dy` is the pointer's vertical travel since the press
 /// (down is positive). Up raises the value; gain is linear, frequency and Q are
-/// geometric (constant octaves / doublings per point).
+/// geometric (constant octaves / doublings per point). Holding Shift fine-tunes by
+/// scaling the travel down.
 pub(crate) fn eq_num_drag_move(s: &mut State, dy: f32) {
     let Some((i, field, start)) = s.eq_num_drag else {
         return;
+    };
+    let dy = if s.shift_held {
+        dy * DRAG_FINE_FACTOR
+    } else {
+        dy
     };
     let value = match field {
         NumField::Gain => start - dy * GAIN_DRAG_DB_PER_PX,
@@ -1343,6 +1362,10 @@ fn setup_art(s: &mut State, waker: Waker) {
 /// as `Key::Text` (`Key::Command(c)` is reserved for Cmd/Ctrl chords), so
 /// `s`/`r` are matched there.
 fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
+    // Track Shift (bare press/release arrives here thanks to `App::modifier_keys`;
+    // other keys carry it in `mods`) so an EQ number drag can fine-tune while held.
+    // The `Key::Modifier` event itself falls through to the `_` arms below.
+    s.shift_held = ev.mods.shift;
     if tx.key_repeat() {
         return false;
     }
@@ -1693,6 +1716,11 @@ fn main() -> anyhow::Result<()> {
         )
     };
     let app = App::new(spec)
+        // Deliver bare Shift/Ctrl/… press+release to `on_key` so the EQ number
+        // drags can fine-tune while Shift is held (the `Drag` event carries no
+        // modifiers). `handle_key` only acts on the modifier state, ignoring the
+        // keys themselves.
+        .modifier_keys()
         // System-wide transport hotkeys (fire even when the window is unfocused).
         // Dedicated hardware media keys + OS "Now Playing" controls are a separate
         // integration (souvlaki) — these are user-reachable chords in the meantime.
@@ -2457,6 +2485,147 @@ mod tests {
         assert!(
             fine > 0.0 && fine < coarse,
             "Shift makes a finer gain step (fine {fine} < coarse {coarse})"
+        );
+    }
+
+    /// Regression: scrolling a band number must step in BOTH directions — a notched
+    /// wheel up raises it and down lowers it (the bug had both directions lowering).
+    /// Drives the real `on_wheel` handler through the harness.
+    #[test]
+    fn number_box_wheel_steps_both_directions() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
+        let f0 = rt.state.eq_bands[0].freq;
+        rt.wheel_event(WheelEvent::new(0.0, -10.0).at(x, y)); // up
+        rt.frame(0.0);
+        let up = rt.state.eq_bands[0].freq;
+        assert!(up > f0, "scroll up raised the frequency ({f0} -> {up})");
+        rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y)); // down
+        rt.wheel_event(WheelEvent::new(0.0, 10.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_bands[0].freq < up,
+            "scroll down lowered it again ({up} -> {})",
+            rt.state.eq_bands[0].freq
+        );
+    }
+
+    /// A trackpad's fine `precise` wheel deltas accumulate into discrete steps and
+    /// still reverse direction (the one-direction bug was worst on precise devices).
+    #[test]
+    fn number_box_trackpad_wheel_accumulates_and_reverses() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
+        let f0 = rt.state.eq_bands[0].freq;
+        // Several small upward precise deltas sum past a notch → at least one step up.
+        for _ in 0..4 {
+            rt.wheel_event(WheelEvent::new(0.0, -8.0).at(x, y).precise(true));
+        }
+        rt.frame(0.0);
+        let up = rt.state.eq_bands[0].freq;
+        assert!(
+            up > f0,
+            "precise scroll up raised the frequency ({f0} -> {up})"
+        );
+        for _ in 0..4 {
+            rt.wheel_event(WheelEvent::new(0.0, 8.0).at(x, y).precise(true));
+        }
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_bands[0].freq < up,
+            "precise scroll down reversed it ({up} -> {})",
+            rt.state.eq_bands[0].freq
+        );
+    }
+
+    /// Windows turns Shift+wheel into a HORIZONTAL wheel: the delta arrives in `dx`
+    /// with `dy == 0`. The number box must still step (the "Shift+scroll does
+    /// nothing" bug), with the same direction convention as the vertical wheel.
+    #[test]
+    fn number_box_horizontal_wheel_steps_like_vertical() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.eq_enabled = true;
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        s.eq_editor_open = true;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
+        rt.frame(0.0);
+        let (x, y) = rt.find("eq-num-freq-0").expect("band 0's freq box renders");
+        let f0 = rt.state.eq_bands[0].freq;
+        // dx < 0 (horizontal "up") raises, mirroring dy < 0.
+        rt.wheel_event(WheelEvent::new(-40.0, 0.0).at(x, y));
+        rt.frame(0.0);
+        let up = rt.state.eq_bands[0].freq;
+        assert!(
+            up > f0,
+            "horizontal (dx) scroll up raised freq ({f0} -> {up})"
+        );
+        rt.wheel_event(WheelEvent::new(40.0, 0.0).at(x, y));
+        rt.wheel_event(WheelEvent::new(40.0, 0.0).at(x, y));
+        rt.frame(0.0);
+        assert!(
+            rt.state.eq_bands[0].freq < up,
+            "horizontal (dx) scroll down lowered it ({up} -> {})",
+            rt.state.eq_bands[0].freq
+        );
+    }
+
+    /// Holding Shift while dragging a band number fine-tunes it — the same drag
+    /// travel changes the value less (the drag reads `State::shift_held`, which the
+    /// key handler keeps current).
+    #[test]
+    fn shift_drag_fine_tunes_a_band_number() {
+        let _guard = config::use_test_config_dir();
+        let mut s = populated_state();
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        let g0 = s.eq_bands[1].gain_db;
+        // Plain drag up by 20 points.
+        eq_num_drag_start(&mut s, 1, NumField::Gain);
+        eq_num_drag_move(&mut s, -20.0);
+        let coarse = s.eq_bands[1].gain_db - g0;
+        eq_num_drag_end(&mut s);
+        // Same drag with Shift held — a finer change.
+        set_eq_band_gain(&mut s, 1, g0);
+        s.shift_held = true;
+        eq_num_drag_start(&mut s, 1, NumField::Gain);
+        eq_num_drag_move(&mut s, -20.0);
+        let fine = s.eq_bands[1].gain_db - g0;
+        assert!(
+            fine > 0.0 && fine < coarse,
+            "Shift+drag is finer (fine {fine} < coarse {coarse})"
         );
     }
 

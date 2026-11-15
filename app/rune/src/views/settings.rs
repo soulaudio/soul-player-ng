@@ -42,6 +42,10 @@ use soul_player_host::IndexingMode;
 const RG_PREAMP_MIN: f32 = -15.0;
 const RG_PREAMP_MAX: f32 = 15.0;
 
+/// Points of trackpad `precise` wheel travel that make one discrete number-box step,
+/// so a fine two-finger scroll accumulates into steps instead of flying or stalling.
+const WHEEL_NOTCH_PX: f32 = 16.0;
+
 /// Width of the category rail (the original's narrow settings `aside`, widened
 /// to seat an icon + label per row).
 const NAV_WIDTH: f32 = 184.0;
@@ -1656,9 +1660,31 @@ fn num_field(
                 Phase::Up => eq_num_drag_end(st),
             })
             .on_wheel(move |st: &mut State, ev: WheelEvent, _tx| {
-                // Scroll up (negative dy) raises the value; Shift fine-tunes, as on
-                // the graph's wheel-over-Q gesture.
-                eq_num_scroll(st, i, field, ev.dy < 0.0, ev.mods.shift);
+                // Windows turns Shift+wheel into a HORIZONTAL wheel: the delta then
+                // arrives in `dx` with `dy == 0`, so read whichever axis carries it
+                // (otherwise Shift+scroll — the fine-tune gesture — does nothing).
+                // Then mirror the volume wheel: ignore trackpad coasting, step once
+                // per detent, and accumulate a trackpad's fine `precise` deltas so a
+                // slow scroll still steps in BOTH directions. Negative delta = scroll
+                // up = raise the value; Shift fine-tunes.
+                let raw = if ev.dy != 0.0 { ev.dy } else { ev.dx };
+                if ev.momentum || raw == 0.0 {
+                    return true;
+                }
+                let fine = ev.mods.shift;
+                if ev.precise {
+                    st.eq_wheel_accum += raw;
+                    let steps = (st.eq_wheel_accum / WHEEL_NOTCH_PX).trunc();
+                    st.eq_wheel_accum -= steps * WHEEL_NOTCH_PX;
+                    let up = steps < 0.0;
+                    let count = (steps.abs() as i32).min(8); // guard a giant delta
+                    for _ in 0..count {
+                        eq_num_scroll(st, i, field, up, fine);
+                    }
+                } else {
+                    st.eq_wheel_accum = 0.0; // a real detent drops any partial travel
+                    eq_num_scroll(st, i, field, raw < 0.0, fine);
+                }
                 true
             })
     };
