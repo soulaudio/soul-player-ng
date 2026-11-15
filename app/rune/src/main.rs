@@ -1522,6 +1522,21 @@ pub(crate) fn set_titlebar_controls_always(s: &mut State, always: bool) {
     config::save_titlebar_controls_always(always);
 }
 
+/// Final best-effort flush on app exit — window close, Quit, or OS logout — run
+/// once even if both `on_close` and `on_quit` fire. Config is already persisted
+/// on change; this captures the warm-startup scan caches updated this session and
+/// marks a clean exit (so the next launch doesn't show the crash prompt).
+fn flush_on_exit(s: &mut State) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static DONE: AtomicBool = AtomicBool::new(false);
+    if DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    config::save_scan_caches(&s.host.caches_snapshot());
+    logging::end_session();
+    tracing::info!("Soul Player exiting");
+}
+
 /// Dispatch an OS media-control event (routed from the media-session thread onto
 /// the main thread), resolving relative seeks against the live playback position.
 pub(crate) fn apply_media_event(s: &mut State, tx: &mut Tx, event: souvlaki::MediaControlEvent) {
@@ -2041,7 +2056,12 @@ fn main() -> anyhow::Result<()> {
                     std::mem::forget(tray);
                 }
             }
-        });
+        })
+        // Flush on the real exit paths: a window close (Windows/Linux → quit) and
+        // an app Quit / OS logout (Cmd+Q, `WM_ENDSESSION`), where the run loop may
+        // not return cleanly.
+        .on_close(|s: &mut State, _tx: &mut Tx| flush_on_exit(s))
+        .on_quit(|s: &mut State, _tx: &mut Tx| flush_on_exit(s));
     let ah = app.handle();
     let _ = media_ah_cell.set(app.handle());
     // Stash a self-handle in State (once, on the main thread) so the managed-library
@@ -2111,11 +2131,10 @@ fn main() -> anyhow::Result<()> {
         tracing::warn!("set_app_icon failed: {e}");
     }
     app.run();
-    // The run loop returned: the window closed cleanly. Remove the session sentinel
-    // so the next launch knows this exit was clean, and log the bracketing line
-    // (paired with the startup banner) — a session that ends without it crashed.
+    // Backstop: `flush_on_exit` (wired to on_close/on_quit) normally marks the
+    // clean exit first; this covers the rare path where the run loop returns
+    // without either firing. `end_session` is idempotent.
     logging::end_session();
-    tracing::info!("Soul Player exiting");
     Ok(())
 }
 
