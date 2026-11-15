@@ -34,10 +34,10 @@ use crate::{
     import_eq, import_profile, new_profile, organize_begin, organize_confirm, organize_dismiss,
     organize_ready, remove_dsp_unit, remove_eq_band, reorder_dsp_units, scan_in_background,
     set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref,
-    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible, set_output_device,
-    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_theme_pref, start_dsp_rename,
-    start_profile_rename, switch_profile, toggle_dsp_expanded, toggle_eq_bands_expanded, unit_bands,
-    unit_enabled, unit_preamp,
+    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
+    set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
+    toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
