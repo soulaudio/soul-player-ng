@@ -1314,6 +1314,11 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // `views::dropdown`). Empty when nothing is open — then this is just the shell.
     let mut overlays = views::settings::settings_overlays(s, &p, cx);
     overlays.extend(views::signal_path::overlay(s, &p));
+    // The crash-report modal draws over everything, on any route — last, so it
+    // stacks above any panel still mounted beneath it.
+    if let Some(dialog) = crash_overlay(s, &p) {
+        overlays.push(dialog);
+    }
     if overlays.is_empty() {
         shell
     } else {
@@ -1324,79 +1329,114 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 /// The routed main content area, keyed `"content"`. On desktop it fills the
 /// space beside the sidebar; on mobile it is the whole window.
 fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -> El {
-    let mut pane = col().key("content").grow(1.0).min_h(0.0);
-    // A dismissible report prompt pinned above the routed page when the previous
-    // session ended abnormally (`logging::begin_session`).
-    if s.crashed_last_session {
-        pane = pane.child(crash_banner(p));
-    }
-    pane.child(match s.route {
-        Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
-        Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
-        Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
-        Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
-        Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
-        Route::Artist => views::artists::artist_detail(s, p, scale).grow(1.0),
-        Route::Genres => views::genres::genres_page(s, p).grow(1.0),
-        Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
-        Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
-    })
+    col()
+        .key("content")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(match s.route {
+            Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
+            Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
+            Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
+            Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
+            Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
+            Route::Artist => views::artists::artist_detail(s, p, scale).grow(1.0),
+            Route::Genres => views::genres::genres_page(s, p).grow(1.0),
+            Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
+            Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
+        })
 }
 
-/// The dismissible crash-report banner (see [`content_pane`]): an accent dot, a
-/// short message, a primary "Report" button that opens a pre-filled GitHub issue
-/// (same flow as Settings → About), and a dismiss button that hides it for this
-/// session.
-fn crash_banner(p: &theme::Palette) -> El {
-    use crate::ui::{radius, space};
-    row()
-        .key("crash-banner")
-        .w_full()
-        .items_center()
-        .gap(space::MD)
-        .px(space::LG)
-        .pt(space::SM)
-        .pb(space::SM)
+/// Hide the crash prompt for this session — also the modal's Escape / outside-press
+/// dismiss handler.
+fn dismiss_crash(s: &mut State) {
+    s.crashed_last_session = false;
+}
+
+/// The crash-report **modal**, mounted on the overlay layer (over any route) when
+/// the previous session ended abnormally (`logging::begin_session`): a centered
+/// card over a dim scrim. Dismisses on Escape or an outside press (`El::modal`),
+/// the same as its Dismiss button.
+fn crash_overlay(s: &State, p: &theme::Palette) -> Option<El> {
+    if !s.crashed_last_session {
+        return None;
+    }
+    Some(
+        col()
+            .key("crash-modal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(rune::Color::BLACK.alpha(0.45))
+            .child(crash_dialog(p).modal(true, dismiss_crash)),
+    )
+}
+
+/// The centered crash-report dialog card: title, a short message, and Dismiss /
+/// Report actions. Report opens the same pre-filled GitHub issue as Settings →
+/// About and closes the dialog.
+fn crash_dialog(p: &theme::Palette) -> El {
+    use crate::ui::{radius, space, type_};
+    col()
+        .key("crash-dialog")
+        .w(380.0)
         .fill(p.card)
-        .child(
-            el().key("crash-dot")
-                .w(8.0)
-                .h(8.0)
-                .radius(4.0)
-                .fill(p.accent),
-        )
+        .radius(radius::LG)
+        .border(1.0, p.border)
+        .padding(space::LG)
+        .gap(space::MD)
         .child(
             rune::text(t!("crash.title").to_string())
+                .font(type_::CARD_TITLE)
                 .color(p.fg)
-                .grow(1.0),
+                .wrap(),
         )
         .child(
-            el().key("crash-report")
-                .role("button")
-                .label(t!("crash.report").to_string())
-                .focusable(true)
-                .padding(space::SM)
-                .radius(radius::MD)
-                .fill(p.primary)
-                .center()
-                .cursor(rune::Cursor::Pointer)
-                .child(rune::text(t!("crash.report").to_string()).color(p.bg))
-                .on_press(|s: &mut State| {
-                    let device = s.output_device.clone();
-                    std::thread::spawn(move || crate::report::open_issue(device));
-                }),
+            rune::text(t!("crash.body").to_string())
+                .color(p.text_secondary)
+                .wrap(),
         )
         .child(
-            el().key("crash-dismiss")
-                .role("button")
-                .label(t!("crash.dismiss").to_string())
-                .focusable(true)
-                .padding(space::SM)
-                .radius(radius::MD)
-                .center()
-                .cursor(rune::Cursor::Pointer)
-                .child(rune::icon(&views::icons::X, 14.0).color(p.text_secondary))
-                .on_press(|s: &mut State| s.crashed_last_session = false),
+            row()
+                .gap(space::SM)
+                .justify_end()
+                .child(
+                    el().key("crash-dismiss")
+                        .role("button")
+                        .label(t!("crash.dismiss").to_string())
+                        .focusable(true)
+                        .padding(space::MD)
+                        .radius(radius::MD)
+                        .fill(p.bg)
+                        .border(1.0, p.border)
+                        .center()
+                        .cursor(rune::Cursor::Pointer)
+                        .child(rune::text(t!("crash.dismiss").to_string()).color(p.fg))
+                        .on_press(dismiss_crash),
+                )
+                .child(
+                    el().key("crash-report")
+                        .role("button")
+                        .label(t!("crash.report").to_string())
+                        .focusable(true)
+                        .padding(space::MD)
+                        .radius(radius::MD)
+                        .fill(p.primary)
+                        .center()
+                        .cursor(rune::Cursor::Pointer)
+                        .child(
+                            row()
+                                .gap(space::SM)
+                                .center_y()
+                                .child(rune::icon(&views::icons::GITHUB, 16.0).color(p.bg))
+                                .child(rune::text(t!("crash.report").to_string()).color(p.bg)),
+                        )
+                        .on_press(|s: &mut State| {
+                            let device = s.output_device.clone();
+                            dismiss_crash(s);
+                            std::thread::spawn(move || crate::report::open_issue(device));
+                        }),
+                ),
         )
 }
 
@@ -2248,31 +2288,31 @@ mod tests {
     }
 
     #[test]
-    fn crash_banner_shows_only_after_an_unclean_exit() {
+    fn crash_dialog_shows_only_after_an_unclean_exit() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
         apply_locale("en");
 
-        // A clean start shows no banner.
+        // A clean start shows no dialog.
         let mut clean = populated_state();
         clean.crashed_last_session = false;
         let mut rt = Runtime::new(clean, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
-            rt.find("crash-banner").is_none(),
-            "no crash banner on a clean start"
+            rt.find("crash-dialog").is_none(),
+            "no crash dialog on a clean start"
         );
 
-        // After an unclean exit the banner and its report button render.
+        // After an unclean exit the modal dialog and its report button render.
         let mut crashed = populated_state();
         crashed.crashed_last_session = true;
         let mut rt2 = Runtime::new(crashed, view, (1100.0, 720.0), env);
         rt2.frame(0.0);
         assert!(
-            rt2.find("crash-banner").is_some(),
-            "crash banner shows after an unclean exit"
+            rt2.find("crash-dialog").is_some(),
+            "crash dialog shows after an unclean exit"
         );
         assert!(
             rt2.find("crash-report").is_some(),
