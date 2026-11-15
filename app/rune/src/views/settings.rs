@@ -31,10 +31,10 @@ use crate::{
     apply_and_save, apply_watch, close_dropdown, commit_eq_edit, cycle_eq_band_kind, eq_edit_start,
     eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, import_eq,
     organize_begin, organize_confirm, organize_dismiss, organize_ready, remove_dsp_unit,
-    remove_eq_band, reorder_dsp_units, select_dsp_unit, set_dsp_unit_enabled, set_eq_band_enabled,
-    set_eq_preamp, set_indexing_mode, set_locale_pref, set_managed_dest, set_managed_strategy,
+    remove_eq_band, reorder_dsp_units, set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp,
+    set_indexing_mode, set_locale_pref, set_managed_dest, set_managed_strategy,
     set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_eq_editor, unit_bands,
+    set_replaygain_preamp, set_settings_tab, set_theme_pref, toggle_dsp_expanded, unit_bands,
     unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
@@ -1253,117 +1253,32 @@ fn db_to_slider(db: f32) -> f32 {
     ((db + GAIN_LIMIT_DB) / (2.0 * GAIN_LIMIT_DB)).clamp(0.0, 1.0)
 }
 
-/// The **DSP / EQ** stage: a fully parametric equalizer. An enable toggle in the
-/// header, a preamp slider for headroom, then the response-curve graph. When the
-/// EQ is off the body is dimmed and only the On/Off toggle stays lit.
-/// The quality dot goes accent when the EQ is actively shaping the signal.
+/// The **DSP chain** stage: an ordered list of expandable DSP unit cards (EQ is
+/// the only kind today), each flowing into the next, plus an "+ Add DSP" control.
+/// There is no master toggle — every unit card owns its own enable. The stage dot
+/// goes accent when ANY enabled unit is actively shaping the signal.
 fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
-    // The header toggle + preamp + editor operate on the active (open) unit.
-    let unit = s.dsp_active;
-    let on = unit_enabled(s, unit);
-    let shaping = on
-        && (unit_preamp(s, unit).abs() > 0.05 || unit_bands(s, unit).iter().any(|b| b.affects()));
-    // Header enable toggle (reuses the signal-path On/Off labels).
-    let toggle = {
-        let label = if on {
-            t!("player.signalPath.on")
-        } else {
-            t!("player.signalPath.off")
-        };
-        let chip = text(label.to_string())
-            .font(type_::LABEL)
-            .px(space::SM)
-            .py(space::XXS)
-            .radius(radius::SM)
-            .key("eq-enable")
-            .role("button")
-            .focusable(true)
-            .cursor(Cursor::Pointer)
-            .on_press(move |st: &mut State| set_dsp_unit_enabled(st, unit, !on));
-        if on {
-            chip.fill(p.primary.alpha(0.16)).color(p.primary)
-        } else {
-            chip.fill(p.muted).color(p.text_secondary)
-        }
-    };
-    // Preamp slider (same ± range as a band; commits live).
-    let preamp = unit_preamp(s, unit);
-    let apply_preamp = move |st: &mut State, v: f32| set_eq_preamp(st, unit, slider_to_db(v));
-    let preamp_row = col()
-        .key("eq-preamp-row")
-        .w_full()
-        .gap(space::XS)
-        .child(
-            row()
-                .w_full()
-                .center_y()
-                .child(
-                    text(t!("settings.preamp").to_string())
-                        .color(p.text_secondary)
-                        .grow(1.0)
-                        .shrink(),
-                )
-                .child(text(format!("{preamp:+.1} dB")).color(p.text_secondary)),
-        )
-        .child(row().w_full().child(slider(
-            "eq-preamp",
-            db_to_slider(preamp),
-            s.dragging_slider.as_deref() == Some("eq-preamp"),
-            cx,
-            p,
-            apply_preamp,
-            apply_preamp,
-        )));
-    // The card body (preamp + parametric response-curve graph). Dimmed when the EQ
-    // is off, so only the header's On/Off toggle stays lit.
-    let body = col()
-        .key("eq-body")
-        .w_full()
-        .gap(space::MD)
-        .child(preamp_row)
-        .child(crate::views::eq_graph::eq_graph(s, p, cx))
-        .child(eq_band_editor(s, p));
-    let body = if on { body } else { body.opacity(fx::DISABLED) };
-    // The reorderable list of EQ units (the DSP chain) sits above the active unit's
-    // editor. The header toggle + editor operate on the active (open) unit.
-    let has_units = !s.dsp_units.is_empty();
-    let card = card("sp-stage-dsp", p)
-        .child(stage_header(
-            if shaping { p.accent } else { p.primary },
-            &icons::SETTINGS,
-            t!("player.signalPath.dsp").to_string(),
-            None,
-            has_units.then_some(toggle),
-            false,
-            p,
-        ))
-        .child(dsp_unit_list(s, p));
-    if has_units { card.child(body) } else { card }
-}
-
-/// Approximate height of one unit row (points) — maps a reorder drag's vertical
-/// travel to a target slot, à la the queue.
-const DSP_ROW_H: f32 = 34.0;
-
-/// Where a dragged unit lands: its index plus one slot per [`DSP_ROW_H`] of travel.
-fn dsp_drop_index(from: usize, dy: f32, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    let steps = (dy / DSP_ROW_H).round() as i64;
-    (from as i64 + steps).clamp(0, len as i64 - 1) as usize
-}
-
-/// The DSP chain as a reorderable list of EQ-unit rows + an "Add EQ" button.
-fn dsp_unit_list(s: &State, p: &Palette) -> El {
-    let n = s.dsp_units.len();
+    let shaping = (0..s.dsp_units.len()).any(|i| {
+        unit_enabled(s, i)
+            && (unit_preamp(s, i).abs() > 0.05 || unit_bands(s, i).iter().any(|b| b.affects()))
+    });
+    let mut card = card("sp-stage-dsp", p).child(stage_header(
+        if shaping { p.accent } else { p.primary },
+        &icons::SETTINGS,
+        t!("player.signalPath.dsp").to_string(),
+        None,
+        // No master toggle — each unit card has its own.
+        None,
+        false,
+        p,
+    ));
+    // One expandable unit card per position, in processing order; a drop line marks
+    // where a dragged card will land (the queue's reorder idiom).
     let target = s.dsp_drag.map(|(_, to)| to);
     let dragging_from = s.dsp_drag.map(|(from, _)| from);
-    let mut list = col().key("dsp-units").w_full().gap(space::XXS);
-    for i in 0..n {
-        // A drop line marks where a dragged unit will land.
+    for i in 0..s.dsp_units.len() {
         if target == Some(i) && dragging_from != Some(i) {
-            list = list.child(
+            card = card.child(
                 el().key("dsp-drop")
                     .w_full()
                     .h(2.0)
@@ -1371,24 +1286,34 @@ fn dsp_unit_list(s: &State, p: &Palette) -> El {
                     .fill(p.accent),
             );
         }
-        list = list.child(dsp_unit_row(i, s, p, dragging_from == Some(i)));
+        card = card.child(dsp_card(i, s, p, cx));
     }
-    let add = chip_btn(
-        "dsp-add-unit".into(),
-        "+ Add EQ".into(),
-        p.primary.alpha(0.16),
-        p.primary,
-        add_dsp_unit,
-    );
-    list.child(row().w_full().child(add))
+    card.child(add_dsp_control(p))
 }
 
-/// One unit row: grip (drag-reorder) · "EQ n" · enable · remove. Clicking the row
-/// makes it the active (open) unit.
-fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
-    let unit = &s.dsp_units[i];
-    let active = i == s.dsp_active;
-    let on = unit.enabled();
+/// One **DSP unit card** (keyed by POSITION, never a unit id): an always-visible
+/// header — expand chevron · type label · reorder grip · enable · remove — and,
+/// when expanded, the unit's body (preamp + response graph + band table). The body
+/// dims when the unit is disabled.
+fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    let enabled = unit_enabled(s, i);
+    let expanded = s.dsp_expanded.get(i).copied().unwrap_or(false);
+    let dragged = s.dsp_drag.map(|(from, _)| from) == Some(i);
+    // Expand/collapse chevron (▸ collapsed, ▾ open).
+    let chevron = text(if expanded { "▾" } else { "▸" }.to_string())
+        .font(type_::LABEL)
+        .color(p.text_secondary)
+        .px(space::XXS)
+        .key(format!("dsp-expand-{i}"))
+        .role("button")
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .on_press(move |st: &mut State| toggle_dsp_expanded(st, i));
+    // The unit type label (EQ is the only kind today).
+    let label = text("EQ".to_string())
+        .font(type_::ITEM_STRONG)
+        .color(if enabled { p.fg } else { p.text_secondary });
+    // Drag-reorder grip — same dy→slot mapping as the queue (via `dsp_drop_index`).
     let grip = el()
         .key(format!("dsp-grip-{i}"))
         .role("button")
@@ -1413,17 +1338,18 @@ fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
                 }
             },
         );
-    let (en_fill, en_fg) = if on {
+    // Per-unit enable chip (the old header On/Off styling).
+    let (en_fill, en_fg) = if enabled {
         (p.primary.alpha(0.16), p.primary)
     } else {
         (p.muted, p.text_secondary)
     };
     let enable = chip_btn(
         format!("dsp-en-{i}"),
-        if on { "On" } else { "Off" }.into(),
+        if enabled { "On" } else { "Off" }.into(),
         en_fill,
         en_fg,
-        move |st| set_dsp_unit_enabled(st, i, !on),
+        move |st| set_dsp_unit_enabled(st, i, !enabled),
     );
     let remove = chip_btn(
         format!("dsp-rm-{i}"),
@@ -1432,35 +1358,128 @@ fn dsp_unit_row(i: usize, s: &State, p: &Palette, dragged: bool) -> El {
         p.text_secondary,
         move |st| remove_dsp_unit(st, i),
     );
-    // The clickable "select" label (content-width, a sibling of grip/enable/remove
-    // — a row-wide or grow button would shadow the child chips' hit areas).
-    let select = text(format!("EQ {}", i + 1))
-        .font(type_::ITEM_STRONG)
-        .py(space::XS)
-        .color(if active { p.fg } else { p.text_secondary })
-        .key(format!("dsp-unit-{i}"))
-        .role("button")
-        .focusable(true)
-        .cursor(Cursor::Pointer)
-        .on_press(move |st: &mut State| select_dsp_unit(st, i));
-    let r = row()
-        .key(format!("dsp-unit-row-{i}"))
+    let header = row()
         .w_full()
         .center_y()
         .gap(space::SM)
-        .pr(space::SM)
-        .radius(radius::SM)
-        .fill(if active {
-            p.primary.alpha(0.12)
-        } else {
-            p.card
-        })
+        .child(chevron)
+        .child(label)
         .child(grip)
-        .child(select)
         .child(el().grow(1.0))
         .child(enable)
         .child(remove);
-    if dragged { r.opacity(0.4) } else { r }
+    let mut unit_card = col()
+        .key(format!("dsp-card-{i}"))
+        .w_full()
+        .gap(space::SM)
+        // A bordered inset panel on the page surface, so each unit reads as its own
+        // card within the DSP stage card.
+        .fill(p.bg)
+        .radius(radius::MD)
+        .border_sides([1.0; 4], p.border)
+        .padding(space::MD)
+        .child(header);
+    if expanded {
+        // Preamp slider (same ± range as a band; commits live), keyed per unit.
+        let preamp = unit_preamp(s, i);
+        let apply_preamp = move |st: &mut State, v: f32| set_eq_preamp(st, i, slider_to_db(v));
+        let slider_key = format!("eq-preamp-{i}");
+        let dragging = s.dragging_slider.as_deref() == Some(slider_key.as_str());
+        let preamp_row = col()
+            .key(format!("eq-preamp-row-{i}"))
+            .w_full()
+            .gap(space::XS)
+            .child(
+                row()
+                    .w_full()
+                    .center_y()
+                    .child(
+                        text(t!("settings.preamp").to_string())
+                            .color(p.text_secondary)
+                            .grow(1.0)
+                            .shrink(),
+                    )
+                    .child(text(format!("{preamp:+.1} dB")).color(p.text_secondary)),
+            )
+            .child(row().w_full().child(slider(
+                &slider_key,
+                db_to_slider(preamp),
+                dragging,
+                cx,
+                p,
+                apply_preamp,
+                apply_preamp,
+            )));
+        // Body: preamp + parametric response-curve graph + band table. Dimmed when
+        // this unit is disabled.
+        let body = col()
+            .key(format!("eq-body-{i}"))
+            .w_full()
+            .gap(space::MD)
+            .child(preamp_row)
+            .child(crate::views::eq_graph::eq_graph(i, s, p, cx))
+            .child(eq_band_editor(i, s, p));
+        let body = if enabled {
+            body
+        } else {
+            body.opacity(fx::DISABLED)
+        };
+        unit_card = unit_card.child(body);
+    }
+    if dragged {
+        unit_card.opacity(0.4)
+    } else {
+        unit_card
+    }
+}
+
+/// Approximate height of one unit row (points) — maps a reorder drag's vertical
+/// travel to a target slot, à la the queue.
+const DSP_ROW_H: f32 = 34.0;
+
+/// Where a dragged unit lands: its index plus one slot per [`DSP_ROW_H`] of travel.
+fn dsp_drop_index(from: usize, dy: f32, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let steps = (dy / DSP_ROW_H).round() as i64;
+    (from as i64 + steps).clamp(0, len as i64 - 1) as usize
+}
+
+/// The key identifying the add-DSP menu (its open state + panel anchor).
+const ADD_DSP_MENU: &str = "dsp-add";
+
+/// The DSP-type choices the add menu offers. One entry (EQ) today — built as a
+/// dropdown so more unit types slot in later without reworking the control.
+fn dsp_type_options() -> Vec<(String, String)> {
+    vec![("eq".to_string(), "EQ".to_string())]
+}
+
+/// The "+ Add DSP" control: a compact primary button that opens the shared
+/// [`dropdown`] of DSP types ([`add_dsp_menu`], mounted at the window root). The
+/// single entry still routes through the dropdown so new types extend it cleanly.
+fn add_dsp_control(p: &Palette) -> El {
+    chip_btn(
+        ADD_DSP_MENU.into(),
+        "+ Add DSP".into(),
+        p.primary.alpha(0.16),
+        p.primary,
+        move |st| crate::toggle_dropdown(st, ADD_DSP_MENU),
+    )
+}
+
+/// The add-DSP dropdown panel — **mount at the window root** via
+/// [`settings_overlays`]. Picking a type appends that unit (EQ today) and opens
+/// its card. Nothing is pre-selected (it's an action menu, not a value picker).
+fn add_dsp_menu(p: &Palette) -> El {
+    dropdown::panel(
+        ADD_DSP_MENU,
+        &dsp_type_options(),
+        "",
+        None,
+        |st: &mut State, _id: &str| add_dsp_unit(st),
+        p,
+    )
 }
 
 /// A compact label for a band's shape (editor type chip).
@@ -1518,28 +1537,18 @@ fn chip_btn_tx(
         .on_press_tx(move |st: &mut State, tx: &mut Tx| on(st, tx))
 }
 
-/// The expandable per-band editor under the graph: a header with the band count,
-/// an Add button, and (when open) a row per band to retype / nudge gain & Q /
-/// bypass / remove it.
-fn eq_band_editor(s: &State, p: &Palette) -> El {
-    // The editor shows the active unit's bands.
-    let unit = s.dsp_active;
+/// Unit `unit`'s per-band editor: a header with the band count + Import / Export /
+/// Add buttons, then a row per band to retype / nudge gain & Q / bypass / remove
+/// it. The table shows directly (the card's own expand is the one level of
+/// collapse — there is no inner "Bands" toggle).
+fn eq_band_editor(unit: usize, s: &State, p: &Palette) -> El {
     let n = unit_bands(s, unit).len();
-    let open = s.eq_editor_open;
-    let chevron = if open { "▾" } else { "▸" };
-    let toggle = row()
-        .key("eq-editor-toggle")
+    let count = row()
         .center_y()
-        .gap(space::XS)
-        .role("button")
-        .focusable(true)
-        .cursor(Cursor::Pointer)
-        .on_press(toggle_eq_editor)
-        .child(text(chevron.to_string()).color(p.text_secondary))
         .child(text(format!("Bands ({n})")).font(type_::LABEL).color(p.fg));
     let can_add = n < soul_player_host::MAX_BANDS;
     let add = chip_btn(
-        "eq-add-band".into(),
+        format!("eq-add-band-{unit}"),
         "+ Add band".into(),
         if can_add {
             p.primary.alpha(0.16)
@@ -1553,54 +1562,66 @@ fn eq_band_editor(s: &State, p: &Palette) -> El {
         },
     );
     // Import / export AutoEQ (Equalizer-APO ParametricEQ) profiles via a native
-    // file dialog — load headphone-correction profiles or share presets.
-    let import = chip_btn_tx("eq-import".into(), "Import".into(), p, |_s, tx| {
-        tx.open_file(
-            FileDialogOptions {
-                title: "Import EQ profile".into(),
-                ..Default::default()
-            }
-            .filter("ParametricEQ (*.txt)", &["txt"]),
-            |s: &mut State, result, _tx| {
-                if let Ok(Some(path)) = result {
-                    import_eq(s, &path);
+    // file dialog — load headphone-correction profiles or share presets. Each acts
+    // on THIS card's unit.
+    let import = chip_btn_tx(
+        format!("eq-import-{unit}"),
+        "Import".into(),
+        p,
+        move |_s, tx| {
+            tx.open_file(
+                FileDialogOptions {
+                    title: "Import EQ profile".into(),
+                    ..Default::default()
                 }
-            },
-        );
-    });
-    let export = chip_btn_tx("eq-export".into(), "Export".into(), p, |_s, tx| {
-        tx.save_file(
-            FileDialogOptions {
-                title: "Export EQ profile".into(),
-                file_name: Some("ParametricEQ.txt".into()),
-                ..Default::default()
-            }
-            .filter("ParametricEQ (*.txt)", &["txt"]),
-            |s: &mut State, result, _tx| {
-                if let Ok(Some(path)) = result {
-                    export_eq(s, &path);
+                .filter("ParametricEQ (*.txt)", &["txt"]),
+                move |s: &mut State, result, _tx| {
+                    if let Ok(Some(path)) = result {
+                        import_eq(s, unit, &path);
+                    }
+                },
+            );
+        },
+    );
+    let export = chip_btn_tx(
+        format!("eq-export-{unit}"),
+        "Export".into(),
+        p,
+        move |_s, tx| {
+            tx.save_file(
+                FileDialogOptions {
+                    title: "Export EQ profile".into(),
+                    file_name: Some("ParametricEQ.txt".into()),
+                    ..Default::default()
                 }
-            },
-        );
-    });
+                .filter("ParametricEQ (*.txt)", &["txt"]),
+                move |s: &mut State, result, _tx| {
+                    if let Ok(Some(path)) = result {
+                        export_eq(s, unit, &path);
+                    }
+                },
+            );
+        },
+    );
     let header = row()
         .w_full()
         .center_y()
         .gap(space::XS)
-        .child(toggle)
+        .child(count)
         .child(el().grow(1.0))
         .child(import)
         .child(export)
         .child(add);
-    let mut panel = col().key("eq-editor").w_full().gap(space::SM).child(header);
-    if open {
-        let mut list = col().w_full().gap(space::XS);
-        for i in 0..n {
-            list = list.child(eq_band_row(unit, i, s, p));
-        }
-        panel = panel.child(list);
+    let mut list = col().w_full().gap(space::XS);
+    for i in 0..n {
+        list = list.child(eq_band_row(unit, i, s, p));
     }
-    panel
+    col()
+        .key(format!("eq-editor-{unit}"))
+        .w_full()
+        .gap(space::SM)
+        .child(header)
+        .child(list)
 }
 
 /// The key-slug for a band number's column (keeps the test keys stable).
@@ -1628,7 +1649,7 @@ fn num_field(
     s: &State,
     p: &Palette,
 ) -> El {
-    let key = format!("eq-num-{}-{i}", field_slug(field));
+    let key = format!("eq-num-{}-{unit}-{i}", field_slug(field));
     let editing = s.eq_edit == Some((unit, i, field));
     // Frequency reads as a secondary value; gain and Q are primary foreground.
     let color = match field {
@@ -1778,14 +1799,17 @@ fn eq_band_row(unit: usize, i: usize, s: &State, p: &Palette) -> El {
     };
     let enabled = band.enabled;
     row()
-        .key(format!("eq-band-row-{i}"))
+        .key(format!("eq-band-row-{unit}-{i}"))
         .w_full()
         .center_y()
         .gap(space::SM)
+        // Wrap the trailing controls onto a second line when the card is too narrow
+        // for the whole row (e.g. a narrow window) rather than overflowing it.
+        .flex_wrap()
         // Fixed-width type column so the row doesn't reshuffle when the shape
         // label changes width (e.g. "Bell" → "Hi shelf").
         .child(row().w(84.0).center_y().child(chip_btn(
-            format!("eq-band-type-{i}"),
+            format!("eq-band-type-{unit}-{i}"),
             kind_chip_label(band.kind).to_string(),
             p.muted,
             p.fg,
@@ -1796,14 +1820,14 @@ fn eq_band_row(unit: usize, i: usize, s: &State, p: &Palette) -> El {
         .child(q)
         .child(el().grow(1.0))
         .child(chip_btn(
-            format!("eq-band-en-{i}"),
+            format!("eq-band-en-{unit}-{i}"),
             if enabled { "On" } else { "Off" }.into(),
             en_fill,
             en_fg,
             move |st| set_eq_band_enabled(st, unit, i, !enabled),
         ))
         .child(chip_btn(
-            format!("eq-band-rm-{i}"),
+            format!("eq-band-rm-{unit}-{i}"),
             "✕".into(),
             p.muted,
             p.text_secondary,
@@ -2242,6 +2266,9 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
     }
     if dropdown::is_open(s, ADD_SOURCE_MENU) {
         overlays.push(add_source_menu(s, p));
+    }
+    if dropdown::is_open(s, ADD_DSP_MENU) {
+        overlays.push(add_dsp_menu(p));
     }
     if dropdown::is_open(s, MANAGED_TEMPLATE) {
         // Match the panel width to the trigger (once it has a committed layout).
