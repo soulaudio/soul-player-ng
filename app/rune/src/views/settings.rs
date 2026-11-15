@@ -2088,7 +2088,12 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     // card; the bottom margin travels with the content). The top inset is `LG` —
     // the same as the category rail and the main sidebar's nav — so the first card
     // lines up with the first rail item and the first nav item.
-    let inner = content.w_full().px(space::XL).pt(space::LG).pb(space::XXL);
+    let inner = content
+        .w_full()
+        .max_w(CONTENT_MAX_W)
+        .px(space::XL)
+        .pt(space::LG)
+        .pb(space::XXL);
     // One Live carries the thumb geometry from the viewport's scroll callback to
     // the thumb element in the same frame.
     let thumb = SETTINGS_SCROLL_THUMB.with(|t| t.clone());
@@ -2098,11 +2103,11 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .min_h(0.0)
         .child(category_nav(s, p))
         .child(
-            // `grow` lets the column claim the body width so every tab's cards
-            // fill one consistent width and share a left edge (this engine splits
-            // free space evenly across grow children, so flanking spacers would
-            // only ever leave the column a third-width and drifting); `max_w`
-            // caps it on wide windows — the original's `max-w-4xl` column.
+            // The scroll VIEWPORT fills the whole body (so its scrollbar sits at the
+            // window's far-right edge, not floating at the content column's edge);
+            // `items_center` centers the `max_w`-capped content column within it, so
+            // every tab's cards share one consistent width and a centered position
+            // even when the window is wider than the column.
             row()
                 .key("settings-body")
                 .grow(1.0)
@@ -2111,8 +2116,8 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                     col()
                         .key("settings-scroll")
                         .grow(1.0)
-                        .max_w(CONTENT_MAX_W)
                         .min_h(0.0)
+                        .items_center()
                         .scroll(ScrollSpec {
                             stick_bottom: false,
                         })
