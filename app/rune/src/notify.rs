@@ -12,6 +12,8 @@
 #![forbid(unsafe_code)]
 
 /// Our stable reverse-DNS AppUserModelID (matches the packager identifier).
+/// Only referenced by the Windows toast + registry paths.
+#[cfg(windows)]
 const AUMID: &str = "co.datadir.soulplayer";
 
 /// Escape text for inclusion in XML character data. `&` first so we don't
