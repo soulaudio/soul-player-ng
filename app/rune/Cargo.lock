@@ -4690,6 +4690,7 @@ dependencies = [
  "anyhow",
  "cargo-packager-updater",
  "dirs 6.0.0",
+ "image",
  "open",
  "os_info",
  "parley_engine",
