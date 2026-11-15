@@ -48,10 +48,12 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     cx.caption_color(p.fg.alpha(0.0));
     cx.titlebar_height(HEIGHT);
 
-    // The window's committed width (previous frame) — the activity widget's
-    // width-responsive variants key off it, the same measure `view` uses for mobile.
-    let window_w = cx
-        .layout_size("app-root")
+    // The BAND's own committed width (previous frame) — not the window's. On desktop
+    // the band sits inside the shell, right of the resizable sidebar, so its width is
+    // `window − sidebar`; measuring it (rather than `app-root`) keeps the widget's
+    // responsive variant and its right dock correct at every sidebar/window size.
+    let band_w = cx
+        .layout_size("titlebar")
         .map(|size| size[0])
         .filter(|w| *w > 0.0)
         .unwrap_or(1100.0);
@@ -68,7 +70,7 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     if let Some(prog) = &s.scan_progress {
         content = content
             .child(el().grow(1.0))
-            .child(scan_activity(prog, s.scan_anim, p, window_w))
+            .child(scan_activity(prog, s.scan_anim, p, band_w))
             .pr(space::SM);
     }
 
@@ -115,12 +117,13 @@ fn caption_glyph(key: &'static str, glyph: &'static Icon, width: f32, p: &Palett
         .child(icon(glyph, GLYPH_SIZE).color(p.fg))
 }
 
-/// Width-responsive thresholds (window width, pt) for the scan-activity widget: at
-/// or above each, one more element joins the icon. Below the narrowest, only the
-/// pulsing icon shows (the `smallest width → just the animated icon` case).
-const SCAN_WIDE: f32 = 820.0; // + phase label
-const SCAN_MED: f32 = 560.0; // + progress bar
-const SCAN_NARROW: f32 = 430.0; // + done/total count
+/// Width-responsive thresholds (band width, pt) for the scan-activity widget: at or
+/// above each, one more element joins the icon. Below the narrowest, only the pulsing
+/// icon shows (the `smallest width → just the animated icon` case). The band is the
+/// strip the widget lives in (`window − sidebar` on desktop), not the whole window.
+const SCAN_WIDE: f32 = 700.0; // + phase label
+const SCAN_MED: f32 = 520.0; // + progress bar
+const SCAN_NARROW: f32 = 380.0; // + done/total count
 
 /// Activity-icon size and progress-bar geometry (pt).
 const SCAN_ICON: f32 = 14.0;
@@ -129,12 +132,12 @@ const SCAN_BAR_H: f32 = 4.0;
 /// Pulse rate (rad/s) of the activity icon's opacity "breathing".
 const SCAN_PULSE_SPEED: f32 = 4.2;
 
-/// The title-bar scan-activity widget: a pulsing activity icon plus — as the window
+/// The title-bar scan-activity widget: a pulsing activity icon plus — as the band
 /// widens — the phase label, a determinate progress bar, and the `done / total`
 /// count. Rendered right-aligned in the header slot while a scan runs. `anim` is the
-/// free-running pulse phase (seconds) the poll advances; `window_w` picks the
-/// responsive variant.
-fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> El {
+/// free-running pulse phase (seconds) the poll advances; `band_w` (the strip's own
+/// width) picks the responsive variant.
+fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, band_w: f32) -> El {
     // Breathing opacity in [0.5, 1.0] so the icon reads as "working" even between
     // progress ticks (the determinate bar carries the exact amount).
     let icon_op = 0.5 + 0.5 * (0.5 + 0.5 * (anim * SCAN_PULSE_SPEED).sin());
@@ -150,7 +153,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> 
         );
 
     // Phase label (widest only).
-    if window_w >= SCAN_WIDE {
+    if band_w >= SCAN_WIDE {
         let label = match prog.phase {
             ScanPhase::Discovering => t!("titlebar.scanning"),
             ScanPhase::Extracting => t!("titlebar.indexing"),
@@ -165,7 +168,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> 
     }
 
     // Determinate progress bar (medium and up).
-    if window_w >= SCAN_MED {
+    if band_w >= SCAN_MED {
         let frac = if prog.total > 0 {
             (prog.done as f32 / prog.total as f32).clamp(0.0, 1.0)
         } else {
@@ -187,7 +190,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> 
     }
 
     // done / total count (narrow and up).
-    if window_w >= SCAN_NARROW {
+    if band_w >= SCAN_NARROW {
         let count = format!(
             "{} / {}",
             group_thousands(prog.done),
