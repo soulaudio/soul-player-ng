@@ -12,8 +12,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Side, Tx,
-    WheelEvent, col, el, icon, row, text, text_input,
+    Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Shadow,
+    Side, Tx, WheelEvent, col, el, icon, row, text, text_input,
 };
 use soul_player_host::organize;
 use soul_player_host::{BandKind, DspUnit, GAIN_LIMIT_DB, ReplayGainMode};
@@ -1178,10 +1178,15 @@ fn stage_header(
 /// A flow arrow between two stage cards — a centered down-chevron showing the
 /// signal moving from one card into the next.
 fn pipeline_arrow(p: &Palette) -> El {
+    // A vertical "wire" running card-to-card (the column around it has gap 0, so the
+    // stubs meet both cards' edges) with a flow chevron riding on it — the signal
+    // visibly travels from one stage into the next.
     col()
         .w_full()
-        .align(Align::Center)
-        .child(icon(&icons::CHEVRON_DOWN, 20.0).color(p.primary.alpha(0.8)))
+        .items_center()
+        .child(el().w(2.0).h(10.0).fill(p.primary.alpha(0.3)))
+        .child(icon(&icons::CHEVRON_DOWN, 14.0).color(p.primary.alpha(0.75)))
+        .child(el().w(2.0).h(10.0).fill(p.primary.alpha(0.3)))
 }
 
 /// A "soon" chip for a not-yet-built stage.
@@ -1246,10 +1251,11 @@ fn audio_pipeline(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     } else {
         p.primary
     };
-    col()
-        .key("settings-content")
-        .gap(space::SM)
+    // The signal-path stages, flush (gap 0) so each `pipeline_arrow` wire visibly
+    // bridges one card into the next.
+    let pipeline = col()
         .w_full()
+        .gap(0.0)
         .child(readout_card(
             "sp-stage-source",
             &icons::MUSIC,
@@ -1280,7 +1286,26 @@ fn audio_pipeline(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             t!("player.signalPath.exclusive").to_string(),
             t!("settings.comingSoon").to_string(),
             p,
-        ))
+        ));
+    // Audio profiles belong to the whole page, not the DSP card, so they ride a bar
+    // pinned to the top of the audio pipeline — switch/manage profiles while scrolled
+    // anywhere down the chain. `fill(p.bg)` hides cards scrolling under it; a hairline
+    // `stuck_shadow` separates it from the content only once it's actually stuck.
+    let profiles = profile_bar(s, p)
+        .py(space::SM)
+        .fill(p.bg)
+        .sticky_top(0.0)
+        .stuck_shadow(Shadow {
+            y: 0.5,
+            color: p.border,
+            ..Default::default()
+        });
+    col()
+        .key("settings-content")
+        .w_full()
+        .gap(space::MD)
+        .child(profiles)
+        .child(pipeline)
 }
 
 /// Map a 0..1 slider position onto the ±[`GAIN_LIMIT_DB`] dB range, rounded to
@@ -1398,7 +1423,6 @@ fn profile_bar(s: &State, p: &Palette) -> El {
         .w_full()
         .center_y()
         .gap(space::XS)
-        .pb(space::SM)
         .child(switcher)
         .child(profile_icon_btn(
             "profile-new",
@@ -1486,19 +1510,16 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         unit_enabled(s, i)
             && (unit_preamp(s, i).abs() > 0.05 || unit_bands(s, i).iter().any(|b| b.affects()))
     });
-    let mut card = card("sp-stage-dsp", p)
-        .child(stage_header(
-            if shaping { p.accent } else { p.primary },
-            &icons::SETTINGS,
-            t!("player.signalPath.dsp").to_string(),
-            None,
-            // No master toggle — each unit card has its own.
-            None,
-            false,
-            p,
-        ))
-        // The profile bar: switch/create/rename/delete/import/export the whole chain.
-        .child(profile_bar(s, p));
+    let mut card = card("sp-stage-dsp", p).child(stage_header(
+        if shaping { p.accent } else { p.primary },
+        &icons::SETTINGS,
+        t!("player.signalPath.dsp").to_string(),
+        None,
+        // No master toggle — each unit card has its own.
+        None,
+        false,
+        p,
+    ));
     // One expandable unit card per position, in processing order; a drop line marks
     // the GAP the dragged card will land in. Moving a card DOWN (to > from) it lands
     // *after* `to`, so the line sits before `to + 1` (or at the very end); moving it
