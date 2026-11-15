@@ -1470,6 +1470,12 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     if tx.key_repeat() {
         return false;
     }
+    // An open dropdown is light-dismiss (no modal): Escape closes it. Its backdrop
+    // handles the outside-press + scroll dismissals.
+    if s.open_dropdown.is_some() && matches!(ev.key, Key::Escape) {
+        close_dropdown(s);
+        return true;
+    }
     // Search-input mode: typed characters build the library filter instead of
     // driving the transport. `/` enters it; Esc clears + exits, Enter just exits
     // (keeping the filter), Backspace edits.
@@ -3672,6 +3678,55 @@ mod tests {
         // `populated_state()` loads the persisted locale, so "de" must not leak.
         config::save_locale("en");
         apply_locale("en");
+    }
+
+    /// A dropdown is light-dismiss, NOT a scroll-locking modal: an outside scroll or
+    /// Escape closes it (so a trigger deep in a scroll never locks the page).
+    #[test]
+    fn a_dropdown_light_dismisses_on_scroll_and_escape() {
+        let _config_guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let open = |rt: &mut Runtime<State>| {
+            click_key(rt, "lang-picker");
+            rt.settle_all();
+            rt.frame(0.0);
+            assert_eq!(rt.state.open_dropdown.as_deref(), Some("lang-picker"));
+            assert!(rt.find("lang-picker-menu").is_some(), "the panel opened");
+        };
+        // Scrolling anywhere closes it (the backdrop's on_wheel).
+        {
+            let mut s = settings_state(&[], &[]);
+            s.settings_tab = SettingsTab::Appearance;
+            apply_locale("en");
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            open(&mut rt);
+            rt.wheel_event(WheelEvent::new(0.0, -20.0).at(80.0, 400.0));
+            rt.frame(0.0);
+            assert_eq!(
+                rt.state.open_dropdown, None,
+                "a scroll outside the panel closes the dropdown"
+            );
+        }
+        // Escape closes it (the app key handler — wired as the real app does).
+        {
+            let mut s = settings_state(&[], &[]);
+            s.settings_tab = SettingsTab::Appearance;
+            apply_locale("en");
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            rt.on_key = Some(handle_key);
+            rt.frame(0.0);
+            open(&mut rt);
+            rt.key(KeyEvent {
+                key: Key::Escape,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+            assert_eq!(rt.state.open_dropdown, None, "Escape closes the dropdown");
+        }
     }
 
     /// The add-source control is a themed `views::dropdown` menu: the trigger
