@@ -1374,14 +1374,21 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // Overlay layer: the shell, plus any open dropdown's panel (Settings →
     // Language) and the expanded signal-path panel, mounted on top so they draw
     // over everything and escape the content scroll viewport's clip (see
-    // `views::dropdown`). Empty when nothing is open — then this is just the shell.
+    // `views::dropdown`).
+    //
+    // ALWAYS wrap the shell in this keyed root, even with no overlays. A conditional
+    // wrap (`shell` alone when empty, wrapped when not) moved the shell one level
+    // deeper the instant a dropdown opened — which rune read as a brand-new
+    // `settings-scroll` and reset its scroll to the top (the "opening a dropdown jumps
+    // the page to the top" bug). A constant structure keeps every scroll viewport's
+    // identity — and thus its offset — stable whether or not an overlay is open.
     let mut overlays = views::settings::settings_overlays(s, &p, cx);
     overlays.extend(views::signal_path::overlay(s, &p));
-    if overlays.is_empty() {
-        shell
-    } else {
-        el().w_full().h_full().child(shell).children(overlays)
-    }
+    el().key("overlay-root")
+        .w_full()
+        .h_full()
+        .child(shell)
+        .children(overlays)
 }
 
 /// The routed main content area, keyed `"content"`. On desktop it fills the
@@ -2904,6 +2911,59 @@ mod tests {
         };
         assert_eq!(label_for(Some("my-name")), "my-name (EQ)");
         assert_eq!(label_for(None), "EQ");
+    }
+
+    /// Opening the "+ Add DSP" dropdown while scrolled down must NOT jump the page
+    /// to the top (the reported bug): the dropdown anchors to the button where it is.
+    #[test]
+    fn opening_add_dsp_does_not_scroll_the_page() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        // A tall chain (first card expanded) so the content overflows a short window
+        // and the Add control sits well below the fold.
+        let bands = soul_player_host::default_bands().to_vec();
+        s.dsp_units = vec![
+            DspUnit::Eq(EqUnit {
+                bands,
+                ..EqUnit::default()
+            }),
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+        ];
+        s.dsp_expanded = vec![true, false, false];
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1300.0, 640.0), env);
+        rt.frame(0.0);
+        // Scroll down until the Add control is in view.
+        for _ in 0..30 {
+            rt.wheel(900.0, 400.0, -120.0);
+        }
+        rt.frame(0.0);
+        let (ax, ay) = rt
+            .find("dsp-add")
+            .expect("Add DSP is in view after scrolling");
+        // Click it, then check the Add control stays roughly where it was (the page
+        // did not jump to the top, which would shove the control far off-screen).
+        rt.pointer_down(ax, ay);
+        rt.pointer_up(ax, ay);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.open_dropdown.as_deref(),
+            Some("dsp-add"),
+            "the dropdown opened"
+        );
+        let add_after = rt.find("dsp-add").map(|(_, y)| y);
+        assert!(
+            add_after.is_some_and(|y| (y - ay).abs() < 60.0),
+            "the Add control stayed put (was {ay}, now {add_after:?}) — the page did not jump"
+        );
     }
 
     /// "+ Add DSP" opens the themed type dropdown — EQ selectable plus a disabled
