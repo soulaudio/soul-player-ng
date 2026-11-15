@@ -3080,13 +3080,16 @@ mod tests {
         assert!(!rt.state.dsp_units[1].enabled(), "the chip disabled unit 1");
         assert!(rt.state.dsp_units[0].enabled(), "unit 0 untouched");
         assert!(rt.state.dsp_units[2].enabled(), "unit 2 untouched");
-        // Grip-drag unit 0 down one slot → it moves to index 1, its open flag riding
-        // along (the queue's dy→slot idiom; ~one row of travel = one slot).
-        let slot = 40.0; // a touch over the ~34 pt row height → rounds to one slot
-        let (gx, gy) = rt.find("dsp-grip-0").expect("unit 0's grip renders");
-        rt.pointer_down(gx, gy);
-        rt.pointer_move(gx, gy + slot);
-        rt.pointer_up(gx, gy + slot);
+        // Grip-drag unit 0 ONTO unit 1's row → it reorders to index 1, its open flag
+        // riding along. The drop target is whichever card the pointer is over (exact,
+        // height-agnostic), resolved by `element_at` — so settle a frame after the move
+        // for the pick to land before releasing.
+        let (gx, gy0) = rt.find("dsp-grip-0").expect("unit 0's grip renders");
+        let (_, gy1) = rt.find("dsp-grip-1").expect("unit 1's grip renders");
+        rt.pointer_down(gx, gy0);
+        rt.pointer_move(gx, gy1);
+        rt.frame(0.0);
+        rt.pointer_up(gx, gy1);
         rt.frame(0.0);
         assert_eq!(
             rt.state.dsp_expanded,
@@ -3102,6 +3105,61 @@ mod tests {
             rt.state.dsp_expanded.len(),
             n - 1,
             "the expand flags stay parallel to the units"
+        );
+    }
+
+    /// Reorder snaps to the card UNDER the pointer, not a fixed row height: dragging a
+    /// collapsed card deep into a tall EXPANDED card lands it at that card's slot. A
+    /// fixed dy→slot mapping over-counts the expanded card's height and clamps the drop
+    /// to the chain's end instead — this is the "dragging isn't exact" bug.
+    #[test]
+    fn reorder_snaps_to_the_hovered_card_regardless_of_height() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.dsp_units = vec![
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit::default()),
+        ];
+        set_dsp_unit_enabled(&mut s, 0, true);
+        set_dsp_unit_enabled(&mut s, 1, true);
+        set_dsp_unit_enabled(&mut s, 2, true);
+        // Unit 1 EXPANDED (tall: preamp + graph + band table); 0 and 2 collapsed. Tag
+        // each unit with a distinct preamp so we can see where it lands post-reorder.
+        s.dsp_expanded = vec![false, true, false];
+        set_eq_preamp(&mut s, 0, -6.0);
+        set_eq_preamp(&mut s, 1, 0.0);
+        set_eq_preamp(&mut s, 2, 6.0);
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
+        rt.frame(0.0);
+        // Drag unit 0's grip DEEP into unit 1's expanded body (far past one row height).
+        let (gx, gy0) = rt.find("dsp-grip-0").expect("unit 0's grip");
+        let (_, gy1) = rt.find("dsp-grip-1").expect("unit 1's grip");
+        let into_body = gy1 + 160.0;
+        rt.pointer_down(gx, gy0);
+        rt.pointer_move(gx, into_body);
+        rt.frame(0.0);
+        rt.pointer_up(gx, into_body);
+        rt.frame(0.0);
+        // Unit 0 landed AT unit 1 (the hovered card) → order [1, 0, 2]; NOT clamped to
+        // the chain's end ([1, 2, 0]) as the old fixed-height mapping would.
+        let preamps: Vec<f32> = rt
+            .state
+            .dsp_units
+            .iter()
+            .map(|u| u.as_eq().expect("eq unit").preamp_db)
+            .collect();
+        assert_eq!(
+            preamps,
+            vec![0.0, -6.0, 6.0],
+            "the dragged card dropped onto the hovered expanded card, not past it"
         );
     }
 

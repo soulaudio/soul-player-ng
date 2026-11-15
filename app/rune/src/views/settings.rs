@@ -1367,7 +1367,10 @@ fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .cursor(Cursor::Pointer)
             .on_double_press(move |st: &mut State| start_dsp_rename(st, i))
     };
-    // Drag-reorder grip — same dy→slot mapping as the queue (via `dsp_drop_index`).
+    // Drag-reorder grip. Cards vary wildly in height (an expanded card is many times
+    // a collapsed one), so a fixed row-height → slot mapping lands way off. Instead
+    // snap the drop target to whichever card the pointer is actually over, via
+    // `Tx::element_at_in` — exact regardless of card heights.
     let grip = el()
         .key(format!("dsp-grip-{i}"))
         .role("button")
@@ -1377,13 +1380,22 @@ fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .cursor(Cursor::Pointer)
         .child(icon(&icons::GRIP, 12.0).color(p.text_secondary.alpha(0.6)))
         .on_drag(
-            move |st: &mut State, d: &mut rune::Drag, _tx| match d.phase {
+            move |st: &mut State, d: &mut rune::Drag, tx: &mut Tx| match d.phase {
                 rune::Phase::Down => st.dsp_drag = Some((i, i)),
                 rune::Phase::Move => {
-                    if let Some((from, _)) = st.dsp_drag {
-                        let to = dsp_drop_index(from, d.dy, st.dsp_units.len());
+                    let [px, py] = d.window_point();
+                    tx.element_at_in("sp-stage-dsp", px, py, |st: &mut State, picked, _tx| {
+                        let Some((from, cur)) = st.dsp_drag else {
+                            return;
+                        };
+                        // Snap to the card under the pointer; keep the current
+                        // target when the pointer is off the cards (gaps/edges).
+                        let to = picked
+                            .as_ref()
+                            .and_then(dsp_card_index_from_pick)
+                            .unwrap_or(cur);
                         st.dsp_drag = Some((from, to));
-                    }
+                    });
                 }
                 rune::Phase::Up => {
                     if let Some((from, to)) = st.dsp_drag.take() {
@@ -1487,17 +1499,18 @@ fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
     }
 }
 
-/// Approximate height of one unit row (points) — maps a reorder drag's vertical
-/// travel to a target slot, à la the queue.
+/// Height of the reorder grip (points) — just the grip's own hit area, no longer a
+/// slot-mapping unit (the drop target comes from the card under the pointer).
 const DSP_ROW_H: f32 = 34.0;
 
-/// Where a dragged unit lands: its index plus one slot per [`DSP_ROW_H`] of travel.
-fn dsp_drop_index(from: usize, dy: f32, len: usize) -> usize {
-    if len == 0 {
-        return 0;
-    }
-    let steps = (dy / DSP_ROW_H).round() as i64;
-    (from as i64 + steps).clamp(0, len as i64 - 1) as usize
+/// The DSP-card index a [`Picked`](rune::Picked) element sits in, read off its key
+/// path (cards are keyed `dsp-card-{i}`). `None` when the pick is outside any card —
+/// e.g. the pointer is in a gap between cards or past the chain's edges.
+fn dsp_card_index_from_pick(picked: &rune::Picked) -> Option<usize> {
+    picked.path().split('/').find_map(|seg| {
+        seg.strip_prefix("dsp-card-")
+            .and_then(|n| n.parse::<usize>().ok())
+    })
 }
 
 /// The key identifying the add-DSP menu (its open state + panel anchor).
