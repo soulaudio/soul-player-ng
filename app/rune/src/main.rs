@@ -716,6 +716,8 @@ const Q_DRAG_PX_PER_DOUBLE: f32 = 90.0;
 const GAIN_SCROLL_DB: f32 = 0.5;
 /// Wheel step: one notch shifts the frequency a sixth of an octave (~12%, ≈2^(1/6)).
 const FREQ_SCROLL_STEP: f32 = 1.1225;
+/// Fine wheel step (Shift held): a 24th of an octave (~3%, ≈2^(1/24)).
+const FREQ_SCROLL_STEP_FINE: f32 = 1.0293;
 
 /// Read a band's `field` value (frequency Hz, gain dB, or Q).
 fn band_field(b: &Band, field: NumField) -> f32 {
@@ -793,8 +795,9 @@ pub(crate) fn eq_num_drag_end(s: &mut State) {
 }
 
 /// Nudge band `i`'s `field` one wheel notch (`up` = scroll up = increase), closing
-/// any open inline edit. Gain steps linearly; frequency and Q step geometrically.
-pub(crate) fn eq_num_scroll(s: &mut State, i: usize, field: NumField, up: bool) {
+/// any open inline edit. `fine` (Shift held) takes a smaller step for precise tuning.
+/// Gain steps linearly; frequency and Q step geometrically.
+pub(crate) fn eq_num_scroll(s: &mut State, i: usize, field: NumField, up: bool, fine: bool) {
     commit_eq_edit(s);
     let Some(b) = s.eq_bands.get(i).copied() else {
         return;
@@ -802,15 +805,22 @@ pub(crate) fn eq_num_scroll(s: &mut State, i: usize, field: NumField, up: bool) 
     s.eq_selected = Some(i);
     let cur = band_field(&b, field);
     let value = match field {
-        NumField::Gain => cur + if up { GAIN_SCROLL_DB } else { -GAIN_SCROLL_DB },
-        NumField::Freq => {
-            cur * if up {
-                FREQ_SCROLL_STEP
-            } else {
-                1.0 / FREQ_SCROLL_STEP
-            }
+        NumField::Gain => {
+            let step = if fine { 0.1 } else { GAIN_SCROLL_DB };
+            cur + if up { step } else { -step }
         }
-        NumField::Q => cur * if up { 1.15 } else { 1.0 / 1.15 },
+        NumField::Freq => {
+            let factor = if fine {
+                FREQ_SCROLL_STEP_FINE
+            } else {
+                FREQ_SCROLL_STEP
+            };
+            cur * if up { factor } else { 1.0 / factor }
+        }
+        NumField::Q => {
+            let factor = if fine { 1.03 } else { 1.15 };
+            cur * if up { factor } else { 1.0 / factor }
+        }
     };
     set_eq_band_field(s, i, field, value);
 }
@@ -2419,13 +2429,34 @@ mod tests {
         eq_num_drag_end(&mut s);
         // Wheel: up widens/raises; here Q up = narrower (higher Q).
         let q0 = s.eq_bands[0].q;
-        eq_num_scroll(&mut s, 0, NumField::Q, true);
+        eq_num_scroll(&mut s, 0, NumField::Q, true, false);
         assert!(s.eq_bands[0].q > q0, "scroll up raised Q");
-        eq_num_scroll(&mut s, 0, NumField::Q, false);
-        eq_num_scroll(&mut s, 0, NumField::Q, false);
+        eq_num_scroll(&mut s, 0, NumField::Q, false, false);
+        eq_num_scroll(&mut s, 0, NumField::Q, false, false);
         assert!(
             s.eq_bands[0].q < q0,
             "two notches down lowered it below start"
+        );
+    }
+
+    /// Holding Shift while scrolling a band number makes a finer step than a plain
+    /// notch — the DAW fine-adjust gesture (the wheel handler passes `ev.mods.shift`).
+    #[test]
+    fn shift_scroll_fine_tunes_a_band_number() {
+        let _guard = config::use_test_config_dir();
+        let mut s = populated_state();
+        s.eq_bands = soul_player_host::default_bands().to_vec();
+        let g0 = s.eq_bands[0].gain_db;
+        // One coarse notch up.
+        eq_num_scroll(&mut s, 0, NumField::Gain, true, false);
+        let coarse = s.eq_bands[0].gain_db - g0;
+        // Reset, then one Shift (fine) notch up.
+        set_eq_band_gain(&mut s, 0, g0);
+        eq_num_scroll(&mut s, 0, NumField::Gain, true, true);
+        let fine = s.eq_bands[0].gain_db - g0;
+        assert!(
+            fine > 0.0 && fine < coarse,
+            "Shift makes a finer gain step (fine {fine} < coarse {coarse})"
         );
     }
 
