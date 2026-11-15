@@ -430,14 +430,7 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
             removal_notice: None,
-            // Dev-only: `SOUL_DEMO_SCAN=1` forces the title-bar activity widget on
-            // (a fixed sample) so its placement/animation can be inspected without
-            // catching a real scan mid-flight. Off in normal runs.
-            scan_progress: std::env::var_os("SOUL_DEMO_SCAN").map(|_| ScanProgress {
-                phase: soul_player_host::ScanPhase::Extracting,
-                done: 1024,
-                total: 1210,
-            }),
+            scan_progress: None,
             scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
             // Restore the persisted device choice (None = system default); the
@@ -2121,14 +2114,15 @@ fn main() -> anyhow::Result<()> {
                 apply_watch(s, up);
             });
         });
-        // Live scan progress → the title-bar activity widget. Fires per tick while an
-        // off-UI-thread scan runs (the watcher, a threaded add); the completing
-        // WatchUpdate above clears it. Registered before `start_watching` so the
-        // first watcher-triggered rescan is already observed.
+        // Live scan progress → the title-bar activity widget. The host sends `Some(p)`
+        // per tick while an off-UI-thread scan runs (the watcher, a threaded add/
+        // rescan) and a terminal `None` when it ends — show and hide on one ordered
+        // stream, so the widget can't be left stuck. Registered before `start_watching`
+        // so the first watcher-triggered rescan is already observed.
         let sph = app.handle();
-        host.on_scan_progress(move |p: ScanProgress| {
+        host.on_scan_progress(move |p: Option<ScanProgress>| {
             sph.update(move |s: &mut State, _tx: &mut Tx| {
-                s.scan_progress = Some(p);
+                s.scan_progress = p;
             });
         });
         host.start_watching();
@@ -2277,6 +2271,73 @@ mod tests {
         assert!(
             rt.find("titlebar-scan-count").is_none(),
             "the count drops at the smallest width"
+        );
+    }
+
+    /// A finished scan retires the widget: once the scan completes, `scan_progress`
+    /// clears (the host's terminal `None`, mirrored here by `apply_watch` — the
+    /// WatchUpdate path) and the widget, shown mid-scan, disappears. Guards the
+    /// "doesn't hide after the scan finishes" regression.
+    #[test]
+    fn a_finished_scan_retires_the_activity_widget() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 50,
+            total: 100,
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_some(),
+            "the widget shows mid-scan"
+        );
+        // The scan completes → the WatchUpdate path clears scan_progress.
+        rt.update(|s: &mut State, _tx: &mut Tx| apply_watch(s, WatchUpdate::default()));
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_none(),
+            "a finished scan retires the activity widget"
+        );
+    }
+
+    /// The widget docks to the trailing edge (not floating mid-bar) and stays clear of
+    /// the Windows caption controls reported via `chrome_insets().trailing`.
+    #[test]
+    fn activity_widget_docks_to_the_trailing_edge() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 500,
+            total: 1000,
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        let mut insets = rune::ChromeInsets::default();
+        insets.trailing = 138.0; // Windows caption buttons
+        insets.height = views::titlebar::HEIGHT;
+        rt.set_chrome_insets(insets);
+        rt.frame(0.0);
+        rt.frame(0.0); // settle window_w → the responsive/dock geometry
+        let (scan, _) = rt
+            .presented("titlebar-scan")
+            .expect("the activity widget renders");
+        let right = scan[0] + scan[2];
+        assert!(
+            right <= 1100.0 - 138.0 + 0.5,
+            "widget clears the caption controls, right={right}"
+        );
+        assert!(
+            scan[0] > 1100.0 / 2.0,
+            "widget docks to the trailing half, not mid-bar, x={}",
+            scan[0]
         );
     }
 
