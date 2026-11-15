@@ -1392,19 +1392,10 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     if let Some(dialog) = crash_overlay(s, &p) {
         overlays.push(dialog);
     }
-    // The scan-activity widget is a window-level overlay pinned to the top-right —
-    // NOT a child of the title-bar band, whose desktop width excludes the resizable
-    // sidebar and so docked it unreliably. Pinned to the window root, it clears the
-    // caption controls at every window/sidebar size.
-    let scan = views::titlebar::scan_overlay(s, &p, cx.chrome_insets(), window_w);
-    if overlays.is_empty() && scan.is_none() {
+    if overlays.is_empty() {
         shell
     } else {
-        let mut root = el().w_full().h_full().child(shell);
-        if let Some(sc) = scan {
-            root = root.child(sc);
-        }
-        root.children(overlays)
+        el().w_full().h_full().child(shell).children(overlays)
     }
 }
 
@@ -2210,6 +2201,10 @@ mod tests {
             total: 1210,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // Two frames: the second reads the band's committed width, so the
+        // responsive branch sees the real desktop band (window − sidebar), not
+        // the first-frame fallback.
+        rt.frame(0.0);
         rt.frame(0.0);
         assert!(
             rt.find("titlebar-scan").is_some(),
@@ -2261,8 +2256,9 @@ mod tests {
             total: 100,
         });
         let mut rt = Runtime::new(s, view, (360.0, 720.0), env);
-        // Two frames: the second reads the first's committed app-root width, so the
-        // width-responsive branch sees the real (narrow) window, not the fallback.
+        // Two frames: the second reads the first's committed band width, so the
+        // width-responsive branch sees the real (narrow) band, not the fallback.
+        // At 360 the window is mobile, so the band spans the whole width.
         rt.frame(0.0);
         rt.frame(0.0);
         assert!(
@@ -2314,37 +2310,51 @@ mod tests {
         );
     }
 
-    /// The scan widget (a window-level overlay) stays clear of the window controls at
-    /// BOTH ends — the trailing Windows caption buttons and the leading edge — so it
-    /// never overlaps them at any window size.
+    /// The scan widget docks into the title-bar band just left of the trailing
+    /// Windows caption buttons — the band's own grow-spacer right-aligns it and the
+    /// caption-glyph cells reserve the trailing gutter, so it never overlaps the
+    /// controls (nor runs off the leading edge). Checked across a sweep of window
+    /// widths — the headless equivalent of resizing the window — so the dock holds
+    /// from a narrow desktop pane up to a maximized one.
     #[test]
-    fn activity_widget_clears_the_window_controls() {
-        let env = Env {
-            system_dark: true,
-            scale: 2.0,
-        };
-        let mut s = State::new(PlayerHandle::offline());
-        s.scan_progress = Some(ScanProgress {
-            phase: soul_player_host::ScanPhase::Extracting,
-            done: 500,
-            total: 1000,
-        });
-        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
-        let mut insets = rune::ChromeInsets::default();
-        insets.trailing = 138.0; // Windows caption buttons
-        insets.height = views::titlebar::HEIGHT;
-        rt.set_chrome_insets(insets);
-        rt.frame(0.0);
-        rt.frame(0.0); // settle window_w → the overlay geometry
-        let (scan, _) = rt
-            .presented("titlebar-scan")
-            .expect("the activity widget renders");
-        let right = scan[0] + scan[2];
-        assert!(
-            right <= 1100.0 - 138.0 + 0.5,
-            "clears the trailing caption controls, right={right}"
-        );
-        assert!(scan[0] >= -0.5, "clears the leading edge, left={}", scan[0]);
+    fn activity_widget_clears_the_window_controls_across_widths() {
+        const TRAILING: f32 = 138.0; // Windows caption buttons
+        // Narrow desktop pane → default → wide → maximized-ish. All ≥ the mobile
+        // breakpoint so the desktop shell (sidebar + band) is in play.
+        for width in [760.0_f32, 1100.0, 1400.0, 1920.0] {
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut s = State::new(PlayerHandle::offline());
+            s.scan_progress = Some(ScanProgress {
+                phase: soul_player_host::ScanPhase::Extracting,
+                done: 500,
+                total: 1000,
+            });
+            let mut rt = Runtime::new(s, view, (width, 720.0), env);
+            let mut insets = rune::ChromeInsets::default();
+            insets.trailing = TRAILING;
+            insets.height = views::titlebar::HEIGHT;
+            rt.set_chrome_insets(insets);
+            rt.frame(0.0);
+            rt.frame(0.0); // settle the band width → the widget's dock
+            let (scan, _) = rt
+                .presented("titlebar-scan")
+                .unwrap_or_else(|| panic!("the activity widget renders at width {width}"));
+            let right = scan[0] + scan[2];
+            // The band's right edge is the window's right edge (the shell is the
+            // trailing column), so the widget must end before the caption gutter.
+            assert!(
+                right <= width - TRAILING + 0.5,
+                "at width {width}: clears the trailing caption controls, right={right}"
+            );
+            assert!(
+                scan[0] >= -0.5,
+                "at width {width}: clears the leading edge, left={}",
+                scan[0]
+            );
+        }
     }
 
     #[test]

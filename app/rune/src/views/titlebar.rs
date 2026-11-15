@@ -46,11 +46,32 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     cx.caption_color(p.fg.alpha(0.0));
     cx.titlebar_height(HEIGHT);
 
-    // The draggable band. The scan-activity widget is NOT a child here — it is a
-    // window-level overlay ([`scan_overlay`], mounted by `view`). On desktop this
-    // band lives INSIDE the shell (right of the resizable sidebar), so its width is
-    // not the window's; docking a trailing widget within it was unreliable across
-    // sidebar/window sizes. A window-pinned overlay sidesteps that entirely.
+    // The BAND's own committed width (previous frame) — not the window's. On desktop
+    // the band sits inside the shell, right of the resizable sidebar, so its width is
+    // `window − sidebar`; measuring it (rather than `app-root`) keeps the widget's
+    // responsive variant and its right dock correct at every sidebar/window size.
+    let band_w = cx
+        .layout_size("titlebar")
+        .map(|size| size[0])
+        .filter(|w| *w > 0.0)
+        .unwrap_or(1100.0);
+
+    // The flexible header slot. While a scan runs it carries the right-aligned
+    // activity widget — a leading grow spacer pushes it to the trailing edge, just
+    // left of the window controls; otherwise it's the empty draggable gap.
+    let mut content = row()
+        .key("titlebar-content")
+        .grow(1.0)
+        .min_w(0.0)
+        .h_full()
+        .items_center();
+    if let Some(prog) = &s.scan_progress {
+        content = content
+            .child(el().grow(1.0))
+            .child(scan_activity(prog, s.scan_anim, p, band_w))
+            .pr(space::SM);
+    }
+
     let strip = row()
         .key("titlebar")
         .w_full()
@@ -63,7 +84,7 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
         // track, and `hover_motion` makes that follow smooth in both directions.
         .hover_group()
         .hover_motion(GLYPH_FADE, GLYPH_FADE)
-        .child(row().key("titlebar-content").grow(1.0).min_w(0.0).h_full());
+        .child(content);
 
     // Windows only (`trailing` is 0 where the native frame stays, e.g. macOS/Linux):
     // our three caption glyphs span the trailing gutter, one per native button.
@@ -123,41 +144,13 @@ fn caption_glyph(
         .child(icon(glyph, GLYPH_SIZE).color(p.fg))
 }
 
-/// The scan-activity widget as a WINDOW-LEVEL overlay, pinned to the top-right of the
-/// window (inset past the trailing controls) and vertically centred in the band.
-/// Mounted by `view` on the root — NOT inside `bar` — so its position is relative to
-/// the whole window, unaffected by the resizable sidebar the desktop title-bar band
-/// sits beside (which made in-band docking unreliable). `None` when no scan runs;
-/// `window_w` is the window width, for the responsive variant.
-pub(crate) fn scan_overlay(
-    s: &State,
-    p: &Palette,
-    chrome: rune::ChromeInsets,
-    window_w: f32,
-) -> Option<El> {
-    s.scan_progress.as_ref().map(|prog| {
-        let avail = (window_w - space::MD - chrome.trailing).max(0.0);
-        // A full-width strip pinned across the top of the window (left+right=0
-        // stretches it — the reliable pin form), with the widget CENTERED. Rune's
-        // title-bar band ignored every trailing inset (padding/margin/pin-right/
-        // absolute/spacer were all dropped), so a right dock that clears the window
-        // controls isn't reachable; centering is reliable and clears both the leading
-        // traffic lights and the trailing `_ [] X`.
-        row()
-            .key("titlebar-scan-layer")
-            .pin(Some(0.0), Some(0.0), Some(0.0), None)
-            .h(HEIGHT)
-            .center()
-            .child(scan_activity(prog, s.scan_anim, p, avail))
-    })
-}
-
-/// Width-responsive thresholds (available header width, pt) for the scan-activity
-/// widget: at or above each, one more element joins the icon. Below the narrowest,
-/// only the pulsing icon shows (the `smallest width → just the animated icon` case).
-const SCAN_WIDE: f32 = 760.0; // + phase label
-const SCAN_MED: f32 = 480.0; // + progress bar
-const SCAN_NARROW: f32 = 360.0; // + done/total count
+/// Width-responsive thresholds (band width, pt) for the scan-activity widget: at or
+/// above each, one more element joins the icon. Below the narrowest, only the pulsing
+/// icon shows (the `smallest width → just the animated icon` case). The band is the
+/// strip the widget lives in (`window − sidebar` on desktop), not the whole window.
+const SCAN_WIDE: f32 = 700.0; // + phase label
+const SCAN_MED: f32 = 520.0; // + progress bar
+const SCAN_NARROW: f32 = 380.0; // + done/total count
 
 /// Activity-icon size and progress-bar geometry (pt).
 const SCAN_ICON: f32 = 14.0;
@@ -166,13 +159,12 @@ const SCAN_BAR_H: f32 = 4.0;
 /// Pulse rate (rad/s) of the activity icon's opacity "breathing".
 const SCAN_PULSE_SPEED: f32 = 4.2;
 
-/// The title-bar scan-activity widget: a pulsing activity icon plus — as space
-/// allows — the phase label, a determinate progress bar, and the `done / total`
-/// count. Rendered while a scan runs, inside the header content area (which already
-/// clears the window controls). `anim` is the free-running pulse phase (seconds) the
-/// poll advances; `avail` is the available header width that picks the responsive
-/// variant.
-fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, avail: f32) -> El {
+/// The title-bar scan-activity widget: a pulsing activity icon plus — as the band
+/// widens — the phase label, a determinate progress bar, and the `done / total`
+/// count. Rendered right-aligned in the header slot while a scan runs. `anim` is the
+/// free-running pulse phase (seconds) the poll advances; `band_w` (the strip's own
+/// width) picks the responsive variant.
+fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, band_w: f32) -> El {
     // Breathing opacity in [0.5, 1.0] so the icon reads as "working" even between
     // progress ticks (the determinate bar carries the exact amount).
     let icon_op = 0.5 + 0.5 * (0.5 + 0.5 * (anim * SCAN_PULSE_SPEED).sin());
@@ -188,7 +180,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, avail: f32) -> El 
         );
 
     // Phase label (widest only).
-    if avail >= SCAN_WIDE {
+    if band_w >= SCAN_WIDE {
         let label = match prog.phase {
             ScanPhase::Discovering => t!("titlebar.scanning"),
             ScanPhase::Extracting => t!("titlebar.indexing"),
@@ -203,7 +195,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, avail: f32) -> El 
     }
 
     // Determinate progress bar (medium and up).
-    if avail >= SCAN_MED {
+    if band_w >= SCAN_MED {
         let frac = if prog.total > 0 {
             (prog.done as f32 / prog.total as f32).clamp(0.0, 1.0)
         } else {
@@ -225,7 +217,7 @@ fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, avail: f32) -> El 
     }
 
     // done / total count (narrow and up).
-    if avail >= SCAN_NARROW {
+    if band_w >= SCAN_NARROW {
         let count = format!(
             "{} / {}",
             group_thousands(prog.done),
