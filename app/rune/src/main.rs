@@ -33,6 +33,7 @@ mod config;
 #[cfg(test)]
 mod i18n_tests;
 mod logging;
+mod media_session;
 mod organize_job;
 mod report;
 mod theme;
@@ -312,6 +313,15 @@ struct State {
     /// back onto the main thread via `AppHandle::update`. `None` in headless tests
     /// (and until `main` sets it), where the organize transitions stay pure.
     app_handle: Option<rune::AppHandle<State>>,
+    /// Channel to the OS media-session thread (`media_session::spawn`), set once
+    /// the window is ready (`main`'s `on_ready`). `None` in headless tests / where
+    /// the OS session couldn't start; feeding it is then a no-op.
+    media_tx: Option<std::sync::mpsc::Sender<media_session::Update>>,
+    /// Last now-playing id / play-state / push time pushed to the media session,
+    /// for change detection + the periodic refresh (`media_session::decide_push`).
+    media_last_id: Option<u32>,
+    media_last_playing: bool,
+    media_last_push: Option<std::time::Instant>,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -451,6 +461,10 @@ impl State {
             organize: None,
             // Set once in `main` (a self-posting update); stays `None` in tests.
             app_handle: None,
+            media_tx: None,
+            media_last_id: None,
+            media_last_playing: false,
+            media_last_push: None,
             art: ArtCache::new(),
             update_available: None,
             // Set from `logging::begin_session()` in `main`; `false` in tests.
@@ -1507,6 +1521,77 @@ pub(crate) fn set_titlebar_controls_always(s: &mut State, always: bool) {
     config::save_titlebar_controls_always(always);
 }
 
+/// Dispatch an OS media-control event (routed from the media-session thread onto
+/// the main thread), resolving relative seeks against the live playback position.
+pub(crate) fn apply_media_event(s: &mut State, tx: &mut Tx, event: souvlaki::MediaControlEvent) {
+    use media_session::SessionAction;
+    match media_session::map_event(event, s.position_secs, s.duration_secs) {
+        Some(SessionAction::Command(cmd)) => s.host.send(cmd),
+        Some(SessionAction::Quit) => tx.quit(),
+        // Raising the window from the OS widget is a follow-up.
+        Some(SessionAction::Raise) | None => {}
+    }
+}
+
+/// Push now-playing changes to the OS media session after each event is folded
+/// into `State`. No-op until the session is up (`media_tx`).
+fn feed_media_session(s: &mut State) {
+    let Some(tx) = s.media_tx.clone() else {
+        return;
+    };
+    let prev = media_session::Snapshot {
+        id: s.media_last_id,
+        playing: s.media_last_playing,
+    };
+    let cur = media_session::Snapshot {
+        id: s.now_playing_id,
+        playing: s.playing,
+    };
+    let since = s
+        .media_last_push
+        .map(|t| t.elapsed())
+        .unwrap_or(std::time::Duration::from_secs(3600));
+    let push = media_session::decide_push(&prev, &cur, since);
+
+    if push == media_session::Push::TrackAndPlayback
+        && let Some(track) = s.now_playing_id.and_then(|id| s.track(id))
+    {
+        let _ = tx.send(media_session::Update::Track(media_session::TrackMeta {
+            title: track.title.clone().unwrap_or_default(),
+            artist: track.artist.clone().unwrap_or_default(),
+            album: track.album.clone().unwrap_or_default(),
+            duration_secs: track.duration_secs,
+        }));
+    }
+    if push != media_session::Push::Nothing {
+        let _ = tx.send(media_session::Update::Playback(media_session::Playback {
+            playing: s.playing,
+            stopped: s.now_playing_id.is_none(),
+            position_secs: s.position_secs,
+        }));
+        s.media_last_push = Some(std::time::Instant::now());
+    }
+    s.media_last_id = s.now_playing_id;
+    s.media_last_playing = s.playing;
+}
+
+/// The window's native handle as an `isize` (Windows HWND) for the media session's
+/// SMTC; `None` on macOS/Linux, where souvlaki needs no handle.
+#[cfg(target_os = "windows")]
+fn window_hwnd(wh: &rune::WindowHandle) -> Option<isize> {
+    wh.with_raw_handle(|handle| match handle.as_raw() {
+        raw_window_handle::RawWindowHandle::Win32(h) => Some(h.hwnd.get()),
+        _ => None,
+    })
+    .ok()
+    .flatten()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn window_hwnd(_wh: &rune::WindowHandle) -> Option<isize> {
+    None
+}
+
 /// `AppSpec::setup`: wires the app's `Waker` into the cover-art cache
 /// (cheat-sheet §5b/§6a) so decoded covers wake a redraw instead of needing
 /// a poll loop.
@@ -1899,6 +1984,10 @@ fn main() -> anyhow::Result<()> {
             view,
         )
     };
+    // A shared cell so `on_ready` (which fires during `run`, when the window and
+    // its HWND exist) can reach an `AppHandle` — which only exists after the app is
+    // built. Set just below, before `run`.
+    let media_ah_cell = std::sync::Arc::new(std::sync::OnceLock::<rune::AppHandle<State>>::new());
     let app = App::new(spec)
         .titlebar(Titlebar::new(views::titlebar::HEIGHT).traffic_lights(
             views::titlebar::TRAFFIC_LIGHTS.0,
@@ -1925,8 +2014,28 @@ fn main() -> anyhow::Result<()> {
             let mut s = State::new(init_host.clone());
             s.crashed_last_session = crashed_last_session;
             s
+        })
+        .on_ready({
+            // Start the OS media session once the window (and its HWND, for Windows
+            // SMTC) exists. `on_ready` may fire more than once — guard it.
+            let cell = media_ah_cell.clone();
+            let mut started = false;
+            move |wh: &rune::WindowHandle| {
+                if started {
+                    return;
+                }
+                let Some(ah) = cell.get().cloned() else {
+                    return;
+                };
+                started = true;
+                let hwnd = window_hwnd(wh);
+                if let Some(tx) = media_session::spawn(ah.clone(), hwnd) {
+                    ah.update(move |s: &mut State, _tx: &mut Tx| s.media_tx = Some(tx));
+                }
+            }
         });
     let ah = app.handle();
+    let _ = media_ah_cell.set(app.handle());
     // Stash a self-handle in State (once, on the main thread) so the managed-library
     // organize flow can post plan/apply progress back from its worker threads. This
     // self-posting update runs on the first frame; `update` only borrows `ah`, so it
@@ -1961,6 +2070,7 @@ fn main() -> anyhow::Result<()> {
         }
         ah.update(move |s: &mut State, tx: &mut Tx| {
             s.apply(&ev);
+            feed_media_session(s); // publish now-playing changes to the OS session
             tx.instant(); // don't animate fast-moving numeric fields
         });
     });
@@ -2291,6 +2401,62 @@ mod tests {
             apply_watch(&mut s, up);
         }
         s
+    }
+
+    /// End-to-end feed pipeline: as the player's now-playing state changes, the
+    /// media session receives the right `Update`s over its channel — track
+    /// metadata (resolved from the library) on a track change, playback on a
+    /// play/pause flip, and `stopped` when nothing is playing.
+    #[test]
+    fn media_session_feed_publishes_track_then_playback_on_change() {
+        let mut s = populated_state();
+        let id = s
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("the test library has tracks");
+        let expected = s.track(id).cloned().expect("the track resolves");
+        let (tx, rx) = std::sync::mpsc::channel();
+        s.media_tx = Some(tx);
+
+        // A track starts playing → a Track update then a Playback update.
+        s.now_playing_id = Some(id);
+        s.playing = true;
+        s.position_secs = 12.0;
+        s.duration_secs = 200.0;
+        feed_media_session(&mut s);
+
+        match rx.try_recv().expect("a track-metadata update") {
+            media_session::Update::Track(meta) => {
+                assert_eq!(meta.title, expected.title.clone().unwrap_or_default());
+                assert_eq!(meta.duration_secs, expected.duration_secs);
+            }
+            media_session::Update::Playback(_) => panic!("expected a Track update first"),
+        }
+        match rx.try_recv().expect("a playback update") {
+            media_session::Update::Playback(pb) => {
+                assert!(pb.playing && !pb.stopped);
+                assert_eq!(pb.position_secs, 12.0);
+            }
+            media_session::Update::Track(_) => panic!("expected a Playback update"),
+        }
+
+        // Pausing the same track pushes only a playback update.
+        s.playing = false;
+        feed_media_session(&mut s);
+        match rx.try_recv().expect("a playback update on pause") {
+            media_session::Update::Playback(pb) => assert!(!pb.playing),
+            media_session::Update::Track(_) => panic!("expected Playback on pause"),
+        }
+
+        // Stopping (no track loaded) reports stopped.
+        s.now_playing_id = None;
+        feed_media_session(&mut s);
+        match rx.try_recv().expect("a playback update on stop") {
+            media_session::Update::Playback(pb) => assert!(pb.stopped),
+            media_session::Update::Track(_) => panic!("expected Playback on stop"),
+        }
+        assert!(rx.try_recv().is_err(), "no extra updates queued");
     }
 
     /// The same contain-itself invariant as settings, but swept across the whole
