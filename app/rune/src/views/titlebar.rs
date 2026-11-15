@@ -12,11 +12,12 @@
 //! which a per-frame `caption_color` can't do.
 #![forbid(unsafe_code)]
 
-use rune::{Cx, El, Icon, Spring, el, icon, row};
+use rune::{Cx, El, Icon, Spring, el, icon, row, text};
+use soul_player_host::{ScanPhase, ScanProgress};
 
 use crate::State;
 use crate::theme::Palette;
-use crate::ui::space;
+use crate::ui::{radius, space, type_};
 use crate::views::icons;
 
 /// Title-bar band height, in points.
@@ -38,12 +39,36 @@ const GLYPH_SIZE: f32 = 15.0;
 /// it carries our own `_ [] X` glyphs at the trailing edge, revealed only while the
 /// band is hovered; the open area to their left is where custom header components go
 /// later.
-pub(crate) fn bar(_s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
+pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     let chrome = cx.chrome_insets();
     // Hide the native Windows caption symbols — we draw our own (animatable) glyphs
     // over the buttons, which still take the clicks. alpha 0 keeps macOS unaffected.
     cx.caption_color(p.fg.alpha(0.0));
     cx.titlebar_height(HEIGHT);
+
+    // The window's committed width (previous frame) — the activity widget's
+    // width-responsive variants key off it, the same measure `view` uses for mobile.
+    let window_w = cx
+        .layout_size("app-root")
+        .map(|size| size[0])
+        .filter(|w| *w > 0.0)
+        .unwrap_or(1100.0);
+
+    // The flexible header slot. While a scan runs it carries the right-aligned
+    // activity widget — a leading grow spacer pushes it to the trailing edge, just
+    // left of the window controls; otherwise it's the empty draggable gap.
+    let mut content = row()
+        .key("titlebar-content")
+        .grow(1.0)
+        .min_w(0.0)
+        .h_full()
+        .items_center();
+    if let Some(prog) = &s.scan_progress {
+        content = content
+            .child(el().grow(1.0))
+            .child(scan_activity(prog, s.scan_anim, p, window_w))
+            .pr(space::SM);
+    }
 
     let strip = row()
         .key("titlebar")
@@ -57,14 +82,7 @@ pub(crate) fn bar(_s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
         // track, and `hover_motion` makes that follow smooth in both directions.
         .hover_group()
         .hover_motion(GLYPH_FADE, GLYPH_FADE)
-        .child(
-            row()
-                .key("titlebar-content")
-                .grow(1.0)
-                .min_w(0.0)
-                .h_full()
-                .items_center(),
-        );
+        .child(content);
 
     // Windows only (`trailing` is 0 where the native frame stays, e.g. macOS/Linux):
     // our three caption glyphs span the trailing gutter, one per native button.
@@ -98,4 +116,109 @@ fn caption_glyph(key: &'static str, glyph: &'static Icon, width: f32, p: &Palett
         .center()
         .group_opacity(0.0, 1.0)
         .child(icon(glyph, GLYPH_SIZE).color(p.fg))
+}
+
+/// Width-responsive thresholds (window width, pt) for the scan-activity widget: at
+/// or above each, one more element joins the icon. Below the narrowest, only the
+/// pulsing icon shows (the `smallest width → just the animated icon` case).
+const SCAN_WIDE: f32 = 820.0; // + phase label
+const SCAN_MED: f32 = 560.0; // + progress bar
+const SCAN_NARROW: f32 = 430.0; // + done/total count
+
+/// Activity-icon size and progress-bar geometry (pt).
+const SCAN_ICON: f32 = 14.0;
+const SCAN_BAR_W: f32 = 84.0;
+const SCAN_BAR_H: f32 = 4.0;
+/// Pulse rate (rad/s) of the activity icon's opacity "breathing".
+const SCAN_PULSE_SPEED: f32 = 4.2;
+
+/// The title-bar scan-activity widget: a pulsing activity icon plus — as the window
+/// widens — the phase label, a determinate progress bar, and the `done / total`
+/// count. Rendered right-aligned in the header slot while a scan runs. `anim` is the
+/// free-running pulse phase (seconds) the poll advances; `window_w` picks the
+/// responsive variant.
+fn scan_activity(prog: &ScanProgress, anim: f32, p: &Palette, window_w: f32) -> El {
+    // Breathing opacity in [0.5, 1.0] so the icon reads as "working" even between
+    // progress ticks (the determinate bar carries the exact amount).
+    let icon_op = 0.5 + 0.5 * (0.5 + 0.5 * (anim * SCAN_PULSE_SPEED).sin());
+
+    let mut rowel = row()
+        .key("titlebar-scan")
+        .h_full()
+        .items_center()
+        .gap(space::XS)
+        .child(
+            el().key("titlebar-scan-icon")
+                .child(icon(&icons::ACTIVITY, SCAN_ICON).color(p.primary.alpha(icon_op))),
+        );
+
+    // Phase label (widest only).
+    if window_w >= SCAN_WIDE {
+        let label = match prog.phase {
+            ScanPhase::Discovering => t!("titlebar.scanning"),
+            ScanPhase::Extracting => t!("titlebar.indexing"),
+        }
+        .to_string();
+        rowel = rowel.child(
+            text(label)
+                .key("titlebar-scan-label")
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        );
+    }
+
+    // Determinate progress bar (medium and up).
+    if window_w >= SCAN_MED {
+        let frac = if prog.total > 0 {
+            (prog.done as f32 / prog.total as f32).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        rowel = rowel.child(
+            el().key("titlebar-scan-bar")
+                .w(SCAN_BAR_W)
+                .h(SCAN_BAR_H)
+                .fill(p.muted)
+                .radius(radius::FULL)
+                .child(
+                    el().w(SCAN_BAR_W * frac)
+                        .h(SCAN_BAR_H)
+                        .fill(p.primary)
+                        .radius(radius::FULL),
+                ),
+        );
+    }
+
+    // done / total count (narrow and up).
+    if window_w >= SCAN_NARROW {
+        let count = format!(
+            "{} / {}",
+            group_thousands(prog.done),
+            group_thousands(prog.total)
+        );
+        rowel = rowel.child(
+            text(count)
+                .key("titlebar-scan-count")
+                .font(type_::LABEL.mono())
+                .color(p.text_secondary),
+        );
+    }
+
+    rowel
+}
+
+/// Group a non-negative integer with ASCII thousands separators ("1,024").
+/// Deterministic and locale-independent — the title bar is no place for
+/// locale-sensitive number formatting (which would also flake locale-ordered tests).
+fn group_thousands(n: usize) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, &b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(b as char);
+    }
+    out
 }

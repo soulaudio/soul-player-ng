@@ -24,8 +24,8 @@ use parley_engine as _;
 use soul_player_host::{
     Band, BandKind, BrowseAxis, Command, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
     IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
-    SPECTRUM_COLS, SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView, WatchUpdate,
-    default_bands,
+    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView,
+    WatchUpdate, default_bands,
     organize::{self, Strategy},
 };
 
@@ -218,6 +218,15 @@ struct State {
     /// The library indexing-speed mode (persisted), rendered by Settings → Sources.
     /// Drives how much parallelism the scanner uses; `Automatic` follows CPU load.
     indexing_mode: IndexingMode,
+    /// Live progress of a running library scan (from the host's `on_scan_progress`),
+    /// rendered as the title-bar activity widget. `None` when no scan is in flight;
+    /// set per tick while an off-UI-thread scan runs and cleared on the completing
+    /// [`apply_watch`]. Only off-thread scans (the live watcher, a threaded add)
+    /// animate it — a scan that blocks the UI thread fills it in one step at the end.
+    scan_progress: Option<ScanProgress>,
+    /// Free-running phase (seconds) advancing while `scan_progress` is `Some`, driven
+    /// by the per-frame poll; the activity icon's pulse is a function of it.
+    scan_anim: f32,
     /// The chosen output device (persisted), rendered by Settings → Output;
     /// `None` = follow the system default. Applies to the next playback session.
     output_device: Option<String>,
@@ -408,6 +417,8 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
             removal_notice: None,
+            scan_progress: None,
+            scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
             // Restore the persisted device choice (None = system default); the
             // enumerated list came from `host` just above.
@@ -524,6 +535,8 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     // any) is applied right after and re-sets it, so the notice always reflects the
     // most recent scan rather than lingering.
     s.removal_notice = None;
+    // A WatchUpdate marks a scan complete — retire the title-bar activity widget.
+    s.scan_progress = None;
 }
 
 /// Apply a `WatchUpdate` and persist the new source set (with each source's
@@ -1001,12 +1014,25 @@ pub(crate) fn set_eq_preamp(s: &mut State, preamp_db: f32) {
     apply_eq(s);
 }
 
-/// Per-frame poll (wired as `AppSpec::poll`) that drives the live EQ spectrum
-/// analyzer: while the Audio settings tab is open and a track is playing, pull the
-/// latest spectrum columns from the host into `State` and keep asking for the next
-/// frame (~60 fps). Clears the spectrum once when playback stops or the tab is
-/// hidden so the display fades out. Returns whether the view must re-render.
-fn spectrum_poll(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
+/// Per-frame poll (wired as `AppSpec::poll`). Drives the title-bar scan-activity
+/// pulse (while a scan runs) *and* the live EQ spectrum analyzer. Returns whether
+/// the view must re-render.
+fn spectrum_poll(s: &mut State, dt: f64, tx: &mut Tx) -> bool {
+    // Title-bar activity: while a library scan is in flight, keep the frame clock
+    // ticking and advance the icon's pulse phase — independent of the spectrum, so
+    // the pill animates even when nothing is playing. Bounded modulo to stay finite
+    // over a long scan.
+    let scanning = s.scan_progress.is_some();
+    if scanning {
+        s.scan_anim = (s.scan_anim + dt as f32) % 1000.0;
+        tx.wake_after(std::time::Duration::from_millis(16));
+    }
+    spectrum_poll_inner(s, dt, tx) || scanning
+}
+
+/// The EQ spectrum half of [`spectrum_poll`] (kept separate so the scan-activity
+/// pulse composes cleanly with its several early returns).
+fn spectrum_poll_inner(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
     // An open inline number editor: once it loses focus (click elsewhere, or Escape),
     // commit what was typed and close it. Keep a slow tick alive while it is focused so
     // that blur is noticed even when nothing is playing.
@@ -1908,6 +1934,16 @@ fn main() -> anyhow::Result<()> {
                 apply_watch(s, up);
             });
         });
+        // Live scan progress → the title-bar activity widget. Fires per tick while an
+        // off-UI-thread scan runs (the watcher, a threaded add); the completing
+        // WatchUpdate above clears it. Registered before `start_watching` so the
+        // first watcher-triggered rescan is already observed.
+        let sph = app.handle();
+        host.on_scan_progress(move |p: ScanProgress| {
+            sph.update(move |s: &mut State, _tx: &mut Tx| {
+                s.scan_progress = Some(p);
+            });
+        });
         host.start_watching();
     }
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
@@ -1966,6 +2002,94 @@ mod tests {
         assert!(
             rt.find("open-folder").is_none(),
             "the single-folder Open Folder button is gone"
+        );
+    }
+
+    /// A running scan paints the title-bar activity widget; a wide window shows the
+    /// full set (icon + label + bar + count).
+    #[test]
+    fn scan_progress_shows_the_titlebar_activity_widget() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 1024,
+            total: 1210,
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_some(),
+            "the activity widget shows while a scan runs"
+        );
+        assert!(rt.find("titlebar-scan-icon").is_some(), "icon present");
+        assert!(
+            rt.find("titlebar-scan-label").is_some(),
+            "wide window shows the phase label"
+        );
+        assert!(
+            rt.find("titlebar-scan-bar").is_some(),
+            "progress bar present"
+        );
+        assert!(
+            rt.find("titlebar-scan-count").is_some(),
+            "done/total count present"
+        );
+    }
+
+    /// With no scan in flight the widget is absent (the title bar is the plain band).
+    #[test]
+    fn no_scan_hides_the_titlebar_activity_widget() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = State::new(PlayerHandle::offline()); // scan_progress defaults to None
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_none(),
+            "no activity widget when nothing is scanning"
+        );
+    }
+
+    /// At the smallest widths the widget collapses to just the animated icon — the
+    /// label, bar, and count drop as the window narrows.
+    #[test]
+    fn narrow_window_collapses_activity_to_icon_only() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 10,
+            total: 100,
+        });
+        let mut rt = Runtime::new(s, view, (360.0, 720.0), env);
+        // Two frames: the second reads the first's committed app-root width, so the
+        // width-responsive branch sees the real (narrow) window, not the fallback.
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan-icon").is_some(),
+            "the pulsing icon survives at the smallest width"
+        );
+        assert!(
+            rt.find("titlebar-scan-label").is_none(),
+            "the label drops when narrow"
+        );
+        assert!(
+            rt.find("titlebar-scan-bar").is_none(),
+            "the bar drops when narrow"
+        );
+        assert!(
+            rt.find("titlebar-scan-count").is_none(),
+            "the count drops at the smallest width"
         );
     }
 

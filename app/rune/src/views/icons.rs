@@ -33,6 +33,10 @@ pub static SHUFFLE: Icon = stroke_icon!(
     r#"<polyline points="16 3 21 3 21 8"/><line x1="4" x2="21" y1="20" y2="3"/><polyline points="21 16 21 21 16 21"/><line x1="15" x2="21" y1="15" y2="21"/><line x1="4" x2="9" y1="4" y2="9"/>"#
 );
 
+/// Lucide "activity" — the heart-rate pulse line. The title-bar scan-activity
+/// indicator; it pulses (opacity) while a library scan runs.
+pub static ACTIVITY: Icon = stroke_icon!("activity", r#"<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>"#);
+
 pub static SKIP_BACK: Icon = stroke_icon!(
     "skip-back",
     r#"<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/>"#
