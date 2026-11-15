@@ -1846,24 +1846,7 @@ fn support_row(p: &Palette) -> El {
             .on_press(|s: &mut State| {
                 // Read state now; do the file read + browser launch off-thread.
                 let device = s.output_device.clone();
-                std::thread::spawn(move || {
-                    let home = dirs::home_dir()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default();
-                    let tail =
-                        crate::report::redact_home(&crate::logging::read_recent_log(40), &home);
-                    let mut diag = crate::report::gather(device);
-                    diag.log_path = diag.log_path.map(|p| crate::report::redact_home(&p, &home));
-                    let url = crate::report::report_url(
-                        crate::report::ISSUE_REPO,
-                        &diag,
-                        &tail,
-                        crate::report::MAX_URL_LEN,
-                    );
-                    if let Err(e) = open::that(&url) {
-                        tracing::error!("open issue URL failed: {e}");
-                    }
-                });
+                std::thread::spawn(move || crate::report::open_issue(device));
             }),
         )
 }

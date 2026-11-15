@@ -119,6 +119,22 @@ pub(crate) fn gather(audio_device: Option<String>) -> Diagnostics {
     }
 }
 
+/// Gather diagnostics + a home-dir-redacted recent-log tail, build the pre-filled
+/// GitHub issue URL, and open it in the browser for the user to review and submit.
+/// Does file I/O and spawns the browser — call it off the UI thread.
+pub(crate) fn open_issue(audio_device: Option<String>) {
+    let home = dirs::home_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let tail = redact_home(&crate::logging::read_recent_log(40), &home);
+    let mut diag = gather(audio_device);
+    diag.log_path = diag.log_path.map(|p| redact_home(&p, &home));
+    let url = report_url(ISSUE_REPO, &diag, &tail, MAX_URL_LEN);
+    if let Err(e) = open::that(&url) {
+        tracing::error!("open issue URL failed: {e}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

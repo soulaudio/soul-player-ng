@@ -637,6 +637,27 @@ settings.openLogs:
   zh: '打开日志文件夹'
   cs: 'Otevřít složku protokolů'
   ja: 'ログフォルダーを開く'
+crash.title:
+  en: 'Soul Player closed unexpectedly last time.'
+  de: 'Soul Player wurde letztes Mal unerwartet beendet.'
+  es: 'Soul Player se cerró inesperadamente la última vez.'
+  zh: 'Soul Player 上次意外关闭。'
+  cs: 'Soul Player se minule neočekávaně ukončil.'
+  ja: 'Soul Player は前回予期せず終了しました。'
+crash.report:
+  en: 'Report'
+  de: 'Melden'
+  es: 'Informar'
+  zh: '报告'
+  cs: 'Nahlásit'
+  ja: '報告'
+crash.dismiss:
+  en: 'Dismiss'
+  de: 'Schließen'
+  es: 'Descartar'
+  zh: '忽略'
+  cs: 'Zavřít'
+  ja: '閉じる'
 settings.updateAvailable:
   en: 'Version %{version} is available.'
   de: 'Version %{version} ist verfügbar.'

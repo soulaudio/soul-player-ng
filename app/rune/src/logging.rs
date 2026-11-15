@@ -130,6 +130,38 @@ pub(crate) fn read_log_tail(path: &Path, max_lines: usize) -> String {
     lines[start..].join("\n")
 }
 
+/// Crash detection via a session sentinel: returns whether `sentinel` already
+/// existed (i.e. the previous session never removed it → it crashed or was
+/// killed), then ensures it exists for this session. [`begin_session`] /
+/// [`end_session`] wrap this against the real path.
+fn detect_and_mark(sentinel: &Path) -> bool {
+    let existed = sentinel.exists();
+    let _ = std::fs::write(sentinel, b"");
+    existed
+}
+
+/// The session sentinel file, alongside the logs.
+fn running_sentinel() -> Option<PathBuf> {
+    Some(log_dir()?.join("running.lock"))
+}
+
+/// Begin a session: returns whether the *previous* session ended without a clean
+/// exit (crash or kill), and marks this session as running. Call once at startup,
+/// after [`init`]. Pair with [`end_session`] after the run loop returns.
+pub(crate) fn begin_session() -> bool {
+    running_sentinel()
+        .map(|s| detect_and_mark(&s))
+        .unwrap_or(false)
+}
+
+/// End a session cleanly: removes the sentinel, so the next launch knows this
+/// session exited normally. Call after the run loop returns.
+pub(crate) fn end_session() {
+    if let Some(sentinel) = running_sentinel() {
+        let _ = std::fs::remove_file(sentinel);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +191,22 @@ mod tests {
     fn read_log_tail_of_a_missing_file_is_empty() {
         let missing = std::env::temp_dir().join("soul-does-not-exist-xyz.log");
         assert_eq!(read_log_tail(&missing, 5), "");
+    }
+
+    #[test]
+    fn detect_and_mark_reports_prior_sentinel_then_persists_it() {
+        let dir = std::env::temp_dir().join(format!("soul-sentinel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let s = dir.join("running.lock");
+        std::fs::remove_file(&s).ok(); // clean slate
+
+        assert!(!detect_and_mark(&s), "first run: no prior sentinel");
+        assert!(s.exists(), "sentinel is created for this session");
+        assert!(
+            detect_and_mark(&s),
+            "second run: the prior sentinel is seen"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

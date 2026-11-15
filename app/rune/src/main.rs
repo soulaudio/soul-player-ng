@@ -291,6 +291,9 @@ struct State {
     /// check (`update::available`); `Some` makes Settings surface "Install &
     /// Restart". `None` = up to date (or the check hasn't run / failed).
     update_available: Option<String>,
+    /// Set at startup (`logging::begin_session`) when the previous session ended
+    /// without a clean exit — surfaces the dismissible "report this crash" banner.
+    crashed_last_session: bool,
     /// Library filter query (case-insensitive substring over title/artist/album);
     /// empty = no filter. Rune has no text widget yet, so it's typed into via the
     /// key handler (`/` to start), not a focused input field.
@@ -412,6 +415,8 @@ impl State {
             app_handle: None,
             art: ArtCache::new(),
             update_available: None,
+            // Set from `logging::begin_session()` in `main`; `false` in tests.
+            crashed_last_session: false,
             search: String::new(),
             searching: false,
             sidebar_width,
@@ -1110,21 +1115,80 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 /// The routed main content area, keyed `"content"`. On desktop it fills the
 /// space beside the sidebar; on mobile it is the whole window.
 fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -> El {
-    col()
-        .key("content")
-        .grow(1.0)
-        .min_h(0.0)
-        .child(match s.route {
-            Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
-            Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
-            Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
-            Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
-            Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
-            Route::Artist => views::artists::artist_detail(s, p, scale).grow(1.0),
-            Route::Genres => views::genres::genres_page(s, p).grow(1.0),
-            Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
-            Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
-        })
+    let mut pane = col().key("content").grow(1.0).min_h(0.0);
+    // A dismissible report prompt pinned above the routed page when the previous
+    // session ended abnormally (`logging::begin_session`).
+    if s.crashed_last_session {
+        pane = pane.child(crash_banner(p));
+    }
+    pane.child(match s.route {
+        Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
+        Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
+        Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
+        Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
+        Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
+        Route::Artist => views::artists::artist_detail(s, p, scale).grow(1.0),
+        Route::Genres => views::genres::genres_page(s, p).grow(1.0),
+        Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
+        Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
+    })
+}
+
+/// The dismissible crash-report banner (see [`content_pane`]): an accent dot, a
+/// short message, a primary "Report" button that opens a pre-filled GitHub issue
+/// (same flow as Settings → About), and a dismiss button that hides it for this
+/// session.
+fn crash_banner(p: &theme::Palette) -> El {
+    use crate::ui::{radius, space};
+    row()
+        .key("crash-banner")
+        .w_full()
+        .items_center()
+        .gap(space::MD)
+        .px(space::LG)
+        .pt(space::SM)
+        .pb(space::SM)
+        .fill(p.card)
+        .child(
+            el().key("crash-dot")
+                .w(8.0)
+                .h(8.0)
+                .radius(4.0)
+                .fill(p.accent),
+        )
+        .child(
+            rune::text(t!("crash.title").to_string())
+                .color(p.fg)
+                .grow(1.0),
+        )
+        .child(
+            el().key("crash-report")
+                .role("button")
+                .label(t!("crash.report").to_string())
+                .focusable(true)
+                .padding(space::SM)
+                .radius(radius::MD)
+                .fill(p.primary)
+                .center()
+                .cursor(rune::Cursor::Pointer)
+                .child(rune::text(t!("crash.report").to_string()).color(p.bg))
+                .on_press(|s: &mut State| {
+                    let device = s.output_device.clone();
+                    std::thread::spawn(move || crate::report::open_issue(device));
+                }),
+        )
+        .child(
+            el().key("crash-dismiss")
+                .role("button")
+                .label(t!("crash.dismiss").to_string())
+                .focusable(true)
+                .padding(space::SM)
+                .radius(radius::MD)
+                .center()
+                .cursor(rune::Cursor::Pointer)
+                .child(rune::icon(&views::icons::X, 14.0).color(p.text_secondary))
+                .on_press(|s: &mut State| s.crashed_last_session = false),
+        )
 }
 
 /// The current page's title, shown in the mobile back bar.
@@ -1458,6 +1522,12 @@ fn main() -> anyhow::Result<()> {
         cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
         "Soul Player starting",
     );
+    // Whether the previous session ended without a clean exit (and mark this one
+    // running). Handed to `State` below so the UI can offer to report the crash.
+    let crashed_last_session = logging::begin_session();
+    if crashed_last_session {
+        tracing::warn!("previous session did not exit cleanly");
+    }
 
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
@@ -1562,7 +1632,11 @@ fn main() -> anyhow::Result<()> {
         .global_shortcut("ctrl+alt+left", |s: &mut State, _: &mut Tx| {
             s.host.send(Command::Prev)
         })
-        .init(move || State::new(init_host.clone()));
+        .init(move || {
+            let mut s = State::new(init_host.clone());
+            s.crashed_last_session = crashed_last_session;
+            s
+        });
     let ah = app.handle();
     // Stash a self-handle in State (once, on the main thread) so the managed-library
     // organize flow can post plan/apply progress back from its worker threads. This
@@ -1620,9 +1694,10 @@ fn main() -> anyhow::Result<()> {
         tracing::warn!("set_app_icon failed: {e}");
     }
     app.run();
-    // The run loop returned: the window closed cleanly. This line (paired with the
-    // startup banner) brackets a session in the log — a session that ends without
-    // it ended in a crash/kill.
+    // The run loop returned: the window closed cleanly. Remove the session sentinel
+    // so the next launch knows this exit was clean, and log the bracketing line
+    // (paired with the startup banner) — a session that ends without it crashed.
+    logging::end_session();
     tracing::info!("Soul Player exiting");
     Ok(())
 }
@@ -1947,6 +2022,39 @@ mod tests {
         assert!(
             rt2.find("removal-notice").is_none(),
             "no warning when there were no deletions"
+        );
+    }
+
+    #[test]
+    fn crash_banner_shows_only_after_an_unclean_exit() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+
+        // A clean start shows no banner.
+        let mut clean = populated_state();
+        clean.crashed_last_session = false;
+        let mut rt = Runtime::new(clean, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("crash-banner").is_none(),
+            "no crash banner on a clean start"
+        );
+
+        // After an unclean exit the banner and its report button render.
+        let mut crashed = populated_state();
+        crashed.crashed_last_session = true;
+        let mut rt2 = Runtime::new(crashed, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("crash-banner").is_some(),
+            "crash banner shows after an unclean exit"
+        );
+        assert!(
+            rt2.find("crash-report").is_some(),
+            "the report button is offered"
         );
     }
 
