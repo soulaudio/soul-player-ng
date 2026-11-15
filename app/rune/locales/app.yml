@@ -160,20 +160,6 @@ player.pause:
   zh: '暂停'
   cs: 'Pozastavit'
   ja: '一時停止'
-player.mute:
-  en: 'Mute'
-  de: 'Stumm'
-  es: 'Silenciar'
-  zh: '静音'
-  cs: 'Ztlumit'
-  ja: 'ミュート'
-player.unmute:
-  en: 'Unmute'
-  de: 'Ton an'
-  es: 'Activar sonido'
-  zh: '取消静音'
-  cs: 'Zrušit ztlumení'
-  ja: 'ミュート解除'
 player.previous:
   en: 'Previous'
   de: 'Zurück'
@@ -988,14 +974,6 @@ settings.signalPathDesc:
   zh: '当前曲目的解码到输出链路。独占输出和 DSP 即将推出。'
   cs: 'Retezec od dekodovani po vystup pro aktualni skladbu. Exkluzivni vystup a DSP brzy.'
   ja: '現在のトラックのデコードから出力までの経路。排他出力とDSPは近日対応。'
-
-settings.comingSoon:
-  en: 'Coming soon'
-  de: 'Demnaechst'
-  es: 'Proximamente'
-  zh: '即将推出'
-  cs: 'Jiz brzy'
-  ja: '近日対応'
 
 # Settings -> Music Data: the Managed Library card (write-path organizer). The
 # template is chosen from presets (no free-text entry — Rune's IME is pre-release).

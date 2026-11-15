@@ -204,8 +204,9 @@ fn add_source_trigger(p: &Palette) -> El {
         .label(t!("settings.addSource").to_string())
         .focusable(true)
         .center_y()
-        .padding(space::MD)
-        .radius(radius::MD)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
         .fill(p.primary)
         .cursor(Cursor::Pointer)
         .child(text(t!("settings.addSource").to_string()).color(p.bg))
@@ -250,8 +251,7 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         .child(
             text(t!("settings.addLocalFolder").to_string())
                 .color(p.fg)
-                .grow(1.0)
-                .truncate(),
+                .grow(1.0),
         )
         .on_press_tx(|s: &mut State, tx: &mut Tx| {
             // Close the menu before the dialog so it isn't left open behind it.
@@ -284,8 +284,7 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         .child(
             text(t!("settings.addRemoteServer").to_string())
                 .color(p.text_secondary)
-                .grow(1.0)
-                .truncate(),
+                .grow(1.0),
         )
         .child(coming_soon);
     // The dialog card: a title over the option rows. `modal` traps focus, makes the
@@ -294,13 +293,16 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         .key(format!("{ADD_SOURCE_MENU}-menu"))
         .focus_group()
         .focus_return(ADD_SOURCE_MENU.to_string())
-        .min_w(300.0)
-        .max_w(440.0)
+        // Sized to fit the full (localized) rows — the labels no longer truncate, so a
+        // generous max keeps even the longest translation + its trailing chip on one
+        // line; the min keeps it dialog-like when the labels are short.
+        .min_w(340.0)
+        .max_w(540.0)
         .fill(p.card)
         .radius(radius::MD)
         .border_sides([1.0; 4], p.border)
         .padding(space::LG)
-        .gap(space::SM)
+        .gap(space::XS)
         .min_h(space::NONE)
         .child(
             text(t!("settings.addSourceTitle").to_string())
@@ -347,8 +349,7 @@ fn add_music_row(s: &State, p: &Palette) -> El {
             .child(
                 text(t!("settings.addMusic").to_string())
                     .color(p.fg)
-                    .grow(1.0)
-                    .truncate(),
+                    .grow(1.0),
             )
             .on_press_tx(|s: &mut State, tx: &mut Tx| {
                 // Close the menu before the dialog so it isn't left open behind it.
@@ -405,8 +406,7 @@ fn add_music_row(s: &State, p: &Palette) -> El {
             .child(
                 text(t!("settings.addMusic").to_string())
                     .color(p.text_secondary)
-                    .grow(1.0)
-                    .truncate(),
+                    .grow(1.0),
             )
             .child(hint)
     }
@@ -420,8 +420,9 @@ fn rescan_button(p: &Palette) -> El {
         .role("button")
         .label(t!("settings.rescan").to_string())
         .focusable(true)
-        .padding(space::MD)
-        .radius(radius::MD)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
         .fill(p.muted)
         .center()
         .cursor(Cursor::Pointer)
