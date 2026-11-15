@@ -34,6 +34,7 @@ mod config;
 mod i18n_tests;
 mod logging;
 mod media_session;
+mod notify;
 mod organize_job;
 mod report;
 mod systray;
@@ -343,6 +344,12 @@ struct State {
     media_last_id: Option<u32>,
     media_last_playing: bool,
     media_last_push: Option<std::time::Instant>,
+    /// Whether the window currently has OS focus (`App::on_focus`). Gates
+    /// now-playing toasts — foreground users already see the UI. Starts `true`.
+    focused: bool,
+    /// Last track id a now-playing toast was considered for, independent of the
+    /// media session (`media_last_id`) so the toast fires on every platform.
+    notify_last_id: Option<u32>,
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
@@ -494,6 +501,8 @@ impl State {
             media_last_id: None,
             media_last_playing: false,
             media_last_push: None,
+            focused: true,
+            notify_last_id: None,
             art: ArtCache::new(),
             update_available: None,
             // Set from `logging::begin_session()` in `main`; `false` in tests.
@@ -1802,6 +1811,12 @@ pub(crate) fn set_titlebar_controls_always(s: &mut State, always: bool) {
     config::save_titlebar_controls_always(always);
 }
 
+/// The window handle, captured in `on_ready`, so `flush_on_exit` can read the
+/// final geometry (`placement()`). A static because the exit hooks receive only
+/// `&mut State`, and set synchronously there (a queued `ah.update` may not run
+/// before exit). `None` in headless tests.
+static WINDOW: std::sync::Mutex<Option<rune::WindowHandle>> = std::sync::Mutex::new(None);
+
 /// Final best-effort flush on app exit — window close, Quit, or OS logout — run
 /// once even if both `on_close` and `on_quit` fire. Config is already persisted
 /// on change; this captures the warm-startup scan caches updated this session and
@@ -1813,6 +1828,15 @@ fn flush_on_exit(s: &mut State) {
         return;
     }
     config::save_scan_caches(&s.host.caches_snapshot());
+    // Persist the window geometry so the next launch reopens where we left off.
+    // `placement()` reads the live window, so it must happen before teardown.
+    if let Some(p) = WINDOW
+        .lock()
+        .ok()
+        .and_then(|w| w.as_ref().and_then(|w| w.placement()))
+    {
+        config::save_window_geometry(p.position, p.content_size, p.maximized, p.minimized);
+    }
     logging::end_session();
     tracing::info!("Soul Player exiting");
 }
@@ -1832,6 +1856,18 @@ pub(crate) fn apply_media_event(s: &mut State, tx: &mut Tx, event: souvlaki::Med
 /// Push now-playing changes to the OS media session after each event is folded
 /// into `State`. No-op until the session is up (`media_tx`).
 fn feed_media_session(s: &mut State) {
+    // Now-playing toast on a genuine track change, gated to backgrounded-only.
+    // Done before the media-session gate below so it fires regardless of whether
+    // the OS session (`media_tx`) is up, and tracked by its own `notify_last_id`.
+    if s.now_playing_id != s.notify_last_id {
+        s.notify_last_id = s.now_playing_id;
+        if let Some(track) = s.now_playing_id.and_then(|id| s.track(id)) {
+            let title = track.title.clone().unwrap_or_default();
+            let artist = track.artist.clone().unwrap_or_default();
+            notify::now_playing(s.focused, &title, &artist);
+        }
+    }
+
     let Some(tx) = s.media_tx.clone() else {
         return;
     };
@@ -2200,6 +2236,9 @@ fn main() -> anyhow::Result<()> {
     if crashed_last_session {
         tracing::warn!("previous session did not exit cleanly");
     }
+    // Register our AppUserModelID so Windows will render/attribute our toasts
+    // (unpackaged apps need a known AUMID). No-op off Windows.
+    notify::register_identity();
 
     // Single-instance (release builds only — dev can run several for comparison):
     // a second launch focuses the running window (and forwards its links to
@@ -2295,7 +2334,20 @@ fn main() -> anyhow::Result<()> {
     // its HWND exist) can reach an `AppHandle` — which only exists after the app is
     // built. Set just below, before `run`.
     let media_ah_cell = std::sync::Arc::new(std::sync::OnceLock::<rune::AppHandle<State>>::new());
-    let app = App::new(spec)
+    let mut builder = App::new(spec);
+    // Restore the last window geometry (outer position, content size, maximized)
+    // so the app reopens where the user left it, clamped onto a currently-
+    // connected display (recovering from an unplugged monitor or resolution
+    // change). Absent on a fresh install → Rune's default placement.
+    if let Some(g) = config::restore_window_geometry() {
+        let wo = rune::WindowOptions {
+            position: Some((g.x, g.y)),
+            physical_size: Some((g.w, g.h)),
+            ..Default::default()
+        };
+        builder = builder.configured_options(wo.into()).maximized(g.maximized);
+    }
+    let app = builder
         .titlebar(Titlebar::new(views::titlebar::HEIGHT).traffic_lights(
             views::titlebar::TRAFFIC_LIGHTS.0,
             views::titlebar::TRAFFIC_LIGHTS.1,
@@ -2337,6 +2389,13 @@ fn main() -> anyhow::Result<()> {
                     return;
                 };
                 started = true;
+                // Keep the handle so `flush_on_exit` can read the final geometry.
+                // Set it synchronously (a queued `ah.update` from `on_ready` may not
+                // apply before exit), via a static since the exit hooks get only
+                // `&mut State`.
+                if let Ok(mut w) = WINDOW.lock() {
+                    *w = Some(wh.clone());
+                }
                 let hwnd = window_hwnd(wh);
                 if let Some(tx) = media_session::spawn(ah.clone(), hwnd) {
                     ah.update(move |s: &mut State, _tx: &mut Tx| s.media_tx = Some(tx));
@@ -2352,7 +2411,9 @@ fn main() -> anyhow::Result<()> {
         // an app Quit / OS logout (Cmd+Q, `WM_ENDSESSION`), where the run loop may
         // not return cleanly.
         .on_close(|s: &mut State, _tx: &mut Tx| flush_on_exit(s))
-        .on_quit(|s: &mut State, _tx: &mut Tx| flush_on_exit(s));
+        .on_quit(|s: &mut State, _tx: &mut Tx| flush_on_exit(s))
+        // Track focus so now-playing toasts fire only while backgrounded.
+        .on_focus(|s: &mut State, focused: bool, _tx: &mut Tx| s.focused = focused);
     let ah = app.handle();
     let _ = media_ah_cell.set(app.handle());
     // Stash a self-handle in State (once, on the main thread) so the managed-library
@@ -2373,6 +2434,7 @@ fn main() -> anyhow::Result<()> {
         std::thread::spawn(move || match update::available() {
             Some(version) => {
                 tracing::info!(version, "update available");
+                notify::update_available(&version);
                 uh.update(move |s: &mut State, _tx: &mut Tx| {
                     s.update_available = Some(version);
                 });
@@ -2595,6 +2657,32 @@ mod tests {
         assert_eq!(s.sources[0].path, testdata_dir());
         assert!(s.sources[0].enabled && s.sources[0].available);
         assert!(!s.library.is_empty(), "testdata scanned into the library");
+    }
+
+    /// The now-playing toast fires once per genuine track change: `feed_media_session`
+    /// advances `notify_last_id` on a new track and dedups repeat events for the same
+    /// one (the toast itself is cfg!(test)-suppressed; this covers the change detection).
+    #[test]
+    fn now_playing_detection_fires_once_per_track() {
+        let mut s = State::new(PlayerHandle::offline());
+        let up = s.host.add_folder(&testdata_dir()).expect("add_folder");
+        apply_watch(&mut s, up);
+        let first = s.library.first().map(|t| t.id).expect("a scanned track");
+
+        s.now_playing_id = Some(first);
+        feed_media_session(&mut s);
+        assert_eq!(
+            s.notify_last_id,
+            Some(first),
+            "new track advances the marker"
+        );
+
+        feed_media_session(&mut s);
+        assert_eq!(s.notify_last_id, Some(first), "same track does not re-fire");
+
+        s.now_playing_id = None;
+        feed_media_session(&mut s);
+        assert_eq!(s.notify_last_id, None, "stopping advances the marker back");
     }
 
     /// A `State` routed to Settings seeded with a given source set. Each source's
