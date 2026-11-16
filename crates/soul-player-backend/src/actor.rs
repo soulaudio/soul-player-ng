@@ -40,15 +40,14 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     /// Spawn the actor. `make_sink` runs on the pump thread (so `K` need not be
-    /// `Send`) and is **reusable**: called with `None` to build the initial sink,
-    /// and with `Some(rate)` to reopen the device at a track's native rate for
-    /// bit-perfect exclusive output (native-rate switching). `on_event` is called
-    /// from the pump thread on every emitted event. `library` is the initial
+    /// `Send`) and builds the initial sink; per-track native-rate switching reopens
+    /// that sink in place (`Sink::reopen`), so it's only called once. `on_event` is
+    /// called from the pump thread on every emitted event. `library` is the initial
     /// `id → path` map (swap later via [`set_library`](Self::set_library)).
     pub fn spawn<K, Mk, Ev>(make_sink: Mk, library: Arc<Library>, on_event: Ev) -> Self
     where
         K: Sink + 'static,
-        Mk: Fn(Option<u32>) -> anyhow::Result<K> + Send + 'static,
+        Mk: FnOnce() -> anyhow::Result<K> + Send + 'static,
         Ev: Fn(Event) + Send + 'static,
     {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -153,13 +152,10 @@ fn pump_thread<K, Mk, Ev>(
     on_event: Ev,
 ) where
     K: Sink + 'static,
-    Mk: Fn(Option<u32>) -> anyhow::Result<K>,
+    Mk: FnOnce() -> anyhow::Result<K>,
     Ev: Fn(Event),
 {
-    // `None` = the initial sink (device default / shared, or exclusive at the device
-    // rate). `Some(rate)` later reopens it at a track's native rate (native-rate
-    // switching), below.
-    let sink = match make_sink(None) {
+    let sink = match make_sink() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("player: sink init failed: {e:#}");
@@ -290,7 +286,7 @@ fn pump_thread<K, Mk, Ev>(
         //     native rate when it differs — see `maybe_switch_native_rate` for the
         //     guards (shared sinks never reopen; the latch suppresses retrying a rate
         //     the device just refused; the current exclusive sink is kept on failure).
-        maybe_switch_native_rate(&mut player, &mut native_rate_tried, &make_sink);
+        maybe_switch_native_rate(&mut player, &mut native_rate_tried);
 
         // 3. Pump one block (paced by the real sink's backpressure; NullSink
         //    returns immediately, so tests run briefly then drop the actor).
@@ -469,7 +465,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            |_rate| Ok(NullSink::new(48_000, 2)),
+            || Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib),
             move |ev| {
                 let _ = ev_tx.send(ev);
@@ -544,7 +540,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            |_rate| Ok(NullSink::new(48_000, 2)),
+            || Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib_a),
             move |ev| {
                 let _ = ev_tx.send(ev);
@@ -586,7 +582,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            |_rate| Ok(NullSink::new(48_000, 2)),
+            || Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib),
             move |ev| {
                 let _ = ev_tx.send(ev);
