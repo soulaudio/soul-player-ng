@@ -13,7 +13,8 @@ use soul_player_host::{Command, TrackView};
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::albums::{detail_track_row, grid_layout};
+use crate::views::albums::detail_track_row;
+use crate::views::grid;
 use crate::views::icons;
 use crate::views::player::cover;
 
@@ -105,7 +106,7 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // Reuse the albums grid's responsive column rule; read this page's own pane
     // width (first frame has no prior layout → a sensible desktop fallback).
     let pane = cx.layout_size("artists").map(|[w, _]| w).unwrap_or(820.0);
-    let card_w = grid_layout(pane).1;
+    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
     let mut grid = row()
         .key("artists-grid")

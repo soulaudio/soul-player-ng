@@ -6,6 +6,7 @@ pub mod artists;
 pub mod dropdown;
 pub mod eq_graph;
 pub mod genres;
+pub mod grid;
 pub mod home;
 pub mod icons;
 pub mod library;
