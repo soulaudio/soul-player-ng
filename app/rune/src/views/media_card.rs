@@ -5,9 +5,6 @@
 //! thin wrappers over this.
 #![forbid(unsafe_code)]
 
-use std::cell::RefCell;
-use std::rc::Rc;
-
 use rune::{Color, Cursor, El, col, el, icon, text};
 use soul_player_host::Command;
 
@@ -63,7 +60,7 @@ pub(crate) fn media_card(
     spec: CardSpec,
     card_w: f32,
     scale: f32,
-    on_open: impl FnMut(&mut State) + 'static,
+    on_open: impl Fn(&mut State) + 'static,
 ) -> El {
     // Circular artwork is just a cover with a half-side corner radius.
     let corner = if spec.circular {
@@ -137,11 +134,6 @@ pub(crate) fn media_card(
         );
     }
 
-    // `El::on_press` takes `Fn`, but `on_open` is only promised as `FnMut` (a
-    // later card may need to mutate captured state across repeated opens) — wrap
-    // it in `Rc<RefCell<_>>` so the handler we hand to `on_press` is `Fn`, without
-    // narrowing the `media_card` signature itself.
-    let on_open = Rc::new(RefCell::new(on_open));
     col()
         .key(spec.key)
         .role("button")
@@ -154,7 +146,7 @@ pub(crate) fn media_card(
         .hover_group()
         .child(cover_area)
         .child(text_col)
-        .on_press(move |st: &mut State| (on_open.borrow_mut())(st))
+        .on_press(on_open)
 }
 
 #[cfg(test)]
