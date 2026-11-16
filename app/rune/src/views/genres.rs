@@ -9,13 +9,14 @@
 
 use std::collections::HashMap;
 
-use rune::{Cursor, El, ScrollSpec, col, el, icon, row, text};
-use soul_player_host::{Command, TrackView};
+use rune::{Cursor, El, ScrollSpec, col, el, row, text};
+use soul_player_host::TrackView;
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::albums::detail_track_row;
+use crate::views::albums::{detail_track_row, fmt_total_dur};
+use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::icons;
 
 /// One grouped genre: its display name and every track id (in library order) for
@@ -125,11 +126,12 @@ fn back_button(p: &Palette) -> El {
         .on_press(|st: &mut State| st.route = crate::Route::Genres)
 }
 
-/// A genre's detail page: a back link, a header (a "GENRE" eyebrow, the name, a
-/// track count and a Play All — no cover, since genres carry none), then the
-/// genre's track list. The genre is `State::open_genre`, re-derived from the
-/// current library; if it has vanished we just offer the way back.
-pub fn genre_detail(s: &State, p: &Palette) -> El {
+/// A genre's detail page: a back link, the shared hero using a muted music-note
+/// tile in place of artwork ("GENRE" eyebrow, name, "{n} tracks · {duration}",
+/// Play All), then the genre's track list. The genre is `State::open_genre`,
+/// re-derived from the current library; if it has vanished we just offer the way
+/// back.
+pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
     let genres = group_genres(&s.library);
     let Some(genre) = s
         .open_genre
@@ -144,55 +146,31 @@ pub fn genre_detail(s: &State, p: &Palette) -> El {
             .child(back_button(p));
     };
 
-    let play_ids = genre.ids.clone();
-    let header = col()
-        .key("genre-header")
-        .gap(space::XS)
-        .pb(space::SECTION)
-        .child(
-            text(t!("genre.eyebrow").to_uppercase())
-                .font(type_::SECTION)
-                .color(p.text_secondary),
-        )
-        .child(
-            text(genre.name.clone())
-                .font(type_::DISPLAY)
-                .color(p.fg)
-                .truncate(),
-        )
-        .child(
-            text(t!("genre.trackCount", count => genre.ids.len()).to_string())
-                .font(type_::CAPTION)
-                .color(p.text_secondary),
-        )
-        .child(
-            // The same "Play All" pill as the artist/album pages — plays the
-            // genre's tracks from the top.
-            el().key("genre-play-all")
-                .role("button")
-                .label(t!("album.playAll").to_string())
-                .focusable(true)
-                .px(space::XL)
-                .py(space::MD)
-                .radius(radius::FULL)
-                .fill(p.primary)
-                .cursor(Cursor::Pointer)
-                .hover(p.bg.alpha(fx::HOVER_FILL))
-                .press(p.bg.alpha(fx::PRESS_FILL))
-                .on_press(move |st: &mut State| {
-                    st.host.send(Command::PlayContext {
-                        ids: play_ids.clone(),
-                        start: 0,
-                    })
-                })
-                .child(
-                    row()
-                        .gap(space::SM)
-                        .center_y()
-                        .child(icon(&icons::PLAY, 20.0).color(p.bg))
-                        .child(text(t!("album.playAll").to_string()).color(p.bg)),
-                ),
-        );
+    let total: f64 = genre
+        .ids
+        .iter()
+        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .map(|t| t.duration_secs)
+        .sum();
+    let meta = t!(
+        "detail.tracksAndDuration",
+        count => genre.ids.len(),
+        dur => fmt_total_dur(total)
+    )
+    .to_string();
+
+    let hero = detail_hero(
+        s,
+        p,
+        scale,
+        "genre",
+        HeroArt::Icon(&icons::MUSIC),
+        t!("genre.eyebrow").to_uppercase(),
+        genre.name.clone(),
+        None,
+        meta,
+        play_all_pill("genre-play-all", genre.ids.clone(), p),
+    );
 
     let mut list = col().key("genre-tracks").role("list").gap(space::XXS);
     for (i, &id) in genre.ids.iter().enumerate() {
@@ -212,18 +190,12 @@ pub fn genre_detail(s: &State, p: &Palette) -> El {
         .key("genre-detail")
         .grow(1.0)
         .min_h(0.0)
-        .child(
-            row()
-                .key("genre-detail-top")
-                .px(space::PANE)
-                .pt(space::SM)
-                .child(back_button(p)),
-        )
+        .child(row_top(p))
         .child(
             col()
                 .key("genre-detail-content")
                 .padding(space::PANE)
-                .child(header)
+                .child(hero)
                 .child(list)
                 .scroll(ScrollSpec {
                     stick_bottom: false,
@@ -232,6 +204,15 @@ pub fn genre_detail(s: &State, p: &Palette) -> El {
                 .grow(1.0)
                 .min_h(0.0),
         )
+}
+
+/// The back-link bar above the genre detail content.
+fn row_top(p: &Palette) -> El {
+    row()
+        .key("genre-detail-top")
+        .px(space::PANE)
+        .pt(space::SM)
+        .child(back_button(p))
 }
 
 #[cfg(test)]

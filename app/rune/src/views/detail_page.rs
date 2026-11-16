@@ -25,8 +25,6 @@ pub(crate) enum HeroArt {
     /// A cover drawn from a member track id; `circular` clips it to a circle.
     Cover { id: u32, circular: bool },
     /// A centered glyph in a muted `radius::MD` tile.
-    // Not yet constructed outside tests — wired in by the genre-detail follow-up task.
-    #[allow(dead_code)]
     Icon(&'static Icon),
 }
 

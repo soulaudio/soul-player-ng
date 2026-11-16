@@ -1757,7 +1757,7 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
             Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
             Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
             Route::Genres => views::genres::genres_page(s, p).grow(1.0),
-            Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
+            Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
         })
 }
