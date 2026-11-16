@@ -5,6 +5,7 @@
 
 pub mod analyzer;
 pub mod eq;
+mod remote;
 mod sink;
 
 use std::collections::HashMap;
