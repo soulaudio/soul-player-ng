@@ -646,6 +646,28 @@ fn save_exclusive_to(path: &Path, on: bool) -> std::io::Result<()> {
     std::fs::write(path, if on { "1" } else { "" })
 }
 
+/// `<config>/soul-player/output_exclusive_strict.txt` — the persisted **strict**
+/// (exclusive-or-stop) choice. `"1"` = strict; blank / missing = off (fall back to
+/// shared). Only meaningful together with `output_exclusive`.
+pub fn output_exclusive_strict_path() -> Option<PathBuf> {
+    Some(soul_player_dir()?.join("output_exclusive_strict.txt"))
+}
+
+/// Whether strict exclusive is requested (default `false`). Reuses the same `"1"`
+/// semantics as [`load_output_exclusive`].
+pub fn load_output_exclusive_strict() -> bool {
+    output_exclusive_strict_path()
+        .map(|p| load_exclusive_from(&p))
+        .unwrap_or(false)
+}
+
+/// Persist the strict-exclusive choice (best-effort).
+pub fn save_output_exclusive_strict(on: bool) {
+    if let Some(p) = output_exclusive_strict_path() {
+        let _ = save_exclusive_to(&p, on);
+    }
+}
+
 // --- ReplayGain preference ---
 
 /// `<config>/soul-player/replaygain.txt` — the persisted ReplayGain choice, two

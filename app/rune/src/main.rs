@@ -241,6 +241,10 @@ struct State {
     /// device may fall back to shared if it can't open exclusive (reflected live in
     /// the signal path's Exclusive stage).
     exclusive: bool,
+    /// Whether **strict** exclusive (exclusive-or-stop) is requested (persisted). With
+    /// `exclusive`, the next session won't fall back to shared if exclusive can't open
+    /// — playback stops instead (the purist stance). Only meaningful when `exclusive`.
+    exclusive_strict: bool,
     /// ReplayGain normalization mode (persisted), rendered by Settings →
     /// ReplayGain; `Off` = no normalization.
     replaygain_mode: ReplayGainMode,
@@ -483,6 +487,7 @@ impl State {
             output_device: config::load_output_device(),
             output_devices,
             exclusive: config::load_output_exclusive(),
+            exclusive_strict: config::load_output_exclusive_strict(),
             replaygain_mode,
             replaygain_preamp,
             dsp_units,
@@ -741,6 +746,17 @@ pub(crate) fn set_exclusive(s: &mut State, on: bool) {
     s.exclusive = on;
     config::save_output_exclusive(on);
     s.host.set_exclusive(on);
+}
+
+/// Toggle + persist **strict** exclusive (exclusive-or-stop). Like
+/// [`set_exclusive`], it applies on the next playback session: with exclusive on and
+/// strict on, that session won't downgrade to shared if exclusive can't open — it
+/// stops instead (shown in the Exclusive card).
+pub(crate) fn set_exclusive_strict(s: &mut State, on: bool) {
+    tracing::info!(strict = on, "strict exclusive toggled");
+    s.exclusive_strict = on;
+    config::save_output_exclusive_strict(on);
+    s.host.set_exclusive_strict(on);
 }
 
 /// Choose + persist the ReplayGain mode (used by the ReplayGain settings buttons).
@@ -2321,6 +2337,7 @@ fn main() -> anyhow::Result<()> {
     // session opens exclusive (bit-perfect) if the user asked for it — falling back
     // to shared if the device refuses, which the signal path then shows.
     host.set_exclusive(config::load_output_exclusive());
+    host.set_exclusive_strict(config::load_output_exclusive_strict());
     // Restore the persisted ReplayGain choice before any spawn, so the first
     // playback session is already normalized (the host banks it and tells the
     // actor on spawn).
@@ -3387,6 +3404,43 @@ mod tests {
                 "stage card {k} renders in the Settings → Audio pipeline"
             );
         }
+    }
+
+    /// The strict (exclusive-or-stop) sub-toggle only appears once exclusive output
+    /// is on — it's a sub-option of exclusive, so hiding it keeps the card uncluttered
+    /// for the common (shared) case.
+    #[test]
+    fn strict_exclusive_toggle_only_shows_when_exclusive_is_on() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+
+        // Exclusive OFF → the Exclusive card renders but no strict sub-toggle.
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.exclusive = false;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("sp-stage-exclusive").is_some(), "the card renders");
+        assert!(
+            rt.find("exclusive-strict-toggle").is_none(),
+            "no strict toggle when exclusive is off"
+        );
+
+        // Exclusive ON → the strict sub-toggle appears.
+        let mut s2 = populated_state();
+        s2.route = Route::Settings;
+        s2.settings_tab = SettingsTab::Audio;
+        s2.exclusive = true;
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("exclusive-strict-toggle").is_some(),
+            "the strict toggle shows once exclusive is on"
+        );
     }
 
     /// The DSP chain's unit card renders the real graphic-EQ controls — a per-unit
