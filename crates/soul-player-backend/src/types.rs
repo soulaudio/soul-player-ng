@@ -300,8 +300,13 @@ pub struct SignalPath {
     pub device_rate: u32,
     /// Whether the engine resamples `decoded_rate` → `device_rate`.
     pub resampling: bool,
-    /// Output bit depth fed to the device (canonical 24-bit today).
+    /// Output bit depth the device actually receives — the shared mixer's format in
+    /// shared mode, or the negotiated bit-perfect depth in exclusive mode (no longer
+    /// a hardcoded canonical 24).
     pub output_bits: u8,
+    /// Whether the sink drives the device in **exclusive** (bit-perfect) mode,
+    /// bypassing the OS mixer. `false` for shared mode (the default / the fallback).
+    pub exclusive: bool,
 }
 
 #[cfg(test)]

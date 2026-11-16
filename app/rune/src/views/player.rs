@@ -686,6 +686,7 @@ mod tests {
             device_rate,
             resampling,
             output_bits: 24,
+            exclusive: false,
         };
         // DSD64 on a 44.1k device: native DSD, no resample.
         assert_eq!(
