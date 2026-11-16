@@ -34,6 +34,41 @@ impl Sink for NullSink {
     }
 }
 
+/// A [`Sink`] that reports **exclusive** output at a configurable rate — for
+/// testing native-rate switching, where the engine reopens an exclusive device at
+/// each track's rate. Discards output like [`NullSink`]; the only thing that
+/// matters is that [`exclusive`](Sink::exclusive) is `true` and the rate is what a
+/// reopen requested.
+pub(crate) struct ExclusiveSink {
+    pub rate: u32,
+    pub channels: u16,
+}
+
+impl ExclusiveSink {
+    pub(crate) fn new(rate: u32, channels: u16) -> Self {
+        Self { rate, channels }
+    }
+}
+
+impl Sink for ExclusiveSink {
+    fn stream_info(&self) -> StreamInfo {
+        StreamInfo {
+            sample_rate: self.rate,
+            channels: self.channels,
+            format: SampleFormat::Int { bits: 24 },
+        }
+    }
+    fn exclusive(&self) -> bool {
+        true
+    }
+    fn write(&mut self, _frames: &[i32]) -> Result<(), SinkError> {
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
+}
+
 /// A [`Sink`] that RECORDS everything the deck writes, applying the same ramped
 /// output-stage volume gain as the real `soul-audio-desktop::sink::CpalSink`
 /// (`cur_gain += (target − cur_gain)·0.01` per interleaved sample, truncating
