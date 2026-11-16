@@ -190,7 +190,7 @@ fn pump_thread<K, Mk, Ev>(
     //     the loader's decoder results) so this pump — the one event source —
     //     emits the `TrackLoudnessAnalyzed` event. The cache is read synchronously
     //     at the RG gate below.
-    let (loud_res_tx, loud_res_rx) = mpsc::channel::<(PathBuf, f32)>();
+    let (loud_res_tx, loud_res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
     let (loudness, analyzer) = LoudnessCache::spawn(loud_res_tx);
 
     let mut vol = VolumeState::new();
@@ -309,8 +309,8 @@ fn pump_thread<K, Mk, Ev>(
         //     emitting one event per newly-computed gain so the app can persist
         //     it. The worker already wrote the cache, so the gain is usable below
         //     and on the NEXT play of that track.
-        while let Ok((path, gain_db)) = loud_res_rx.try_recv() {
-            on_event(Event::TrackLoudnessAnalyzed { path, gain_db });
+        while let Ok((path, loudness)) = loud_res_rx.try_recv() {
+            on_event(Event::TrackLoudnessAnalyzed { path, loudness });
         }
 
         // 3c. Re-apply ReplayGain when the current track changes, or when the
@@ -350,9 +350,20 @@ fn pump_thread<K, Mk, Ev>(
             {
                 tick.duration_secs = Some(d);
             }
+            let cur_id = tick.now_playing_id;
             on_event(Event::Tick(tick));
             on_event(Event::Queue(project_queue(&player)));
-            on_event(Event::SignalPath(project_signal_path(&player)));
+            // Attach the current track's cached loudness metrics to the signal path
+            // (the pure projection can't reach the actor's cache). Re-emitted every
+            // tick, so it fills in within ~125 ms of the background analysis landing.
+            let mut sp = project_signal_path(&player);
+            if let Some(sp) = sp.as_mut()
+                && let Some(id) = cur_id
+                && let Some(path) = library.lock().expect("library mutex").path_of(id)
+            {
+                sp.loudness = loudness.metrics(&path);
+            }
+            on_event(Event::SignalPath(sp));
             last_tick = Instant::now();
         }
 
@@ -646,10 +657,20 @@ mod tests {
 
         // A cache seeded (as `SeedLoudness` would) with a computed gain for the
         // untagged WAV at id 0 — no worker interaction needed to observe the fold.
-        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, f32)>();
+        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
         let (loudness, _worker) = LoudnessCache::spawn(res_tx);
         let path0 = library.lock().unwrap().path_of(0).unwrap();
-        loudness.seed(&[(path0, -7.5)]);
+        // integrated −10.5 LUFS → derived RG gain −7.5 dB (to the −18 target).
+        loudness.seed(&[(
+            path0,
+            crate::TrackLoudness {
+                integrated_lufs: -10.5,
+                lra: 0.0,
+                true_peak_dbtp: 0.0,
+                plr: 0.0,
+                dr: 0.0,
+            },
+        )]);
         let rg_tags: BTreeMap<u32, RgInfo> = BTreeMap::new(); // WAV fixtures: untagged
 
         // Track mode: the cached gain stands in as the track gain.
@@ -705,7 +726,7 @@ mod tests {
         let lib = fixture_library(&dir);
         let library = Arc::new(Mutex::new(lib));
 
-        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, f32)>();
+        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
         let (loudness, _worker) = LoudnessCache::spawn(res_tx);
         let rg_tags: BTreeMap<u32, RgInfo> = BTreeMap::new();
 

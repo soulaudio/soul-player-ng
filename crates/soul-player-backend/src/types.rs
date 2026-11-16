@@ -6,7 +6,33 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use soul_audio_core::DeckState;
+use soul_audio_loudness::LoudnessMetrics;
 use soul_audio_queue::Repeat;
+
+/// Per-track loudness & dynamic-range metrics for the UI readouts and ReplayGain —
+/// the serde-able DTO mirror of the core analyzer's [`LoudnessMetrics`]. All in
+/// standard units: `integrated_lufs`/`true_peak_dbtp` absolute, `lra`/`plr` in LU,
+/// `dr` the integer DR value.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrackLoudness {
+    pub integrated_lufs: f32,
+    pub lra: f32,
+    pub true_peak_dbtp: f32,
+    pub plr: f32,
+    pub dr: f32,
+}
+
+impl From<LoudnessMetrics> for TrackLoudness {
+    fn from(m: LoudnessMetrics) -> Self {
+        Self {
+            integrated_lufs: m.integrated_lufs,
+            lra: m.lra,
+            true_peak_dbtp: m.true_peak_dbtp,
+            plr: m.plr,
+            dr: m.dr,
+        }
+    }
+}
 
 /// A command from the UI to the player actor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -65,7 +91,7 @@ pub enum Command {
     /// `(path, track_gain_db)` pair (the computed gain to the −18 LUFS RG2 target).
     /// The pump inserts them into the cache; see the hybrid ReplayGain path in
     /// `crate::loudness`.
-    SeedLoudness(Vec<(PathBuf, f32)>),
+    SeedLoudness(Vec<(PathBuf, TrackLoudness)>),
 }
 
 /// How ReplayGain tags are applied during playback, chosen in Settings →
@@ -142,15 +168,15 @@ pub enum Event {
     /// signal-path display. Emitted alongside `Tick`/`Queue` so it tracks rate /
     /// ReplayGain / device changes.
     SignalPath(Option<SignalPath>),
-    /// A previously-untagged track finished background loudness analysis: `path`
-    /// identifies the file and `gain_db` is the computed ReplayGain track gain (to
-    /// the −18 LUFS RG2 target), emitted once when the analysis completes. The app
-    /// persists it (keyed by path + mtime/size) and seeds it back next launch via
-    /// [`Command::SeedLoudness`]. No UI is required — a silent background cache is
-    /// the intended behavior.
+    /// A previously-unmeasured track finished background loudness analysis: `path`
+    /// identifies the file and `loudness` is its full metric set (integrated LUFS,
+    /// LRA, true-peak, PLR, DR), emitted once when the analysis completes. The app
+    /// renders the readouts, derives the ReplayGain gain from the integrated
+    /// loudness, and persists the set (keyed by path + mtime/size) to seed back next
+    /// launch via [`Command::SeedLoudness`].
     TrackLoudnessAnalyzed {
         path: PathBuf,
-        gain_db: f32,
+        loudness: TrackLoudness,
     },
     /// A library rescan found tracks that disappeared from an **available** source
     /// since the last scan: `root` is the source they were under and `count` is how
@@ -307,6 +333,10 @@ pub struct SignalPath {
     /// Whether the sink drives the device in **exclusive** (bit-perfect) mode,
     /// bypassing the OS mixer. `false` for shared mode (the default / the fallback).
     pub exclusive: bool,
+    /// The current track's loudness & dynamic-range metrics, once the background
+    /// analysis has them cached (`None` while unmeasured — the readouts show
+    /// "analyzing…"). Filled by the actor from its loudness cache at projection.
+    pub loudness: Option<TrackLoudness>,
 }
 
 #[cfg(test)]
@@ -340,11 +370,21 @@ mod tests {
         assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
     }
 
+    fn loudness(integrated: f32) -> TrackLoudness {
+        TrackLoudness {
+            integrated_lufs: integrated,
+            lra: 6.0,
+            true_peak_dbtp: -1.2,
+            plr: 12.0,
+            dr: 11.0,
+        }
+    }
+
     #[test]
     fn seed_loudness_command_serde_roundtrips() {
         let cmd = Command::SeedLoudness(vec![
-            (PathBuf::from("/music/a.flac"), -6.0),
-            (PathBuf::from("/music/b.wav"), 2.5),
+            (PathBuf::from("/music/a.flac"), loudness(-12.0)),
+            (PathBuf::from("/music/b.wav"), loudness(-20.5)),
         ]);
         let json = serde_json::to_string(&cmd).unwrap();
         assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
@@ -354,7 +394,7 @@ mod tests {
     fn track_loudness_analyzed_event_serde_roundtrips() {
         let ev = Event::TrackLoudnessAnalyzed {
             path: PathBuf::from("/music/untagged.flac"),
-            gain_db: -3.25,
+            loudness: loudness(-14.0),
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<Event>(&json).unwrap(), ev);
