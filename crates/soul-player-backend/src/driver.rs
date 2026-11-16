@@ -310,7 +310,11 @@ pub fn project_signal_path<K: Sink, D: SeekableDecoder>(
         replay_gain_db: deck.replay_gain_db(),
         device_rate: di.device_rate,
         resampling: di.resampling,
-        output_bits: 24,
+        // The device's real output depth (shared mixer format, or the negotiated
+        // bit-perfect depth in exclusive mode), sourced from the sink — not a
+        // hardcoded canonical 24.
+        output_bits: di.output_format.bits_per_sample(),
+        exclusive: di.exclusive,
     })
 }
 
@@ -545,7 +549,14 @@ mod tests {
             sp.resampling,
             "44.1 kHz decoder into a 48 kHz device resamples"
         );
-        assert_eq!(sp.output_bits, 24);
+        assert_eq!(
+            sp.output_bits, 24,
+            "NullSink reports canonical 24-bit as its output format"
+        );
+        assert!(
+            !sp.exclusive,
+            "the test NullSink is a shared sink, not exclusive"
+        );
         assert_eq!(sp.replay_gain_db, 0.0, "no ReplayGain applied");
     }
 
