@@ -5271,8 +5271,8 @@ mod tests {
     }
 
     /// Pressing the signal-path line opens the stage-by-stage panel: every stage
-    /// row renders, the not-yet-built stages are present (as "soon"), and the
-    /// ReplayGain toggle flips the mode.
+    /// row renders, every pipeline stage is present (Exclusive output and DSP/EQ
+    /// now live, not "soon"), and the ReplayGain toggle flips the mode.
     #[test]
     fn signal_path_panel_opens_with_stages_and_rg_toggle() {
         use soul_player_host::{SignalPath, SourceFormat};
@@ -5328,7 +5328,7 @@ mod tests {
             "sp-row-resample",
             "sp-row-output",
             "sp-row-exclusive", // live (bit-perfect) or dim "shared"
-            "sp-row-dsp",       // "soon"
+            "sp-row-dsp",       // live: accent "Active" or dim "Bypassed"
         ] {
             assert!(rt.find(k).is_some(), "stage row {k} renders");
         }

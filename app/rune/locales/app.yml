@@ -1069,13 +1069,20 @@ player.signalPath.rateExact:
   zh: '无 - 比特完美'
   cs: 'zadne - bitove presne'
   ja: 'なし - ビットパーフェクト'
-player.signalPath.soon:
-  en: 'soon'
-  de: 'bald'
-  es: 'pronto'
-  zh: '即将推出'
-  cs: 'brzy'
-  ja: '近日'
+player.signalPath.dspActive:
+  en: 'Active'
+  de: 'Aktiv'
+  es: 'Activo'
+  zh: '已启用'
+  cs: 'Aktivní'
+  ja: '有効'
+player.signalPath.dspBypassed:
+  en: 'Bypassed'
+  de: 'Umgangen'
+  es: 'Omitido'
+  zh: '旁路'
+  cs: 'Přemostěno'
+  ja: 'バイパス'
 player.signalPath.loudness:
   en: 'Loudness'
   de: 'Lautheit'
@@ -1150,12 +1157,12 @@ settings.signalPath:
   cs: 'Cesta signalu'
   ja: 'シグナルパス'
 settings.signalPathDesc:
-  en: 'The decode-to-output chain for the current track. Exclusive output and DSP are coming soon.'
-  de: 'Die Dekodierungs- bis Ausgabekette des aktuellen Titels. Exklusivausgabe und DSP folgen bald.'
-  es: 'La cadena de decodificacion a salida de la pista actual. Salida exclusiva y DSP llegaran pronto.'
-  zh: '当前曲目的解码到输出链路。独占输出和 DSP 即将推出。'
-  cs: 'Retezec od dekodovani po vystup pro aktualni skladbu. Exkluzivni vystup a DSP brzy.'
-  ja: '現在のトラックのデコードから出力までの経路。排他出力とDSPは近日対応。'
+  en: 'The decode-to-output chain for the current track, including exclusive output and the DSP/EQ stage.'
+  de: 'Die Dekodierungs- bis Ausgabekette des aktuellen Titels, inklusive Exklusivausgabe und der DSP/EQ-Stufe.'
+  es: 'La cadena de decodificacion a salida de la pista actual, incluyendo salida exclusiva y la etapa DSP/EQ.'
+  zh: '当前曲目的解码到输出链路，包括独占输出和 DSP/EQ 环节。'
+  cs: 'Retezec od dekodovani po vystup pro aktualni skladbu, vcetne exkluzivniho vystupu a stupne DSP/EQ.'
+  ja: '現在のトラックのデコードから出力までの経路（排他出力とDSP/EQ段を含む）。'
 
 # Settings -> Music Data: the Managed Library card (write-path organizer). The
 # template is chosen from presets (no free-text entry — Rune's IME is pre-release).
