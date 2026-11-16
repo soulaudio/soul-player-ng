@@ -131,6 +131,13 @@ detail.durationM:
   zh: '%{mins} 分钟'
   cs: '%{mins} min'
   ja: '%{mins} 分'
+detail.tracksAndDuration:
+  en: '%{count} tracks · %{dur}'
+  de: '%{count} Titel · %{dur}'
+  es: '%{count} pistas · %{dur}'
+  zh: '%{count} 首 · %{dur}'
+  cs: '%{count} skladeb · %{dur}'
+  ja: '%{count} 曲 · %{dur}'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
