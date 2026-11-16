@@ -389,10 +389,14 @@ struct Inner {
     /// NEXT spawn, not the live stream (like the output device). The factory records
     /// what the request actually resolved to in [`exclusive_status`](Inner::exclusive_status).
     exclusive: Mutex<bool>,
-    /// What the last exclusive-output request resolved to (active at a device format
-    /// / fell back to shared with a reason / shared by choice). Written by the sink
-    /// factory on the pump thread at spawn, read by the UI to show the truth — hence
-    /// an `Arc` shared with the factory.
+    /// **Strict** exclusive (exclusive-or-stop): when on with `exclusive`, the next
+    /// session does NOT fall back to shared if exclusive can't open — playback simply
+    /// doesn't start (the purist stance). Applies to the next spawn, like `exclusive`.
+    exclusive_strict: Mutex<bool>,
+    /// What the last exclusive-output request resolved to (active / fell back to
+    /// shared with a reason / unavailable under strict / shared by choice). Written by
+    /// the sink factory on the pump thread at spawn, read by the UI to show the truth
+    /// — hence an `Arc` shared with the factory.
     exclusive_status: Arc<Mutex<ExclusiveStatus>>,
     /// The ReplayGain normalization choice `(mode, preamp_db)`. Remembered so a
     /// freshly-spawned actor is told the current setting (via a `SetReplayGain`
@@ -489,6 +493,7 @@ impl PlayerHandle {
                 indexing_mode: Mutex::new(IndexingMode::Maximum),
                 output_device: Mutex::new(None),
                 exclusive: Mutex::new(false),
+                exclusive_strict: Mutex::new(false),
                 exclusive_status: Arc::new(Mutex::new(ExclusiveStatus::Shared)),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
@@ -994,6 +999,21 @@ impl PlayerHandle {
         *self.inner.exclusive.lock().expect("exclusive mutex")
     }
 
+    /// Set **strict** exclusive (exclusive-or-stop): when on together with
+    /// [`set_exclusive`](Self::set_exclusive), the next session will NOT fall back to
+    /// shared if exclusive can't open — playback simply doesn't start, and
+    /// [`exclusive_status`](Self::exclusive_status) reports
+    /// [`ExclusiveStatus::Unavailable`]. Applies to the next spawn, like the toggle.
+    pub fn set_exclusive_strict(&self, on: bool) {
+        *self.inner.exclusive_strict.lock().expect("strict mutex") = on;
+    }
+
+    /// Whether strict exclusive is requested (for seeding the Settings toggle).
+    #[must_use]
+    pub fn exclusive_strict(&self) -> bool {
+        *self.inner.exclusive_strict.lock().expect("strict mutex")
+    }
+
     /// What the most recent device spawn's exclusive request resolved to (active at
     /// a negotiated device format / fell back to shared with a reason / shared by
     /// choice). The sink factory writes this when it opens the device; before the
@@ -1335,6 +1355,7 @@ impl PlayerHandle {
         // Snapshot the exclusive-output request the same way (applies to this spawn
         // only); share the status cell so the factory can record what it resolved to.
         let exclusive = *self.inner.exclusive.lock().expect("exclusive mutex");
+        let strict = *self.inner.exclusive_strict.lock().expect("strict mutex");
         let exclusive_status = Arc::clone(&self.inner.exclusive_status);
         // Snapshot the ReplayGain choice the same way, then tell the fresh actor so
         // the session starts already normalized. Lock ordering: this holds `guard`
@@ -1353,6 +1374,7 @@ impl PlayerHandle {
             self.inner.mode,
             device,
             exclusive,
+            strict,
             exclusive_status,
             self.inner.dsp.clone(),
             self.inner.spectrum.clone(),
@@ -1441,9 +1463,15 @@ mod tests {
         assert!(h.exclusive_requested(), "the request is remembered");
         h.set_exclusive(false);
         assert!(!h.exclusive_requested(), "and can be turned back off");
+        // Strict (exclusive-or-stop) is an independent remembered flag.
+        assert!(!h.exclusive_strict(), "strict defaults off");
+        h.set_exclusive_strict(true);
+        assert!(h.exclusive_strict(), "the strict request is remembered");
+        h.set_exclusive_strict(false);
+        assert!(!h.exclusive_strict(), "and can be turned back off");
         assert!(
             h.inner.player.lock().unwrap().is_none(),
-            "no actor is spawned just to set the toggle"
+            "no actor is spawned just to set the toggles"
         );
     }
 

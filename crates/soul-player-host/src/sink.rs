@@ -37,19 +37,23 @@ impl SinkMode {
 }
 
 /// What an **exclusive-output** request resolved to on the most recent actor spawn,
-/// so the UI can tell the truth: active (and at what device format), fell back to
-/// shared (and why), or shared by choice. The live `exclusive` flag on the signal
-/// path says whether the *current* stream is exclusive; this adds the *reason* a
-/// requested exclusive didn't take.
+/// so the UI can tell the truth: active, fell back to shared (and why), unavailable
+/// under strict mode (and why), or shared by choice. The live rate / format comes
+/// from the signal path (which tracks per-track native-rate reopens); this says only
+/// *whether* exclusive took and *why not* when it didn't — so it never goes stale on
+/// a reopen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExclusiveStatus {
     /// Exclusive was not requested — shared mode by choice.
     Shared,
-    /// Exclusive is active, at this negotiated device format.
-    Active { rate: u32, channels: u16 },
+    /// Exclusive is active (the live format is on the signal path).
+    Active,
     /// Exclusive was requested but fell back to shared; a human-readable reason
     /// (device in use, no exclusive format, not available on this platform, …).
     FellBack(String),
+    /// Exclusive was requested with **strict** mode on and could not be opened, so
+    /// playback did NOT start (never silently downgraded to shared); the reason.
+    Unavailable(String),
 }
 
 /// The chosen device sink: shared-mode cpal, or (Windows) a WASAPI exclusive-mode
@@ -130,14 +134,16 @@ impl Sink for DeviceSink {
 ///
 /// `output_device` names the device the `Device` arm should open (one of
 /// [`soul_audio_desktop::output_device_names`]); `None` means the system default.
-/// `exclusive` asks for a bit-perfect WASAPI exclusive stream, falling back to
-/// shared (recording why in `status`) if the device refuses it. Both are ignored
-/// by `Offline` (the `NullSink` has no device to pick).
+/// `exclusive` asks for a bit-perfect WASAPI exclusive stream; `strict` makes that
+/// **exclusive-or-stop** (no fall-back to shared — the actor doesn't start if
+/// exclusive can't open). All are ignored by `Offline` (the `NullSink` has no device
+/// to pick). The outcome is recorded in `status`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_actor(
     mode: SinkMode,
     output_device: Option<String>,
     exclusive: bool,
+    strict: bool,
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
@@ -148,7 +154,7 @@ pub(crate) fn build_actor(
         // Offline/headless has no audible output, so the EQ/analyzer are moot there.
         SinkMode::Offline => AudioPlayer::spawn(|| Ok(NullSink::new(48_000, 2)), lib, on_event),
         SinkMode::Device => AudioPlayer::spawn(
-            device_sink_factory(output_device, exclusive, status, dsp, spectrum),
+            device_sink_factory(output_device, exclusive, strict, status, dsp, spectrum),
             lib,
             on_event,
         ),
@@ -157,56 +163,69 @@ pub(crate) fn build_actor(
 
 /// Build the pump-thread make-sink closure for the real device: try exclusive first
 /// when asked (bit-perfect, Windows only, at the device's native rate), else — or on
-/// an exclusive failure — open the named shared device (falling back to the system
-/// default if it is gone), then wrap it in the [`DspSink`] so the DSP chain runs at
-/// the device rate. Called ONCE for the initial sink; per-track native-rate switching
-/// is done by the engine reopening this sink in place (`Sink::reopen`), not by
-/// rebuilding it, so this is an `FnOnce`.
+/// an exclusive failure in non-strict mode — open the named shared device (falling
+/// back to the system default if it is gone), then wrap it in the [`DspSink`] so the
+/// DSP chain runs at the device rate. Called ONCE for the initial sink; per-track
+/// native-rate switching reopens this sink in place (`Sink::reopen`), so it's an
+/// `FnOnce`.
 fn device_sink_factory(
     output_device: Option<String>,
     exclusive: bool,
+    strict: bool,
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
 ) -> impl FnOnce() -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
     move || {
-        let device = open_device_sink(output_device, exclusive, &status)?;
+        let device = open_device_sink(output_device, exclusive, strict, &status)?;
         Ok(DspSink::new(device, dsp, spectrum))
     }
 }
 
-/// Open the device sink, honoring `exclusive` when possible and recording the
-/// outcome in `status`. Exclusive is attempted only on Windows (via WASAPI), at the
-/// device's native rate. On an exclusive failure it falls back to a shared `CpalSink`
-/// — never silent, never a hard stop — and records [`ExclusiveStatus::FellBack`]. A
-/// successful exclusive open records [`ExclusiveStatus::Active`].
+/// Open the device sink, honoring `exclusive` when possible and recording the outcome
+/// in `status`. Exclusive is attempted only on Windows (via WASAPI), at the device's
+/// native rate. On an exclusive failure:
+///
+/// - non-`strict`: fall back to a shared `CpalSink` — never silent — and record
+///   [`ExclusiveStatus::FellBack`];
+/// - `strict` (exclusive-or-stop): do NOT fall back — record
+///   [`ExclusiveStatus::Unavailable`] and return `Err`, so the actor doesn't start
+///   (no silent downgrade to the OS mixer).
+///
+/// A successful exclusive open records [`ExclusiveStatus::Active`].
 fn open_device_sink(
     output_device: Option<String>,
     exclusive: bool,
+    strict: bool,
     status: &Arc<Mutex<ExclusiveStatus>>,
 ) -> anyhow::Result<DeviceSink> {
     if exclusive {
+        // The exclusive-open failure reason (set on either platform below), used to
+        // decide strict-stop vs shared-fallback once, after the attempt.
+        let reason: String;
         #[cfg(windows)]
-        match try_open_exclusive(output_device.clone()) {
-            Ok(sink) => {
-                let si = sink.stream_info();
-                *status.lock().expect("exclusive status mutex") = ExclusiveStatus::Active {
-                    rate: si.sample_rate,
-                    channels: si.channels,
-                };
-                return Ok(DeviceSink::Exclusive(sink));
-            }
-            Err(reason) => {
-                *status.lock().expect("exclusive status mutex") = ExclusiveStatus::FellBack(reason);
-                // fall through to the shared sink
+        {
+            match try_open_exclusive(output_device.clone()) {
+                Ok(sink) => {
+                    *status.lock().expect("exclusive status mutex") = ExclusiveStatus::Active;
+                    return Ok(DeviceSink::Exclusive(sink));
+                }
+                Err(r) => reason = r,
             }
         }
         #[cfg(not(windows))]
         {
-            *status.lock().expect("exclusive status mutex") = ExclusiveStatus::FellBack(
-                "exclusive output is not available on this platform".to_string(),
-            );
+            reason = "exclusive output is not available on this platform".to_string();
         }
+
+        if strict {
+            // Exclusive-or-stop: don't downgrade to shared — stop here.
+            *status.lock().expect("exclusive status mutex") =
+                ExclusiveStatus::Unavailable(reason.clone());
+            anyhow::bail!("exclusive output unavailable (strict mode): {reason}");
+        }
+        *status.lock().expect("exclusive status mutex") = ExclusiveStatus::FellBack(reason);
+        // fall through to the shared sink
     } else {
         *status.lock().expect("exclusive status mutex") = ExclusiveStatus::Shared;
     }

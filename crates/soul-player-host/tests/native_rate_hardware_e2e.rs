@@ -101,7 +101,7 @@ fn native_rate_switch_engages_on_real_hardware() {
     );
     // Sanity: the status cell agrees the stream is exclusive (active at some rate).
     assert!(
-        matches!(h.exclusive_status(), ExclusiveStatus::Active { .. }),
+        matches!(h.exclusive_status(), ExclusiveStatus::Active),
         "exclusive_status should be Active after a successful switch"
     );
 }
