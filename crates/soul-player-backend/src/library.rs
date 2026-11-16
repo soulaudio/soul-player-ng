@@ -44,6 +44,19 @@ pub struct IncrementalBuild {
     pub bytes: Vec<Vec<u8>>,
 }
 
+/// The result of [`Library::locate`]: which source a track belongs to and its
+/// path relative to that source's root — e.g. for a remote source, whose
+/// "root" isn't a real local directory, the relative path (not an absolute
+/// local one) is what a caller needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Located {
+    /// Index into [`Library::source_counts`]'s order — the compound id's
+    /// source bits.
+    pub source: usize,
+    /// The file's path relative to that source's root, native components.
+    pub rel: PathBuf,
+}
+
 /// A `.soulidx` reader over an **owning** in-memory source: `Cursor` owns the
 /// baked bytes, so the reader is `'static` with no leak and no on-disk cache, and
 /// drops cleanly when the `Library` is swapped out on rescan.
@@ -215,21 +228,41 @@ impl Library {
     /// components.
     #[must_use]
     pub fn path_of(&self, id: u32) -> Option<PathBuf> {
+        let located = self.locate(id)?;
+        let root = self.roots.get(located.source)?;
+        Some(root.join(located.rel))
+    }
+
+    /// The source index + root-relative path for track `id`, without joining
+    /// it to that source's physical root — the piece [`path_of`](Self::path_of)
+    /// needs before it resolves to an absolute local path, and what a remote
+    /// source (whose "root" isn't a real local directory) needs instead. The
+    /// compound id's source bits select the source; the `/`-separated
+    /// `folder.path` is re-split into native components and joined with the
+    /// file name.
+    #[must_use]
+    pub fn locate(&self, id: u32) -> Option<Located> {
         let (source, _) = unpack(id);
-        let root = self.roots.get(source as usize)?;
+        let source = source as usize;
+        // Bounds-check the source even though nothing here indexes `roots` —
+        // `path_of` relies on this to reject an out-of-range id the same way
+        // it always has.
+        if source >= self.roots.len() {
+            return None;
+        }
         let cat = self.cat();
         let t = cat.track(id).ok()?;
         let folder = cat.folder(t.folder).ok()?;
-        let rel = resolve(&cat, folder.path)?;
+        let rel_str = resolve(&cat, folder.path)?;
         let name = resolve(&cat, t.file_name)?;
-        let mut p = root.clone();
-        if !rel.is_empty() {
-            for seg in rel.split('/') {
-                p.push(seg);
+        let mut rel = PathBuf::new();
+        if !rel_str.is_empty() {
+            for seg in rel_str.split('/') {
+                rel.push(seg);
             }
         }
-        p.push(&name);
-        Some(p)
+        rel.push(&name);
+        Some(Located { source, rel })
     }
 
     /// The tag-derived duration (seconds) for `id`, if known (> 0). Used to fill
@@ -379,6 +412,26 @@ mod tests {
         assert_eq!(v[2].id, 2);
         assert!(lib.path_of(2).unwrap().ends_with("c.wav"));
         assert_eq!(lib.path_of(9), None);
+    }
+
+    #[test]
+    fn locate_returns_source_index_and_root_relative_path() {
+        let root = tmpdir("locate");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+
+        let lib = Library::scan_many(std::slice::from_ref(&root)).unwrap();
+        let located = lib.locate(0).expect("track 0 locates");
+        assert_eq!(located.source, 0);
+        assert_eq!(
+            root.join(&located.rel),
+            lib.path_of(0).unwrap(),
+            "root joined with the relative path matches path_of"
+        );
+
+        // Same out-of-range id that path_of (see
+        // scan_finds_supported_files_skips_others_and_assigns_index_ids) returns
+        // None for.
+        assert_eq!(lib.locate(9), None);
     }
 
     #[test]
