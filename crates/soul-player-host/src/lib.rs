@@ -59,6 +59,81 @@ type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
 /// Long enough to collapse a burst, short enough to feel live.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(600);
 
+/// A watcher event path that can't change the library — editor temp / partial-
+/// download files and OS metadata sidecars. When a whole debounced batch is noise,
+/// the watcher skips the rescan. Deliberately CONSERVATIVE: only confirmed junk is
+/// noise, so a real change (including a cover-art image) is never skipped.
+fn is_noise(path: &Path) -> bool {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        let n = name.to_ascii_lowercase();
+        // OS metadata sidecars and AppleDouble (`._foo`) resource forks.
+        if matches!(n.as_str(), ".ds_store" | "thumbs.db" | "desktop.ini") || n.starts_with("._") {
+            return true;
+        }
+    }
+    // Temp / partial-download / editor-swap / lock extensions.
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
+        Some(
+            "tmp"
+                | "temp"
+                | "part"
+                | "partial"
+                | "crdownload"
+                | "download"
+                | "swp"
+                | "swx"
+                | "swo"
+                | "bak"
+                | "lock"
+        )
+    )
+}
+
+/// Whether `path` is inside `root` (or is `root`), compared on component boundaries
+/// (so `…/rock` never matches `…/rockabilly`) and case-insensitively on Windows
+/// (whose filesystem is), so an event path's casing can't hide a real match.
+fn path_under(path: &Path, root: &Path) -> bool {
+    let mut rc = root.components();
+    let mut pc = path.components();
+    loop {
+        match rc.next() {
+            None => return true, // every component of `root` matched → `path` is within it
+            Some(r) => match pc.next() {
+                None => return false, // `path` is shorter than `root`
+                Some(p) => {
+                    let same = if cfg!(windows) {
+                        p.as_os_str().eq_ignore_ascii_case(r.as_os_str())
+                    } else {
+                        p == r
+                    };
+                    if !same {
+                        return false;
+                    }
+                }
+            },
+        }
+    }
+}
+
+/// The configured roots that contain at least one of `paths` — the set a watcher
+/// burst actually touched, so only these need re-reading (the rest are reused). An
+/// empty result means no root was affected.
+fn affected_roots(paths: &[PathBuf], roots: &[PathBuf]) -> std::collections::HashSet<PathBuf> {
+    let mut set = std::collections::HashSet::new();
+    for p in paths {
+        for r in roots {
+            if path_under(p, r) {
+                set.insert(r.clone());
+            }
+        }
+    }
+    set
+}
+
 /// The per-source status of one configured folder, as of the last scan.
 ///
 /// A source is kept in the configured set regardless of its state — disabling it
@@ -275,6 +350,13 @@ struct Inner {
     /// a cold full read. A configured-but-unscanned root (disabled / offline) keeps
     /// its cache for when it returns; a de-configured root's cache is pruned.
     caches: Mutex<HashMap<PathBuf, ScanCache>>,
+    /// The per-source baked `.soulidx` bytes, keyed by root path — the last build's
+    /// output per root. A scoped (watcher-triggered) rescan re-scans only the roots
+    /// whose files changed and reuses the cached bytes of the rest verbatim (each
+    /// root bakes independently, so the result is byte-identical to a full rescan).
+    /// Kept in lock-step with `caches`: refreshed for re-scanned roots, pruned for
+    /// de-configured ones.
+    source_bytes: Mutex<HashMap<PathBuf, Vec<u8>>>,
     /// Subscribers for a background (watcher-triggered) rescan's [`WatchUpdate`], so
     /// the UI refreshes its library/sources when files change on disk while the app
     /// is open. Registered via [`on_watch_update`](PlayerHandle::on_watch_update);
@@ -400,6 +482,7 @@ impl PlayerHandle {
                 folders: Mutex::new(Vec::new()),
                 last_sources: Mutex::new(Vec::new()),
                 caches: Mutex::new(HashMap::new()),
+                source_bytes: Mutex::new(HashMap::new()),
                 watch_subscribers: Mutex::new(Vec::new()),
                 scan_progress_subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
@@ -468,26 +551,81 @@ impl PlayerHandle {
         Ok(up)
     }
 
-    /// The scan itself, **without emitting any event**: scan the enabled + reachable
-    /// roots incrementally, swap in the aggregated library, refresh the per-source
-    /// caches, and build the [`WatchUpdate`] plus the per-root deletions
-    /// (`(root, removed paths)`). Split out from [`rescan`](Self::rescan) so the live
-    /// watcher can broadcast the library refresh *before* the deletion warning (the
-    /// synchronous path emits inline right after, ordering the same way).
+    /// The enabled **and currently reachable** source roots, in config order — the
+    /// set a scan actually reads. Availability is checked at the ROOT so a transient
+    /// outage skips the whole source rather than purging it file-by-file.
+    fn enabled_reachable_roots(&self) -> Vec<PathBuf> {
+        self.inner
+            .folders
+            .lock()
+            .expect("folders mutex")
+            .iter()
+            .filter(|f| f.enabled && f.path.is_dir())
+            .map(|f| f.path.clone())
+            .collect()
+    }
+
+    /// A full rescan of every enabled + reachable root — the entry for a source
+    /// change, a manual Rescan, and the deferred startup scan. See
+    /// [`rescan_build`](Self::rescan_build).
     fn rescan_compute(&self) -> anyhow::Result<(WatchUpdate, Deletions)> {
+        self.rescan_build(None)
+    }
+
+    /// A **scoped** rescan: re-read only the roots in `affected` (that are enabled +
+    /// reachable) and reuse every other root's cached baked bytes verbatim — the
+    /// watcher's smart path. Byte-identical to a full rescan because each root bakes
+    /// independently. A root in `affected` (or any root with no cached bytes to
+    /// reuse) is re-scanned.
+    fn rescan_scoped(
+        &self,
+        affected: &std::collections::HashSet<PathBuf>,
+    ) -> anyhow::Result<(WatchUpdate, Deletions)> {
+        self.rescan_build(Some(affected))
+    }
+
+    /// The scan itself, **without emitting any event**: (incrementally) re-read the
+    /// roots this call scans — all enabled + reachable roots when `affected` is
+    /// `None`, else only those roots — swap in the aggregated library, refresh the
+    /// per-source caches + baked bytes, and build the [`WatchUpdate`] plus the
+    /// per-root deletions. Split out from [`rescan`](Self::rescan) so the live watcher
+    /// can broadcast the library refresh *before* the deletion warning (the
+    /// synchronous path emits inline right after, ordering the same way).
+    fn rescan_build(
+        &self,
+        affected: Option<&std::collections::HashSet<PathBuf>>,
+    ) -> anyhow::Result<(WatchUpdate, Deletions)> {
+        use std::collections::HashSet;
         let cfg = self.inner.folders.lock().expect("folders mutex").clone();
-        // Only enabled, reachable roots are scanned — checked at the ROOT so a
-        // transient outage is skipped, never purged file-by-file.
         let to_scan: Vec<PathBuf> = cfg
             .iter()
             .filter(|f| f.enabled && f.path.is_dir())
             .map(|f| f.path.clone())
             .collect();
-        // Warm priors: each root's cached scan state (empty = a cold scan), so only
-        // new/changed files are re-read. Clone out of the lock before scanning.
+        // Which of `to_scan` do we actually re-read? All of them for a full rescan;
+        // for a scoped one, only the affected roots plus any that have no cached bytes
+        // to reuse. The rest are rebuilt from their cached baked bytes.
+        let rescan_mask: Vec<bool> = {
+            let bytes = self.inner.source_bytes.lock().expect("source_bytes mutex");
+            to_scan
+                .iter()
+                .map(|r| match affected {
+                    None => true,
+                    Some(set) => set.contains(r) || !bytes.contains_key(r),
+                })
+                .collect()
+        };
+        let rescan_roots: Vec<PathBuf> = to_scan
+            .iter()
+            .zip(&rescan_mask)
+            .filter(|(_, m)| **m)
+            .map(|(r, _)| r.clone())
+            .collect();
+        // Warm priors for the roots we scan: each root's cached scan state (empty =
+        // a cold scan), so only new/changed files are re-read.
         let priors: Vec<ScanCache> = {
             let caches = self.inner.caches.lock().expect("caches mutex");
-            to_scan
+            rescan_roots
                 .iter()
                 .map(|r| caches.get(r).cloned().unwrap_or_default())
                 .collect()
@@ -508,30 +646,75 @@ impl PlayerHandle {
         let target = Arc::new(AtomicUsize::new(mode.resolve_threads().min(ceiling)));
         let sampler = matches!(mode, IndexingMode::Automatic)
             .then(|| LoadSampler::spawn(Arc::clone(&target), ceiling));
-        let build = Library::scan_many_incremental(&to_scan, &priors, ceiling, &target, &mut |p| {
-            self.broadcast_scan_progress(Some(p))
-        });
+        let build =
+            Library::scan_many_incremental(&rescan_roots, &priors, ceiling, &target, &mut |p| {
+                self.broadcast_scan_progress(Some(p))
+            });
         // Terminal tick: the scan is over (whether it succeeded or errored), so retire
         // any progress indicator. Emitted on this same ordered stream *after* every
         // `Some` tick, so the UI's show→hide can't be left stuck.
         self.broadcast_scan_progress(None);
         let IncrementalBuild {
-            library,
+            library: scanned,
             caches: fresh,
             removed,
+            bytes: fresh_bytes,
         } = build?;
         drop(sampler); // stop the sampler as soon as the scan is done
-        // Refresh the scanned roots' caches; keep configured-but-unscanned roots
-        // warm (a disabled / offline source re-aggregates from its cache when it
-        // returns); prune caches for roots no longer configured.
+
+        // Assemble the final library + the per-root bytes to cache. A full rescan IS
+        // the scanned library; a scoped one interleaves the freshly-baked bytes of the
+        // re-scanned roots with the cached bytes of the reused ones, in `to_scan`
+        // order, and rebuilds the aggregate from them.
+        let (library, store_bytes): (Library, Vec<(PathBuf, Vec<u8>)>) = if affected.is_none() {
+            let store = to_scan
+                .iter()
+                .cloned()
+                .zip(fresh_bytes.iter().cloned())
+                .collect();
+            (scanned, store)
+        } else {
+            let cached = self.inner.source_bytes.lock().expect("source_bytes mutex");
+            let mut fresh_iter = fresh_bytes.into_iter();
+            let mut merged: Vec<Vec<u8>> = Vec::with_capacity(to_scan.len());
+            let mut store: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+            for (root, &scanned_here) in to_scan.iter().zip(&rescan_mask) {
+                if scanned_here {
+                    let b = fresh_iter.next().expect("fresh bytes per re-scanned root");
+                    store.push((root.clone(), b.clone()));
+                    merged.push(b);
+                } else {
+                    // Reuse verbatim — the mask is false only when bytes exist.
+                    merged.push(
+                        cached
+                            .get(root)
+                            .cloned()
+                            .expect("cached bytes for a reused root"),
+                    );
+                }
+            }
+            drop(cached);
+            (Library::from_source_bytes(&to_scan, merged), store)
+        };
+
+        let configured: HashSet<&PathBuf> = cfg.iter().map(|f| &f.path).collect();
+        // Refresh the re-scanned roots' caches; keep configured-but-unscanned roots
+        // warm (a disabled / offline source re-aggregates when it returns); prune
+        // caches for roots no longer configured.
         {
             let mut caches = self.inner.caches.lock().expect("caches mutex");
-            for (root, cache) in to_scan.iter().zip(fresh) {
+            for (root, cache) in rescan_roots.iter().zip(fresh) {
                 caches.insert(root.clone(), cache);
             }
-            let configured: std::collections::HashSet<&PathBuf> =
-                cfg.iter().map(|f| &f.path).collect();
             caches.retain(|p, _| configured.contains(p));
+        }
+        // Same bookkeeping for the baked-bytes cache (refresh re-scanned, prune gone).
+        {
+            let mut bytes = self.inner.source_bytes.lock().expect("source_bytes mutex");
+            for (root, b) in store_bytes {
+                bytes.insert(root, b);
+            }
+            bytes.retain(|p, _| configured.contains(p));
         }
         let lib = Arc::new(library);
         let views = lib.views();
@@ -585,6 +768,35 @@ impl PlayerHandle {
             }
         }
         *self.inner.folders.lock().expect("folders mutex") = set;
+        self.rescan()
+    }
+
+    /// Seed the configured-source set from `(path, enabled)` pairs **without
+    /// scanning** — for a fast first paint. The window can render the Sources list
+    /// immediately ([`sources`](Self::sources) falls back to a count-0 listing of the
+    /// configured set before any scan), while the actual library scan runs off the
+    /// main thread afterwards via [`rescan_sources`](Self::rescan_sources). Pairs are
+    /// deduped preserving order (first occurrence of a path wins). Touches only the
+    /// configured set — not the library, the caches, or the watcher.
+    pub fn configure_sources(&self, entries: &[(PathBuf, bool)]) {
+        let mut set: Vec<FolderConfig> = Vec::with_capacity(entries.len());
+        for (p, en) in entries {
+            if !set.iter().any(|f| &f.path == p) {
+                set.push(FolderConfig {
+                    path: p.clone(),
+                    enabled: *en,
+                });
+            }
+        }
+        *self.inner.folders.lock().expect("folders mutex") = set;
+    }
+
+    /// Rescan the already-configured source set and return the refreshed
+    /// [`WatchUpdate`] — the public entry the app's deferred startup scan (and a
+    /// manual Rescan) runs off the main thread. Same as the internal post-mutation
+    /// rescan but without changing the configured set. Emits `TracksRemoved` for any
+    /// deletions and re-arms the watcher if it is running.
+    pub fn rescan_sources(&self) -> anyhow::Result<WatchUpdate> {
         self.rescan()
     }
 
@@ -945,34 +1157,50 @@ impl PlayerHandle {
 
     /// Start — or re-arm — the live filesystem watcher over the currently enabled
     /// and reachable roots. A debounced change (an album copy coalesces to one
-    /// callback) triggers a background incremental rescan; its [`WatchUpdate`] is
-    /// broadcast to [`on_watch_update`](Self::on_watch_update) subscribers so the UI
-    /// refreshes, and any deletions are emitted right after (so the list updates
-    /// before the "N removed" warning). Idempotent — replaces any existing watcher,
-    /// which is how a source add/remove re-arms it. A watcher that fails to start
-    /// degrades silently (no live reindex; manual Rescan still works).
+    /// callback) triggers a background rescan; its [`WatchUpdate`] is broadcast to
+    /// [`on_watch_update`](Self::on_watch_update) subscribers so the UI refreshes, and
+    /// any deletions are emitted right after (so the list updates before the "N
+    /// removed" warning). Idempotent — replaces any existing watcher, which is how a
+    /// source add/remove re-arms it. A watcher that fails to start degrades silently
+    /// (no live reindex; manual Rescan still works).
+    ///
+    /// The rescan is **smart**: a burst that is all noise (editor temp files, partial
+    /// downloads, OS metadata) is dropped with no rescan, and an actual change
+    /// re-reads only the roots it touched — the rest are reused from cache. It falls
+    /// back to a full rescan whenever a change can't be attributed to a root.
     pub fn start_watching(&self) {
-        let roots: Vec<PathBuf> = self
-            .inner
-            .folders
-            .lock()
-            .expect("folders mutex")
-            .iter()
-            .filter(|f| f.enabled && f.path.is_dir())
-            .map(|f| f.path.clone())
-            .collect();
+        let roots: Vec<PathBuf> = self.enabled_reachable_roots();
         let weak = Arc::downgrade(&self.inner);
         let mut debouncer = match new_debouncer(WATCH_DEBOUNCE, move |res: DebounceEventResult| {
-            if res.is_err() {
+            let Ok(events) = res else {
                 return; // watch-backend hiccup — ignore; the next event re-triggers
-            }
+            };
             let Some(inner) = weak.upgrade() else {
                 return; // the handle (and app) is gone
             };
             let handle = PlayerHandle { inner };
+            // Drop a pure-noise burst — it can't change the library, so don't pay for
+            // a rescan (nor make the activity widget flicker) on editor/OS churn.
+            let changed: Vec<PathBuf> = events
+                .into_iter()
+                .map(|e| e.path)
+                .filter(|p| !is_noise(p))
+                .collect();
+            if changed.is_empty() {
+                return;
+            }
+            // Re-read only the roots a change actually touched; reuse the rest from
+            // their cached bytes. If nothing maps to a root (shouldn't happen under a
+            // recursive watch), fall back to a full rescan — correctness over cleverness.
+            let affected = affected_roots(&changed, &handle.enabled_reachable_roots());
+            let result = if affected.is_empty() {
+                handle.rescan_compute()
+            } else {
+                handle.rescan_scoped(&affected)
+            };
             // Broadcast the library refresh BEFORE the deletion warning, so the list
             // already reflects the removal when the "N removed" notice arrives.
-            if let Ok((up, removed)) = handle.rescan_compute() {
+            if let Ok((up, removed)) = result {
                 handle.broadcast_watch(up);
                 for (root, gone) in removed {
                     handle.emit(Event::TracksRemoved {
@@ -1497,6 +1725,169 @@ mod tests {
             h2.caches_snapshot().get(&aroot).map(super::ScanCache::len),
             Some(2),
             "seeded cache survives the rescan and stays warm"
+        );
+    }
+
+    #[test]
+    fn configure_sources_seeds_the_set_without_scanning() {
+        let a = folder_with("cfg_a", &["a1.wav", "a2.wav"]);
+        let aroot = a.path().to_path_buf();
+        let h = PlayerHandle::offline();
+
+        // Configure WITHOUT scanning: the source is listed (available, count 0) so the
+        // window can paint the Sources list immediately, but no library is built yet.
+        h.configure_sources(&[(aroot.clone(), true)]);
+        let srcs = h.sources();
+        assert_eq!(srcs.len(), 1, "the configured source is listed at once");
+        assert_eq!(srcs[0].path, aroot);
+        assert!(srcs[0].enabled && srcs[0].available);
+        assert_eq!(srcs[0].track_count, 0, "no scan yet → count 0 (loading)");
+        assert!(
+            h.views().is_empty(),
+            "configure_sources does NOT scan — the library stays empty until rescan"
+        );
+        assert_eq!(h.watched_folders(), vec![aroot.clone()]);
+
+        // The deferred (off-thread) scan then folds in the real tracks + counts.
+        let up = h.rescan_sources().expect("rescan");
+        assert_eq!(up.views.len(), 2, "the deferred scan folds the tracks in");
+        assert_eq!(up.sources.len(), 1);
+        assert_eq!(up.sources[0].track_count, 2);
+    }
+
+    #[test]
+    fn configure_sources_dedups_by_path_preserving_order() {
+        let a = folder_with("cfg_dedup", &["a.wav"]);
+        let aroot = a.path().to_path_buf();
+        let h = PlayerHandle::offline();
+        // Duplicate path (second disabled) must not create a second entry; first wins.
+        h.configure_sources(&[(aroot.clone(), true), (aroot.clone(), false)]);
+        assert_eq!(h.watched_folders(), vec![aroot.clone()]);
+        let srcs = h.sources();
+        assert_eq!(srcs.len(), 1);
+        assert!(srcs[0].enabled, "first occurrence wins the enabled flag");
+    }
+
+    #[test]
+    fn is_noise_flags_junk_but_never_audio_art_or_dirs() {
+        use super::is_noise;
+        // Confirmed junk → noise (a batch of only these skips the rescan).
+        assert!(is_noise(Path::new("/music/.DS_Store")));
+        assert!(is_noise(Path::new("/music/Thumbs.db")));
+        assert!(is_noise(Path::new("/music/desktop.ini")));
+        assert!(
+            is_noise(Path::new("/music/._song.flac")),
+            "AppleDouble sidecar"
+        );
+        assert!(
+            is_noise(Path::new("/music/track.flac.part")),
+            "partial download"
+        );
+        assert!(is_noise(Path::new("/music/x.crdownload")));
+        assert!(is_noise(Path::new("/music/.song.flac.swp")), "vim swap");
+        assert!(is_noise(Path::new("/music/album.tmp")));
+        // Real, library-relevant changes → NOT noise (never skip these).
+        assert!(!is_noise(Path::new("/music/album/track.flac")));
+        assert!(
+            !is_noise(Path::new("/music/album/cover.jpg")),
+            "art can matter"
+        );
+        assert!(!is_noise(Path::new("/music/album")), "a directory");
+    }
+
+    #[test]
+    fn affected_roots_scopes_to_the_containing_roots() {
+        use super::affected_roots;
+        let r1 = PathBuf::from("/music/rock");
+        let r2 = PathBuf::from("/music/jazz");
+        let roots = vec![r1.clone(), r2.clone()];
+        // A change under rock affects only rock.
+        assert_eq!(
+            affected_roots(&[PathBuf::from("/music/rock/album/x.flac")], &roots),
+            std::iter::once(r1.clone()).collect()
+        );
+        // Changes under both affect both.
+        assert_eq!(
+            affected_roots(
+                &[
+                    PathBuf::from("/music/rock/x.flac"),
+                    PathBuf::from("/music/jazz/y.flac"),
+                ],
+                &roots,
+            )
+            .len(),
+            2
+        );
+        // A change outside every root affects none (→ nothing to re-read).
+        assert!(affected_roots(&[PathBuf::from("/other/z.flac")], &roots).is_empty());
+        // The root path itself (e.g. the folder deleted) counts as affecting it.
+        assert_eq!(
+            affected_roots(std::slice::from_ref(&r1), &roots),
+            std::iter::once(r1).collect()
+        );
+        // A sibling that merely shares a name PREFIX is not "under" the root.
+        assert!(affected_roots(&[PathBuf::from("/music/rockabilly/x.flac")], &roots).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn affected_roots_is_case_insensitive_on_windows() {
+        use super::affected_roots;
+        let r = PathBuf::from(r"C:\Music\Rock");
+        assert_eq!(
+            affected_roots(
+                &[PathBuf::from(r"c:\music\ROCK\album\x.flac")],
+                std::slice::from_ref(&r),
+            ),
+            std::iter::once(r).collect(),
+            "a casing difference must not hide a real change"
+        );
+    }
+
+    #[test]
+    fn scoped_rescan_reuses_unaffected_roots_and_matches_a_full_rescan() {
+        let a = folder_with("scoped_host_a", &["a1.wav"]);
+        let b = folder_with("scoped_host_b", &["b1.wav", "b2.wav"]);
+        let (aroot, broot) = (a.path().to_path_buf(), b.path().to_path_buf());
+        let h = PlayerHandle::offline();
+
+        // A full scan populates both roots (and the per-root byte cache a scoped
+        // rescan reuses).
+        let up = h.set_folders(&[aroot.clone(), broot.clone()]).unwrap();
+        assert_eq!(up.views.len(), 3, "a1 + b1 + b2");
+
+        // Change root A only, then rescan SCOPED to just A: B is rebuilt from its
+        // cached bytes (not re-read), and the result still lists B's tracks — exactly
+        // what a full rescan would produce.
+        std::fs::write(aroot.join("a2.wav"), wav(48_000, 96_000)).unwrap();
+        let affected: std::collections::HashSet<PathBuf> = std::iter::once(aroot.clone()).collect();
+        let (scoped, removed) = h.rescan_scoped(&affected).expect("scoped rescan");
+        assert_eq!(
+            scoped.views.len(),
+            4,
+            "A's new a2 folds in AND B's two tracks are kept (reused, not dropped)"
+        );
+        assert!(removed.is_empty(), "nothing deleted");
+        // Per-source counts match a full rescan of the same trees.
+        let full = PlayerHandle::offline();
+        let up_full = full.set_folders(&[aroot.clone(), broot.clone()]).unwrap();
+        assert_eq!(
+            scoped.views.len(),
+            up_full.views.len(),
+            "scoped == full track total"
+        );
+        assert_eq!(
+            scoped
+                .sources
+                .iter()
+                .map(|s| s.track_count)
+                .collect::<Vec<_>>(),
+            up_full
+                .sources
+                .iter()
+                .map(|s| s.track_count)
+                .collect::<Vec<_>>(),
+            "scoped per-source counts == a full rescan"
         );
     }
 

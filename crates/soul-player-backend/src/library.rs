@@ -37,6 +37,11 @@ pub struct IncrementalBuild {
     /// only for roots that had any. These are genuine per-file removals (the host
     /// only scans *available* roots, so an offline drive never lands here).
     pub removed: Vec<(PathBuf, Vec<PathBuf>)>,
+    /// The baked `.soulidx` bytes per root, **parallel to the `roots`** passed in.
+    /// Each root bakes independently, so these can be cached and later fed back to
+    /// [`Library::from_source_bytes`] to rebuild an unaffected root without
+    /// re-scanning it — the basis for the watcher's scoped rescan.
+    pub bytes: Vec<Vec<u8>>,
 }
 
 /// A `.soulidx` reader over an **owning** in-memory source: `Cursor` owns the
@@ -119,6 +124,7 @@ impl Library {
         let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(roots.len());
         let mut counts = Vec::with_capacity(roots.len());
         let mut caches = Vec::with_capacity(roots.len());
+        let mut all_bytes = Vec::with_capacity(roots.len());
         let mut removed = Vec::new();
         for (i, root) in roots.iter().enumerate() {
             let prior = priors.get(i).cloned().unwrap_or_default();
@@ -130,9 +136,12 @@ impl Library {
                 progress,
             )?;
             let bytes = soul_audio_index::build::write_index(&outcome.input);
-            let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(bytes)));
+            // Keep the baked bytes so an unaffected root can be reused verbatim on a
+            // scoped rescan; the reader reads a clone, the original is carried back.
+            let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(bytes.clone())));
             counts.push(reader.track_count() as usize);
             members.push(Box::new(reader));
+            all_bytes.push(bytes);
             if !outcome.removed.is_empty() {
                 removed.push((root.clone(), outcome.removed));
             }
@@ -146,7 +155,31 @@ impl Library {
             },
             caches,
             removed,
+            bytes: all_bytes,
         })
+    }
+
+    /// Rebuild a library from per-root baked `.soulidx` bytes (parallel to `roots`),
+    /// **without scanning** — the companion to the `bytes` returned by
+    /// [`scan_many_incremental`](Self::scan_many_incremental). Because each root bakes
+    /// independently, feeding an unaffected root's cached bytes here produces exactly
+    /// what re-scanning it would, so the watcher can re-scan only the roots that
+    /// changed and reuse the rest. `roots.len()` must equal `bytes.len()`.
+    #[must_use]
+    pub fn from_source_bytes(roots: &[PathBuf], bytes: Vec<Vec<u8>>) -> Library {
+        debug_assert_eq!(roots.len(), bytes.len(), "one baked index per root");
+        let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(bytes.len());
+        let mut counts = Vec::with_capacity(bytes.len());
+        for b in bytes {
+            let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(b)));
+            counts.push(reader.track_count() as usize);
+            members.push(Box::new(reader));
+        }
+        Library {
+            roots: roots.to_vec(),
+            counts,
+            catalog: Mutex::new(MultiCatalog::new(members)),
+        }
     }
 
     /// Lock the aggregate for one call.
@@ -714,6 +747,70 @@ mod tests {
         assert_eq!(build3.removed.len(), 1, "one root reported deletions");
         assert_eq!(build3.removed[0].0, root);
         assert_eq!(build3.removed[0].1.len(), 2, "two files removed");
+    }
+
+    #[test]
+    fn from_source_bytes_rebuilds_and_scoped_reuse_matches_a_full_rescan() {
+        // The smart-watcher primitive: because each root bakes INDEPENDENTLY into its
+        // own reader (no cross-root interning), an unaffected root's baked bytes can be
+        // reused verbatim instead of re-scanned — the result is byte-identical to a
+        // full rescan.
+        let a = tmpdir("scoped_a");
+        std::fs::write(a.join("a1.wav"), wav(48_000, 48_000)).unwrap();
+        let b = tmpdir("scoped_b");
+        std::fs::write(b.join("b1.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(b.join("b2.wav"), wav(48_000, 24_000)).unwrap();
+        let roots = vec![a.clone(), b.clone()];
+        let ids = |l: &Library| l.views().into_iter().map(|v| v.id).collect::<Vec<_>>();
+        let cold = || [ScanCache::default(), ScanCache::default()];
+
+        // A scan carries back the baked bytes, parallel to `roots`.
+        let full =
+            Library::scan_many_incremental(&roots, &cold(), 4, &AtomicUsize::new(4), &mut |_| {})
+                .unwrap();
+        assert_eq!(full.bytes.len(), 2, "one baked index per root");
+
+        // `from_source_bytes` rebuilds the SAME library with no scan.
+        let rebuilt = Library::from_source_bytes(&roots, full.bytes.clone());
+        assert_eq!(
+            ids(&rebuilt),
+            ids(&full.library),
+            "rebuilt-from-bytes == scanned"
+        );
+        assert_eq!(rebuilt.source_counts(), full.library.source_counts());
+
+        // Change root A only; rescan JUST A and reuse B's cached bytes → identical to
+        // a full rescan of both roots.
+        std::fs::write(a.join("a2.wav"), wav(48_000, 48_000)).unwrap();
+        let only_a = Library::scan_many_incremental(
+            std::slice::from_ref(&a),
+            &[full.caches[0].clone()],
+            4,
+            &AtomicUsize::new(4),
+            &mut |_| {},
+        )
+        .unwrap();
+        let merged = vec![only_a.bytes[0].clone(), full.bytes[1].clone()];
+        let scoped = Library::from_source_bytes(&roots, merged);
+
+        let full_rescan = Library::scan_many_incremental(
+            &roots,
+            &full.caches,
+            4,
+            &AtomicUsize::new(4),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            ids(&scoped),
+            ids(&full_rescan.library),
+            "scoped reuse of B == a full rescan"
+        );
+        assert_eq!(
+            scoped.source_counts(),
+            full_rescan.library.source_counts(),
+            "per-source counts match the full rescan"
+        );
     }
 
     #[test]
