@@ -7,22 +7,16 @@
 
 use std::collections::HashMap;
 
-use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text};
+use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
 use soul_player_host::{Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::icons;
+use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
+use crate::views::grid;
 use crate::views::library::fmt_dur;
-use crate::views::player::cover;
-
-/// The hover play-overlay button — the old app's `w-14 h-14 rounded-xl` (56 px).
-const PLAY_BTN: f32 = 56.0;
-/// Smallest album-card width before the responsive grid drops a column. Tuned so
-/// the column count tracks the old app's `grid-cols-2..8` breakpoints and cards
-/// land ~144 px at a desktop width (its `lg` tier).
-const MIN_CARD: f32 = 130.0;
+use crate::views::media_card::{CardSpec, media_card};
 
 /// One grouped album: display name, its artist, a track id to draw the cover
 /// from, and every track id (in library order) to play on click.
@@ -57,132 +51,61 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     albums
 }
 
-/// The command an album card's play action issues, mirroring the old app's
-/// MediaCard `handlePlayPause`: if a track of this album is the one playing,
-/// toggle pause/resume; otherwise start the album from the top. Pure, so the
-/// view and its test share exactly one rule. "Active" = the now-playing track
-/// belongs to this album.
-fn album_play_command(now_playing: Option<u32>, ids: &[u32]) -> Command {
-    if now_playing.is_some_and(|id| ids.contains(&id)) {
-        Command::TogglePlay
+/// Sum of track seconds as a coarse human total — "1 h 23 min" or "45 min"
+/// (detail headers show totals, not mm:ss). Rounds to whole minutes. Pure.
+pub(crate) fn fmt_total_dur(total_secs: f64) -> String {
+    let mins = (total_secs.max(0.0) / 60.0).round() as u64;
+    let (h, m) = (mins / 60, mins % 60);
+    if h > 0 {
+        t!("detail.durationHm", hours => h, mins => m).to_string()
     } else {
-        Command::PlayContext {
-            ids: ids.to_vec(),
-            start: 0,
-        }
+        t!("detail.durationM", mins => m).to_string()
     }
 }
 
-/// One album card: a square cover, the title, and the artist. Clicking plays the
-/// album, or toggles pause/resume if it is already the playing context.
-fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
-    let ids = a.ids.clone();
-    let name = a.name.clone();
-    // When this album is the active, playing context the overlay shows a pause
-    // glyph and its press toggles — the old app's MediaCard behaviour.
-    let show_pause = s.now_playing_id.is_some_and(|id| a.ids.contains(&id)) && s.playing;
-    col()
-        .key(format!("album-{slot}"))
-        .role("button")
-        .label(a.name.clone())
-        .focusable(true)
-        .w(card_w)
-        // No wrapper background or inset — the old app's MediaCard is `pb-2` with a
-        // `mb-2` cover; the cover + the hover play-overlay are the affordance, not a
-        // background pill.
-        .gap(space::SM)
-        .pb(space::SM)
-        .cursor(Cursor::Pointer)
-        .hover_group()
-        .child(
-            // Cover + a play button that fades in on card hover (old app's
-            // `opacity-0 group-hover:opacity-100` MediaCard overlay). ONLY the
-            // button plays/pauses; clicking the cover elsewhere (or the title)
-            // opens the album's detail page — the old app's MediaCard split of
-            // button = play, body = navigate.
-            el().key("cover-area")
-                .size(card_w, card_w)
-                // The old app's MediaCard cover carries a `shadow` (Rune has no
-                // group-driven shadow/scale, so the hover `shadow-md`/`scale-105`
-                // lift isn't reproduced — the base shadow is).
-                .radius(radius::MD)
-                .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
-                .child(cover(s, Some(a.cover_id), card_w, radius::MD, p, scale))
-                .child(
-                    el().key("play-overlay")
-                        .size(card_w, card_w)
-                        .absolute(0.0, 0.0)
-                        .center()
-                        .group_opacity(0.0, 1.0)
-                        .child(
-                            // Old app's `w-14 h-14 rounded-xl bg-black/50` button,
-                            // darkening to ~black/70 on direct hover (its
-                            // `hover:bg-black/70`). Carries the play/pause press.
-                            el().key("play-btn")
-                                .role("button")
-                                .label(t!("player.play").to_string())
-                                .focusable(true)
-                                .size(PLAY_BTN, PLAY_BTN)
-                                .radius(radius::LG)
-                                .fill(Color::BLACK.alpha(0.5))
-                                .hover(Color::BLACK.alpha(0.3))
-                                .cursor(Cursor::Pointer)
-                                .center()
-                                .on_press(move |st: &mut State| {
-                                    st.host.send(album_play_command(st.now_playing_id, &ids))
-                                })
-                                .child(
-                                    icon(
-                                        if show_pause {
-                                            &icons::PAUSE
-                                        } else {
-                                            &icons::PLAY
-                                        },
-                                        32.0,
-                                    )
-                                    .color(Color::WHITE),
-                                ),
-                        ),
-                ),
-        )
-        .child(
-            col()
-                .key("album-text")
-                .gap(space::XXS)
-                .min_w(0.0)
-                .child(
-                    // Title dims to 0.8 on card hover (old app's
-                    // `group-hover:opacity-[var(--hover-text-opacity)]`).
-                    text(a.name.clone())
-                        .font(type_::CARD_TITLE)
-                        .color(p.fg)
-                        .truncate()
-                        .group_opacity(1.0, 0.8),
-                )
-                .child(
-                    text(a.artist.clone())
-                        .font(type_::ITEM)
-                        .color(p.text_secondary)
-                        .truncate(),
-                ),
-        )
-        // The card body opens the album's detail page (the play button above owns
-        // play/pause). The old app's MediaCard navigates on body click.
-        .on_press(move |st: &mut State| {
-            st.route = crate::Route::Album;
-            st.open_album = Some(name.clone());
+/// The albums of a single artist: filter the library to that artist (matching
+/// `group_artists`' empty→"Unknown" bucketing), then fold by album in first-seen
+/// order — the artist page's Discography. Pure, reusing the album fold.
+pub(crate) fn albums_of_artist(library: &[TrackView], artist: &str) -> Vec<Album> {
+    let subset: Vec<TrackView> = library
+        .iter()
+        .filter(|t| {
+            let a = t
+                .artist
+                .clone()
+                .filter(|a| !a.is_empty())
+                .unwrap_or_else(|| t!("library.unknown").to_string());
+            a == artist
         })
+        .cloned()
+        .collect();
+    group_albums(&subset)
 }
 
-/// Columns and per-card width for a content pane `pane_w` points wide: fill the
-/// pane, dropping a column below [`MIN_CARD`]. Fed the pane width (window minus the
-/// sidebar), the column count tracks the old app's `grid-cols-2..8` viewport
-/// breakpoints. Pure, so the grid and its test share exactly one rule.
-pub(crate) fn grid_layout(pane_w: f32) -> (usize, f32) {
-    let avail = (pane_w - 2.0 * space::PANE).max(MIN_CARD);
-    let cols = (((avail + space::GUTTER) / (MIN_CARD + space::GUTTER)).floor() as usize).max(1);
-    let card_w = ((avail - (cols as f32 - 1.0) * space::GUTTER) / cols as f32).floor();
-    (cols, card_w)
+/// One album card: a square cover with a hover play-overlay, the title, and the
+/// artist. Clicking the body opens the album's detail page; the overlay plays.
+fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
+    let name = a.name.clone();
+    media_card(
+        s,
+        p,
+        CardSpec {
+            key: format!("album-{slot}"),
+            label: a.name.clone(),
+            title: a.name.clone(),
+            subtitle: Some(a.artist.clone()),
+            cover_id: a.cover_id,
+            circular: false,
+            play_ids: a.ids.clone(),
+        },
+        card_w,
+        scale,
+        move |st: &mut State| {
+            st.route = crate::Route::Album;
+            st.open_album = Some(name.clone());
+            st.mobile_show_content = true;
+        },
+    )
 }
 
 /// The Albums page: a responsive grid of album cards, scrolled vertically.
@@ -193,7 +116,7 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // (minus the grid's own padding); the first frame has no prior layout, so fall
     // back to a sensible desktop width.
     let pane = cx.layout_size("albums").map(|[w, _]| w).unwrap_or(820.0);
-    let card_w = grid_layout(pane).1;
+    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
     let mut grid = row()
         .key("albums-grid")
@@ -213,9 +136,6 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .min_h(0.0),
     )
 }
-
-/// Large cover on the album detail page (the old app's `w-44`).
-const DETAIL_COVER: f32 = 176.0;
 
 /// A back link to the Albums grid — a `←` glyph. Our focused shell keeps no page
 /// history, so it simply returns to the grid.
@@ -309,11 +229,11 @@ pub(crate) fn detail_track_row(
     })
 }
 
-/// An album's detail page (the old app's AlbumPage): a back link, then a header
-/// — large cover, an "ALBUM" eyebrow, title, artist, track count and a Play
-/// button — over the album's track list. The album is `State::open_album`,
-/// re-derived from the current library; if it has vanished we just offer the
-/// way back.
+/// An album's detail page (the old app's AlbumPage): a back link, then the shared
+/// hero — square cover, "ALBUM" eyebrow, title, artist, "{n} tracks · {duration}"
+/// and a Play-All pill — over the album's numbered track list. The album is
+/// `State::open_album`, re-derived from the current library; if it has vanished we
+/// just offer the way back.
 pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     let albums = group_albums(&s.library);
     let Some(album) = s
@@ -329,86 +249,34 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             .child(back_button(p));
     };
 
-    let play_ids = album.ids.clone();
-    // Header stacks (cover over info) when the pane is too narrow for them side
-    // by side (the old app's `flex-col sm:flex-row`).
-    let header = row()
-        .key("album-header")
-        .flex_wrap()
-        .gap(space::XL)
-        .pb(space::SECTION)
-        .child(
-            // Large cover with a `shadow-lg`, as the old app's AlbumPage.
-            el().key("album-cover")
-                .radius(radius::MD)
-                .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
-                .child(cover(
-                    s,
-                    Some(album.cover_id),
-                    DETAIL_COVER,
-                    radius::MD,
-                    p,
-                    scale,
-                )),
-        )
-        .child(
-            col()
-                .key("album-meta")
-                .gap(space::XS)
-                .grow(1.0)
-                .min_w(0.0)
-                .center_y()
-                .child(
-                    text(t!("album.eyebrow").to_uppercase())
-                        .font(type_::SECTION)
-                        .color(p.text_secondary),
-                )
-                .child(
-                    text(album.name.clone())
-                        .font(type_::DISPLAY)
-                        .color(p.fg)
-                        .truncate(),
-                )
-                .child(
-                    text(album.artist.clone())
-                        .font(type_::CARD_TITLE)
-                        .color(p.text_secondary)
-                        .truncate(),
-                )
-                .child(
-                    text(t!("album.trackCount", count => album.ids.len()).to_string())
-                        .font(type_::CAPTION)
-                        .color(p.text_secondary),
-                )
-                .child(
-                    // The old app's "Play All" pill (`rounded-full px-6 py-3`,
-                    // filled Play icon) — plays the whole album from the top.
-                    el().key("album-play-all")
-                        .role("button")
-                        .label(t!("album.playAll").to_string())
-                        .focusable(true)
-                        .px(space::XL)
-                        .py(space::MD)
-                        .radius(radius::FULL)
-                        .fill(p.primary)
-                        .cursor(Cursor::Pointer)
-                        .hover(p.bg.alpha(fx::HOVER_FILL))
-                        .press(p.bg.alpha(fx::PRESS_FILL))
-                        .on_press(move |st: &mut State| {
-                            st.host.send(Command::PlayContext {
-                                ids: play_ids.clone(),
-                                start: 0,
-                            })
-                        })
-                        .child(
-                            row()
-                                .gap(space::SM)
-                                .center_y()
-                                .child(icon(&icons::PLAY, 20.0).color(p.bg))
-                                .child(text(t!("album.playAll").to_string()).color(p.bg)),
-                        ),
-                ),
-        );
+    let total: f64 = album
+        .ids
+        .iter()
+        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .map(|t| t.duration_secs)
+        .sum();
+    let meta = t!(
+        "detail.tracksAndDuration",
+        count => album.ids.len(),
+        dur => fmt_total_dur(total)
+    )
+    .to_string();
+
+    let hero = detail_hero(
+        s,
+        p,
+        scale,
+        "album",
+        HeroArt::Cover {
+            id: album.cover_id,
+            circular: false,
+        },
+        t!("album.eyebrow").to_uppercase(),
+        album.name.clone(),
+        Some(album.artist.clone()),
+        meta,
+        play_all_pill("album-play-all", album.ids.clone(), p),
+    );
 
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
     for (i, &id) in album.ids.iter().enumerate() {
@@ -439,7 +307,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             col()
                 .key("album-detail-content")
                 .padding(space::PANE)
-                .child(header)
+                .child(hero)
                 .child(list)
                 .scroll(ScrollSpec {
                     stick_bottom: false,
@@ -454,46 +322,45 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
 mod tests {
     use super::*;
 
-    #[test]
-    fn an_active_album_toggles_play_pause_otherwise_plays_from_the_start() {
-        // The old app's MediaCard play button toggles pause/resume when its own
-        // context is the active one, and starts the entity otherwise. We judge
-        // "active" by the now-playing track belonging to this album.
-        assert_eq!(
-            album_play_command(Some(6), &[5, 6, 7]),
-            Command::TogglePlay,
-            "a track of this album is playing → toggle"
-        );
-        assert_eq!(
-            album_play_command(Some(9), &[5, 6, 7]),
-            Command::PlayContext {
-                ids: vec![5, 6, 7],
-                start: 0
-            },
-            "a different album is playing → play this one from the top"
-        );
-        assert_eq!(
-            album_play_command(None, &[5, 6, 7]),
-            Command::PlayContext {
-                ids: vec![5, 6, 7],
-                start: 0
-            },
-            "nothing playing → play from the top"
-        );
+    fn atv(id: u32, artist: &str, album: &str) -> TrackView {
+        TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some(artist.to_string()),
+            album: Some(album.to_string()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+        }
     }
 
     #[test]
-    fn grid_fills_the_pane_with_more_columns_as_it_widens() {
-        // Fed the content-pane width (window minus the ~294 pt sidebar), the column
-        // count tracks the old app's grid-cols-2..8 viewport breakpoints, and cards
-        // land ~144 pt at a desktop width (its `lg` tier).
-        assert_eq!(grid_layout(606.0).0, 4, "md-ish pane → 4 columns");
-        let (cols, card) = grid_layout(820.0);
-        assert_eq!(cols, 5, "lg pane → 5 columns");
-        assert!((card - 144.0).abs() <= 2.0, "lg cards ~144 pt, got {card}");
-        assert_eq!(grid_layout(1306.0).0, 8, "2xl pane → 8 columns");
-        // Never fewer than one column; the card never shrinks below the minimum.
-        assert_eq!(grid_layout(200.0).0, 1);
-        assert!(grid_layout(820.0).1 >= MIN_CARD);
+    fn total_duration_rounds_to_whole_minutes_and_formats_hours() {
+        rust_i18n::set_locale("en");
+        assert_eq!(fmt_total_dur(45.0 * 60.0), "45 min");
+        assert_eq!(fmt_total_dur(83.0 * 60.0), "1 h 23 min");
+        assert_eq!(fmt_total_dur(0.0), "0 min");
+        assert_eq!(fmt_total_dur(29.0), "0 min", "under 30 s rounds down");
+        assert_eq!(fmt_total_dur(31.0), "1 min", "over 30 s rounds up");
+    }
+
+    #[test]
+    fn albums_of_artist_folds_only_that_artists_albums_first_seen() {
+        rust_i18n::set_locale("en");
+        let lib = vec![
+            atv(1, "Bach", "Cello Suites"),
+            atv(2, "Satie", "Gymnopedies"),
+            atv(3, "Bach", "Cello Suites"),
+            atv(4, "Bach", "Goldberg"),
+        ];
+        let albums = albums_of_artist(&lib, "Bach");
+        assert_eq!(albums.len(), 2, "only Bach's two albums");
+        assert_eq!(albums[0].name, "Cello Suites");
+        assert_eq!(
+            albums[0].ids,
+            vec![1, 3],
+            "both Cello Suites tracks fold in"
+        );
+        assert_eq!(albums[1].name, "Goldberg");
+        assert_eq!(albums[1].ids, vec![4]);
     }
 }

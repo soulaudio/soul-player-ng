@@ -90,6 +90,13 @@ fn views_have_no_hardcoded_ui_strings() {
         ("library.rs", include_str!("views/library.rs")),
         ("settings.rs", include_str!("views/settings.rs")),
         ("queue.rs", include_str!("views/queue.rs")),
+        ("home.rs", include_str!("views/home.rs")),
+        ("albums.rs", include_str!("views/albums.rs")),
+        ("artists.rs", include_str!("views/artists.rs")),
+        ("genres.rs", include_str!("views/genres.rs")),
+        ("media_card.rs", include_str!("views/media_card.rs")),
+        ("detail_page.rs", include_str!("views/detail_page.rs")),
+        ("grid.rs", include_str!("views/grid.rs")),
     ];
     let mut offenders = Vec::new();
     for (name, src) in sources {
