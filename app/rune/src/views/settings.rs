@@ -33,11 +33,12 @@ use crate::{
     eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, export_profile,
     import_eq, import_profile, new_profile, organize_begin, organize_confirm, organize_dismiss,
     organize_ready, remove_dsp_unit, remove_eq_band, reorder_dsp_units, scan_in_background,
-    set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp, set_exclusive, set_indexing_mode,
-    set_locale_pref, set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
-    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
-    set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
-    toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
+    set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict,
+    set_indexing_mode, set_locale_pref, set_managed_dest, set_managed_strategy,
+    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
+    set_replaygain_preamp, set_settings_tab, set_theme_pref, start_dsp_rename,
+    start_profile_rename, switch_profile, toggle_dsp_expanded, toggle_eq_bands_expanded,
+    unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
@@ -1127,28 +1128,71 @@ fn output_card(s: &State, p: &Palette) -> El {
 /// when on but the device fell back to shared, that's shown honestly (accent dot);
 /// off is plain shared output. Applies to the next playback session, like the
 /// device choice.
-fn exclusive_card(s: &State, p: &Palette) -> El {
+/// What the Exclusive card should SAY about the current output, decided purely from
+/// the toggle + live signal path + the host's resolved status — so the mapping (the
+/// reason surfacing, the strict-stop case) is unit-tested without a live device. The
+/// card turns this into a quality dot + i18n text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExclusiveDisplay {
+    /// Not requested — shared by choice.
+    Shared,
+    /// Exclusive is active; the device format string (from the signal path).
+    Active(String),
+    /// Requested but fell back to shared; the device's reason.
+    FellBack(String),
+    /// Requested with strict mode and couldn't open — stopped; the reason.
+    Stopped(String),
+    /// Requested but nothing has opened a device yet (applies next session).
+    Pending,
+}
+
+fn exclusive_display(
+    exclusive: bool,
+    signal_path: Option<soul_player_host::SignalPath>,
+    status: soul_player_host::ExclusiveStatus,
+) -> ExclusiveDisplay {
     use crate::views::signal_path::exclusive_value;
-    let playing = s.signal_path;
-    let active = playing.map(|x| x.exclusive).unwrap_or(false);
-    // A dot + one-line status describing what is ACTUALLY happening, not just what
-    // was requested — the fall-back case is the one users most need to see.
-    let (dot, status) = if !s.exclusive {
-        (p.primary, t!("settings.exclusiveStatusShared").to_string())
-    } else if active {
-        let fmt = exclusive_value(&playing.expect("active implies a signal path"));
-        (
-            p.primary,
-            format!("{} · {fmt}", t!("settings.exclusiveBitPerfect")),
-        )
-    } else if playing.is_some() {
-        // Requested, but the live stream is shared → the device refused exclusive.
-        (p.accent, t!("settings.exclusiveFellBack").to_string())
-    } else {
-        // Requested, nothing playing yet → it applies on the next session.
-        (p.primary, t!("settings.exclusivePending").to_string())
-    };
-    card("sp-stage-exclusive", p)
+    use soul_player_host::ExclusiveStatus;
+    if !exclusive {
+        return ExclusiveDisplay::Shared;
+    }
+    // The live signal path is authoritative for "exclusive right now" + its format.
+    if let Some(sp) = signal_path.filter(|x| x.exclusive) {
+        return ExclusiveDisplay::Active(exclusive_value(&sp));
+    }
+    // Requested but not (yet) active — the host status carries the real reason.
+    match status {
+        ExclusiveStatus::Unavailable(reason) => ExclusiveDisplay::Stopped(reason),
+        ExclusiveStatus::FellBack(reason) => ExclusiveDisplay::FellBack(reason),
+        _ => ExclusiveDisplay::Pending,
+    }
+}
+
+fn exclusive_card(s: &State, p: &Palette) -> El {
+    // A dot + one-line status describing what is ACTUALLY happening. When exclusive
+    // was requested but isn't active, the host status carries the real reason (device
+    // in use, no exclusive format, …) — far more useful than a generic message.
+    let (dot, status) =
+        match exclusive_display(s.exclusive, s.signal_path, s.host.exclusive_status()) {
+            ExclusiveDisplay::Shared => {
+                (p.primary, t!("settings.exclusiveStatusShared").to_string())
+            }
+            ExclusiveDisplay::Active(fmt) => (
+                p.primary,
+                format!("{} · {fmt}", t!("settings.exclusiveBitPerfect")),
+            ),
+            ExclusiveDisplay::FellBack(reason) => (
+                p.accent,
+                format!("{} — {reason}", t!("settings.exclusiveFellBackShort")),
+            ),
+            ExclusiveDisplay::Stopped(reason) => (
+                p.accent,
+                format!("{} — {reason}", t!("settings.exclusiveStopped")),
+            ),
+            ExclusiveDisplay::Pending => (p.primary, t!("settings.exclusivePending").to_string()),
+        };
+    let indent = 8.0 + space::SM + 18.0 + space::SM;
+    let mut el = card("sp-stage-exclusive", p)
         .child(stage_header(
             dot,
             &icons::SETTINGS,
@@ -1162,9 +1206,28 @@ fn exclusive_card(s: &State, p: &Palette) -> El {
             // Indent the status under the dot+icon so it lines up with the title.
             row()
                 .w_full()
-                .pl(8.0 + space::SM + 18.0 + space::SM)
+                .pl(indent)
                 .child(text(status).font(type_::BODY).color(p.fg).grow(1.0).wrap()),
-        )
+        );
+    // Strict (exclusive-or-stop) is a sub-option — only shown when exclusive is on.
+    if s.exclusive {
+        el = el.child(
+            row()
+                .w_full()
+                .pl(indent)
+                .center_y()
+                .gap(space::SM)
+                .child(
+                    text(t!("settings.exclusiveStrict").to_string())
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary)
+                        .grow(1.0)
+                        .wrap(),
+                )
+                .child(strict_toggle(s.exclusive_strict, p)),
+        );
+    }
+    el
 }
 
 /// The Exclusive on/off switch (a filled pill), persisted via [`set_exclusive`].
@@ -1187,6 +1250,30 @@ fn exclusive_toggle(on: bool, p: &Palette) -> El {
             .color(if on { p.bg } else { p.fg }),
         )
         .on_press(move |s: &mut State| set_exclusive(s, !s.exclusive))
+}
+
+/// The strict (exclusive-or-stop) on/off switch — a smaller pill, persisted via
+/// [`set_exclusive_strict`]. Filled `accent` when on (it's a stop-rather-than-fallback
+/// stance, not a clean-pass), muted when off.
+fn strict_toggle(on: bool, p: &Palette) -> El {
+    el().key("exclusive-strict-toggle")
+        .role("button")
+        .label(t!("settings.exclusiveStrict").to_string())
+        .focusable(true)
+        .padding(space::XS)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if on { p.accent } else { p.muted })
+        .child(
+            text(if on {
+                t!("settings.exclusiveOn").to_string()
+            } else {
+                t!("settings.exclusiveOff").to_string()
+            })
+            .font(type_::LABEL)
+            .color(if on { p.bg } else { p.fg }),
+        )
+        .on_press(move |s: &mut State| set_exclusive_strict(s, !s.exclusive_strict))
 }
 
 // ── Signal-path pipeline (Settings → Audio is laid out AS the pipeline) ───────
@@ -2777,4 +2864,64 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
         overlays.push(modal);
     }
     overlays
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExclusiveDisplay, exclusive_display};
+    use soul_player_host::{ExclusiveStatus, SignalPath, SourceCodec, SourceFormat};
+
+    fn sp(exclusive: bool) -> SignalPath {
+        SignalPath {
+            source: SourceFormat::Pcm { bits: 24 },
+            codec: SourceCodec::Flac,
+            decoded_rate: 96_000,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db: 0.0,
+            device_rate: 96_000,
+            resampling: false,
+            output_bits: 24,
+            exclusive,
+            loudness: None,
+        }
+    }
+
+    #[test]
+    fn exclusive_display_maps_status_to_the_right_message() {
+        use ExclusiveDisplay::*;
+        // Not requested → shared by choice (the status is irrelevant).
+        assert_eq!(
+            exclusive_display(false, None, ExclusiveStatus::Shared),
+            Shared
+        );
+        // Active: the live signal path says exclusive → show its device format.
+        assert_eq!(
+            exclusive_display(true, Some(sp(true)), ExclusiveStatus::Active),
+            Active("96 kHz · 24-bit".to_string())
+        );
+        // Requested, fell back to shared → surface the DEVICE'S reason verbatim.
+        assert_eq!(
+            exclusive_display(
+                true,
+                Some(sp(false)),
+                ExclusiveStatus::FellBack("device is in use by another app".into()),
+            ),
+            FellBack("device is in use by another app".into())
+        );
+        // Requested + strict, couldn't open → stopped, with the reason.
+        assert_eq!(
+            exclusive_display(
+                true,
+                None,
+                ExclusiveStatus::Unavailable("no exclusive format".into()),
+            ),
+            Stopped("no exclusive format".into())
+        );
+        // Requested, but no device has spawned yet → pending (applies next session).
+        assert_eq!(
+            exclusive_display(true, None, ExclusiveStatus::Shared),
+            Pending
+        );
+    }
 }

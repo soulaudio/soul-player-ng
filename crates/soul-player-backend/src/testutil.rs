@@ -34,19 +34,37 @@ impl Sink for NullSink {
     }
 }
 
-/// A [`Sink`] that reports **exclusive** output at a configurable rate — for
-/// testing native-rate switching, where the engine reopens an exclusive device at
-/// each track's rate. Discards output like [`NullSink`]; the only thing that
-/// matters is that [`exclusive`](Sink::exclusive) is `true` and the rate is what a
-/// reopen requested.
+/// A [`Sink`] that reports **exclusive** output at a configurable rate — for testing
+/// native-rate switching, where the engine reopens an exclusive device **in place** at
+/// each track's rate. Discards output like [`NullSink`]. [`reopen`](Sink::reopen)
+/// models a real exclusive device: by default it adopts the requested rate (the device
+/// supports it); with `refuse_reopen` set it KEEPS its current rate (the device refused
+/// the new rate and the real sink would fall back). `reopens` counts reopen calls so a
+/// test can assert the engine doesn't thrash a refused rate.
 pub(crate) struct ExclusiveSink {
     pub rate: u32,
     pub channels: u16,
+    pub refuse_reopen: bool,
+    pub reopens: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl ExclusiveSink {
     pub(crate) fn new(rate: u32, channels: u16) -> Self {
-        Self { rate, channels }
+        Self {
+            rate,
+            channels,
+            refuse_reopen: false,
+            reopens: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// An exclusive sink whose device REFUSES a reopen (keeps its current rate). The
+    /// returned `reopens` counter lets a test assert the refused rate isn't retried.
+    pub(crate) fn refusing(rate: u32, channels: u16) -> Self {
+        Self {
+            refuse_reopen: true,
+            ..Self::new(rate, channels)
+        }
     }
 }
 
@@ -65,6 +83,15 @@ impl Sink for ExclusiveSink {
         Ok(())
     }
     fn flush(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
+    fn reopen(&mut self, rate: u32) -> Result<(), SinkError> {
+        self.reopens
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !self.refuse_reopen {
+            self.rate = rate; // device supports the new rate → adopt it
+        }
+        // else: keep the current rate (the real exclusive sink falls back on refusal)
         Ok(())
     }
 }
