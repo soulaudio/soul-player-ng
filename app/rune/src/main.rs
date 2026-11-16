@@ -7862,31 +7862,76 @@ mod tests {
         );
     }
 
-    /// Every interactive control exposes keyboard a11y: focusable, with a role and
-    /// an accessible name. A broad audit across the sidebar, library, transport,
-    /// and each Settings tab — so a regression that drops `.focusable`/`.role`/
-    /// `.label` from a control is caught.
-    #[test]
-    fn interactive_controls_expose_keyboard_a11y() {
-        fn assert_a11y(rt: &Runtime<State>, k: &str) {
-            let e = el_info(rt, k);
-            assert!(e.focusable, "{k} is keyboard-focusable");
-            assert!(
-                !e.role.is_empty() && e.role != "none",
-                "{k} exposes an a11y role (got {:?})",
-                e.role
-            );
-            assert!(
-                e.label.as_deref().is_some_and(|l| !l.is_empty()),
-                "{k} carries an accessible label"
-            );
-        }
+    /// Controls that are focusable/role-bearing but legitimately carry no accessible
+    /// name. (surface, element key, why). This allow-list is the ONLY suppression —
+    /// every entry must be justified. Start empty; add only with a documented reason.
+    const A11Y_ALLOWLIST: &[(&str, &str, &str)] = &[];
+
+    /// Roles denoting an interactive control, which therefore require an accessible name.
+    fn interactive_role(role: &str) -> bool {
+        // `option` is the themed dropdown's item role (see `views/dropdown.rs`).
+        matches!(
+            role,
+            "button" | "link" | "checkbox" | "slider" | "menuitem" | "tab" | "textbox" | "option"
+        )
+    }
+
+    /// An element the user can operate right now: focusable or interactive-roled, and
+    /// actually present (not inert, not transparent). `elements()` includes opacity-0
+    /// nodes and `inert` ones, so both are filtered here.
+    fn actionable(e: &rune::ElementInfo) -> bool {
+        (e.focusable || interactive_role(e.role)) && !e.inert && e.opacity > 0.01
+    }
+
+    /// The accessible name: the explicit label, else the visible text (a track row
+    /// names itself by its text). Whitespace-only counts as empty.
+    fn a11y_name(e: &rune::ElementInfo) -> Option<String> {
+        e.label
+            .clone()
+            .or_else(|| e.text.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+
+    /// A fully-populated base state so controls (now-playing, track rows, transport)
+    /// actually render on every surface.
+    fn a11y_base() -> State {
         let mut s = State::new(PlayerHandle::recording());
         s.sidebar_collapsed = false;
         s.nav_hidden = Vec::new();
-        s.library = vec![album_track(1, "A")];
+        s.library = vec![album_track(1, "Aria"), album_track(2, "Bolero")];
         s.now_playing_id = Some(1);
         s.playing = true;
+        s
+    }
+
+    /// The surfaces the a11y sweep audits: each a scene fn applied over `a11y_base`.
+    #[allow(clippy::type_complexity)]
+    const A11Y_SURFACES: &[(&str, fn(&mut State))] = &[
+        ("home", scene_home),
+        ("albums", scene_albums),
+        ("album-detail", scene_album_detail),
+        ("artists", scene_artists),
+        ("artist-detail", scene_artist_detail),
+        ("genres", scene_genres),
+        ("queue", scene_queue),
+        ("collapsed", scene_collapsed),
+        ("mobile-content", scene_mobile_content),
+        ("settings-music", scene_settings_music),
+        ("settings-audio", scene_settings_audio),
+        ("settings-audio-eq", scene_settings_audio_eq),
+        ("settings-appearance", scene_settings_appearance),
+        ("settings-about", scene_settings_about),
+        ("settings-lang-open", scene_settings_lang_open),
+        ("add-source-open", scene_add_source_open),
+        ("organize-confirm", scene_organize_confirm),
+        ("signal-path-open", scene_signal_path_open),
+        ("crash-dialog", scene_crash_dialog),
+    ];
+
+    /// Render one a11y surface headlessly.
+    fn a11y_surface(scene: fn(&mut State)) -> Runtime<State> {
+        let mut s = a11y_base();
+        scene(&mut s);
         let mut rt = Runtime::new(
             s,
             view,
@@ -7897,59 +7942,47 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        // Sidebar nav + footer, library controls, transport, now-playing.
-        for k in [
-            "nav-home",
-            "nav-albums",
-            "nav-artists",
-            "nav-library",
-            "nav-settings",
-            "sort-artist",
-            "sort-folder",
-            "track-1",
-            "enqueue-1",
-            "play-pause",
-            "shuffle",
-            "repeat",
-            "volume-mute",
-            "now-playing-text",
-        ] {
-            assert_a11y(&rt, k);
+        rt
+    }
+
+    /// Every actionable control, on every surface, exposes an accessible name and a
+    /// valid interactive role. A dropped `.label()`/`.role()`/`.focusable()` fails here.
+    #[test]
+    fn all_actionable_controls_are_labelled() {
+        let mut violations: Vec<String> = Vec::new();
+        for (name, scene) in A11Y_SURFACES {
+            let rt = a11y_surface(*scene);
+            for e in rt.elements() {
+                if !actionable(&e) {
+                    continue;
+                }
+                let key = e.key.as_deref().unwrap_or("<no key>");
+                if A11Y_ALLOWLIST
+                    .iter()
+                    .any(|(s, k, _)| s == name && *k == key)
+                {
+                    continue;
+                }
+                if !interactive_role(e.role) {
+                    violations.push(format!(
+                        "[{name}] {key}: focusable but role={:?} is not interactive",
+                        e.role
+                    ));
+                }
+                if a11y_name(&e).is_none() {
+                    violations.push(format!(
+                        "[{name}] {key}: role={:?} has no accessible name",
+                        e.role
+                    ));
+                }
+            }
         }
-        // Settings — the category rail + the Appearance tab controls (a fresh
-        // Runtime routed to Settings, the pattern the other settings tests use).
-        let settings_rt = |tab: SettingsTab| {
-            let mut s = State::new(PlayerHandle::offline());
-            s.sidebar_collapsed = false;
-            s.route = Route::Settings;
-            s.settings_tab = tab;
-            let mut rt = Runtime::new(
-                s,
-                view,
-                (1100.0, 720.0),
-                Env {
-                    system_dark: true,
-                    scale: 2.0,
-                },
-            );
-            rt.frame(0.0);
-            rt
-        };
-        let appearance = settings_rt(SettingsTab::Appearance);
-        for k in [
-            "cat-appearance",
-            "cat-audio",
-            "cat-about",
-            "theme-dark",
-            "nav-toggle-home",
-            "nav-toggle-tracks",
-        ] {
-            assert_a11y(&appearance, k);
-        }
-        // The Music Data tab's source actions.
-        let music = settings_rt(SettingsTab::MusicData);
-        assert_a11y(&music, "add-source");
-        assert_a11y(&music, "rescan-sources");
+        assert!(
+            violations.is_empty(),
+            "a11y sweep found {} unlabelled/mis-roled controls:\n{}",
+            violations.len(),
+            violations.join("\n")
+        );
     }
 
     #[test]
