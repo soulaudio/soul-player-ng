@@ -40,13 +40,15 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     /// Spawn the actor. `make_sink` runs on the pump thread (so `K` need not be
-    /// `Send`). `on_event` is called from the pump thread on every emitted
-    /// event. `library` is the initial `id → path` map (swap later via
-    /// [`set_library`](Self::set_library)).
+    /// `Send`) and is **reusable**: called with `None` to build the initial sink,
+    /// and with `Some(rate)` to reopen the device at a track's native rate for
+    /// bit-perfect exclusive output (native-rate switching). `on_event` is called
+    /// from the pump thread on every emitted event. `library` is the initial
+    /// `id → path` map (swap later via [`set_library`](Self::set_library)).
     pub fn spawn<K, Mk, Ev>(make_sink: Mk, library: Arc<Library>, on_event: Ev) -> Self
     where
         K: Sink + 'static,
-        Mk: FnOnce() -> anyhow::Result<K> + Send + 'static,
+        Mk: Fn(Option<u32>) -> anyhow::Result<K> + Send + 'static,
         Ev: Fn(Event) + Send + 'static,
     {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -144,6 +146,25 @@ fn read_rg_tags(path: &Path) -> RgInfo {
     }
 }
 
+/// The native rate to reopen the output device at for bit-perfect exclusive output,
+/// or `None` to leave the sink as is. Reopen only when the sink is **exclusive**, the
+/// track's `decoded_rate` differs from the current `device_rate`, and we didn't just
+/// fail at that rate (`tried`). Pure so the loop-safety guard is unit-tested without a
+/// device: a shared sink never reopens; a rate the device just refused isn't retried
+/// (the caller sets `tried` on failure); a new/different rate is tried again.
+fn native_rate_target(
+    exclusive: bool,
+    decoded_rate: u32,
+    device_rate: u32,
+    tried: Option<u32>,
+) -> Option<u32> {
+    if exclusive && decoded_rate != device_rate && tried != Some(decoded_rate) {
+        Some(decoded_rate)
+    } else {
+        None
+    }
+}
+
 fn pump_thread<K, Mk, Ev>(
     make_sink: Mk,
     cmd_rx: Receiver<Command>,
@@ -151,10 +172,13 @@ fn pump_thread<K, Mk, Ev>(
     on_event: Ev,
 ) where
     K: Sink + 'static,
-    Mk: FnOnce() -> anyhow::Result<K>,
+    Mk: Fn(Option<u32>) -> anyhow::Result<K>,
     Ev: Fn(Event),
 {
-    let sink = match make_sink() {
+    // `None` = the initial sink (device default / shared, or exclusive at the device
+    // rate). `Some(rate)` later reopens it at a track's native rate (native-rate
+    // switching), below.
+    let sink = match make_sink(None) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("player: sink init failed: {e:#}");
@@ -193,6 +217,12 @@ fn pump_thread<K, Mk, Ev>(
     let mut last_tick = Instant::now();
     let tick_every = Duration::from_millis(125); // ~8 Hz
     let mut disconnected = false;
+
+    // --- Native-rate switching state ---
+    // The native rate a reopen was last ATTEMPTED at; set only on a FAILED reopen so
+    // we don't retry the same unsupported rate every pump (which would thrash the
+    // device or loop). A different track rate, or a success, clears the suppression.
+    let mut native_rate_tried: Option<u32> = None;
 
     // --- ReplayGain state ---
     // Config, updated by `Command::SetReplayGain` (the host sends the persisted
@@ -272,6 +302,47 @@ fn pump_thread<K, Mk, Ev>(
         }
         while let Some(id) = player.poll_open() {
             let _ = req_tx.send(id);
+        }
+
+        // 2b. Native-rate switching (bit-perfect exclusive output): if the sink is
+        //     driving the device EXCLUSIVELY and the current track's native rate
+        //     differs from the device rate, reopen the device at the track's rate and
+        //     swap it in, so the track plays with no resampling. Done before the pump
+        //     writes this track's audio.
+        //
+        //     Guards keep it safe and non-looping:
+        //       - `exclusive` only — a shared sink never reopens (it stays at the
+        //         device default and resamples, as before), and a reopen that fails
+        //         back to shared won't retry.
+        //       - `native_rate_tried` suppresses retrying a rate the device just
+        //         refused; `make_sink(Some(rate))` HARD-FAILS on an exclusive-reopen
+        //         failure (rather than downgrading to shared), so on failure we keep
+        //         the current exclusive sink (resampling) instead of losing exclusive.
+        if let Some(di) = player.deck().decode_info()
+            && let Some(want) = native_rate_target(
+                di.exclusive,
+                di.decoded.sample_rate,
+                di.device_rate,
+                native_rate_tried,
+            )
+        {
+            // ANY failure (the device refusing the rate, or an incompatible swap)
+            // suppresses retrying THIS rate so we never thrash the device every pump;
+            // only a full success clears the latch. On failure the current exclusive
+            // sink is kept (it resamples) rather than losing exclusive.
+            let outcome = make_sink(Some(want)).and_then(|new_sink| {
+                player
+                    .deck_mut()
+                    .swap_sink(new_sink)
+                    .map_err(|e| anyhow::anyhow!("sink swap failed: {e:?}"))
+            });
+            match outcome {
+                Ok(()) => native_rate_tried = None,
+                Err(e) => {
+                    native_rate_tried = Some(want);
+                    eprintln!("player: exclusive reopen at {want} Hz failed: {e:#}");
+                }
+            }
         }
 
         // 3. Pump one block (paced by the real sink's backpressure; NullSink
@@ -412,6 +483,26 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::mpsc::RecvTimeoutError;
 
+    #[test]
+    fn native_rate_target_only_reopens_an_exclusive_mismatched_untried_rate() {
+        // Exclusive + the track's rate differs from the device → reopen at the track's
+        // rate (bit-perfect).
+        assert_eq!(native_rate_target(true, 44_100, 48_000, None), Some(44_100));
+        // Shared sink (not exclusive) never reopens — it stays at the device rate and
+        // resamples, so a shared user never thrashes the device.
+        assert_eq!(native_rate_target(false, 44_100, 48_000, None), None);
+        // Already rate-matched → nothing to do.
+        assert_eq!(native_rate_target(true, 48_000, 48_000, None), None);
+        // A rate the device just refused (recorded in `tried`) isn't retried — this is
+        // the anti-loop / anti-thrash guard.
+        assert_eq!(native_rate_target(true, 44_100, 48_000, Some(44_100)), None);
+        // But a DIFFERENT rate than the one that failed is tried again.
+        assert_eq!(
+            native_rate_target(true, 96_000, 48_000, Some(44_100)),
+            Some(96_000)
+        );
+    }
+
     fn wav(rate: u32, frames: u32) -> Vec<u8> {
         // Minimal stereo-16-bit WAV writer (same as library.rs tests).
         let channels: u16 = 2;
@@ -451,7 +542,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_rate| Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib),
             move |ev| {
                 let _ = ev_tx.send(ev);
@@ -526,7 +617,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_rate| Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib_a),
             move |ev| {
                 let _ = ev_tx.send(ev);
@@ -568,7 +659,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_rate| Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib),
             move |ev| {
                 let _ = ev_tx.send(ev);
