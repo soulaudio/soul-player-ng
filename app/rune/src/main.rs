@@ -2273,16 +2273,25 @@ fn main() -> anyhow::Result<()> {
     host.set_indexing_mode(IndexingMode::from_config(&config::load_indexing_mode()));
     // The dev/e2e harness loads a single folder from the env; otherwise restore
     // the persisted watched-folder set so Sources survive a restart.
+    //
+    // `needs_startup_scan`: a restored real library is scanned OFF the main thread
+    // once the window is up (see the `on_ready`/first-frame kickoff below), so a
+    // cold or large library never blocks the first paint (#102). The env/e2e path
+    // stays synchronous — its testdata is tiny and the harness expects it loaded.
+    let mut needs_startup_scan = false;
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
         host.autoload_from_env()?;
     } else {
         let saved = config::load_sources_with_enabled();
         if !saved.is_empty() {
-            tracing::info!(count = saved.len(), "restoring saved sources");
-            let _ = host.set_sources(&saved);
-            // Persist the refreshed caches so the next launch stays warm (adds /
-            // edits since last run are now folded in).
-            config::save_scan_caches(&host.caches_snapshot());
+            tracing::info!(
+                count = saved.len(),
+                "restoring saved sources (scan deferred)"
+            );
+            // Set the configured set now (cheap) so the window opens on the Sources
+            // list immediately; the scan itself is deferred to a background worker.
+            host.configure_sources(&saved);
+            needs_startup_scan = true;
         }
     }
 
@@ -2421,6 +2430,13 @@ fn main() -> anyhow::Result<()> {
         let h = ah.clone();
         ah.update(move |s: &mut State, _tx: &mut Tx| {
             s.app_handle = Some(h);
+            // Now that the window is up (first frame painted on the count-0 Sources
+            // list + empty library), run the restored library's first scan OFF the
+            // main thread. Results fold in via `apply_and_save` and the title-bar
+            // activity widget animates meanwhile — no blocked first paint (#102).
+            if needs_startup_scan {
+                scan_in_background(s, |host| host.rescan_sources(), apply_and_save);
+            }
         });
     }
     // Launch-time update check (release builds only): off-thread so it never
@@ -2760,6 +2776,38 @@ mod tests {
         assert_eq!(s.sources[0].path, testdata_dir());
         assert!(s.sources[0].enabled && s.sources[0].available);
         assert!(!s.library.is_empty(), "testdata scanned into the library");
+    }
+
+    /// #102: a restored library paints before it is scanned. `configure_sources`
+    /// seeds the Sources list (count 0) with no scan, so the first frame has
+    /// something to render and an empty library; the deferred off-thread scan then
+    /// folds the real tracks + counts in. Guards against the startup scan creeping
+    /// back onto the first-paint path.
+    #[test]
+    fn restored_sources_paint_before_the_deferred_scan() {
+        let host = PlayerHandle::offline();
+        host.configure_sources(&[(testdata_dir(), true)]);
+        let s = State::new(host);
+        // First paint: the source is listed (count 0, loading) but nothing scanned.
+        assert_eq!(s.sources.len(), 1);
+        assert_eq!(s.sources[0].path, testdata_dir());
+        assert_eq!(s.sources[0].track_count, 0, "count 0 before the scan");
+        assert!(
+            s.library.is_empty(),
+            "no blocking scan — the library is empty until the deferred scan runs"
+        );
+        // The deferred scan (synchronous here) folds the real library + counts in.
+        let mut s = s;
+        let up = s.host.rescan_sources().expect("deferred rescan");
+        apply_watch(&mut s, up);
+        assert!(
+            !s.library.is_empty(),
+            "the deferred scan populates the library"
+        );
+        assert!(
+            s.sources[0].track_count > 0,
+            "real counts replace the loading 0"
+        );
     }
 
     /// The now-playing toast fires once per genuine track change: `feed_media_session`
