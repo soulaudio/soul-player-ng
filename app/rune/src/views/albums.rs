@@ -7,17 +7,16 @@
 
 use std::collections::HashMap;
 
-use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text};
+use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
 use soul_player_host::{Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
+use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::grid;
-use crate::views::icons;
 use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
-use crate::views::player::cover;
 
 /// One grouped album: display name, its artist, a track id to draw the cover
 /// from, and every track id (in library order) to play on click.
@@ -54,8 +53,6 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
 
 /// Sum of track seconds as a coarse human total — "1 h 23 min" or "45 min"
 /// (detail headers show totals, not mm:ss). Rounds to whole minutes. Pure.
-// Not yet called outside tests — wired in by the detail-header follow-up tasks.
-#[allow(dead_code)]
 pub(crate) fn fmt_total_dur(total_secs: f64) -> String {
     let mins = (total_secs.max(0.0) / 60.0).round() as u64;
     let (h, m) = (mins / 60, mins % 60);
@@ -141,9 +138,6 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .min_h(0.0),
     )
 }
-
-/// Large cover on the album detail page (the old app's `w-44`).
-const DETAIL_COVER: f32 = 176.0;
 
 /// A back link to the Albums grid — a `←` glyph. Our focused shell keeps no page
 /// history, so it simply returns to the grid.
@@ -237,11 +231,11 @@ pub(crate) fn detail_track_row(
     })
 }
 
-/// An album's detail page (the old app's AlbumPage): a back link, then a header
-/// — large cover, an "ALBUM" eyebrow, title, artist, track count and a Play
-/// button — over the album's track list. The album is `State::open_album`,
-/// re-derived from the current library; if it has vanished we just offer the
-/// way back.
+/// An album's detail page (the old app's AlbumPage): a back link, then the shared
+/// hero — square cover, "ALBUM" eyebrow, title, artist, "{n} tracks · {duration}"
+/// and a Play-All pill — over the album's numbered track list. The album is
+/// `State::open_album`, re-derived from the current library; if it has vanished we
+/// just offer the way back.
 pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     let albums = group_albums(&s.library);
     let Some(album) = s
@@ -257,86 +251,34 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             .child(back_button(p));
     };
 
-    let play_ids = album.ids.clone();
-    // Header stacks (cover over info) when the pane is too narrow for them side
-    // by side (the old app's `flex-col sm:flex-row`).
-    let header = row()
-        .key("album-header")
-        .flex_wrap()
-        .gap(space::XL)
-        .pb(space::SECTION)
-        .child(
-            // Large cover with a `shadow-lg`, as the old app's AlbumPage.
-            el().key("album-cover")
-                .radius(radius::MD)
-                .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
-                .child(cover(
-                    s,
-                    Some(album.cover_id),
-                    DETAIL_COVER,
-                    radius::MD,
-                    p,
-                    scale,
-                )),
-        )
-        .child(
-            col()
-                .key("album-meta")
-                .gap(space::XS)
-                .grow(1.0)
-                .min_w(0.0)
-                .center_y()
-                .child(
-                    text(t!("album.eyebrow").to_uppercase())
-                        .font(type_::SECTION)
-                        .color(p.text_secondary),
-                )
-                .child(
-                    text(album.name.clone())
-                        .font(type_::DISPLAY)
-                        .color(p.fg)
-                        .truncate(),
-                )
-                .child(
-                    text(album.artist.clone())
-                        .font(type_::CARD_TITLE)
-                        .color(p.text_secondary)
-                        .truncate(),
-                )
-                .child(
-                    text(t!("album.trackCount", count => album.ids.len()).to_string())
-                        .font(type_::CAPTION)
-                        .color(p.text_secondary),
-                )
-                .child(
-                    // The old app's "Play All" pill (`rounded-full px-6 py-3`,
-                    // filled Play icon) — plays the whole album from the top.
-                    el().key("album-play-all")
-                        .role("button")
-                        .label(t!("album.playAll").to_string())
-                        .focusable(true)
-                        .px(space::XL)
-                        .py(space::MD)
-                        .radius(radius::FULL)
-                        .fill(p.primary)
-                        .cursor(Cursor::Pointer)
-                        .hover(p.bg.alpha(fx::HOVER_FILL))
-                        .press(p.bg.alpha(fx::PRESS_FILL))
-                        .on_press(move |st: &mut State| {
-                            st.host.send(Command::PlayContext {
-                                ids: play_ids.clone(),
-                                start: 0,
-                            })
-                        })
-                        .child(
-                            row()
-                                .gap(space::SM)
-                                .center_y()
-                                .child(icon(&icons::PLAY, 20.0).color(p.bg))
-                                .child(text(t!("album.playAll").to_string()).color(p.bg)),
-                        ),
-                ),
-        );
+    let total: f64 = album
+        .ids
+        .iter()
+        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .map(|t| t.duration_secs)
+        .sum();
+    let meta = t!(
+        "detail.tracksAndDuration",
+        count => album.ids.len(),
+        dur => fmt_total_dur(total)
+    )
+    .to_string();
+
+    let hero = detail_hero(
+        s,
+        p,
+        scale,
+        "album",
+        HeroArt::Cover {
+            id: album.cover_id,
+            circular: false,
+        },
+        t!("album.eyebrow").to_uppercase(),
+        album.name.clone(),
+        Some(album.artist.clone()),
+        meta,
+        play_all_pill("album-play-all", album.ids.clone(), p),
+    );
 
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
     for (i, &id) in album.ids.iter().enumerate() {
@@ -367,7 +309,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             col()
                 .key("album-detail-content")
                 .padding(space::PANE)
-                .child(header)
+                .child(hero)
                 .child(list)
                 .scroll(ScrollSpec {
                     stick_bottom: false,

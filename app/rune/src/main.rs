@@ -7059,6 +7059,33 @@ mod tests {
         );
     }
 
+    /// The album detail header's Play-All pill plays the album from the top.
+    #[test]
+    fn the_album_detail_play_all_plays_the_album() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.route = Route::Album;
+        s.open_album = Some("Alb".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("album-header").is_some(), "the shared hero renders");
+        assert!(rt.find("album-cover").is_some(), "the hero cover renders");
+        click(&mut rt, "album-play-all");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 0
+            }],
+            "Play All plays the album from the top"
+        );
+    }
+
     /// Clicking the row of the track that is already playing toggles pause/resume
     /// (the old app's TrackList current-row control), rather than restarting it.
     #[test]
