@@ -135,8 +135,11 @@ pub(crate) fn build_actor(
     on_event: impl Fn(Event) + Send + 'static,
 ) -> AudioPlayer {
     match mode {
-        // Offline/headless has no audible output, so the EQ/analyzer are moot there.
-        SinkMode::Offline => AudioPlayer::spawn(|| Ok(NullSink::new(48_000, 2)), lib, on_event),
+        // Offline/headless has no audible output, so the EQ/analyzer are moot there
+        // (and it never reopens — a NullSink reports its fixed rate).
+        SinkMode::Offline => {
+            AudioPlayer::spawn(|_rate| Ok(NullSink::new(48_000, 2)), lib, on_event)
+        }
         SinkMode::Device => AudioPlayer::spawn(
             device_sink_factory(output_device, exclusive, status, dsp, spectrum),
             lib,
@@ -145,39 +148,49 @@ pub(crate) fn build_actor(
     }
 }
 
-/// Build the pump-thread make-sink closure for the real device: try exclusive
-/// first when asked (bit-perfect, Windows only), else — or on any exclusive
-/// failure — open the named shared device (falling back to the system default if
-/// it is gone), then wrap it in the [`DspSink`] so the DSP chain runs at the
-/// device rate. Returning one closure (matching internally) keeps a single
-/// concrete `FnOnce` type for `AudioPlayer::spawn`'s factory bound.
+/// Build the reusable pump-thread make-sink closure for the real device: try
+/// exclusive first when asked (bit-perfect, Windows only, at `rate_hint`'s rate),
+/// else — or on an exclusive INITIAL failure — open the named shared device
+/// (falling back to the system default if it is gone), then wrap it in the
+/// [`DspSink`] so the DSP chain runs at the device rate. Returning one closure
+/// (matching internally) keeps a single concrete type for `AudioPlayer::spawn`'s
+/// factory bound.
 fn device_sink_factory(
     output_device: Option<String>,
     exclusive: bool,
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
-) -> impl FnOnce() -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
-    move || {
-        let device = open_device_sink(output_device, exclusive, &status)?;
-        Ok(DspSink::new(device, dsp, spectrum))
+) -> impl Fn(Option<u32>) -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
+    // Reusable (`Fn`, not `FnOnce`): called with `None` for the initial sink and with
+    // `Some(rate)` to reopen the exclusive device at a track's native rate. Captured
+    // state is cloned per call so the closure can run more than once.
+    move |rate_hint| {
+        let device = open_device_sink(output_device.clone(), exclusive, rate_hint, &status)?;
+        Ok(DspSink::new(device, dsp.clone(), spectrum.clone()))
     }
 }
 
 /// Open the device sink, honoring `exclusive` when possible and recording the
-/// outcome in `status`. Exclusive is attempted only on Windows (via WASAPI); any
-/// failure (device in use, no exclusive format, wrong platform) falls back to a
-/// shared `CpalSink` — never silent, never a hard stop. A successful exclusive
-/// open records [`ExclusiveStatus::Active`]; a fallback records
-/// [`ExclusiveStatus::FellBack`] with the reason.
+/// outcome in `status`. Exclusive is attempted only on Windows (via WASAPI).
+/// `rate_hint` is the track's native rate for a bit-perfect reopen; `None` is the
+/// initial open at the device's default rate.
+///
+/// On an exclusive failure the initial open (`None`) falls back to a shared
+/// `CpalSink` — never silent, never a hard stop — and records
+/// [`ExclusiveStatus::FellBack`]; a reopen (`Some`) instead returns `Err`, so the
+/// caller keeps the current exclusive sink (which resamples) rather than downgrading
+/// the whole session to shared. A successful exclusive open records
+/// [`ExclusiveStatus::Active`].
 fn open_device_sink(
     output_device: Option<String>,
     exclusive: bool,
+    rate_hint: Option<u32>,
     status: &Arc<Mutex<ExclusiveStatus>>,
 ) -> anyhow::Result<DeviceSink> {
     if exclusive {
         #[cfg(windows)]
-        match try_open_exclusive(output_device.clone()) {
+        match try_open_exclusive(output_device.clone(), rate_hint) {
             Ok(sink) => {
                 let si = sink.stream_info();
                 *status.lock().expect("exclusive status mutex") = ExclusiveStatus::Active {
@@ -187,12 +200,24 @@ fn open_device_sink(
                 return Ok(DeviceSink::Exclusive(sink));
             }
             Err(reason) => {
+                // A native-rate REOPEN (`rate_hint.is_some()`) must not downgrade to
+                // shared — error so the pump keeps the current exclusive sink
+                // (resampling) rather than losing exclusive for the whole session.
+                // Only the INITIAL open (`None`) falls back to shared.
+                if rate_hint.is_some() {
+                    anyhow::bail!("exclusive reopen at native rate failed: {reason}");
+                }
                 *status.lock().expect("exclusive status mutex") = ExclusiveStatus::FellBack(reason);
                 // fall through to the shared sink
             }
         }
         #[cfg(not(windows))]
         {
+            // Exclusive isn't available off Windows; a reopen can't happen (the sink
+            // is never exclusive), and the initial open records the fallback.
+            if rate_hint.is_some() {
+                anyhow::bail!("exclusive output is not available on this platform");
+            }
             *status.lock().expect("exclusive status mutex") = ExclusiveStatus::FellBack(
                 "exclusive output is not available on this platform".to_string(),
             );
@@ -210,14 +235,19 @@ fn open_device_sink(
     Ok(DeviceSink::Shared(shared))
 }
 
-/// Open the WASAPI exclusive sink at the device's native (shared mix-format) rate —
-/// the rate a DAC also accepts exclusively, so a rate-matched track plays
-/// bit-perfect. Returns the failure reason as a string so the caller can record it
-/// and fall back to shared.
+/// Open the WASAPI exclusive sink. `rate_hint` is the track's native rate for a
+/// bit-perfect reopen; `None` (the initial open) uses the device's shared
+/// mix-format rate (which a DAC also accepts exclusively). Channels always come
+/// from the device. Returns the failure reason as a string so the caller can
+/// record it (initial open) or keep the current sink (reopen).
 #[cfg(windows)]
-fn try_open_exclusive(name: Option<String>) -> Result<WasapiExclusiveSink, String> {
-    let (rate, channels) = default_output_config(name.as_deref())
+fn try_open_exclusive(
+    name: Option<String>,
+    rate_hint: Option<u32>,
+) -> Result<WasapiExclusiveSink, String> {
+    let (default_rate, channels) = default_output_config(name.as_deref())
         .ok_or_else(|| "output device unavailable".to_string())?;
+    let rate = rate_hint.unwrap_or(default_rate);
     WasapiExclusiveSink::open(name, rate, channels).map_err(|e| e.to_string())
 }
 

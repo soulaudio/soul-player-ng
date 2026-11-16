@@ -117,6 +117,13 @@ impl<K: Sink> Sink for DspSink<K> {
         self.inner.stream_info()
     }
 
+    /// Forward the wrapped device's exclusive flag — the DSP chain doesn't change
+    /// how the device is driven, and the engine reads this to decide native-rate
+    /// switching, so it must reflect the real (inner) sink, not the trait default.
+    fn exclusive(&self) -> bool {
+        self.inner.exclusive()
+    }
+
     fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
         // Feed the analyzer the pre-chain signal (the track's own content) whether
         // or not the chain is engaged — the UI overlays the response to show it.
