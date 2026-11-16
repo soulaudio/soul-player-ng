@@ -24,8 +24,8 @@ use parley_engine as _;
 use soul_player_host::{
     Band, BandKind, BrowseAxis, Command, DspUnit, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
     IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
-    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView,
-    WatchUpdate, default_bands,
+    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus,
+    TrackLoudness, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
 };
 
@@ -2176,6 +2176,13 @@ fn scene_signal_path(s: &mut State) {
         device_rate: 48_000,
         resampling: true,
         output_bits: 24,
+        loudness: Some(TrackLoudness {
+            integrated_lufs: -14.2,
+            lra: 9.5,
+            true_peak_dbtp: -0.8,
+            plr: 13.4,
+            dr: 12.0,
+        }),
     });
 }
 
@@ -2459,8 +2466,8 @@ fn main() -> anyhow::Result<()> {
         // Persist a completed background analysis to the on-disk cache (best-effort,
         // off the UI thread) so it seeds the NEXT launch; the fold into playback is
         // the backend's, already in its in-memory cache.
-        if let Event::TrackLoudnessAnalyzed { path, gain_db } = &ev {
-            config::record_loudness(path, *gain_db);
+        if let Event::TrackLoudnessAnalyzed { path, loudness } = &ev {
+            config::record_loudness(path, loudness);
         }
         ah.update(move |s: &mut State, tx: &mut Tx| {
             s.apply(&ev);
@@ -3245,6 +3252,7 @@ mod tests {
             device_rate: 48_000,
             resampling: true,
             output_bits: 24,
+            loudness: None,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
@@ -3295,6 +3303,7 @@ mod tests {
             device_rate: 96_000,
             resampling: false,
             output_bits: 24,
+            loudness: None,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
@@ -4666,6 +4675,7 @@ mod tests {
             device_rate: 96_000,
             resampling: false,
             output_bits: 24,
+            loudness: None,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
@@ -5160,6 +5170,13 @@ mod tests {
             device_rate: 48_000,
             resampling: true,
             output_bits: 24,
+            loudness: Some(TrackLoudness {
+                integrated_lufs: -14.2,
+                lra: 9.5,
+                true_peak_dbtp: -0.8,
+                plr: 13.4,
+                dr: 12.0,
+            }),
         });
         s.replaygain_mode = ReplayGainMode::Off;
         apply_locale("en");
@@ -5189,6 +5206,18 @@ mod tests {
             "sp-row-dsp",       // "soon"
         ] {
             assert!(rt.find(k).is_some(), "stage row {k} renders");
+        }
+
+        // The per-track loudness & dynamic-range readouts render (#110): integrated
+        // LUFS, LRA, true-peak, PLR, and the DR value.
+        for k in [
+            "signal-path-integrated",
+            "signal-path-lra",
+            "signal-path-truepeak",
+            "signal-path-plr",
+            "signal-path-dr",
+        ] {
+            assert!(rt.find(k).is_some(), "loudness row {k} renders");
         }
 
         // The ReplayGain toggle is the one real pipeline toggle: Off → Track.

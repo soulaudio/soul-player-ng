@@ -1106,7 +1106,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "soul-audio-artbake"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "embedded-io",
  "image",
@@ -1117,7 +1117,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-catalog"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "embedded-io",
  "soul-audio-core",
@@ -1126,7 +1126,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-control"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "soul-audio-core",
  "soul-audio-engine",
@@ -1136,7 +1136,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-core"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "embedded-io",
 ]
@@ -1144,7 +1144,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-desktop"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "anyhow",
  "cpal",
@@ -1157,7 +1157,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-dsp"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "serde",
  "soul-audio-eq",
@@ -1166,7 +1166,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-engine"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "soul-audio-core",
 ]
@@ -1174,7 +1174,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-eq"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "libm",
  "soul-audio-core",
@@ -1183,7 +1183,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-import"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "embedded-io-adapters",
  "serde",
@@ -1196,7 +1196,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-index"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "embedded-io",
  "soul-audio-artbake",
@@ -1207,12 +1207,12 @@ dependencies = [
 [[package]]
 name = "soul-audio-loudness"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 
 [[package]]
 name = "soul-audio-multicatalog"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "soul-audio-catalog",
  "soul-audio-index",
@@ -1221,7 +1221,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-organize"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "embedded-io-adapters",
  "soul-audio-tags",
@@ -1230,7 +1230,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-queue"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "heapless",
  "soul-audio-engine",
@@ -1239,7 +1239,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-tags"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#0aad28cbff664f4682f34d3cc501b8304eee632e"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#490704779c0b854c0ed30dade82d0f2d0e7285a6"
 dependencies = [
  "embedded-io",
  "soul-audio-core",
@@ -1528,7 +1528,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

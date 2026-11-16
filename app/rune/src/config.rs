@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use soul_player_host::{
     Band, BandKind, DspChain, DspUnit, EqUnit, MAX_BANDS, Profile, ProfileSet, ReplayGainMode,
-    SCAN_CACHE_VERSION, ScanCache, default_bands,
+    SCAN_CACHE_VERSION, ScanCache, TrackLoudness, default_bands,
 };
 // The persisted profile/chain exchange format now lives in the shared `soul-audio-dsp`
 // crate (re-exported through the host), so the DAP reads the identical shapes. This
@@ -771,30 +771,31 @@ fn save_rg_to(path: &Path, mode: ReplayGainMode, preamp_db: f32) -> std::io::Res
 
 // --- hybrid-ReplayGain loudness cache ---
 
-/// `<config>/soul-player/loudness_cache.txt` — the persisted computed gains for
-/// previously-untagged tracks the backend background-analyzed. One line per entry:
-/// `"<gain_db>\t<mtime_secs>\t<size>\t<path>"`. The mtime+size are a cheap
-/// freshness stamp: an entry whose file no longer matches (edited / replaced /
-/// moved) is dropped on load so a stale gain is never seeded.
+/// `<config>/soul-player/loudness_cache.txt` — the persisted loudness & dynamic-
+/// range metrics for tracks the backend background-analyzed. One line per entry:
+/// `"<integrated>\t<lra>\t<true_peak>\t<plr>\t<dr>\t<mtime_secs>\t<size>\t<path>"`.
+/// The mtime+size are a cheap freshness stamp: an entry whose file no longer
+/// matches (edited / replaced / moved) is dropped on load. The 8-field layout also
+/// makes an older 4-field (gain-only) cache parse as empty — migration-free.
 pub fn loudness_cache_path() -> Option<PathBuf> {
     Some(soul_player_dir()?.join("loudness_cache.txt"))
 }
 
-/// The saved, still-valid `(path, gain_db)` entries (empty if the file is missing
+/// The saved, still-valid `(path, metrics)` entries (empty if the file is missing
 /// / unreadable). Each is validated against the file's CURRENT mtime+size; stale
 /// or vanished files are skipped.
-pub fn load_loudness_cache() -> Vec<(PathBuf, f32)> {
+pub fn load_loudness_cache() -> Vec<(PathBuf, TrackLoudness)> {
     loudness_cache_path()
         .map(|p| load_loudness_from(&p))
         .unwrap_or_default()
 }
 
-/// Record a freshly-computed gain for `audio_path` (best-effort — a failed write
-/// never breaks the UI). Upserts by path (the new stamp wins) and rewrites the
-/// file, so the cache dedups rather than growing without bound.
-pub fn record_loudness(audio_path: &Path, gain_db: f32) {
+/// Record a freshly-computed metric set for `audio_path` (best-effort — a failed
+/// write never breaks the UI). Upserts by path (the new stamp wins) and rewrites
+/// the file, so the cache dedups rather than growing without bound.
+pub fn record_loudness(audio_path: &Path, loudness: &TrackLoudness) {
     if let Some(p) = loudness_cache_path() {
-        let _ = record_loudness_to(&p, audio_path, gain_db);
+        let _ = record_loudness_to(&p, audio_path, loudness);
     }
 }
 
@@ -810,11 +811,10 @@ fn file_stamp(path: &Path) -> Option<(u64, u64)> {
     Some((mtime, m.len()))
 }
 
-/// Read + validate the cache from `path` (the testable core). A line parses as
-/// `gain \t mtime \t size \t path` (the path may itself contain tabs — only the
-/// first three tabs are split on), and is kept only when the file still matches
-/// the recorded mtime+size.
-fn load_loudness_from(path: &Path) -> Vec<(PathBuf, f32)> {
+/// Read + validate the cache from `path` (the testable core). A line parses as the
+/// 8 tab-separated fields above (the path — the last field — may itself contain
+/// tabs), and is kept only when the file still matches the recorded mtime+size.
+fn load_loudness_from(path: &Path) -> Vec<(PathBuf, TrackLoudness)> {
     let Ok(body) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -823,15 +823,25 @@ fn load_loudness_from(path: &Path) -> Vec<(PathBuf, f32)> {
         if line.is_empty() {
             continue;
         }
-        // Split off exactly the first three fields; the rest is the path verbatim.
-        let mut it = line.splitn(4, '\t');
-        let (Some(gain), Some(mtime), Some(size), Some(p)) =
-            (it.next(), it.next(), it.next(), it.next())
-        else {
+        let mut it = line.splitn(8, '\t');
+        let (Some(int), Some(lra), Some(tp), Some(plr), Some(dr), Some(mtime), Some(size), Some(p)) = (
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+            it.next(),
+        ) else {
             continue;
         };
-        let (Ok(gain), Ok(mtime), Ok(size)) = (
-            gain.parse::<f32>(),
+        let (Ok(int), Ok(lra), Ok(tp), Ok(plr), Ok(dr), Ok(mtime), Ok(size)) = (
+            int.parse::<f32>(),
+            lra.parse::<f32>(),
+            tp.parse::<f32>(),
+            plr.parse::<f32>(),
+            dr.parse::<f32>(),
             mtime.parse::<u64>(),
             size.parse::<u64>(),
         ) else {
@@ -839,18 +849,31 @@ fn load_loudness_from(path: &Path) -> Vec<(PathBuf, f32)> {
         };
         let audio = PathBuf::from(p);
         if file_stamp(&audio) == Some((mtime, size)) {
-            out.push((audio, gain));
+            out.push((
+                audio,
+                TrackLoudness {
+                    integrated_lufs: int,
+                    lra,
+                    true_peak_dbtp: tp,
+                    plr,
+                    dr,
+                },
+            ));
         }
     }
     out
 }
 
-/// Upsert `(audio_path, gain_db)` into the cache at `cache_path` and rewrite it
+/// Upsert `(audio_path, metrics)` into the cache at `cache_path` and rewrite it
 /// (the testable core of [`record_loudness`]). Skips a non-UTF-8 or un-stat-able
 /// audio path (nothing to validate against later). Existing entries are reloaded
 /// WITHOUT revalidation so a momentarily-offline file isn't purged by a write for
 /// a different track.
-fn record_loudness_to(cache_path: &Path, audio_path: &Path, gain_db: f32) -> std::io::Result<()> {
+fn record_loudness_to(
+    cache_path: &Path,
+    audio_path: &Path,
+    loudness: &TrackLoudness,
+) -> std::io::Result<()> {
     let Some((mtime, size)) = file_stamp(audio_path) else {
         return Ok(()); // can't stamp it → nothing worth persisting
     };
@@ -860,19 +883,29 @@ fn record_loudness_to(cache_path: &Path, audio_path: &Path, gain_db: f32) -> std
     if let Some(dir) = cache_path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    // Reload existing lines verbatim (key = path field) so the upsert dedups.
+    // Reload existing lines verbatim (key = the last/path field) so the upsert
+    // dedups; old 4-field lines have no 8th field and are dropped on rewrite.
     let mut lines: Vec<(String, String)> = Vec::new(); // (path_key, full_line)
     if let Ok(body) = std::fs::read_to_string(cache_path) {
         for line in body.lines() {
             if line.is_empty() {
                 continue;
             }
-            if let Some(key) = line.splitn(4, '\t').nth(3) {
+            if let Some(key) = line.splitn(8, '\t').nth(7) {
                 lines.push((key.to_string(), line.to_string()));
             }
         }
     }
-    let fresh = format!("{gain_db}\t{mtime}\t{size}\t{path_str}");
+    let TrackLoudness {
+        integrated_lufs,
+        lra,
+        true_peak_dbtp,
+        plr,
+        dr,
+    } = *loudness;
+    let fresh = format!(
+        "{integrated_lufs}\t{lra}\t{true_peak_dbtp}\t{plr}\t{dr}\t{mtime}\t{size}\t{path_str}"
+    );
     let mut replaced = false;
     for entry in &mut lines {
         if entry.0 == path_str {
@@ -1497,6 +1530,16 @@ mod tests {
         assert_eq!(preamp, 0.0);
     }
 
+    fn tl(integrated: f32) -> TrackLoudness {
+        TrackLoudness {
+            integrated_lufs: integrated,
+            lra: 8.5,
+            true_peak_dbtp: -1.3,
+            plr: 11.2,
+            dr: 10.0,
+        }
+    }
+
     #[test]
     fn loudness_cache_roundtrips_a_valid_entry() {
         let dir = std::env::temp_dir().join(format!("soul_rune_loud_{}", std::process::id()));
@@ -1508,20 +1551,21 @@ mod tests {
         let audio = dir.join("track.flac");
         std::fs::write(&audio, b"some bytes standing in for audio").unwrap();
 
-        record_loudness_to(&cache, &audio, -4.25).unwrap();
+        record_loudness_to(&cache, &audio, &tl(-4.25)).unwrap();
         let loaded = load_loudness_from(&cache);
         assert_eq!(loaded.len(), 1, "the recorded entry reloads");
         assert_eq!(loaded[0].0, audio, "path reloads verbatim");
-        assert!(
-            (loaded[0].1 - (-4.25)).abs() < 1e-6,
-            "gain reloads verbatim"
+        assert_eq!(
+            loaded[0].1,
+            tl(-4.25),
+            "the full metric set reloads verbatim"
         );
 
-        // Upsert the same path → still one entry, new gain wins (dedup).
-        record_loudness_to(&cache, &audio, 1.5).unwrap();
+        // Upsert the same path → still one entry, the new metrics win (dedup).
+        record_loudness_to(&cache, &audio, &tl(1.5)).unwrap();
         let loaded = load_loudness_from(&cache);
         assert_eq!(loaded.len(), 1, "an upsert dedups by path");
-        assert!((loaded[0].1 - 1.5).abs() < 1e-6, "the newer gain wins");
+        assert_eq!(loaded[0].1, tl(1.5), "the newer metrics win");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1535,7 +1579,7 @@ mod tests {
 
         let audio = dir.join("track.flac");
         std::fs::write(&audio, b"original content").unwrap();
-        record_loudness_to(&cache, &audio, -4.25).unwrap();
+        record_loudness_to(&cache, &audio, &tl(-4.25)).unwrap();
         assert_eq!(load_loudness_from(&cache).len(), 1, "fresh entry loads");
 
         // Change the file's size (and content) → the recorded stamp no longer
@@ -1548,7 +1592,7 @@ mod tests {
 
         // A record for a vanished file persists nothing to re-seed later.
         let gone = dir.join("missing.flac");
-        record_loudness_to(&cache, &gone, 0.0).unwrap();
+        record_loudness_to(&cache, &gone, &tl(0.0)).unwrap();
         assert!(
             load_loudness_from(&cache).is_empty(),
             "an un-stat-able file is never cached"

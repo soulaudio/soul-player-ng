@@ -311,6 +311,8 @@ pub fn project_signal_path<K: Sink, D: SeekableDecoder>(
         device_rate: di.device_rate,
         resampling: di.resampling,
         output_bits: 24,
+        // The actor fills this from its loudness cache (this projection is pure).
+        loudness: None,
     })
 }
 

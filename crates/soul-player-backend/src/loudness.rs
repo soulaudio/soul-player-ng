@@ -27,9 +27,16 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
+use crate::types::TrackLoudness;
 use soul_audio_core::Decoder;
 use soul_audio_desktop::open_track;
 use soul_audio_loudness::{NO_LOUDNESS, R128Analyzer, REPLAYGAIN2_TARGET_LUFS};
+
+/// The ReplayGain-2.0 track gain (dB, to the −18 LUFS target) derived from a
+/// track's integrated loudness.
+fn gain_from(m: &TrackLoudness) -> f32 {
+    REPLAYGAIN2_TARGET_LUFS - m.integrated_lufs
+}
 
 /// One analysis job: the track id that triggered it (informational — the cache is
 /// keyed by path) and the path to decode.
@@ -40,10 +47,11 @@ type Job = (u32, PathBuf);
 #[derive(Default)]
 struct CacheInner {
     /// Path → analysis outcome. A key present at all means "analysis finished,
-    /// never re-enqueue": `Some(gain_db)` is a usable computed gain; `None` is a
-    /// sentinel for a track we analyzed but got no gain from (decode failed, >2
-    /// channels / DSD, or below the loudness gate) so we don't retry it forever.
-    done: BTreeMap<PathBuf, Option<f32>>,
+    /// never re-enqueue": `Some(metrics)` is a usable analysis (the ReplayGain gain
+    /// is derived from its integrated loudness); `None` is a sentinel for a track we
+    /// analyzed but got nothing usable from (decode failed, >2 channels / DSD, or
+    /// below the loudness gate) so we don't retry it forever.
+    done: BTreeMap<PathBuf, Option<TrackLoudness>>,
     /// Paths currently queued or being analyzed — the single-flight guard.
     inflight: BTreeSet<PathBuf>,
 }
@@ -62,7 +70,7 @@ impl LoudnessCache {
     /// event; failures are recorded as the `None` sentinel and post nothing.
     /// Returns the worker's [`JoinHandle`] — drop the `LoudnessCache` (closing the
     /// job channel) then join it to shut the worker down cleanly.
-    pub fn spawn(results: Sender<(PathBuf, f32)>) -> (LoudnessCache, JoinHandle<()>) {
+    pub fn spawn(results: Sender<(PathBuf, TrackLoudness)>) -> (LoudnessCache, JoinHandle<()>) {
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         let inner = Arc::new(Mutex::new(CacheInner::default()));
         let worker_inner = Arc::clone(&inner);
@@ -88,6 +96,14 @@ impl LoudnessCache {
     /// fresh job is still warranted).
     #[must_use]
     pub fn lookup(&self, path: &Path) -> Option<f32> {
+        self.metrics(path).map(|m| gain_from(&m))
+    }
+
+    /// The full cached loudness metrics for `path`, if a usable analysis is cached
+    /// (`None` for "not analyzed yet" or "analyzed, nothing usable"). Drives the
+    /// loudness/dynamic-range readouts; the ReplayGain path uses [`lookup`](Self::lookup).
+    #[must_use]
+    pub fn metrics(&self, path: &Path) -> Option<TrackLoudness> {
         self.inner
             .lock()
             .expect("loudness cache mutex")
@@ -126,10 +142,10 @@ impl LoudnessCache {
     /// a track analyzed in a past session is normalized this session with no
     /// re-scan. Entries are inserted as usable (`Some`) gains; an already-present
     /// key is left as-is (a live result or an earlier seed wins).
-    pub fn seed(&self, entries: &[(PathBuf, f32)]) {
+    pub fn seed(&self, entries: &[(PathBuf, TrackLoudness)]) {
         let mut g = self.inner.lock().expect("loudness cache mutex");
-        for (path, gain) in entries {
-            g.done.entry(path.clone()).or_insert(Some(*gain));
+        for (path, metrics) in entries {
+            g.done.entry(path.clone()).or_insert(Some(*metrics));
         }
     }
 }
@@ -140,7 +156,7 @@ impl LoudnessCache {
 fn analysis_worker(
     jobs: &Receiver<Job>,
     inner: &Arc<Mutex<CacheInner>>,
-    results: &Sender<(PathBuf, f32)>,
+    results: &Sender<(PathBuf, TrackLoudness)>,
 ) {
     for (_id, path) in jobs {
         let outcome = analyze_track(&path);
@@ -149,10 +165,10 @@ fn analysis_worker(
             g.inflight.remove(&path);
             g.done.insert(path.clone(), outcome);
         }
-        if let Some(gain) = outcome {
+        if let Some(metrics) = outcome {
             // A closed results channel means the pump is gone; the loop will end
             // when the job channel closes too, so just stop posting.
-            if results.send((path, gain)).is_err() {
+            if results.send((path, metrics)).is_err() {
                 break;
             }
         }
@@ -172,7 +188,7 @@ fn analysis_worker(
 /// analyze it via that PCM form. The `is_dsd()` guard is a safety net for any
 /// decoder that would instead report a raw 1-bit stream, where the `24 - bits`
 /// canonical shift would be meaningless.
-fn analyze_track(path: &Path) -> Option<f32> {
+fn analyze_track(path: &Path) -> Option<TrackLoudness> {
     let mut d = open_track(path).ok()?;
     let si = d.stream_info();
     if si.format.is_dsd() || si.channels == 0 || si.channels > 2 {
@@ -199,11 +215,12 @@ fn analyze_track(path: &Path) -> Option<f32> {
         }
         a.feed(&canon[..n]);
     }
-    let l = a.integrated_lufs();
-    if l == NO_LOUDNESS {
+    // No integrated loudness (silent / below gate / weird) → no usable analysis:
+    // the hybrid-ReplayGain path needs a gain, and the readouts key off integrated.
+    if a.integrated_lufs() == NO_LOUDNESS {
         return None;
     }
-    Some(a.replay_gain_db(REPLAYGAIN2_TARGET_LUFS))
+    Some(a.metrics().into())
 }
 
 #[cfg(test)]
@@ -223,10 +240,22 @@ mod tests {
     }
 
     /// Simulate the worker finishing one job: clear in-flight, record the outcome.
-    fn complete(cache: &LoudnessCache, path: &Path, outcome: Option<f32>) {
+    fn complete(cache: &LoudnessCache, path: &Path, outcome: Option<TrackLoudness>) {
         let mut g = cache.inner.lock().unwrap();
         g.inflight.remove(path);
         g.done.insert(path.to_path_buf(), outcome);
+    }
+
+    /// A metrics value with a given integrated loudness (the field the RG gain is
+    /// derived from); the rest are filler for the single-flight tests.
+    fn metrics_at(integrated: f32) -> TrackLoudness {
+        TrackLoudness {
+            integrated_lufs: integrated,
+            lra: 0.0,
+            true_peak_dbtp: 0.0,
+            plr: 0.0,
+            dr: 0.0,
+        }
     }
 
     #[test]
@@ -246,9 +275,15 @@ mod tests {
         // Not usable yet (still analyzing).
         assert_eq!(cache.lookup(&p), None);
 
-        // Worker completes with a gain → lookup folds it; never re-enqueued.
-        complete(&cache, &p, Some(-4.5));
-        assert_eq!(cache.lookup(&p), Some(-4.5), "a completed gain is cached");
+        // Worker completes with metrics → lookup derives the gain (−18 − integrated);
+        // never re-enqueued. integrated −13.5 → gain −4.5.
+        complete(&cache, &p, Some(metrics_at(-13.5)));
+        assert_eq!(cache.lookup(&p), Some(-4.5), "the derived gain is cached");
+        assert_eq!(
+            cache.metrics(&p).map(|m| m.integrated_lufs),
+            Some(-13.5),
+            "the full metrics are available for the readouts"
+        );
         assert!(
             !cache.enqueue(7, p.clone()),
             "an analyzed path is not re-enqueued"
@@ -280,7 +315,11 @@ mod tests {
         let (cache, rx) = headless();
         let a = PathBuf::from("/music/a.flac");
         let b = PathBuf::from("/music/b.flac");
-        cache.seed(&[(a.clone(), -6.0), (b.clone(), 2.5)]);
+        // integrated −12.0 → gain −6.0; integrated −20.5 → gain +2.5.
+        cache.seed(&[
+            (a.clone(), metrics_at(-12.0)),
+            (b.clone(), metrics_at(-20.5)),
+        ]);
         assert_eq!(cache.lookup(&a), Some(-6.0));
         assert_eq!(cache.lookup(&b), Some(2.5));
         // Seeded = analyzed → never scheduled; nothing was sent to the worker.
@@ -301,14 +340,19 @@ mod tests {
             .join("../../testdata")
             .join("tone.flac");
         assert!(path.is_file(), "committed fixture {path:?} missing");
-        let gain = thread::Builder::new()
+        let m = thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
             .spawn(move || analyze_track(&path))
             .expect("spawn big-stack thread")
             .join()
             .expect("analysis thread panicked");
-        let gain = gain.expect("a tonal fixture has a defined integrated loudness");
+        let m = m.expect("a tonal fixture has a defined integrated loudness");
+        let gain = gain_from(&m);
         assert!(gain.is_finite(), "computed gain {gain} is finite");
+        assert!(
+            m.integrated_lufs.is_finite(),
+            "integrated loudness is finite"
+        );
         // The master tone is −6 dBFS; its gain to −18 LUFS lands in a wide sane
         // band — this only guards against a nonsense (wrong-canonicalization) value.
         assert!(
@@ -333,10 +377,13 @@ mod tests {
             .expect("spawn big-stack thread")
             .join()
             .expect("analysis thread panicked");
-        // Either a finite computed gain (decimated to PCM) or None (below gate) —
-        // never a panic or a non-finite value.
-        if let Some(gain) = out {
-            assert!(gain.is_finite(), "decimated-DSD gain {gain} is finite");
+        // Either finite metrics (decimated to PCM) or None (below gate) — never a
+        // panic or a non-finite value.
+        if let Some(m) = out {
+            assert!(
+                m.integrated_lufs.is_finite() && gain_from(&m).is_finite(),
+                "decimated-DSD metrics are finite"
+            );
         }
     }
 }
