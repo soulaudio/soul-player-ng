@@ -1,6 +1,7 @@
 pub mod config;
 pub mod domain;
 pub mod index;
+pub mod media;
 pub mod store;
 
 pub fn version() -> &'static str {

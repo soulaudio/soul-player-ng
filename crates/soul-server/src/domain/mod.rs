@@ -1,4 +1,5 @@
 pub mod ports;
+pub mod service;
 
 pub type UserId = i64;
 
