@@ -3,12 +3,15 @@
 
 pub mod albums;
 pub mod artists;
+pub mod detail_page;
 pub mod dropdown;
 pub mod eq_graph;
 pub mod genres;
+pub mod grid;
 pub mod home;
 pub mod icons;
 pub mod library;
+pub mod media_card;
 pub mod player;
 pub mod queue;
 pub mod reveal;
