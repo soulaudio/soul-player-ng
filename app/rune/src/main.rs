@@ -2284,7 +2284,10 @@ fn main() -> anyhow::Result<()> {
     } else {
         let saved = config::load_sources_with_enabled();
         if !saved.is_empty() {
-            tracing::info!(count = saved.len(), "restoring saved sources (scan deferred)");
+            tracing::info!(
+                count = saved.len(),
+                "restoring saved sources (scan deferred)"
+            );
             // Set the configured set now (cheap) so the window opens on the Sources
             // list immediately; the scan itself is deferred to a background worker.
             host.configure_sources(&saved);
@@ -2797,7 +2800,10 @@ mod tests {
         let mut s = s;
         let up = s.host.rescan_sources().expect("deferred rescan");
         apply_watch(&mut s, up);
-        assert!(!s.library.is_empty(), "the deferred scan populates the library");
+        assert!(
+            !s.library.is_empty(),
+            "the deferred scan populates the library"
+        );
         assert!(
             s.sources[0].track_count > 0,
             "real counts replace the loading 0"
