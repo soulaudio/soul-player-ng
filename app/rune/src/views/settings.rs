@@ -1160,29 +1160,61 @@ fn exclusive_display(
     }
 }
 
+/// How prominently the exclusive status reads. `Active` = bit-perfect right now (the
+/// one "it's working" state); `Neutral` = plain shared output; `Attention` = requested
+/// but not bit-perfect (pending / fell back / stopped). The card colours the status
+/// box by this, so "applied" is unmistakable from "idle" and "not applied yet".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StatusKind {
+    Active,
+    Neutral,
+    Attention,
+}
+
+/// The one-line status text + its severity for an [`ExclusiveDisplay`]. Pure, so the
+/// applied-vs-idle-vs-pending mapping is unit-tested without a live device.
+fn exclusive_status(display: &ExclusiveDisplay) -> (String, StatusKind) {
+    match display {
+        ExclusiveDisplay::Shared => (
+            t!("settings.exclusiveStatusShared").to_string(),
+            StatusKind::Neutral,
+        ),
+        ExclusiveDisplay::Active(fmt) => (
+            format!("{} · {fmt}", t!("settings.exclusiveBitPerfect")),
+            StatusKind::Active,
+        ),
+        ExclusiveDisplay::FellBack(reason) => (
+            format!("{} — {reason}", t!("settings.exclusiveFellBackShort")),
+            StatusKind::Attention,
+        ),
+        ExclusiveDisplay::Stopped(reason) => (
+            format!("{} — {reason}", t!("settings.exclusiveStopped")),
+            StatusKind::Attention,
+        ),
+        ExclusiveDisplay::Pending => (
+            t!("settings.exclusivePending").to_string(),
+            StatusKind::Attention,
+        ),
+    }
+}
+
 fn exclusive_card(s: &State, p: &Palette) -> El {
     // A dot + one-line status describing what is ACTUALLY happening. When exclusive
     // was requested but isn't active, the host status carries the real reason (device
     // in use, no exclusive format, …) — far more useful than a generic message.
-    let (dot, status) =
-        match exclusive_display(s.exclusive, s.signal_path, s.host.exclusive_status()) {
-            ExclusiveDisplay::Shared => {
-                (p.primary, t!("settings.exclusiveStatusShared").to_string())
-            }
-            ExclusiveDisplay::Active(fmt) => (
-                p.primary,
-                format!("{} · {fmt}", t!("settings.exclusiveBitPerfect")),
-            ),
-            ExclusiveDisplay::FellBack(reason) => (
-                p.accent,
-                format!("{} — {reason}", t!("settings.exclusiveFellBackShort")),
-            ),
-            ExclusiveDisplay::Stopped(reason) => (
-                p.accent,
-                format!("{} — {reason}", t!("settings.exclusiveStopped")),
-            ),
-            ExclusiveDisplay::Pending => (p.primary, t!("settings.exclusivePending").to_string()),
-        };
+    let (status, kind) = exclusive_status(&exclusive_display(
+        s.exclusive,
+        s.signal_path,
+        s.host.exclusive_status(),
+    ));
+    // Colour the dot + the status box by severity so the current state reads at a
+    // glance: Active is a filled-tint "working" box, Neutral is a plain shared box,
+    // Attention (pending / fell back / stopped) is an accent box that draws the eye.
+    let (dot, box_fill, box_fg) = match kind {
+        StatusKind::Active => (p.primary, p.primary.alpha(0.16), p.primary),
+        StatusKind::Neutral => (p.primary, p.muted, p.text_secondary),
+        StatusKind::Attention => (p.accent, p.accent.alpha(0.16), p.accent),
+    };
     let indent = 8.0 + space::SM + 18.0 + space::SM;
     let mut el = card("sp-stage-exclusive", p)
         .child(stage_header(
@@ -1195,11 +1227,22 @@ fn exclusive_card(s: &State, p: &Palette) -> El {
             p,
         ))
         .child(
-            // Indent the status under the dot+icon so it lines up with the title.
-            row()
-                .w_full()
-                .pl(indent)
-                .child(text(status).font(type_::BODY).color(p.fg).grow(1.0).wrap()),
+            // Indent the status box under the dot+icon so it lines up with the title.
+            row().w_full().pl(indent).child(
+                row()
+                    .key("sp-stage-exclusive-status")
+                    .grow(1.0)
+                    .padding(space::SM)
+                    .radius(radius::SM)
+                    .fill(box_fill)
+                    .child(
+                        text(status)
+                            .font(type_::BODY)
+                            .color(box_fg)
+                            .grow(1.0)
+                            .wrap(),
+                    ),
+            ),
         );
     // Strict (exclusive-or-stop) is a sub-option — only shown when exclusive is on.
     if s.exclusive {
@@ -2900,5 +2943,52 @@ mod tests {
             exclusive_display(true, None, ExclusiveStatus::Shared),
             Pending
         );
+    }
+
+    /// The status badge must make "applied right now" visually distinct from "idle"
+    /// and "not applied yet" — the whole point of the card. Active is its own kind
+    /// (prominent); shared is neutral; everything that isn't actually bit-perfect
+    /// (pending / fell back / stopped) reads as attention and surfaces its detail.
+    #[test]
+    fn exclusive_status_badge_distinguishes_applied_from_idle() {
+        use super::{StatusKind, exclusive_status};
+        use ExclusiveDisplay::*;
+
+        let (txt, kind) = exclusive_status(&Active("96 kHz · 24-bit".to_string()));
+        assert_eq!(
+            kind,
+            StatusKind::Active,
+            "live bit-perfect is the Active kind"
+        );
+        assert!(
+            txt.contains("96 kHz · 24-bit"),
+            "names the live format: {txt}"
+        );
+
+        assert_eq!(
+            exclusive_status(&Shared).1,
+            StatusKind::Neutral,
+            "shared/off is neutral, not a working state"
+        );
+        assert_eq!(
+            exclusive_status(&Pending).1,
+            StatusKind::Attention,
+            "pending is NOT applied yet → attention, never Active"
+        );
+
+        let (fb, fk) = exclusive_status(&FellBack("device in use".to_string()));
+        assert_eq!(fk, StatusKind::Attention);
+        assert!(
+            fb.contains("device in use"),
+            "surfaces the fallback reason: {fb}"
+        );
+        assert_eq!(
+            exclusive_status(&Stopped("no format".to_string())).1,
+            StatusKind::Attention
+        );
+
+        // The three kinds are genuinely distinct, so applied never looks like idle.
+        assert_ne!(StatusKind::Active, StatusKind::Neutral);
+        assert_ne!(StatusKind::Active, StatusKind::Attention);
     }
 }
