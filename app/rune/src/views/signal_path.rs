@@ -334,6 +334,102 @@ pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
     ))
 }
 
+/// Per-track **loudness & dynamic-range** readouts (from the hybrid-ReplayGain
+/// background analysis): integrated LUFS, LRA, true-peak, PLR, and DR. Shown under
+/// the pipeline; "analyzing…" until the current track has been measured.
+pub(crate) fn loudness_block(s: &State, p: &Palette) -> El {
+    let mut block = col()
+        .key("signal-path-loudness")
+        .w_full()
+        .gap(space::XXS)
+        .pt(space::XS)
+        .child(
+            text(t!("player.signalPath.loudness").to_string())
+                .font(type_::SECTION)
+                .color(p.text_secondary),
+        );
+    block = match s.signal_path.and_then(|sp| sp.loudness) {
+        Some(m) => block
+            .child(metric_row(
+                "signal-path-integrated",
+                t!("player.signalPath.integrated").to_string(),
+                format!("{:.1} LUFS", m.integrated_lufs),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-lra",
+                t!("player.signalPath.lra").to_string(),
+                format!("{:.1} LU", m.lra),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-truepeak",
+                t!("player.signalPath.truePeak").to_string(),
+                format!("{:+.1} dBTP", m.true_peak_dbtp),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-plr",
+                t!("player.signalPath.plr").to_string(),
+                format!("{:.1} LU", m.plr),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-dr",
+                t!("player.signalPath.dynamicRange").to_string(),
+                format!("DR{}", m.dr as i32),
+                dr_color(m.dr, p),
+                p,
+            )),
+        None => block.child(
+            text(t!("player.signalPath.analyzing").to_string())
+                .key("signal-path-analyzing")
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        ),
+    };
+    block
+}
+
+/// One labelled metric row: label left, mono value right (the value colour is the
+/// caller's — DR uses the banded [`dr_color`]).
+fn metric_row(
+    key: &'static str,
+    label: String,
+    value: String,
+    value_color: Color,
+    p: &Palette,
+) -> El {
+    row()
+        .key(key)
+        .w_full()
+        .items_center()
+        .child(
+            text(label)
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .grow(1.0),
+        )
+        .child(text(value).font(type_::LABEL.mono()).color(value_color))
+}
+
+/// DR colour band (TT/Dynameter convention): dynamic (≥ 14) highlighted in the
+/// brand colour, compressed (< 8) flagged with the attention accent, in-between
+/// neutral.
+fn dr_color(dr: f32, p: &Palette) -> Color {
+    if dr >= 14.0 {
+        p.primary
+    } else if dr < 8.0 {
+        p.accent
+    } else {
+        p.fg
+    }
+}
+
 /// The signal-path popover, mounted at the window root (via [`crate::view`]'s
 /// overlay layer) and anchored above the now-playing line. `None` when closed.
 pub fn overlay(s: &State, p: &Palette) -> Option<El> {
@@ -358,7 +454,8 @@ pub fn overlay(s: &State, p: &Palette) -> Option<El> {
                     .font(type_::SECTION)
                     .color(p.text_secondary),
             )
-            .child(pipeline_rows(s, p)),
+            .child(pipeline_rows(s, p))
+            .child(loudness_block(s, p)),
     )
 }
 
@@ -384,6 +481,7 @@ mod tests {
             resampling,
             output_bits: 24,
             exclusive: false,
+            loudness: None,
         }
     }
 
