@@ -33,8 +33,8 @@ use crate::{
     eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, export_profile,
     import_eq, import_profile, new_profile, organize_begin, organize_confirm, organize_dismiss,
     organize_ready, remove_dsp_unit, remove_eq_band, reorder_dsp_units, scan_in_background,
-    set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp, set_indexing_mode, set_locale_pref,
-    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp, set_exclusive, set_indexing_mode,
+    set_locale_pref, set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
     set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
     set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
     toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
@@ -1114,6 +1114,73 @@ fn output_card(s: &State, p: &Palette) -> El {
         .child(choices)
 }
 
+/// Exclusive (bit-perfect) output: a toggle plus the live truth. When on and the
+/// current stream is exclusive it's bit-perfect (primary dot + the device format);
+/// when on but the device fell back to shared, that's shown honestly (accent dot);
+/// off is plain shared output. Applies to the next playback session, like the
+/// device choice.
+fn exclusive_card(s: &State, p: &Palette) -> El {
+    use crate::views::signal_path::exclusive_value;
+    let playing = s.signal_path;
+    let active = playing.map(|x| x.exclusive).unwrap_or(false);
+    // A dot + one-line status describing what is ACTUALLY happening, not just what
+    // was requested — the fall-back case is the one users most need to see.
+    let (dot, status) = if !s.exclusive {
+        (p.primary, t!("settings.exclusiveStatusShared").to_string())
+    } else if active {
+        let fmt = exclusive_value(&playing.expect("active implies a signal path"));
+        (
+            p.primary,
+            format!("{} · {fmt}", t!("settings.exclusiveBitPerfect")),
+        )
+    } else if playing.is_some() {
+        // Requested, but the live stream is shared → the device refused exclusive.
+        (p.accent, t!("settings.exclusiveFellBack").to_string())
+    } else {
+        // Requested, nothing playing yet → it applies on the next session.
+        (p.primary, t!("settings.exclusivePending").to_string())
+    };
+    card("sp-stage-exclusive", p)
+        .child(stage_header(
+            dot,
+            &icons::SETTINGS,
+            t!("player.signalPath.exclusive").to_string(),
+            Some(t!("settings.exclusiveDesc").to_string()),
+            Some(exclusive_toggle(s.exclusive, p)),
+            false,
+            p,
+        ))
+        .child(
+            // Indent the status under the dot+icon so it lines up with the title.
+            row()
+                .w_full()
+                .pl(8.0 + space::SM + 18.0 + space::SM)
+                .child(text(status).font(type_::BODY).color(p.fg).grow(1.0).wrap()),
+        )
+}
+
+/// The Exclusive on/off switch (a filled pill), persisted via [`set_exclusive`].
+/// Filled `primary` when on, muted when off — matching the nav show/hide toggles.
+fn exclusive_toggle(on: bool, p: &Palette) -> El {
+    el().key("exclusive-toggle")
+        .role("button")
+        .label(t!("player.signalPath.exclusive").to_string())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if on { p.primary } else { p.muted })
+        .child(
+            text(if on {
+                t!("settings.exclusiveOn").to_string()
+            } else {
+                t!("settings.exclusiveOff").to_string()
+            })
+            .color(if on { p.bg } else { p.fg }),
+        )
+        .on_press(move |s: &mut State| set_exclusive(s, !s.exclusive))
+}
+
 // ── Signal-path pipeline (Settings → Audio is laid out AS the pipeline) ───────
 //
 // The whole Audio page is the signal path: one card per stage — Source →
@@ -1172,17 +1239,6 @@ fn pipeline_arrow(p: &Palette) -> El {
         .child(el().w(2.0).h(10.0).fill(p.primary.alpha(0.3)))
 }
 
-/// A "soon" chip for a not-yet-built stage.
-fn soon_chip(p: &Palette) -> El {
-    text(t!("player.signalPath.soon").to_string())
-        .font(type_::LABEL)
-        .color(p.text_secondary)
-        .px(space::SM)
-        .py(space::XXS)
-        .radius(radius::SM)
-        .fill(p.muted)
-}
-
 /// A read-only stage card (Source, Resample): header + its current value.
 fn readout_card(
     key: &str,
@@ -1201,19 +1257,6 @@ fn readout_card(
                 .pl(8.0 + space::SM + 18.0 + space::SM)
                 .child(text(value).font(type_::BODY).color(p.fg).grow(1.0).wrap()),
         )
-}
-
-/// A not-yet-built stage card (DSP/EQ, Exclusive output): a dim header + "soon".
-fn soon_card(key: &str, glyph: &'static Icon, title: String, desc: String, p: &Palette) -> El {
-    card(key, p).child(stage_header(
-        p.border,
-        glyph,
-        title,
-        Some(desc),
-        Some(soon_chip(p)),
-        true,
-        p,
-    ))
 }
 
 /// The Settings → Audio page, laid out as the signal-path pipeline: a stage card
@@ -1263,13 +1306,7 @@ fn audio_pipeline(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .child(pipeline_arrow(p))
         .child(output_card(s, p))
         .child(pipeline_arrow(p))
-        .child(soon_card(
-            "sp-stage-exclusive",
-            &icons::SETTINGS,
-            t!("player.signalPath.exclusive").to_string(),
-            t!("settings.comingSoon").to_string(),
-            p,
-        ));
+        .child(exclusive_card(s, p));
     // Audio profiles belong to the whole page, not the DSP card, so they ride a bar
     // pinned to the top of the audio pipeline — switch/manage profiles while scrolled
     // anywhere down the chain. `fill(p.bg)` hides cards scrolling under it; a hairline

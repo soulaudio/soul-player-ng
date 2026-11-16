@@ -20,8 +20,8 @@ use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_engine::{Engine, Provided};
 
 use crate::driver::{
-    RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain, project_queue,
-    project_signal_path, project_tick, queue_for,
+    RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain, maybe_switch_native_rate,
+    project_queue, project_signal_path, project_tick, queue_for,
 };
 use crate::library::Library;
 use crate::loudness::LoudnessCache;
@@ -40,13 +40,15 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     /// Spawn the actor. `make_sink` runs on the pump thread (so `K` need not be
-    /// `Send`). `on_event` is called from the pump thread on every emitted
-    /// event. `library` is the initial `id → path` map (swap later via
-    /// [`set_library`](Self::set_library)).
+    /// `Send`) and is **reusable**: called with `None` to build the initial sink,
+    /// and with `Some(rate)` to reopen the device at a track's native rate for
+    /// bit-perfect exclusive output (native-rate switching). `on_event` is called
+    /// from the pump thread on every emitted event. `library` is the initial
+    /// `id → path` map (swap later via [`set_library`](Self::set_library)).
     pub fn spawn<K, Mk, Ev>(make_sink: Mk, library: Arc<Library>, on_event: Ev) -> Self
     where
         K: Sink + 'static,
-        Mk: FnOnce() -> anyhow::Result<K> + Send + 'static,
+        Mk: Fn(Option<u32>) -> anyhow::Result<K> + Send + 'static,
         Ev: Fn(Event) + Send + 'static,
     {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -151,10 +153,13 @@ fn pump_thread<K, Mk, Ev>(
     on_event: Ev,
 ) where
     K: Sink + 'static,
-    Mk: FnOnce() -> anyhow::Result<K>,
+    Mk: Fn(Option<u32>) -> anyhow::Result<K>,
     Ev: Fn(Event),
 {
-    let sink = match make_sink() {
+    // `None` = the initial sink (device default / shared, or exclusive at the device
+    // rate). `Some(rate)` later reopens it at a track's native rate (native-rate
+    // switching), below.
+    let sink = match make_sink(None) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("player: sink init failed: {e:#}");
@@ -193,6 +198,12 @@ fn pump_thread<K, Mk, Ev>(
     let mut last_tick = Instant::now();
     let tick_every = Duration::from_millis(125); // ~8 Hz
     let mut disconnected = false;
+
+    // --- Native-rate switching state ---
+    // The native rate a reopen was last ATTEMPTED at; set only on a FAILED reopen so
+    // we don't retry the same unsupported rate every pump (which would thrash the
+    // device or loop). A different track rate, or a success, clears the suppression.
+    let mut native_rate_tried: Option<u32> = None;
 
     // --- ReplayGain state ---
     // Config, updated by `Command::SetReplayGain` (the host sends the persisted
@@ -273,6 +284,13 @@ fn pump_thread<K, Mk, Ev>(
         while let Some(id) = player.poll_open() {
             let _ = req_tx.send(id);
         }
+
+        // 2b. Native-rate switching (bit-perfect exclusive output): before the pump
+        //     writes this track's audio, reopen the exclusive device at the track's
+        //     native rate when it differs — see `maybe_switch_native_rate` for the
+        //     guards (shared sinks never reopen; the latch suppresses retrying a rate
+        //     the device just refused; the current exclusive sink is kept on failure).
+        maybe_switch_native_rate(&mut player, &mut native_rate_tried, &make_sink);
 
         // 3. Pump one block (paced by the real sink's backpressure; NullSink
         //    returns immediately, so tests run briefly then drop the actor).
@@ -462,7 +480,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_rate| Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib),
             move |ev| {
                 let _ = ev_tx.send(ev);
@@ -537,7 +555,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_rate| Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib_a),
             move |ev| {
                 let _ = ev_tx.send(ev);
@@ -579,7 +597,7 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_rate| Ok(NullSink::new(48_000, 2)),
             Arc::clone(&lib),
             move |ev| {
                 let _ = ev_tx.send(ev);

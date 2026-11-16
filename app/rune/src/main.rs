@@ -236,6 +236,11 @@ struct State {
     /// The output devices enumerated from the host at startup — the picker's
     /// choices. Empty on a host that exposes none (headless / no audio).
     output_devices: Vec<String>,
+    /// Whether **exclusive** (bit-perfect) output is requested (persisted), rendered
+    /// as a toggle in Settings → Output. Applies to the next playback session; the
+    /// device may fall back to shared if it can't open exclusive (reflected live in
+    /// the signal path's Exclusive stage).
+    exclusive: bool,
     /// ReplayGain normalization mode (persisted), rendered by Settings →
     /// ReplayGain; `Off` = no normalization.
     replaygain_mode: ReplayGainMode,
@@ -379,6 +384,14 @@ struct State {
     /// Primary nav items the user has hidden (by id — see `sidebar::NAV_DEFS`);
     /// empty = all shown. Toggled from Settings → Navigation, persisted.
     nav_hidden: Vec<String>,
+    /// Per-nav-item reveal progress (0 = gone, 1 = shown), advanced each poll
+    /// frame by `views::reveal::tick` so a Settings toggle fades-then-collapses the
+    /// item instead of snapping. An id absent from the map sits at its target.
+    nav_reveal: std::collections::HashMap<&'static str, f32>,
+    /// The absolute poll clock seen last frame, so [`views::reveal::frame_delta`]
+    /// can recover the real per-frame delta (Rune's poll arg is the absolute clock,
+    /// not a delta). Drives every manual, time-based animation (the nav reveal).
+    reveal_clock: f64,
     /// UI language preference ("system"/"en"/"de"/…); drives the global
     /// `rust_i18n` locale via [`apply_locale`]. Changed by Settings → Language.
     locale_pref: String,
@@ -469,6 +482,7 @@ impl State {
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
             output_devices,
+            exclusive: config::load_output_exclusive(),
             replaygain_mode,
             replaygain_preamp,
             dsp_units,
@@ -512,6 +526,8 @@ impl State {
             // The menu is the mobile home view; a nav tap flips this true.
             mobile_show_content: false,
             nav_hidden: config::load_nav_hidden(),
+            nav_reveal: std::collections::HashMap::new(),
+            reveal_clock: 0.0,
             locale_pref,
             open_dropdown: None,
             dragging_slider: None,
@@ -522,6 +538,15 @@ impl State {
     /// Whether the primary nav item `id` is currently shown.
     pub(crate) fn nav_visible(&self, id: &str) -> bool {
         !self.nav_hidden.iter().any(|h| h == id)
+    }
+
+    /// The reveal progress (0..1) for nav item `id`: the stored animation value, or
+    /// — before it has ever animated — its resting target (1 shown, 0 hidden).
+    pub(crate) fn nav_reveal(&self, id: &str) -> f32 {
+        self.nav_reveal
+            .get(id)
+            .copied()
+            .unwrap_or(if self.nav_visible(id) { 1.0 } else { 0.0 })
     }
 
     /// Resolve a library track by id. Shared by the now-playing panel
@@ -704,6 +729,18 @@ pub(crate) fn set_output_device(s: &mut State, name: Option<String>) {
     s.output_device = name.clone();
     config::save_output_device(s.output_device.as_deref());
     s.host.set_output_device(name);
+}
+
+/// Toggle + persist exclusive (bit-perfect) output (used by the Output settings
+/// toggle). Updates the UI, writes the config, and tells the host — which applies
+/// it to the NEXT playback session (the current stream keeps its mode until then).
+/// If the device can't open exclusive, that session falls back to shared, shown
+/// live in the signal path's Exclusive stage.
+pub(crate) fn set_exclusive(s: &mut State, on: bool) {
+    tracing::info!(exclusive = on, "exclusive output toggled");
+    s.exclusive = on;
+    config::save_output_exclusive(on);
+    s.host.set_exclusive(on);
 }
 
 /// Choose + persist the ReplayGain mode (used by the ReplayGain settings buttons).
@@ -1312,22 +1349,43 @@ pub(crate) fn set_eq_preamp(s: &mut State, unit: usize, preamp_db: f32) {
 /// Per-frame poll (wired as `AppSpec::poll`). Drives the title-bar scan-activity
 /// pulse (while a scan runs) *and* the live EQ spectrum analyzer. Returns whether
 /// the view must re-render.
-fn spectrum_poll(s: &mut State, dt: f64, tx: &mut Tx) -> bool {
+fn spectrum_poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
+    // `now` is Rune's ABSOLUTE frame clock (seconds since launch), not a per-frame
+    // delta — see `AppSpec::poll`. Recover the real time this frame covered for the
+    // manual, time-based animations (clamped so an idle gap can't teleport them).
+    let frame_dt = views::reveal::frame_delta(now, &mut s.reveal_clock);
     // Title-bar activity: while a library scan is in flight, keep the frame clock
-    // ticking and advance the icon's pulse phase — independent of the spectrum, so
-    // the pill animates even when nothing is playing. Bounded modulo to stay finite
-    // over a long scan.
+    // ticking and breathe the icon's pulse — independent of the spectrum, so the
+    // pill animates even when nothing is playing. The phase rides the absolute
+    // clock directly (a constant real-time rate), bounded modulo to stay finite and
+    // f32-precise over a long scan.
     let scanning = s.scan_progress.is_some();
     if scanning {
-        s.scan_anim = (s.scan_anim + dt as f32) % 1000.0;
+        s.scan_anim = (now as f32) % 1000.0;
         tx.wake_after(std::time::Duration::from_millis(16));
     }
-    spectrum_poll_inner(s, dt, tx) || scanning
+    // Advance the sidebar nav fade+collapse reveal toward each item's visibility,
+    // so a Settings toggle glides (fade, then collapse) instead of snapping.
+    let mut nav_animating = false;
+    for def in views::sidebar::NAV_DEFS {
+        let shown = s.nav_visible(def.id);
+        let progress = s
+            .nav_reveal
+            .entry(def.id)
+            .or_insert(if shown { 1.0 } else { 0.0 });
+        if views::reveal::tick(progress, shown, frame_dt) {
+            nav_animating = true;
+        }
+    }
+    if nav_animating {
+        tx.wake_after(std::time::Duration::from_millis(16));
+    }
+    spectrum_poll_inner(s, now, tx) || scanning || nav_animating
 }
 
 /// The EQ spectrum half of [`spectrum_poll`] (kept separate so the scan-activity
 /// pulse composes cleanly with its several early returns).
-fn spectrum_poll_inner(s: &mut State, _dt: f64, tx: &mut Tx) -> bool {
+fn spectrum_poll_inner(s: &mut State, _now: f64, tx: &mut Tx) -> bool {
     // An open inline number editor: once it loses focus (click elsewhere, or Escape),
     // commit what was typed and close it. Keep a slow tick alive while it is focused so
     // that blur is noticed even when nothing is playing.
@@ -2176,6 +2234,7 @@ fn scene_signal_path(s: &mut State) {
         device_rate: 48_000,
         resampling: true,
         output_bits: 24,
+        exclusive: false,
         loudness: Some(TrackLoudness {
             integrated_lufs: -14.2,
             lra: 9.5,
@@ -2258,6 +2317,10 @@ fn main() -> anyhow::Result<()> {
     // the actor, so the first playback session already targets the chosen device
     // (empty / absent config = system default).
     host.set_output_device(config::load_output_device());
+    // Restore the persisted exclusive-output choice the same way, so the first
+    // session opens exclusive (bit-perfect) if the user asked for it — falling back
+    // to shared if the device refuses, which the signal path then shows.
+    host.set_exclusive(config::load_output_exclusive());
     // Restore the persisted ReplayGain choice before any spawn, so the first
     // playback session is already normalized (the host banks it and tells the
     // actor on spawn).
@@ -3252,6 +3315,7 @@ mod tests {
             device_rate: 48_000,
             resampling: true,
             output_bits: 24,
+            exclusive: false,
             loudness: None,
         });
         apply_locale("en");
@@ -3303,6 +3367,7 @@ mod tests {
             device_rate: 96_000,
             resampling: false,
             output_bits: 24,
+            exclusive: false,
             loudness: None,
         });
         apply_locale("en");
@@ -4675,6 +4740,7 @@ mod tests {
             device_rate: 96_000,
             resampling: false,
             output_bits: 24,
+            exclusive: false,
             loudness: None,
         });
         apply_locale("en");
@@ -5170,6 +5236,7 @@ mod tests {
             device_rate: 48_000,
             resampling: true,
             output_bits: 24,
+            exclusive: false,
             loudness: Some(TrackLoudness {
                 integrated_lufs: -14.2,
                 lra: 9.5,
@@ -5202,7 +5269,7 @@ mod tests {
             "sp-row-replaygain",
             "sp-row-resample",
             "sp-row-output",
-            "sp-row-exclusive", // "soon"
+            "sp-row-exclusive", // live (bit-perfect) or dim "shared"
             "sp-row-dsp",       // "soon"
         ] {
             assert!(rt.find(k).is_some(), "stage row {k} renders");
@@ -6609,11 +6676,10 @@ mod tests {
         );
     }
 
-    /// A hidden nav item stays mounted but folds to nothing — zero height, faded
-    /// out — so toggling it later springs open/shut instead of snapping (and the
-    /// queue below never overlaps a fading full-height ghost).
+    /// At rest a hidden nav item is fully collapsed away (reveal progress 0) — not
+    /// rendered at all; shown items remain.
     #[test]
-    fn a_hidden_nav_item_folds_away_in_the_sidebar() {
+    fn a_hidden_nav_item_is_absent_at_rest() {
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.nav_hidden = vec!["artists".into(), "home".into()];
@@ -6629,25 +6695,18 @@ mod tests {
         rt.frame(0.0);
         rt.settle_all();
         rt.frame(0.0);
-        // Folded = faded to nothing and zero height; open = visible with height.
-        let folded = |rt: &Runtime<State>, key: &str| {
+        // A hidden item stays mounted (so toggling it never runs Rune's removal
+        // animation) but collapsed to 0×0 and fully transparent, so nothing of it
+        // shows. It is still in the element tree, so test visibility by opacity.
+        let visible = |rt: &Runtime<State>, key: &str| {
             rt.elements()
-                .into_iter()
-                .find(|e| e.key.as_deref() == Some(key))
-                .map(|e| e.opacity < 0.01 && e.rect[3] < 1.0)
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
         };
-        assert_eq!(
-            folded(&rt, "nav-artists"),
-            Some(true),
-            "a hidden item folds away"
-        );
-        assert_eq!(folded(&rt, "nav-home"), Some(true));
-        assert_eq!(
-            folded(&rt, "nav-albums"),
-            Some(false),
-            "shown items stay open"
-        );
-        assert_eq!(folded(&rt, "nav-library"), Some(false));
+        assert!(!visible(&rt, "nav-artists"), "a hidden item is invisible");
+        assert!(!visible(&rt, "nav-home"));
+        assert!(visible(&rt, "nav-albums"), "shown items remain");
+        assert!(visible(&rt, "nav-library"));
     }
 
     #[test]
@@ -6671,36 +6730,35 @@ mod tests {
             },
         );
         rt.frame(0.0);
+        let visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
         assert!(rt.state.nav_visible("albums"), "albums shown by default");
-        assert!(rt.find("nav-albums").is_some());
+        assert!(visible(&rt, "nav-albums"));
         click(&mut rt, "nav-toggle-albums");
         assert!(!rt.state.nav_visible("albums"), "the toggle hides albums");
-        // Read the persisted choice right after the click — before `settle_all`
-        // steps the fold animation — to keep the load-modify-write window small.
         assert!(
             config::load_nav_hidden().iter().any(|h| h == "albums"),
             "the choice persists to (the test) config"
         );
-        // The item folds away (height + opacity spring to 0) rather than vanishing
-        // instantly, so the sidebar glides shut.
-        rt.settle_all();
-        rt.frame(0.0);
-        let folded = rt
-            .elements()
-            .into_iter()
-            .find(|e| e.key.as_deref() == Some("nav-albums"))
-            .map(|e| e.opacity < 0.01 && e.rect[3] < 1.0);
-        assert_eq!(folded, Some(true), "the hidden item folds to nothing");
+        // Once hidden, the row collapses and fades to transparent (the accessor
+        // reports 0 for a hidden item, so it reads invisible even without the poll).
+        for _ in 0..30 {
+            rt.frame(1.0 / 60.0);
+        }
+        assert!(
+            !visible(&rt, "nav-albums"),
+            "the hidden item is no longer drawn once the reveal finishes"
+        );
     }
 
-    /// Hiding a nav item folds it shut *smoothly*: a couple of frames into the
-    /// animated commit its height is partway between open and zero (not snapped,
-    /// and not a full-height fading ghost), then it settles to nothing.
+    /// Hiding a nav item plays a *sequential* reveal driven by the poll: first the
+    /// label fades while the row keeps full height (nothing below reflows), THEN —
+    /// once it's invisible — the height collapses, and finally the row leaves.
     #[test]
-    fn hiding_a_nav_item_folds_smoothly_not_instantly() {
-        // Drive visibility through `State` directly (not `set_nav_visible`, which
-        // persists to the shared test config) so this test neither reads a leaked
-        // value nor leaves one — the fold is purely a render-state effect.
+    fn hiding_a_nav_item_fades_then_collapses_then_leaves() {
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.nav_hidden.clear();
@@ -6713,29 +6771,78 @@ mod tests {
                 scale: 2.0,
             },
         );
+        // The reveal is driven by the app poll (it advances `nav_reveal` each frame);
+        // `Runtime::new` doesn't wire it, so attach it here to exercise the real,
+        // frame-by-frame fade+collapse rather than an instant visibility flip.
+        rt.poll = Some(spectrum_poll);
         rt.frame(0.0);
         rt.settle_all();
         rt.frame(0.0);
-        let height = |rt: &Runtime<State>| {
+        // The row stays mounted throughout (stable structure), so read its height and
+        // opacity straight off `nav-albums`: full height + opacity while fading, then
+        // 0 height + transparent once collapsed. The queue below is the witness that
+        // the collapsed space actually closes without overlapping it.
+        let albums = |rt: &Runtime<State>| {
             rt.elements()
                 .into_iter()
                 .find(|e| e.key.as_deref() == Some("nav-albums"))
-                .map(|e| e.rect[3])
-                .unwrap_or(0.0)
+                .map(|e| (e.rect[3], e.opacity))
         };
-        let open = height(&rt);
-        assert!(open > 20.0, "albums starts open to full height, got {open}");
+        let queue_y = |rt: &Runtime<State>| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("queue"))
+                .map(|e| e.rect[1])
+                .expect("the queue section renders")
+        };
+        let (open_h, _) = albums(&rt).expect("albums starts open");
+        assert!(open_h > 20.0, "open to full height, got {open_h}");
+        let y_open = queue_y(&rt);
+
         rt.update(|s, _tx| s.nav_hidden = vec!["albums".into()]);
+        // Phase 1 (a couple frames in): the label is FADING — opacity down, but the
+        // row keeps its full height, so the queue has barely moved (the collapse
+        // that would pull it up hasn't started — the fade goes first).
         rt.frame(1.0 / 60.0);
         rt.frame(1.0 / 60.0);
-        let mid = height(&rt);
+        let (h, op) = albums(&rt).expect("still present while fading");
+        assert!(op < 1.0, "label is fading, opacity {op}");
         assert!(
-            mid > 1.0 && mid < open,
-            "folds partway after two frames, got {mid} (open {open})"
+            (h - open_h).abs() < 1.0,
+            "row keeps full height while fading, got {h} (open {open_h})"
         );
-        rt.settle_all();
-        rt.frame(0.0);
-        assert!(height(&rt) < 1.0, "settles fully shut, got {}", height(&rt));
+        assert!(
+            (y_open - queue_y(&rt)).abs() < views::sidebar::NAV_ITEM_H * 0.5,
+            "queue hasn't yet glided up a full row — the fade precedes the collapse"
+        );
+        // Phases 2+3: let it finish — the label leaves, and only now has the queue
+        // glided up a whole row into the collapsed space.
+        for _ in 0..60 {
+            rt.frame(1.0 / 60.0);
+        }
+        let (_, end_op) = albums(&rt).expect("row stays mounted (stable structure)");
+        assert!(
+            end_op < 0.01,
+            "fully hidden → transparent, opacity {end_op}"
+        );
+        // The collapse lives on the reveal wrapper (the button keeps its intrinsic
+        // height, clipped); the wrapper is what drives to 0.
+        let reveal_h = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("nav-albums-reveal"))
+            .map(|e| e.rect[3])
+            .expect("reveal wrapper stays mounted");
+        assert!(
+            reveal_h < 2.0,
+            "fully hidden → collapsed, wrapper height {reveal_h}"
+        );
+        assert!(
+            queue_y(&rt) < y_open - views::sidebar::NAV_ITEM_H * 0.5,
+            "queue glided up into the collapsed space ({} → {})",
+            y_open,
+            queue_y(&rt)
+        );
     }
 
     #[test]
