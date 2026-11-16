@@ -202,6 +202,9 @@ struct State {
     /// Which genre's detail page is showing, when `route == Route::Genre`.
     /// Set from a genre row's click.
     open_genre: Option<String>,
+    /// Whether the artist detail's "Top Songs" section is expanded past the first
+    /// five (toggled by its Show more/less link). Reset when a new artist opens.
+    artist_top_expanded: bool,
     /// Which Settings category the content pane shows (ephemeral; defaults to
     /// `Appearance`). Switched by the settings page's own category rail.
     settings_tab: SettingsTab,
@@ -472,6 +475,7 @@ impl State {
             open_album: None,
             open_artist: None,
             open_genre: None,
+            artist_top_expanded: false,
             settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
@@ -1751,7 +1755,7 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
             Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
             Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
             Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
-            Route::Artist => views::artists::artist_detail(s, p, scale).grow(1.0),
+            Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
             Route::Genres => views::genres::genres_page(s, p).grow(1.0),
             Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
             Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
@@ -6552,7 +6556,7 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        click(&mut rt, "artist-0"); // the first grouped artist (Bach)
+        click(&mut rt, "card-text"); // the first grouped artist's title (Bach)
         assert!(
             matches!(rt.state.route, Route::Artist),
             "the card opens the artist detail page"
@@ -6605,6 +6609,112 @@ mod tests {
             }],
             "Play All plays only this artist's tracks, from the top"
         );
+    }
+
+    /// The artist detail shows both a Top-Songs section and a Discography grid.
+    #[test]
+    fn the_artist_detail_has_top_songs_and_discography() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        // Two albums for Bach so the discography has cards to show.
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Cello Suites"),
+            artist_album_track(3, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0); // second frame: discography grid reads its committed width
+        assert!(
+            rt.find("artist-header").is_some(),
+            "the circular hero renders"
+        );
+        assert!(
+            rt.find("artist-top-songs").is_some(),
+            "Top Songs section renders"
+        );
+        assert!(
+            rt.find("artist-discography").is_some(),
+            "Discography section renders"
+        );
+        assert!(
+            rt.find("artist-disc-0").is_some(),
+            "a discography album card renders"
+        );
+    }
+
+    /// A discography album card opens that album's detail page.
+    #[test]
+    fn a_discography_card_opens_the_album() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        click(&mut rt, "card-text"); // first disc card's title area (Cello Suites)
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "a disc card opens the album"
+        );
+        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+    }
+
+    /// With more than five tracks, Show more expands the Top-Songs list.
+    #[test]
+    fn show_more_expands_top_songs() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = (1..=7)
+            .map(|i| artist_album_track(i, "Bach", "Cello Suites"))
+            .collect();
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Only the first five tracks show; the sixth row is hidden.
+        assert!(rt.find("album-track-4").is_some(), "the fifth track shows");
+        assert!(rt.find("album-track-5").is_none(), "the sixth is collapsed");
+        assert!(
+            rt.find("artist-top-toggle").is_some(),
+            "a Show more toggle renders"
+        );
+        click(&mut rt, "artist-top-toggle");
+        assert!(rt.state.artist_top_expanded, "the toggle expands Top Songs");
+        assert!(
+            rt.find("album-track-5").is_some(),
+            "the sixth track shows once expanded"
+        );
+    }
+
+    fn artist_album_track(id: u32, artist: &str, album: &str) -> soul_player_host::TrackView {
+        soul_player_host::TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some(artist.to_string()),
+            album: Some(album.to_string()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+        }
     }
 
     /// The sidebar offers a Genres nav entry, and pressing it switches the route
