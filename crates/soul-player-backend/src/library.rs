@@ -308,6 +308,29 @@ impl Library {
     }
 }
 
+/// Resolves a track id to a local file path for the loader. `Library` resolves
+/// it locally; a host-side adapter can resolve remote ids by fetching them.
+pub trait TrackSource: Send + Sync {
+    fn path_of(&self, id: u32) -> Option<std::path::PathBuf>;
+
+    /// The tag-derived duration (seconds), used by the pump's Tick fallback when
+    /// the decoder itself can't report a length. Defaults to "unknown" so an
+    /// implementor only needs this when it has a cheaper-than-decoding answer.
+    fn duration_of(&self, _id: u32) -> Option<f64> {
+        None
+    }
+}
+
+impl TrackSource for Library {
+    fn path_of(&self, id: u32) -> Option<std::path::PathBuf> {
+        Library::path_of(self, id)
+    }
+
+    fn duration_of(&self, id: u32) -> Option<f64> {
+        Library::duration_of(self, id)
+    }
+}
+
 /// Resolve a heap string ref (exact length known) into an owned `String`, routed
 /// through the aggregate so the owning source is honored.
 fn resolve(cat: &MultiCatalog, s: StrRef) -> Option<String> {
@@ -907,6 +930,20 @@ mod tests {
             Some(3),
             "extraction finishes at done == total"
         );
+    }
+
+    #[test]
+    fn library_as_a_trait_object_resolves_the_same_path() {
+        // Proves `TrackSource` is a usable trait object over `Library`: resolving
+        // through `dyn TrackSource` must agree with the inherent `Library::path_of`.
+        let root = tmpdir("tracksource");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+
+        let lib = Library::scan_many(std::slice::from_ref(&root)).unwrap();
+        let expected = Library::path_of(&lib, 0);
+        let ts: std::sync::Arc<dyn TrackSource> = std::sync::Arc::new(lib);
+        assert_eq!(ts.path_of(0), expected);
+        assert_eq!(ts.path_of(9), None);
     }
 
     #[cfg(unix)]

@@ -23,7 +23,7 @@ use crate::driver::{
     RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain, maybe_switch_native_rate,
     project_queue, project_signal_path, project_tick, queue_for,
 };
-use crate::library::Library;
+use crate::library::TrackSource;
 use crate::loudness::LoudnessCache;
 use crate::types::{Command, Event, ReplayGainMode};
 
@@ -34,7 +34,7 @@ const SEED_STEP: u64 = 0x9E37_79B9_7F4A_7C15;
 /// Handle to the running player actor. Dropping it stops the threads.
 pub struct AudioPlayer {
     cmd_tx: Option<Sender<Command>>,
-    library: Arc<Mutex<Arc<Library>>>,
+    library: Arc<Mutex<Arc<dyn TrackSource>>>,
     pump: Option<JoinHandle<()>>,
 }
 
@@ -45,7 +45,7 @@ impl AudioPlayer {
     /// bit-perfect exclusive output (native-rate switching). `on_event` is called
     /// from the pump thread on every emitted event. `library` is the initial
     /// `id → path` map (swap later via [`set_library`](Self::set_library)).
-    pub fn spawn<K, Mk, Ev>(make_sink: Mk, library: Arc<Library>, on_event: Ev) -> Self
+    pub fn spawn<K, Mk, Ev>(make_sink: Mk, library: Arc<dyn TrackSource>, on_event: Ev) -> Self
     where
         K: Sink + 'static,
         Mk: Fn(Option<u32>) -> anyhow::Result<K> + Send + 'static,
@@ -83,7 +83,7 @@ impl AudioPlayer {
     }
 
     /// Replace the library used by the loader to resolve `id → path`.
-    pub fn set_library(&self, library: Arc<Library>) {
+    pub fn set_library(&self, library: Arc<dyn TrackSource>) {
         *self.library.lock().expect("library mutex") = library;
     }
 }
@@ -108,7 +108,7 @@ impl Drop for AudioPlayer {
 fn loader_thread(
     req_rx: Receiver<u32>,
     res_tx: Sender<(u32, RgInfo, anyhow::Result<OwnedDecoder>)>,
-    library: Arc<Mutex<Arc<Library>>>,
+    library: Arc<Mutex<Arc<dyn TrackSource>>>,
 ) {
     for id in req_rx {
         let (rg, opened) = {
@@ -149,7 +149,7 @@ fn read_rg_tags(path: &Path) -> RgInfo {
 fn pump_thread<K, Mk, Ev>(
     make_sink: Mk,
     cmd_rx: Receiver<Command>,
-    library: Arc<Mutex<Arc<Library>>>,
+    library: Arc<Mutex<Arc<dyn TrackSource>>>,
     on_event: Ev,
 ) where
     K: Sink + 'static,
@@ -393,7 +393,7 @@ fn resolve_rg_info(
     cur: Option<u32>,
     mode: ReplayGainMode,
     rg_tags: &BTreeMap<u32, RgInfo>,
-    library: &Arc<Mutex<Arc<Library>>>,
+    library: &Arc<Mutex<Arc<dyn TrackSource>>>,
     loudness: &LoudnessCache,
 ) -> Option<RgInfo> {
     let id = cur?;
@@ -426,6 +426,7 @@ fn resolve_rg_info(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::library::Library;
     use crate::testutil::NullSink;
     use std::path::PathBuf;
     use std::sync::mpsc::RecvTimeoutError;
@@ -470,7 +471,7 @@ mod tests {
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
             |_rate| Ok(NullSink::new(48_000, 2)),
-            Arc::clone(&lib),
+            lib,
             move |ev| {
                 let _ = ev_tx.send(ev);
             },
@@ -545,7 +546,7 @@ mod tests {
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
             |_rate| Ok(NullSink::new(48_000, 2)),
-            Arc::clone(&lib_a),
+            lib_a,
             move |ev| {
                 let _ = ev_tx.send(ev);
             },
@@ -563,7 +564,7 @@ mod tests {
 
         // Swap the loader's library to B mid-play, then play B's track 0. The
         // now-playing track must resolve to B (≈1 s) — not stale A (2 s).
-        player.set_library(Arc::clone(&lib_b));
+        player.set_library(lib_b);
         player.send(Command::PlayContext {
             ids: vec![0],
             start: 0,
@@ -587,7 +588,7 @@ mod tests {
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
             |_rate| Ok(NullSink::new(48_000, 2)),
-            Arc::clone(&lib),
+            lib,
             move |ev| {
                 let _ = ev_tx.send(ev);
             },
@@ -642,7 +643,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sas_rg_fold_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let lib = fixture_library(&dir);
-        let library = Arc::new(Mutex::new(lib));
+        let ts: Arc<dyn TrackSource> = lib;
+        let library = Arc::new(Mutex::new(ts));
 
         // A cache seeded (as `SeedLoudness` would) with a computed gain for the
         // untagged WAV at id 0 — no worker interaction needed to observe the fold.
@@ -703,7 +705,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("sas_rg_miss_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let lib = fixture_library(&dir);
-        let library = Arc::new(Mutex::new(lib));
+        let ts: Arc<dyn TrackSource> = lib;
+        let library = Arc::new(Mutex::new(ts));
 
         let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, f32)>();
         let (loudness, _worker) = LoudnessCache::spawn(res_tx);
