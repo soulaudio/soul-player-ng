@@ -1,4 +1,5 @@
 pub mod domain;
+pub mod store;
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
