@@ -2132,6 +2132,22 @@ fn scene_settings_about(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::About;
 }
+/// Settings → Appearance (the tab the sweep audits for theme + nav toggles).
+fn scene_settings_appearance(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Appearance;
+}
+/// Settings → Music Data with the add-source menu open (its scrim makes the page
+/// inert), for sweeping the modal's option buttons.
+fn scene_add_source_open(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+    s.open_dropdown = Some("add-source".to_string());
+}
+/// The crash-report dialog shown after a crashed session.
+fn scene_crash_dialog(s: &mut State) {
+    s.crashed_last_session = true;
+}
 /// German settings scenes: the longest-label locale we ship, for catching text
 /// overflow in `--snap`. `apply_locale` (not `set_locale_pref`) so the snapshot
 /// never writes the user's persisted language.
@@ -2372,6 +2388,9 @@ fn main() -> anyhow::Result<()> {
             ("settings-audio-eq", scene_settings_audio_eq),
             ("settings-audio-eq-off", scene_settings_audio_eq_off),
             ("settings-about", scene_settings_about),
+            ("settings-appearance", scene_settings_appearance),
+            ("add-source-open", scene_add_source_open),
+            ("crash-dialog", scene_crash_dialog),
             ("settings-music-de", scene_settings_music_de),
             ("settings-audio-de", scene_settings_audio_de),
             ("settings-appearance-de", scene_settings_appearance_de),
@@ -7931,6 +7950,63 @@ mod tests {
         let music = settings_rt(SettingsTab::MusicData);
         assert_a11y(&music, "add-source");
         assert_a11y(&music, "rescan-sources");
+    }
+
+    #[test]
+    fn the_new_a11y_scenes_render_their_surface() {
+        // Appearance tab shows its category rail.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        scene_settings_appearance(&mut s);
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("cat-appearance").is_some(),
+            "appearance scene shows the settings rail"
+        );
+
+        // Add-source menu open.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        scene_add_source_open(&mut s);
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("add-source-opt-local").is_some(),
+            "add-source menu is open"
+        );
+
+        // Crash dialog.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        scene_crash_dialog(&mut s);
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(rt.find("crash-dialog").is_some(), "crash dialog is shown");
     }
 
     #[test]
