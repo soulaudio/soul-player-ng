@@ -1120,38 +1120,69 @@ fn output_card(s: &State, p: &Palette) -> El {
 /// when on but the device fell back to shared, that's shown honestly (accent dot);
 /// off is plain shared output. Applies to the next playback session, like the
 /// device choice.
-fn exclusive_card(s: &State, p: &Palette) -> El {
+/// What the Exclusive card should SAY about the current output, decided purely from
+/// the toggle + live signal path + the host's resolved status — so the mapping (the
+/// reason surfacing, the strict-stop case) is unit-tested without a live device. The
+/// card turns this into a quality dot + i18n text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ExclusiveDisplay {
+    /// Not requested — shared by choice.
+    Shared,
+    /// Exclusive is active; the device format string (from the signal path).
+    Active(String),
+    /// Requested but fell back to shared; the device's reason.
+    FellBack(String),
+    /// Requested with strict mode and couldn't open — stopped; the reason.
+    Stopped(String),
+    /// Requested but nothing has opened a device yet (applies next session).
+    Pending,
+}
+
+fn exclusive_display(
+    exclusive: bool,
+    signal_path: Option<soul_player_host::SignalPath>,
+    status: soul_player_host::ExclusiveStatus,
+) -> ExclusiveDisplay {
     use crate::views::signal_path::exclusive_value;
     use soul_player_host::ExclusiveStatus;
-    let playing = s.signal_path;
-    let active = playing.map(|x| x.exclusive).unwrap_or(false);
+    if !exclusive {
+        return ExclusiveDisplay::Shared;
+    }
+    // The live signal path is authoritative for "exclusive right now" + its format.
+    if let Some(sp) = signal_path.filter(|x| x.exclusive) {
+        return ExclusiveDisplay::Active(exclusive_value(&sp));
+    }
+    // Requested but not (yet) active — the host status carries the real reason.
+    match status {
+        ExclusiveStatus::Unavailable(reason) => ExclusiveDisplay::Stopped(reason),
+        ExclusiveStatus::FellBack(reason) => ExclusiveDisplay::FellBack(reason),
+        _ => ExclusiveDisplay::Pending,
+    }
+}
+
+fn exclusive_card(s: &State, p: &Palette) -> El {
     // A dot + one-line status describing what is ACTUALLY happening. When exclusive
     // was requested but isn't active, the host status carries the real reason (device
     // in use, no exclusive format, …) — far more useful than a generic message.
-    let (dot, status) = if !s.exclusive {
-        (p.primary, t!("settings.exclusiveStatusShared").to_string())
-    } else if active {
-        let fmt = exclusive_value(&playing.expect("active implies a signal path"));
-        (
-            p.primary,
-            format!("{} · {fmt}", t!("settings.exclusiveBitPerfect")),
-        )
-    } else {
-        match s.host.exclusive_status() {
-            // Strict mode: exclusive couldn't open and we did NOT fall back — stopped.
-            ExclusiveStatus::Unavailable(reason) => (
-                p.accent,
-                format!("{} — {reason}", t!("settings.exclusiveStopped")),
+    let (dot, status) =
+        match exclusive_display(s.exclusive, s.signal_path, s.host.exclusive_status()) {
+            ExclusiveDisplay::Shared => {
+                (p.primary, t!("settings.exclusiveStatusShared").to_string())
+            }
+            ExclusiveDisplay::Active(fmt) => (
+                p.primary,
+                format!("{} · {fmt}", t!("settings.exclusiveBitPerfect")),
             ),
-            // Fell back to shared; show the device's reason.
-            ExclusiveStatus::FellBack(reason) => (
+            ExclusiveDisplay::FellBack(reason) => (
                 p.accent,
                 format!("{} — {reason}", t!("settings.exclusiveFellBackShort")),
             ),
-            // Requested but nothing has opened a device yet → applies next session.
-            _ => (p.primary, t!("settings.exclusivePending").to_string()),
-        }
-    };
+            ExclusiveDisplay::Stopped(reason) => (
+                p.accent,
+                format!("{} — {reason}", t!("settings.exclusiveStopped")),
+            ),
+            ExclusiveDisplay::Pending => (p.primary, t!("settings.exclusivePending").to_string()),
+        };
     let indent = 8.0 + space::SM + 18.0 + space::SM;
     let mut el = card("sp-stage-exclusive", p)
         .child(stage_header(
@@ -2810,4 +2841,64 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
         overlays.push(modal);
     }
     overlays
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExclusiveDisplay, exclusive_display};
+    use soul_player_host::{ExclusiveStatus, SignalPath, SourceCodec, SourceFormat};
+
+    fn sp(exclusive: bool) -> SignalPath {
+        SignalPath {
+            source: SourceFormat::Pcm { bits: 24 },
+            codec: SourceCodec::Flac,
+            decoded_rate: 96_000,
+            decoded_bits: 24,
+            channels: 2,
+            replay_gain_db: 0.0,
+            device_rate: 96_000,
+            resampling: false,
+            output_bits: 24,
+            exclusive,
+            loudness: None,
+        }
+    }
+
+    #[test]
+    fn exclusive_display_maps_status_to_the_right_message() {
+        use ExclusiveDisplay::*;
+        // Not requested → shared by choice (the status is irrelevant).
+        assert_eq!(
+            exclusive_display(false, None, ExclusiveStatus::Shared),
+            Shared
+        );
+        // Active: the live signal path says exclusive → show its device format.
+        assert_eq!(
+            exclusive_display(true, Some(sp(true)), ExclusiveStatus::Active),
+            Active("96 kHz · 24-bit".to_string())
+        );
+        // Requested, fell back to shared → surface the DEVICE'S reason verbatim.
+        assert_eq!(
+            exclusive_display(
+                true,
+                Some(sp(false)),
+                ExclusiveStatus::FellBack("device is in use by another app".into()),
+            ),
+            FellBack("device is in use by another app".into())
+        );
+        // Requested + strict, couldn't open → stopped, with the reason.
+        assert_eq!(
+            exclusive_display(
+                true,
+                None,
+                ExclusiveStatus::Unavailable("no exclusive format".into()),
+            ),
+            Stopped("no exclusive format".into())
+        );
+        // Requested, but no device has spawned yet → pending (applies next session).
+        assert_eq!(
+            exclusive_display(true, None, ExclusiveStatus::Shared),
+            Pending
+        );
+    }
 }
