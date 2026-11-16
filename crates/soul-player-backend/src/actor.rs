@@ -483,6 +483,83 @@ mod tests {
         drop(player); // clean shutdown (joins threads)
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// Wait (bounded) for a Tick showing `id` playing with duration ≈ `approx` s.
+    /// Ticks for any other track/duration are skipped; returns false on timeout.
+    fn wait_for_now_playing(rx: &mpsc::Receiver<Event>, id: u32, approx: f64) -> bool {
+        let deadline = Duration::from_secs(5);
+        loop {
+            match rx.recv_timeout(deadline) {
+                Ok(Event::Tick(t)) => {
+                    if t.now_playing_id == Some(id)
+                        && t.state == crate::types::PlayState::Playing
+                        && t.duration_secs.is_some_and(|d| (d - approx).abs() < 0.25)
+                    {
+                        return true;
+                    }
+                }
+                Ok(_) => {}
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return false,
+            }
+        }
+    }
+
+    /// Guards the folder-switch / loader race the retired Tauri e2e test
+    /// (`folder_switch_loads_the_new_library`, #2) covered flakily: after the library
+    /// is swapped mid-playback, a play against the NEW library's ids must resolve and
+    /// play the NEW track. The loader reads the shared library fresh on every request
+    /// (there is no stale-library window), so this is deterministic — proven by the
+    /// durations: A's tracks are 2 s, B's are 1 s, so the now-playing duration pins
+    /// which library resolved the id.
+    #[test]
+    fn swapping_the_library_mid_play_resolves_the_new_library() {
+        let base = std::env::temp_dir().join(format!("sas_actor_swap_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (dir_a, dir_b) = (base.join("A"), base.join("B"));
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::write(dir_a.join("a.wav"), wav(48_000, 96_000)).unwrap(); // 2.0 s
+        std::fs::write(dir_a.join("a2.wav"), wav(48_000, 96_000)).unwrap();
+        std::fs::write(dir_b.join("b.wav"), wav(48_000, 48_000)).unwrap(); // 1.0 s
+        let lib_a = Arc::new(Library::scan(&dir_a).unwrap());
+        let lib_b = Arc::new(Library::scan(&dir_b).unwrap());
+
+        let (ev_tx, ev_rx) = mpsc::channel::<Event>();
+        let player = AudioPlayer::spawn(
+            || Ok(NullSink::new(48_000, 2)),
+            Arc::clone(&lib_a),
+            move |ev| {
+                let _ = ev_tx.send(ev);
+            },
+        );
+
+        // Play library A; confirm A's 2 s track 0 is the now-playing track.
+        player.send(Command::PlayContext {
+            ids: vec![0, 1],
+            start: 0,
+        });
+        assert!(
+            wait_for_now_playing(&ev_rx, 0, 2.0),
+            "A's 2 s track 0 never became now-playing"
+        );
+
+        // Swap the loader's library to B mid-play, then play B's track 0. The
+        // now-playing track must resolve to B (≈1 s) — not stale A (2 s).
+        player.set_library(Arc::clone(&lib_b));
+        player.send(Command::PlayContext {
+            ids: vec![0],
+            start: 0,
+        });
+        assert!(
+            wait_for_now_playing(&ev_rx, 0, 1.0),
+            "after the swap, B's 1 s track never became now-playing — the loader \
+             resolved the id against the stale library (the #2 folder-switch race)"
+        );
+
+        drop(player);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn drop_returns_promptly_even_while_repeat_all_plays() {
         let dir = std::env::temp_dir().join(format!("sas_actor_drop_{}", std::process::id()));
