@@ -6952,7 +6952,7 @@ mod tests {
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        click(&mut rt, "album-text"); // the title/artist area — not the play button
+        click(&mut rt, "card-text"); // the title/artist area — not the play button
         assert!(
             matches!(rt.state.route, Route::Album),
             "the card body opens the album detail page"

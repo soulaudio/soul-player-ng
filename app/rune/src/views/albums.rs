@@ -16,10 +16,8 @@ use crate::ui::{fx, radius, space, type_};
 use crate::views::grid;
 use crate::views::icons;
 use crate::views::library::fmt_dur;
+use crate::views::media_card::{CardSpec, media_card};
 use crate::views::player::cover;
-
-/// The hover play-overlay button — the old app's `w-14 h-14 rounded-xl` (56 px).
-const PLAY_BTN: f32 = 56.0;
 
 /// One grouped album: display name, its artist, a track id to draw the cover
 /// from, and every track id (in library order) to play on click.
@@ -54,121 +52,30 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     albums
 }
 
-/// The command an album card's play action issues, mirroring the old app's
-/// MediaCard `handlePlayPause`: if a track of this album is the one playing,
-/// toggle pause/resume; otherwise start the album from the top. Pure, so the
-/// view and its test share exactly one rule. "Active" = the now-playing track
-/// belongs to this album.
-fn album_play_command(now_playing: Option<u32>, ids: &[u32]) -> Command {
-    if now_playing.is_some_and(|id| ids.contains(&id)) {
-        Command::TogglePlay
-    } else {
-        Command::PlayContext {
-            ids: ids.to_vec(),
-            start: 0,
-        }
-    }
-}
-
-/// One album card: a square cover, the title, and the artist. Clicking plays the
-/// album, or toggles pause/resume if it is already the playing context.
+/// One album card: a square cover with a hover play-overlay, the title, and the
+/// artist. Clicking the body opens the album's detail page; the overlay plays.
 fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
-    let ids = a.ids.clone();
     let name = a.name.clone();
-    // When this album is the active, playing context the overlay shows a pause
-    // glyph and its press toggles — the old app's MediaCard behaviour.
-    let show_pause = s.now_playing_id.is_some_and(|id| a.ids.contains(&id)) && s.playing;
-    col()
-        .key(format!("album-{slot}"))
-        .role("button")
-        .label(a.name.clone())
-        .focusable(true)
-        .w(card_w)
-        // No wrapper background or inset — the old app's MediaCard is `pb-2` with a
-        // `mb-2` cover; the cover + the hover play-overlay are the affordance, not a
-        // background pill.
-        .gap(space::SM)
-        .pb(space::SM)
-        .cursor(Cursor::Pointer)
-        .hover_group()
-        .child(
-            // Cover + a play button that fades in on card hover (old app's
-            // `opacity-0 group-hover:opacity-100` MediaCard overlay). ONLY the
-            // button plays/pauses; clicking the cover elsewhere (or the title)
-            // opens the album's detail page — the old app's MediaCard split of
-            // button = play, body = navigate.
-            el().key("cover-area")
-                .size(card_w, card_w)
-                // The old app's MediaCard cover carries a `shadow` (Rune has no
-                // group-driven shadow/scale, so the hover `shadow-md`/`scale-105`
-                // lift isn't reproduced — the base shadow is).
-                .radius(radius::MD)
-                .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
-                .child(cover(s, Some(a.cover_id), card_w, radius::MD, p, scale))
-                .child(
-                    el().key("play-overlay")
-                        .size(card_w, card_w)
-                        .absolute(0.0, 0.0)
-                        .center()
-                        .group_opacity(0.0, 1.0)
-                        .child(
-                            // Old app's `w-14 h-14 rounded-xl bg-black/50` button,
-                            // darkening to ~black/70 on direct hover (its
-                            // `hover:bg-black/70`). Carries the play/pause press.
-                            el().key("play-btn")
-                                .role("button")
-                                .label(t!("player.play").to_string())
-                                .focusable(true)
-                                .size(PLAY_BTN, PLAY_BTN)
-                                .radius(radius::LG)
-                                .fill(Color::BLACK.alpha(0.5))
-                                .hover(Color::BLACK.alpha(0.3))
-                                .cursor(Cursor::Pointer)
-                                .center()
-                                .on_press(move |st: &mut State| {
-                                    st.host.send(album_play_command(st.now_playing_id, &ids))
-                                })
-                                .child(
-                                    icon(
-                                        if show_pause {
-                                            &icons::PAUSE
-                                        } else {
-                                            &icons::PLAY
-                                        },
-                                        32.0,
-                                    )
-                                    .color(Color::WHITE),
-                                ),
-                        ),
-                ),
-        )
-        .child(
-            col()
-                .key("album-text")
-                .gap(space::XXS)
-                .min_w(0.0)
-                .child(
-                    // Title dims to 0.8 on card hover (old app's
-                    // `group-hover:opacity-[var(--hover-text-opacity)]`).
-                    text(a.name.clone())
-                        .font(type_::CARD_TITLE)
-                        .color(p.fg)
-                        .truncate()
-                        .group_opacity(1.0, 0.8),
-                )
-                .child(
-                    text(a.artist.clone())
-                        .font(type_::ITEM)
-                        .color(p.text_secondary)
-                        .truncate(),
-                ),
-        )
-        // The card body opens the album's detail page (the play button above owns
-        // play/pause). The old app's MediaCard navigates on body click.
-        .on_press(move |st: &mut State| {
+    media_card(
+        s,
+        p,
+        CardSpec {
+            key: format!("album-{slot}"),
+            label: a.name.clone(),
+            title: a.name.clone(),
+            subtitle: Some(a.artist.clone()),
+            cover_id: a.cover_id,
+            circular: false,
+            play_ids: a.ids.clone(),
+        },
+        card_w,
+        scale,
+        move |st: &mut State| {
             st.route = crate::Route::Album;
             st.open_album = Some(name.clone());
-        })
+            st.mobile_show_content = true;
+        },
+    )
 }
 
 /// The Albums page: a responsive grid of album cards, scrolled vertically.
@@ -434,37 +341,4 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                 .grow(1.0)
                 .min_h(0.0),
         )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_active_album_toggles_play_pause_otherwise_plays_from_the_start() {
-        // The old app's MediaCard play button toggles pause/resume when its own
-        // context is the active one, and starts the entity otherwise. We judge
-        // "active" by the now-playing track belonging to this album.
-        assert_eq!(
-            album_play_command(Some(6), &[5, 6, 7]),
-            Command::TogglePlay,
-            "a track of this album is playing → toggle"
-        );
-        assert_eq!(
-            album_play_command(Some(9), &[5, 6, 7]),
-            Command::PlayContext {
-                ids: vec![5, 6, 7],
-                start: 0
-            },
-            "a different album is playing → play this one from the top"
-        );
-        assert_eq!(
-            album_play_command(None, &[5, 6, 7]),
-            Command::PlayContext {
-                ids: vec![5, 6, 7],
-                start: 0
-            },
-            "nothing playing → play from the top"
-        );
-    }
 }
