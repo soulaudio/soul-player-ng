@@ -7870,9 +7870,19 @@ mod tests {
     /// Roles denoting an interactive control, which therefore require an accessible name.
     fn interactive_role(role: &str) -> bool {
         // `option` is the themed dropdown's item role (see `views/dropdown.rs`).
+        // `switch` is the ARIA toggle-switch role (see `shuffle_button` in
+        // `views/player.rs`), correctly distinct from `checkbox`.
         matches!(
             role,
-            "button" | "link" | "checkbox" | "slider" | "menuitem" | "tab" | "textbox" | "option"
+            "button"
+                | "link"
+                | "checkbox"
+                | "slider"
+                | "menuitem"
+                | "tab"
+                | "textbox"
+                | "option"
+                | "switch"
         )
     }
 
