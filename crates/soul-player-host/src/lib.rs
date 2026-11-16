@@ -37,7 +37,7 @@ pub use soul_audio_organize as organize;
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
     SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath, SourceCodec, SourceFormat,
-    Tick, TrackView,
+    Tick, TrackLoudness, TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -405,7 +405,7 @@ struct Inner {
     /// Banked so a lazily- (or re-) spawned actor is re-seeded on spawn — the
     /// hybrid-ReplayGain cache for previously-untagged tracks survives the actor's
     /// lazy start just like the ReplayGain choice does.
-    loudness_seed: Mutex<Vec<(PathBuf, f32)>>,
+    loudness_seed: Mutex<Vec<(PathBuf, TrackLoudness)>>,
     /// Test-support: when `Some`, [`send`](PlayerHandle::send) records commands
     /// here instead of driving the actor, so a head's command wiring can be
     /// asserted headlessly. `None` (the default) in every real handle.
@@ -1066,7 +1066,7 @@ impl PlayerHandle {
     /// re-spawned) actor is re-seeded on spawn, and pushed to a live actor right
     /// away if one is already running. Like [`set_replay_gain`](Self::set_replay_gain),
     /// it never spawns an actor just to seed.
-    pub fn seed_loudness(&self, entries: Vec<(PathBuf, f32)>) {
+    pub fn seed_loudness(&self, entries: Vec<(PathBuf, TrackLoudness)>) {
         *self
             .inner
             .loudness_seed
@@ -1471,14 +1471,24 @@ mod tests {
         );
     }
 
+    fn test_loudness(integrated: f32) -> TrackLoudness {
+        TrackLoudness {
+            integrated_lufs: integrated,
+            lra: 7.0,
+            true_peak_dbtp: -1.0,
+            plr: 10.0,
+            dr: 11.0,
+        }
+    }
+
     #[test]
     fn seed_loudness_before_open_is_remembered_without_spawning() {
         // Seeding the loudness cache must not spawn an actor (no device stream
         // before playback) and must not panic — it's banked for the next spawn.
         let h = PlayerHandle::offline();
         h.seed_loudness(vec![
-            (PathBuf::from("/music/a.flac"), -6.0),
-            (PathBuf::from("/music/b.wav"), 2.5),
+            (PathBuf::from("/music/a.flac"), test_loudness(-12.0)),
+            (PathBuf::from("/music/b.wav"), test_loudness(-20.5)),
         ]);
         assert_eq!(
             h.inner.loudness_seed.lock().unwrap().len(),

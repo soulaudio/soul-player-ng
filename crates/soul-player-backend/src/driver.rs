@@ -315,6 +315,8 @@ pub fn project_signal_path<K: Sink, D: SeekableDecoder>(
         // hardcoded canonical 24.
         output_bits: di.output_format.bits_per_sample(),
         exclusive: di.exclusive,
+        // The actor fills this from its loudness cache (this projection is pure).
+        loudness: None,
     })
 }
 
