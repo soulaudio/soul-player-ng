@@ -1,11 +1,16 @@
 //! `soul-server` CLI: config-driven remote source server + user management.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
 use soul_server::config;
 use soul_server::domain::ports::UserStore;
+use soul_server::domain::service::Services;
+use soul_server::index::CoreIndex;
+use soul_server::media::FsMedia;
+use soul_server::proto::native;
 use soul_server::store::SqliteUsers;
 
 #[derive(Parser)]
@@ -40,16 +45,27 @@ enum UserCommand {
     },
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve => {
-            println!("serve: not yet wired (coming in a later task)");
-            Ok(())
-        }
+        Command::Serve => run_serve(&cli.config).await,
         Command::User { command } => run_user_command(&cli.config, command),
     }
+}
+
+async fn run_serve(config_path: &std::path::Path) -> anyhow::Result<()> {
+    let cfg = config::load(config_path)?;
+    let index = CoreIndex::scan(cfg.roots.clone())?;
+    let media = FsMedia;
+    let users = SqliteUsers::open(&cfg.db)?;
+    let services = Arc::new(Services {
+        index,
+        media,
+        users,
+    });
+    native::serve(&cfg.bind, services).await
 }
 
 fn run_user_command(config_path: &std::path::Path, command: UserCommand) -> anyhow::Result<()> {

@@ -2,6 +2,9 @@ pub mod config;
 pub mod domain;
 pub mod index;
 pub mod media;
+pub mod proto {
+    pub mod native;
+}
 pub mod store;
 
 pub fn version() -> &'static str {
