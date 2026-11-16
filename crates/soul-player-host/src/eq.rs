@@ -54,6 +54,9 @@ pub struct DspSink<K: Sink> {
     buf_f32: Vec<f32>,
     buf_i32: Vec<i32>,
     analyzer: Analyzer,
+    /// Kept so [`reopen`](Sink::reopen) can rebuild the analyzer for a new device rate
+    /// (its bin→frequency map is rate-dependent).
+    spectrum: SpectrumShared,
 }
 
 impl<K: Sink> DspSink<K> {
@@ -73,7 +76,8 @@ impl<K: Sink> DspSink<K> {
             channels: usize::from(info.channels.max(1)),
             buf_f32: Vec::new(),
             buf_i32: Vec::new(),
-            analyzer: Analyzer::new(rate as f32, spectrum),
+            analyzer: Analyzer::new(rate as f32, spectrum.clone()),
+            spectrum,
         }
     }
 
@@ -122,6 +126,27 @@ impl<K: Sink> Sink for DspSink<K> {
     /// switching, so it must reflect the real (inner) sink, not the trait default.
     fn exclusive(&self) -> bool {
         self.inner.exclusive()
+    }
+
+    /// Reopen the wrapped device at `rate` (native-rate switching), then re-set up the
+    /// DSP chain for the device's NEW rate: the EQ filters are designed per sample rate
+    /// and the analyzer's bin→frequency map is rate-dependent, so a stale rate would
+    /// mis-design both. The filter bank is rebuilt fresh (no stale state across the
+    /// rate change) on the next block.
+    fn reopen(&mut self, rate: u32) -> Result<(), SinkError> {
+        self.inner.reopen(rate)?;
+        let info = self.inner.stream_info();
+        if info.sample_rate != self.rate {
+            self.rate = info.sample_rate;
+            self.channels = usize::from(info.channels.max(1));
+            // Force `sync()` to redesign every unit for the new rate (clearing the old
+            // filter bank so no stale history carries across the rate change).
+            self.units.clear();
+            self.preamps.clear();
+            self.applied_gen = None;
+            self.analyzer = Analyzer::new(self.rate as f32, self.spectrum.clone());
+        }
+        Ok(())
     }
 
     fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
