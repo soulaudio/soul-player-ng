@@ -254,6 +254,47 @@ mod tests {
     // ---- DspSink behaviour ----------------------------------------------------
 
     #[test]
+    fn dsp_sink_forwards_exclusive_from_the_wrapped_sink() {
+        // Regression: the engine reads `Sink::exclusive()` THROUGH this DSP wrapper to
+        // decide native-rate switching. If `DspSink` used the trait default (`false`),
+        // the whole bit-perfect / exclusive-output feature would be silently inert.
+        struct Inner(bool);
+        impl Sink for Inner {
+            fn stream_info(&self) -> StreamInfo {
+                info(48_000, 2)
+            }
+            fn exclusive(&self) -> bool {
+                self.0
+            }
+            fn write(&mut self, _: &[i32]) -> Result<(), SinkError> {
+                Ok(())
+            }
+            fn flush(&mut self) -> Result<(), SinkError> {
+                Ok(())
+            }
+        }
+        let spectrum = || Arc::new(Mutex::new(SpectrumFrame::default()));
+        let exclusive = DspSink::new(
+            Inner(true),
+            Arc::new(Mutex::new(DspChain::default())),
+            spectrum(),
+        );
+        assert!(
+            exclusive.exclusive(),
+            "an exclusive inner sink reports exclusive through the wrapper"
+        );
+        let shared = DspSink::new(
+            Inner(false),
+            Arc::new(Mutex::new(DspChain::default())),
+            spectrum(),
+        );
+        assert!(
+            !shared.exclusive(),
+            "a shared inner sink reports shared through the wrapper"
+        );
+    }
+
+    #[test]
     fn a_dsp_unit_eq_applies_the_same_gain_as_the_bare_eq_unit() {
         // The typed-unit wrapper must be behaviour-identical to the old EQ-only
         // chain: a `DspUnit::Eq` built from the same `EqUnit` boosts its band by the
