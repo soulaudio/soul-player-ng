@@ -604,6 +604,48 @@ fn save_device_to(path: &Path, name: Option<&str>) -> std::io::Result<()> {
     std::fs::write(path, body)
 }
 
+// --- exclusive (bit-perfect) output preference ---
+// A sibling of `output_device.txt`: both describe how the output device is opened.
+
+/// `<config>/soul-player/output_exclusive.txt` — the persisted exclusive-output
+/// (bit-perfect) choice. `"1"` = exclusive requested; blank / missing / anything
+/// else = shared (the default).
+pub fn output_exclusive_path() -> Option<PathBuf> {
+    Some(soul_player_dir()?.join("output_exclusive.txt"))
+}
+
+/// Whether exclusive output is requested (default `false` if missing / unreadable).
+pub fn load_output_exclusive() -> bool {
+    output_exclusive_path()
+        .map(|p| load_exclusive_from(&p))
+        .unwrap_or(false)
+}
+
+/// Persist the exclusive-output choice (best-effort — a failed write never breaks
+/// the UI).
+pub fn save_output_exclusive(on: bool) {
+    if let Some(p) = output_exclusive_path() {
+        let _ = save_exclusive_to(&p, on);
+    }
+}
+
+/// Read the exclusive flag from `path` (the testable core): a trimmed `"1"` is on,
+/// anything else / missing is off.
+fn load_exclusive_from(path: &Path) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| s.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// Write the exclusive flag to `path`, creating the parent dir. The testable core
+/// of `save_output_exclusive`.
+fn save_exclusive_to(path: &Path, on: bool) -> std::io::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(path, if on { "1" } else { "" })
+}
+
 // --- ReplayGain preference ---
 
 /// `<config>/soul-player/replaygain.txt` — the persisted ReplayGain choice, two
@@ -1503,6 +1545,29 @@ mod tests {
     #[test]
     fn load_missing_output_device_is_none() {
         assert!(load_device_from(Path::new("/no/such/soul-player/output_device.txt")).is_none());
+    }
+
+    #[test]
+    fn save_then_load_output_exclusive_roundtrips() {
+        let dir = std::env::temp_dir().join(format!("soul_rune_excl_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("output_exclusive.txt");
+        save_exclusive_to(&path, true).unwrap();
+        assert!(load_exclusive_from(&path), "exclusive=on reloads as on");
+        save_exclusive_to(&path, false).unwrap();
+        assert!(
+            !load_exclusive_from(&path),
+            "exclusive=off reloads as off (a blank file)"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_missing_output_exclusive_is_off() {
+        assert!(
+            !load_exclusive_from(Path::new("/no/such/soul-player/output_exclusive.txt")),
+            "a missing file defaults to shared (off)"
+        );
     }
 
     #[test]

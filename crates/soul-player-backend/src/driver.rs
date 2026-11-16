@@ -310,16 +310,76 @@ pub fn project_signal_path<K: Sink, D: SeekableDecoder>(
         replay_gain_db: deck.replay_gain_db(),
         device_rate: di.device_rate,
         resampling: di.resampling,
-        output_bits: 24,
+        // The device's real output depth (shared mixer format, or the negotiated
+        // bit-perfect depth in exclusive mode), sourced from the sink — not a
+        // hardcoded canonical 24.
+        output_bits: di.output_format.bits_per_sample(),
+        exclusive: di.exclusive,
         // The actor fills this from its loudness cache (this projection is pure).
         loudness: None,
     })
 }
 
+/// The native rate to reopen the output device at for bit-perfect exclusive output,
+/// or `None` to leave the sink as is. Reopen only when the sink is **exclusive**, the
+/// track's `decoded_rate` differs from the current `device_rate`, and we didn't just
+/// fail at that rate (`tried`). Pure so the loop-safety guard is unit-tested without a
+/// device: a shared sink never reopens; a rate the device just refused isn't retried
+/// (the caller sets `tried` on failure); a new/different rate is tried again.
+#[must_use]
+pub fn native_rate_target(
+    exclusive: bool,
+    decoded_rate: u32,
+    device_rate: u32,
+    tried: Option<u32>,
+) -> Option<u32> {
+    if exclusive && decoded_rate != device_rate && tried != Some(decoded_rate) {
+        Some(decoded_rate)
+    } else {
+        None
+    }
+}
+
+/// Native-rate switching (bit-perfect exclusive output): if the sink is driving the
+/// device **exclusively** and the current track's native rate differs from the device
+/// rate, reopen the device at the track's rate (via `make_sink(Some(rate))`) and swap
+/// it in, so the track plays with no resampling.
+///
+/// `tried` is the caller's anti-thrash latch (threaded through the pump loop): ANY
+/// failure — the device refusing the rate, or an incompatible swap — latches the rate
+/// so it isn't retried every pump; only a full success clears it. On failure the
+/// current exclusive sink is kept (it resamples) rather than losing exclusive for the
+/// whole session — so `make_sink(Some(_))` is expected to hard-fail rather than
+/// downgrade to shared. A shared sink (`exclusive() == false`) never reopens.
+pub fn maybe_switch_native_rate<K: Sink, D: SeekableDecoder>(
+    player: &mut ServicePlayer<K, D>,
+    tried: &mut Option<u32>,
+    make_sink: impl Fn(Option<u32>) -> anyhow::Result<K>,
+) {
+    if let Some(di) = player.deck().decode_info()
+        && let Some(want) =
+            native_rate_target(di.exclusive, di.decoded.sample_rate, di.device_rate, *tried)
+    {
+        let outcome = make_sink(Some(want)).and_then(|new_sink| {
+            player
+                .deck_mut()
+                .swap_sink(new_sink)
+                .map_err(|e| anyhow::anyhow!("sink swap failed: {e:?}"))
+        });
+        match outcome {
+            Ok(()) => *tried = None,
+            Err(e) => {
+                *tried = Some(want);
+                eprintln!("player: exclusive reopen at {want} Hz failed: {e:#}");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutil::{CapturingSink, ConstDecoder, NullSink};
+    use crate::testutil::{CapturingSink, ConstDecoder, ExclusiveSink, NullSink};
     use crate::types::RepeatMode;
     use soul_audio_control::Player;
     use soul_audio_core::{Deck, Quality};
@@ -547,7 +607,14 @@ mod tests {
             sp.resampling,
             "44.1 kHz decoder into a 48 kHz device resamples"
         );
-        assert_eq!(sp.output_bits, 24);
+        assert_eq!(
+            sp.output_bits, 24,
+            "NullSink reports canonical 24-bit as its output format"
+        );
+        assert!(
+            !sp.exclusive,
+            "the test NullSink is a shared sink, not exclusive"
+        );
         assert_eq!(sp.replay_gain_db, 0.0, "no ReplayGain applied");
     }
 
@@ -574,6 +641,190 @@ mod tests {
             !sp.resampling,
             "48 kHz into a 48 kHz device: sample-rate-exact, no resample"
         );
+    }
+
+    // ── Native-rate switching (bit-perfect exclusive output) ──────────────────────
+
+    /// A player over a mock EXCLUSIVE sink at `rate`, so `maybe_switch_native_rate`
+    /// sees `exclusive() == true` and acts (a `NullSink` player is shared and never
+    /// reopens).
+    fn exclusive_player(rate: u32) -> ServicePlayer<ExclusiveSink, ConstDecoder> {
+        let deck = Deck::new(ExclusiveSink::new(rate, 2), Quality::Hq);
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        Player::new(engine, u64::from(rate))
+    }
+
+    /// Play one `ConstDecoder` track at `track_rate` and pump once so it's current
+    /// (and its decode→device path is projectable).
+    fn load_one<K: Sink>(p: &mut ServicePlayer<K, ConstDecoder>, track_rate: u32) {
+        apply_command(
+            p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(track_rate, 2, FRAMES, 7))
+                .unwrap();
+        }
+        p.pump().unwrap();
+    }
+
+    #[test]
+    fn native_rate_target_only_reopens_an_exclusive_mismatched_untried_rate() {
+        // Exclusive + the track's rate differs from the device → reopen at the track's
+        // rate (bit-perfect).
+        assert_eq!(native_rate_target(true, 44_100, 48_000, None), Some(44_100));
+        // Shared sink (not exclusive) never reopens — it stays at the device rate and
+        // resamples, so a shared user never thrashes the device.
+        assert_eq!(native_rate_target(false, 44_100, 48_000, None), None);
+        // Already rate-matched → nothing to do.
+        assert_eq!(native_rate_target(true, 48_000, 48_000, None), None);
+        // A rate the device just refused (recorded in `tried`) isn't retried — the
+        // anti-loop / anti-thrash guard.
+        assert_eq!(native_rate_target(true, 44_100, 48_000, Some(44_100)), None);
+        // But a DIFFERENT rate than the one that failed is tried again.
+        assert_eq!(
+            native_rate_target(true, 96_000, 48_000, Some(44_100)),
+            Some(96_000)
+        );
+    }
+
+    #[test]
+    fn native_rate_switch_reopens_exclusive_at_the_tracks_rate() {
+        // ExclusiveSink @ 48k; a 44.1k track is exclusive but RESAMPLED. The switch
+        // reopens the device at the track's 44.1k → bit-perfect (no resample), still
+        // exclusive — the whole point of the feature, end to end through the deck.
+        let mut p = exclusive_player(48_000);
+        load_one(&mut p, 44_100);
+        let before = project_signal_path(&p).expect("loaded");
+        assert!(
+            before.exclusive && before.resampling && before.device_rate == 48_000,
+            "before: exclusive but resampling 44.1→48, got {before:?}"
+        );
+
+        let mut tried = None;
+        maybe_switch_native_rate(&mut p, &mut tried, |hint| {
+            Ok(ExclusiveSink::new(hint.unwrap_or(48_000), 2))
+        });
+
+        let after = project_signal_path(&p).expect("still loaded");
+        assert_eq!(
+            after.device_rate, 44_100,
+            "device reopened at the track's rate"
+        );
+        assert!(
+            !after.resampling,
+            "bit-perfect — no resample after the switch"
+        );
+        assert!(after.exclusive, "still exclusive after the swap");
+        assert_eq!(tried, None, "a successful switch clears the retry latch");
+    }
+
+    #[test]
+    fn native_rate_switch_leaves_a_shared_sink_untouched() {
+        // A shared sink (NullSink, exclusive() == false) must NEVER reopen — shared
+        // users stay at the device rate and resample, with no device thrash. make_sink
+        // must not even be called.
+        let mut p = player(); // NullSink @ 48k (shared)
+        load_one(&mut p, 44_100);
+        let calls = std::cell::Cell::new(0);
+        let mut tried = None;
+        maybe_switch_native_rate(&mut p, &mut tried, |hint| {
+            calls.set(calls.get() + 1);
+            Ok(NullSink::new(hint.unwrap_or(48_000), 2))
+        });
+        assert_eq!(calls.get(), 0, "a shared sink never reopens");
+        let sp = project_signal_path(&p).unwrap();
+        assert!(
+            sp.resampling && sp.device_rate == 48_000,
+            "shared stays at the device rate and resamples"
+        );
+    }
+
+    #[test]
+    fn native_rate_switch_is_a_noop_when_already_rate_matched() {
+        // Exclusive sink @ 48k with a 48k track: already bit-perfect, so no reopen.
+        let mut p = exclusive_player(48_000);
+        load_one(&mut p, 48_000);
+        assert!(
+            !project_signal_path(&p).unwrap().resampling,
+            "already matched"
+        );
+        let calls = std::cell::Cell::new(0);
+        let mut tried = None;
+        maybe_switch_native_rate(&mut p, &mut tried, |hint| {
+            calls.set(calls.get() + 1);
+            Ok(ExclusiveSink::new(hint.unwrap_or(48_000), 2))
+        });
+        assert_eq!(calls.get(), 0, "no reopen when the rate already matches");
+    }
+
+    #[test]
+    fn native_rate_switch_latches_a_failing_rate_and_does_not_thrash() {
+        // The device can't open exclusive at the track's rate: the reopen fails. The
+        // first call attempts ONCE and keeps the current exclusive sink (resampling);
+        // the latch then suppresses retrying every pump (the anti-thrash guard — the
+        // bug a naive clear-before-swap would reintroduce).
+        let mut p = exclusive_player(48_000);
+        load_one(&mut p, 44_100);
+        let calls = std::cell::Cell::new(0);
+        let make = |_hint: Option<u32>| -> anyhow::Result<ExclusiveSink> {
+            calls.set(calls.get() + 1);
+            anyhow::bail!("device refuses exclusive at this rate")
+        };
+
+        let mut tried = None;
+        maybe_switch_native_rate(&mut p, &mut tried, make);
+        assert_eq!(calls.get(), 1, "one reopen attempt");
+        assert_eq!(tried, Some(44_100), "the failing rate is latched");
+        let kept = project_signal_path(&p).unwrap();
+        assert!(
+            kept.exclusive && kept.resampling && kept.device_rate == 48_000,
+            "on failure the current exclusive sink is kept (resampling), not downgraded"
+        );
+
+        // A later pump at the same rate must NOT re-attempt — no device thrash.
+        maybe_switch_native_rate(&mut p, &mut tried, make);
+        assert_eq!(calls.get(), 1, "the latched rate is not retried");
+    }
+
+    #[test]
+    fn native_rate_switches_per_track_across_a_mixed_rate_sequence() {
+        // 44.1k track → reopen at 44.1k (bit-perfect); then a 96k track → reopen at
+        // 96k. A success after an earlier switch clears the latch, so each new rate
+        // switches. Models an album boundary where the rate changes.
+        let mut p = exclusive_player(48_000);
+        let make = |hint: Option<u32>| Ok(ExclusiveSink::new(hint.unwrap_or(48_000), 2));
+        let mut tried = None;
+
+        load_one(&mut p, 44_100);
+        maybe_switch_native_rate(&mut p, &mut tried, make);
+        let a = project_signal_path(&p).unwrap();
+        assert_eq!(
+            (a.device_rate, a.resampling),
+            (44_100, false),
+            "first track bit-perfect"
+        );
+
+        // Play a second track at a new rate (clears preloads + loads it current).
+        load_one(&mut p, 96_000);
+        let mid = project_signal_path(&p).unwrap();
+        assert!(
+            mid.resampling,
+            "96k into the 44.1k device resamples until the switch"
+        );
+        maybe_switch_native_rate(&mut p, &mut tried, make);
+        let b = project_signal_path(&p).unwrap();
+        assert_eq!(
+            (b.device_rate, b.resampling),
+            (96_000, false),
+            "second track bit-perfect"
+        );
+        assert!(b.exclusive);
     }
 
     #[test]

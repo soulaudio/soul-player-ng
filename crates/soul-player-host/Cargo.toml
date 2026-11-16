@@ -42,5 +42,14 @@ notify-debouncer-mini = "0.4"
 # parallelism to how busy the machine is. Minimal features (system/CPU only).
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 
+# On Windows, also pull in the WASAPI exclusive / bit-perfect output backend.
+# Cargo unions features across this and the base dependency, so the host builds
+# shared-mode `CpalSink` everywhere plus the exclusive sink on Windows. Non-Windows
+# targets never see the `wasapi` dependency.
+[target.'cfg(windows)'.dependencies.soul-audio-desktop]
+git = "https://github.com/soulaudio/soul-audio-core"
+branch = "main"
+features = ["wasapi-exclusive"]
+
 [dev-dependencies]
 tempfile = "3"

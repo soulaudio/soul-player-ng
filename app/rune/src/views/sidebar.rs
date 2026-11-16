@@ -11,6 +11,7 @@ use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
 use crate::views::player::player_panel;
 use crate::views::queue::queue_section;
+use crate::views::reveal;
 use crate::{Route, State, config};
 
 /// The old app's default sidebar width (`w-72`).
@@ -97,20 +98,29 @@ fn nav_active(route: Route, def: &NavDef) -> bool {
     }
 }
 
-/// A clickable nav entry that switches `State::route`. A large semibold label
-/// with a trailing status dot — filled with the primary colour when active, a
-/// faint ring otherwise — mirroring the old app's sidebar nav.
-/// One primary nav row. `visible` is the user's Settings → Navigation choice: a
-/// hidden item stays mounted (stable key) but folds to zero height, faded and
-/// inert, so toggling it in Settings makes Rune spring the height + opacity — the
-/// sidebar glides open/shut instead of snapping, and the queue below never
-/// overlaps a fading full-height ghost.
+/// The nav item's natural height in points (20 pt NAV label + a status dot + the
+/// `XS` top/bottom padding). Used as the collapse target by the reveal animation.
+pub(crate) const NAV_ITEM_H: f32 = 33.0;
+
+/// A nav entry that switches `State::route`, drawn at a `0..1` reveal `progress`
+/// from [`crate::views::reveal`] (1 = fully shown, 0 = hidden). The row is ALWAYS
+/// in the tree — it is never added or removed as it toggles; instead the constant
+/// reveal wrapper owns its height and opacity, collapsing to 0×0 and transparent
+/// when hidden. That structural stability is deliberate: if the row were removed
+/// when hidden, Rune would run its automatic removal animation (a fold + fade that
+/// briefly re-inflates the just-collapsed row to full height and ghosts it back
+/// in). Keeping the node and driving it ourselves means there is nothing for Rune
+/// to animate on its own — the reveal performs the entire fade, then collapse.
+///
+/// While invisible (fully hidden, or mid-collapse with the label faded out) the row
+/// is inert: not focusable, no button role, no hit target, so the keyboard and
+/// pointer skip it exactly as if it were absent.
 fn nav_item(
     key: &str,
     label: String,
     route: Route,
     active: bool,
-    visible: bool,
+    progress: f32,
     p: &Palette,
 ) -> El {
     let dot = el()
@@ -123,49 +133,49 @@ fn nav_item(
     } else {
         dot.border_sides([1.0, 1.0, 1.0, 1.0], p.border)
     };
-    let content = row()
-        .w_full()
-        .center_y()
-        .child(
-            text(label.clone())
-                .font(type_::NAV)
-                .color(if active { p.primary } else { p.text_secondary })
-                .grow(1.0),
-        )
-        .child(dot);
-
-    if !visible {
-        // Folded away: zero height (Rune springs it from its open size), faded out,
-        // content clipped to the shrinking box, and inert — no role/focus/press so
-        // a hidden page isn't reachable or announced.
-        return el()
-            .key(key.to_string())
-            .w_full()
-            .h(0.0)
-            .opacity(0.0)
-            .clip_rounded(radius::SM)
-            .child(content);
-    }
-
-    el().key(key.to_string())
-        .role("button")
-        .label(label)
-        .focusable(true)
+    let mut button = el()
+        .key(key.to_string())
         .w_full()
         .px(space::MD)
         .py(space::XS)
         .radius(radius::SM)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(content)
-        // Switch pages and, on mobile, flip to the content pane (the old app's
-        // NavBar: `navigate(path); if (isMobile) setMobileShowContent(true)`).
-        // Harmless on desktop, where `mobile_show_content` is ignored.
-        .on_press(move |s: &mut State| {
-            s.route = route;
-            s.mobile_show_content = true;
-        })
+        .child(
+            row()
+                .w_full()
+                .center_y()
+                .child(
+                    text(label.clone())
+                        .font(type_::NAV)
+                        .color(if active { p.primary } else { p.text_secondary })
+                        .grow(1.0),
+                )
+                .child(dot),
+        );
+    // Interactive only while at all visible. A hidden-at-rest row (opacity 0) and a
+    // collapsing row (invisible, mid-fold) carry no role/focus/handlers, so Tab and
+    // clicks pass them by; the moment the fade makes it visible it becomes a button.
+    if reveal::opacity(progress) > 0.0 {
+        button = button
+            .role("button")
+            .label(label)
+            .focusable(true)
+            .cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(fx::HOVER))
+            .press(p.fg.alpha(fx::PRESS))
+            // Switch pages and, on mobile, flip to the content pane (the old app's
+            // NavBar: `navigate(path); if (isMobile) setMobileShowContent(true)`).
+            .on_press(move |s: &mut State| {
+                s.route = route;
+                s.mobile_show_content = true;
+            });
+    }
+
+    el().key(format!("{key}-reveal"))
+        .w_full()
+        .h(NAV_ITEM_H * reveal::height_factor(progress))
+        .clip_rounded(radius::SM)
+        .opacity(reveal::opacity(progress))
+        .child(button)
 }
 
 /// The mobile content view's top bar: a back arrow that returns to the sidebar
@@ -229,18 +239,28 @@ pub fn sidebar(
             // Settings rail — so the first nav item's box lines up with the first
             // row of whatever page is open (and the footer hugs the bottom with
             // less padding below).
-            // Render EVERY nav item, folding the hidden ones to zero height (see
-            // `nav_item`). Keeping them mounted with a stable key lets Rune spring the
-            // height + fade when the user toggles one in Settings, so the sidebar
-            // glides instead of snapping (and the queue below never overlaps a ghost).
-            let mut nav = col().key("nav").px(space::LG).pt(space::LG).pb(space::LG);
+            // Render each nav item at its reveal `progress` (advanced in the poll).
+            // Toggling one in Settings glides it open/shut — fade then collapse —
+            // instead of snapping; a fully-gone item (progress 0) isn't rendered.
+            // The reveal animates each item's height + opacity itself, per poll frame,
+            // so Rune must APPLY those values, not spring toward them: without this it
+            // adds its own ~0.15 s layout/opacity spring on top, lagging the collapse
+            // and leaving a half-height, half-faded tail after the reveal already
+            // reached 0. `instant_changes` lands layout + opacity at once (hover/press
+            // colours keep their springs), making our per-frame values authoritative.
+            let mut nav = col()
+                .key("nav")
+                .px(space::LG)
+                .pt(space::LG)
+                .pb(space::LG)
+                .instant_changes();
             for def in NAV_DEFS {
                 nav = nav.child(nav_item(
                     def.key,
                     nav_label(def.id),
                     def.route,
                     nav_active(s.route, def),
-                    s.nav_visible(def.id),
+                    s.nav_reveal(def.id),
                     p,
                 ));
             }
