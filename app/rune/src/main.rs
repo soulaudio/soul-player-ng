@@ -7817,6 +7817,71 @@ mod tests {
         }
     }
 
+    /// Overlays are operable from the keyboard: Escape dismisses them, and while a
+    /// modal is open the page behind it is inert (so Tab can't leak behind it). The
+    /// language dropdown is deliberately non-modal, so for it we instead check its
+    /// options are focusable + labelled and that Escape closes it.
+    #[test]
+    fn dialogs_are_keyboard_operable() {
+        for (name, scene, dialog_key) in [
+            (
+                "organize-confirm",
+                scene_organize_confirm as fn(&mut State),
+                "organize-confirm",
+            ),
+            ("crash-dialog", scene_crash_dialog, "crash-dialog"),
+            (
+                "add-source-open",
+                scene_add_source_open,
+                "add-source-opt-local",
+            ),
+        ] {
+            let mut rt = a11y_surface(scene);
+            rt.on_key = Some(handle_key);
+            assert!(rt.find(dialog_key).is_some(), "[{name}] dialog is open");
+            // A background control is not actionable while the dialog is up.
+            let bg_leaks = rt
+                .elements()
+                .into_iter()
+                .any(|e| e.key.as_deref() == Some("play-pause") && actionable(&e));
+            assert!(
+                !bg_leaks,
+                "[{name}] the background stays inert behind the dialog"
+            );
+            key(&mut rt, Key::Escape);
+            assert!(
+                rt.find(dialog_key).is_none(),
+                "[{name}] Escape closes the dialog"
+            );
+        }
+
+        // The language dropdown (non-modal, keyed "lang-picker").
+        let mut rt = a11y_surface(scene_settings_lang_open);
+        rt.on_key = Some(handle_key);
+        let items: Vec<_> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| {
+                e.role == "option"
+                    && e.key
+                        .as_deref()
+                        .is_some_and(|k| k.starts_with("lang-picker-opt-"))
+            })
+            .collect();
+        assert!(
+            items.iter().any(|e| e.focusable),
+            "the language dropdown has focusable options"
+        );
+        for e in &items {
+            assert!(a11y_name(e).is_some(), "{:?} is labelled", e.key);
+        }
+        key(&mut rt, Key::Escape);
+        assert!(
+            rt.state.open_dropdown.is_none(),
+            "Escape closes the dropdown"
+        );
+    }
+
     /// Keyboard reaches the primary nav and Space activates it: a nav item is a
     /// labeled, focusable button; Tab lands on it; Space routes to its page
     /// (without the Space=play shortcut swallowing the activation).
