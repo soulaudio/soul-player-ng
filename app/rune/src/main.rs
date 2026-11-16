@@ -7777,6 +7777,46 @@ mod tests {
         focused_key(rt).as_deref() == Some(target)
     }
 
+    /// Tabbing through a surface visits controls in reading order: top-to-bottom
+    /// within a column, and columns left-to-right. The app is multi-pane (sidebar,
+    /// then content — Settings adds its category rail), so finishing one column and
+    /// dropping to the TOP of the next pane to the right is in-order; what must never
+    /// happen is focus jumping UP within the same (or a leftward) column — a control
+    /// wired far from its visual place.
+    #[test]
+    fn focus_order_follows_reading_order() {
+        const ROW_TOL: f32 = 36.0; // ~one row; same-row jitter stays "not above".
+        const COL_TOL: f32 = 120.0; // a step this far right is a new pane, which may reset y.
+        for (name, scene) in [
+            ("home", scene_home as fn(&mut State)),
+            ("settings-audio", scene_settings_audio),
+        ] {
+            let mut rt = a11y_surface(scene);
+            rt.on_key = Some(handle_key);
+            let mut prev: Option<[f32; 4]> = None;
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..60 {
+                key(&mut rt, Key::Tab);
+                let Some(k) = focused_key(&rt) else { continue };
+                if !seen.insert(k.clone()) {
+                    break; // wrapped around the focus ring
+                }
+                let r = el_info(&rt, &k).rect;
+                if let Some(p) = prev {
+                    // In order if it is not above the previous control, or it has
+                    // clearly moved into a pane to the right (where y may reset).
+                    let in_reading_order = r[1] >= p[1] - ROW_TOL || r[0] >= p[0] + COL_TOL;
+                    assert!(
+                        in_reading_order,
+                        "[{name}] focus jumped backward to {k} at {r:?} (prev {p:?})"
+                    );
+                }
+                prev = Some(r);
+            }
+            assert!(prev.is_some(), "[{name}] Tab reached at least one control");
+        }
+    }
+
     /// Keyboard reaches the primary nav and Space activates it: a nav item is a
     /// labeled, focusable button; Tab lands on it; Space routes to its page
     /// (without the Space=play shortcut swallowing the activation).
