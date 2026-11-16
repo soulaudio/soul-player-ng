@@ -66,8 +66,6 @@ pub(crate) fn fmt_total_dur(total_secs: f64) -> String {
 /// The albums of a single artist: filter the library to that artist (matching
 /// `group_artists`' empty→"Unknown" bucketing), then fold by album in first-seen
 /// order — the artist page's Discography. Pure, reusing the album fold.
-// Not yet called outside tests — wired in by the artist-detail follow-up task.
-#[allow(dead_code)]
 pub(crate) fn albums_of_artist(library: &[TrackView], artist: &str) -> Vec<Album> {
     let subset: Vec<TrackView> = library
         .iter()

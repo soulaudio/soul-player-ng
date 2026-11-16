@@ -138,6 +138,41 @@ detail.tracksAndDuration:
   zh: '%{count} 首 · %{dur}'
   cs: '%{count} skladeb · %{dur}'
   ja: '%{count} 曲 · %{dur}'
+detail.albumsAndTracks:
+  en: '%{albums} albums · %{tracks} tracks'
+  de: '%{albums} Alben · %{tracks} Titel'
+  es: '%{albums} álbumes · %{tracks} pistas'
+  zh: '%{albums} 张专辑 · %{tracks} 首'
+  cs: '%{albums} alb · %{tracks} skladeb'
+  ja: '%{albums} アルバム · %{tracks} 曲'
+artist.topSongs:
+  en: 'Top Songs'
+  de: 'Top-Titel'
+  es: 'Mejores canciones'
+  zh: '热门歌曲'
+  cs: 'Nejlepší skladby'
+  ja: '人気の曲'
+artist.discography:
+  en: 'Discography'
+  de: 'Diskografie'
+  es: 'Discografía'
+  zh: '唱片集'
+  cs: 'Diskografie'
+  ja: 'ディスコグラフィー'
+artist.showMore:
+  en: 'Show more'
+  de: 'Mehr anzeigen'
+  es: 'Mostrar más'
+  zh: '显示更多'
+  cs: 'Zobrazit více'
+  ja: 'もっと見る'
+artist.showLess:
+  en: 'Show less'
+  de: 'Weniger anzeigen'
+  es: 'Mostrar menos'
+  zh: '收起'
+  cs: 'Zobrazit méně'
+  ja: '折りたたむ'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
