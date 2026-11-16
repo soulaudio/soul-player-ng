@@ -230,6 +230,13 @@ mod tests {
         fn flush(&mut self) -> Result<(), SinkError> {
             Ok(())
         }
+        fn reopen(&mut self, rate: u32) -> Result<(), SinkError> {
+            // Model an in-place device reopen at a new rate (what `DspSink::reopen`
+            // forwards to) and forget prior output so a test can see only post-reopen.
+            self.info.sample_rate = rate;
+            self.out.clear();
+            Ok(())
+        }
     }
 
     fn info(rate: u32, channels: u16) -> StreamInfo {
@@ -347,6 +354,58 @@ mod tests {
         assert!(
             (gain / want - 1.0).abs() < 0.08,
             "a DspUnit::Eq +6 dB band should ~double the 1 kHz amplitude: gain {gain:.3}, want {want:.3}"
+        );
+    }
+
+    #[test]
+    fn dsp_sink_reopen_redesigns_the_eq_for_the_new_rate() {
+        // After a native-rate reopen, the EQ must be RE-designed for the device's NEW
+        // rate. A bell at 1 kHz boosts a 1 kHz tone at 48k; after reopening at 96k, a
+        // 1 kHz tone (generated at 96k) must STILL be boosted — if the filter kept its
+        // 48k coefficients, that tone would land at the wrong normalized frequency and
+        // NOT be boosted (the staleness bug this guards against).
+        let n = 24_000;
+        let amp = 3_000_000.0;
+        let mut unit = EqUnit::default();
+        unit.bands[3] = bell(1000.0, 6.0, 1.0);
+        let shared = Arc::new(Mutex::new(DspChain {
+            units: vec![DspUnit::Eq(unit)],
+            generation: 1,
+        }));
+        let mut sink = dsp_sink(
+            Capture {
+                info: info(48_000, 1),
+                out: Vec::new(),
+            },
+            shared,
+        );
+
+        // At 48k: the 1 kHz tone is boosted ~+6 dB.
+        let in48 = sine(1000.0, 48_000.0, n, amp);
+        let in_peak = tail_peak(&in48);
+        sink.write(&in48).unwrap();
+        let gain48 = tail_peak(&sink.inner.out) / in_peak;
+        assert!(
+            (gain48 / db_to_lin(6.0) - 1.0).abs() < 0.1,
+            "1 kHz boosted at 48k: gain {gain48:.3}"
+        );
+
+        // Reopen the device at 96k (Capture::reopen changes its rate + clears output).
+        sink.reopen(96_000).unwrap();
+        assert_eq!(
+            sink.stream_info().sample_rate,
+            96_000,
+            "reopen forwards the new device rate"
+        );
+
+        // At 96k: a 1 kHz tone (generated at 96k) is STILL boosted — EQ redesigned.
+        let in96 = sine(1000.0, 96_000.0, n, amp);
+        let in_peak96 = tail_peak(&in96);
+        sink.write(&in96).unwrap();
+        let gain96 = tail_peak(&sink.inner.out) / in_peak96;
+        assert!(
+            (gain96 / db_to_lin(6.0) - 1.0).abs() < 0.15,
+            "the 1 kHz band must follow the rate change (redesigned for 96k): gain {gain96:.3}"
         );
     }
 
