@@ -52,6 +52,41 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     albums
 }
 
+/// Sum of track seconds as a coarse human total — "1 h 23 min" or "45 min"
+/// (detail headers show totals, not mm:ss). Rounds to whole minutes. Pure.
+// Not yet called outside tests — wired in by the detail-header follow-up tasks.
+#[allow(dead_code)]
+pub(crate) fn fmt_total_dur(total_secs: f64) -> String {
+    let mins = (total_secs.max(0.0) / 60.0).round() as u64;
+    let (h, m) = (mins / 60, mins % 60);
+    if h > 0 {
+        t!("detail.durationHm", hours => h, mins => m).to_string()
+    } else {
+        t!("detail.durationM", mins => m).to_string()
+    }
+}
+
+/// The albums of a single artist: filter the library to that artist (matching
+/// `group_artists`' empty→"Unknown" bucketing), then fold by album in first-seen
+/// order — the artist page's Discography. Pure, reusing the album fold.
+// Not yet called outside tests — wired in by the artist-detail follow-up task.
+#[allow(dead_code)]
+pub(crate) fn albums_of_artist(library: &[TrackView], artist: &str) -> Vec<Album> {
+    let subset: Vec<TrackView> = library
+        .iter()
+        .filter(|t| {
+            let a = t
+                .artist
+                .clone()
+                .filter(|a| !a.is_empty())
+                .unwrap_or_else(|| t!("library.unknown").to_string());
+            a == artist
+        })
+        .cloned()
+        .collect();
+    group_albums(&subset)
+}
+
 /// One album card: a square cover with a hover play-overlay, the title, and the
 /// artist. Clicking the body opens the album's detail page; the overlay plays.
 fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
@@ -341,4 +376,51 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                 .grow(1.0)
                 .min_h(0.0),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn atv(id: u32, artist: &str, album: &str) -> TrackView {
+        TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some(artist.to_string()),
+            album: Some(album.to_string()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+        }
+    }
+
+    #[test]
+    fn total_duration_rounds_to_whole_minutes_and_formats_hours() {
+        rust_i18n::set_locale("en");
+        assert_eq!(fmt_total_dur(45.0 * 60.0), "45 min");
+        assert_eq!(fmt_total_dur(83.0 * 60.0), "1 h 23 min");
+        assert_eq!(fmt_total_dur(0.0), "0 min");
+        assert_eq!(fmt_total_dur(29.0), "0 min", "under 30 s rounds down");
+        assert_eq!(fmt_total_dur(31.0), "1 min", "over 30 s rounds up");
+    }
+
+    #[test]
+    fn albums_of_artist_folds_only_that_artists_albums_first_seen() {
+        rust_i18n::set_locale("en");
+        let lib = vec![
+            atv(1, "Bach", "Cello Suites"),
+            atv(2, "Satie", "Gymnopedies"),
+            atv(3, "Bach", "Cello Suites"),
+            atv(4, "Bach", "Goldberg"),
+        ];
+        let albums = albums_of_artist(&lib, "Bach");
+        assert_eq!(albums.len(), 2, "only Bach's two albums");
+        assert_eq!(albums[0].name, "Cello Suites");
+        assert_eq!(
+            albums[0].ids,
+            vec![1, 3],
+            "both Cello Suites tracks fold in"
+        );
+        assert_eq!(albums[1].name, "Goldberg");
+        assert_eq!(albums[1].ids, vec![4]);
+    }
 }

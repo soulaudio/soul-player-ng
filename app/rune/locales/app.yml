@@ -117,6 +117,20 @@ genre.trackCount:
   zh: '%{count} 首'
   cs: '%{count} skladeb'
   ja: '%{count} 曲'
+detail.durationHm:
+  en: '%{hours} h %{mins} min'
+  de: '%{hours} Std. %{mins} Min.'
+  es: '%{hours} h %{mins} min'
+  zh: '%{hours} 小时 %{mins} 分钟'
+  cs: '%{hours} h %{mins} min'
+  ja: '%{hours} 時間 %{mins} 分'
+detail.durationM:
+  en: '%{mins} min'
+  de: '%{mins} Min.'
+  es: '%{mins} min'
+  zh: '%{mins} 分钟'
+  cs: '%{mins} min'
+  ja: '%{mins} 分'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
