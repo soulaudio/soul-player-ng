@@ -2,8 +2,9 @@
 //! chain shown stage by stage — Source → Decode → ReplayGain → Resample →
 //! Output — opened by pressing the now-playing signal-path line. ReplayGain
 //! toggles inline (the one stage that is a real on/off today); exclusive /
-//! bit-perfect output and a DSP/EQ chain are surfaced as **"soon"** so the whole
-//! pipeline is visible even before those stages exist. Rendered as a themed
+//! bit-perfect output is live (lit when the stream bypasses the OS mixer), and a
+//! DSP/EQ chain is still surfaced as **"soon"** so the whole pipeline is visible
+//! even before that stage is projected here. Rendered as a themed
 //! overlay anchored to the `"signal-path"` line and `modal` (dismiss on an
 //! outside press / Escape), the same mechanism as [`crate::views::dropdown`].
 #![forbid(unsafe_code)]
@@ -83,10 +84,19 @@ pub(crate) fn resample_value(sp: &SignalPath) -> String {
     }
 }
 
-/// Output stage: device rate + bit depth (always shared for now; exclusive is a
-/// "soon" toggle on this row).
+/// Output stage: device rate + bit depth the device receives.
 fn output_value(sp: &SignalPath) -> String {
     format!("{} kHz · {}-bit", khz(sp.device_rate), sp.output_bits)
+}
+
+/// Exclusive stage: when the stream is exclusive, the bit-perfect device format
+/// (the DAC receives exactly this — no OS mixer); otherwise "shared".
+pub(crate) fn exclusive_value(sp: &SignalPath) -> String {
+    if sp.exclusive {
+        format!("{} kHz · {}-bit", khz(sp.device_rate), sp.output_bits)
+    } else {
+        t!("player.signalPath.shared").to_string()
+    }
 }
 
 /// ReplayGain stage value: the applied gain, or "off".
@@ -295,18 +305,23 @@ pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
                 .pb(space::SM),
         );
     }
-    // Not-yet-built stages: dim cards marked "soon", still in the flow.
+    // Exclusive (bit-perfect) output — live: lit when the current stream bypasses
+    // the OS mixer (the device gets exactly these samples), dim "shared" otherwise.
+    let excl_live = s.signal_path.filter(|x| x.exclusive);
     rows.child(stage_card(
         "sp-row-exclusive",
         &icons::SETTINGS,
         t!("player.signalPath.exclusive").to_string(),
-        String::new(),
-        Some(soon_chip(p)),
+        s.signal_path
+            .map(|x| exclusive_value(&x))
+            .unwrap_or_default(),
+        None,
         p.primary,
-        true,
+        excl_live.is_none(), // dim unless exclusive is actually active
         p,
     ))
     .child(connector(true, p))
+    // DSP/EQ projection into this compact panel isn't wired yet — still "soon".
     .child(stage_card(
         "sp-row-dsp",
         &icons::SETTINGS,
@@ -368,6 +383,7 @@ mod tests {
             device_rate,
             resampling,
             output_bits: 24,
+            exclusive: false,
         }
     }
 
@@ -398,6 +414,28 @@ mod tests {
             resample_value(&flac),
             t!("player.signalPath.rateExact").to_string()
         );
+    }
+
+    #[test]
+    fn exclusive_value_reflects_bit_perfect_vs_shared() {
+        let base = sp(
+            SourceFormat::Pcm { bits: 24 },
+            SourceCodec::Flac,
+            96_000,
+            96_000,
+            false,
+        );
+        // Shared (the default): the OS-mixer path reads as "Shared", not a format.
+        assert_eq!(
+            exclusive_value(&base),
+            t!("player.signalPath.shared").to_string()
+        );
+        // Exclusive: the device receives exactly this bit-perfect format.
+        let excl = SignalPath {
+            exclusive: true,
+            ..base
+        };
+        assert_eq!(exclusive_value(&excl), "96 kHz · 24-bit");
     }
 
     /// The Source stage names the real codec on an otherwise-identical PCM stream:

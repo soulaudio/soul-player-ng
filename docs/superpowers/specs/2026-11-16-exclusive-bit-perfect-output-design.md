@@ -95,14 +95,38 @@ adapter: `CpalSink`, device enumeration, the `Sink` trait impls). The no_std DAP
      "Exclusive unavailable — shared" + reason, with a retry affordance.
 5. Full verify (app/host/backend), PR, merge.
 
+## Shipped in two increments
+
+The engine opens the sink **once per playback session** at a fixed rate and resamples
+each track to it (the `Deck` resampler). True native-rate-per-track switching therefore
+needs a core-engine change (rebuild the deck's sink when the decoder rate changes) — a
+distinct, DAP-relevant piece of work. So Option A lands in two increments:
+
+- **Increment 1 (this PR):** exclusive mixer-bypass at the **device's native (shared
+  mix-format) rate**. A rate-matched track is fully bit-perfect (mixer bypassed, native
+  bit depth); a mismatched track is still exclusive but resampled to the device rate —
+  and the signal path shows that truth (`resampling: true`, `exclusive: true`). Graceful
+  fallback to shared on any exclusive failure, with the reason. This delivers the core
+  audiophile win (no Windows mixer SRC/volume/mixing) and validates the whole toggle →
+  sink → fallback → signal-path plumbing end to end.
+- **Increment 2 (next, core-engine):** **native-rate auto-switching** — the engine
+  reopens the exclusive sink at each track's rate so nothing is ever resampled (the
+  Roon/Audirvana behavior). Homed in `soul-audio-core` (the DAP's engine benefits too):
+  `pump_thread` + `Deck` gain the ability to swap the sink when the source rate changes.
+
 ## Non-goals / later
 
+- **Increment 2 native-rate auto-switching** (above) — the next core-engine step.
 - **macOS** (CoreAudio hog mode + `kAudioDevicePropertyNominalSampleRate`) and **Linux**
   (ALSA `hw:` direct) — later sinks behind the same `Sink` seam.
 - **DoP** (DSD-over-PCM) for exclusive DSD passthrough — later.
 - **Live hot-swap** of the device/mode mid-stream — today it applies on the next actor
   spawn (same as device selection); keep that for now.
 - **Strict bit-perfect** (exclusive-or-stop) switch — later, as an opt-in for purists.
+- **Precise fallback reason surfaced in the UI** — the host records the typed
+  `ExclusiveError` reason (`exclusive_status()`); increment 1's Settings card shows the
+  active/fell-back/shared distinction, and wiring the exact reason string into the card
+  is a small follow-up.
 
 ## Risks
 

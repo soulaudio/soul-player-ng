@@ -236,6 +236,11 @@ struct State {
     /// The output devices enumerated from the host at startup — the picker's
     /// choices. Empty on a host that exposes none (headless / no audio).
     output_devices: Vec<String>,
+    /// Whether **exclusive** (bit-perfect) output is requested (persisted), rendered
+    /// as a toggle in Settings → Output. Applies to the next playback session; the
+    /// device may fall back to shared if it can't open exclusive (reflected live in
+    /// the signal path's Exclusive stage).
+    exclusive: bool,
     /// ReplayGain normalization mode (persisted), rendered by Settings →
     /// ReplayGain; `Off` = no normalization.
     replaygain_mode: ReplayGainMode,
@@ -469,6 +474,7 @@ impl State {
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
             output_devices,
+            exclusive: config::load_output_exclusive(),
             replaygain_mode,
             replaygain_preamp,
             dsp_units,
@@ -704,6 +710,18 @@ pub(crate) fn set_output_device(s: &mut State, name: Option<String>) {
     s.output_device = name.clone();
     config::save_output_device(s.output_device.as_deref());
     s.host.set_output_device(name);
+}
+
+/// Toggle + persist exclusive (bit-perfect) output (used by the Output settings
+/// toggle). Updates the UI, writes the config, and tells the host — which applies
+/// it to the NEXT playback session (the current stream keeps its mode until then).
+/// If the device can't open exclusive, that session falls back to shared, shown
+/// live in the signal path's Exclusive stage.
+pub(crate) fn set_exclusive(s: &mut State, on: bool) {
+    tracing::info!(exclusive = on, "exclusive output toggled");
+    s.exclusive = on;
+    config::save_output_exclusive(on);
+    s.host.set_exclusive(on);
 }
 
 /// Choose + persist the ReplayGain mode (used by the ReplayGain settings buttons).
@@ -2176,6 +2194,7 @@ fn scene_signal_path(s: &mut State) {
         device_rate: 48_000,
         resampling: true,
         output_bits: 24,
+        exclusive: false,
     });
 }
 
@@ -2251,6 +2270,10 @@ fn main() -> anyhow::Result<()> {
     // the actor, so the first playback session already targets the chosen device
     // (empty / absent config = system default).
     host.set_output_device(config::load_output_device());
+    // Restore the persisted exclusive-output choice the same way, so the first
+    // session opens exclusive (bit-perfect) if the user asked for it — falling back
+    // to shared if the device refuses, which the signal path then shows.
+    host.set_exclusive(config::load_output_exclusive());
     // Restore the persisted ReplayGain choice before any spawn, so the first
     // playback session is already normalized (the host banks it and tells the
     // actor on spawn).
@@ -3197,6 +3220,7 @@ mod tests {
             device_rate: 48_000,
             resampling: true,
             output_bits: 24,
+            exclusive: false,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
@@ -3247,6 +3271,7 @@ mod tests {
             device_rate: 96_000,
             resampling: false,
             output_bits: 24,
+            exclusive: false,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
@@ -4618,6 +4643,7 @@ mod tests {
             device_rate: 96_000,
             resampling: false,
             output_bits: 24,
+            exclusive: false,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
@@ -5112,6 +5138,7 @@ mod tests {
             device_rate: 48_000,
             resampling: true,
             output_bits: 24,
+            exclusive: false,
         });
         s.replaygain_mode = ReplayGainMode::Off;
         apply_locale("en");
@@ -5137,7 +5164,7 @@ mod tests {
             "sp-row-replaygain",
             "sp-row-resample",
             "sp-row-output",
-            "sp-row-exclusive", // "soon"
+            "sp-row-exclusive", // live (bit-perfect) or dim "shared"
             "sp-row-dsp",       // "soon"
         ] {
             assert!(rt.find(k).is_some(), "stage row {k} renders");

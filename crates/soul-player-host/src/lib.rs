@@ -25,7 +25,7 @@ pub use eq::{
     GAIN_LIMIT_DB, MAX_BANDS, Profile, ProfileSet, Q_MAX, Q_MIN, band_magnitude_db, default_bands,
     eq_magnitude_db, format_autoeq, parse_autoeq,
 };
-pub use sink::SinkMode;
+pub use sink::{ExclusiveStatus, SinkMode};
 /// The portable audio-profile exchange format (the `*Cfg` serde structs), re-exported
 /// so a UI head reaches it through the one host contract. The desktop persists/exports
 /// through these; the DAP reads the same shapes.
@@ -302,6 +302,16 @@ struct Inner {
     /// passed to the sink factory; a change applies to the NEXT spawn, not the
     /// live stream (see [`set_output_device`](PlayerHandle::set_output_device)).
     output_device: Mutex<Option<String>>,
+    /// Whether the user asked for bit-perfect **exclusive** output. Read when the
+    /// actor is (re)spawned and passed to the sink factory; a change applies to the
+    /// NEXT spawn, not the live stream (like the output device). The factory records
+    /// what the request actually resolved to in [`exclusive_status`](Inner::exclusive_status).
+    exclusive: Mutex<bool>,
+    /// What the last exclusive-output request resolved to (active at a device format
+    /// / fell back to shared with a reason / shared by choice). Written by the sink
+    /// factory on the pump thread at spawn, read by the UI to show the truth — hence
+    /// an `Arc` shared with the factory.
+    exclusive_status: Arc<Mutex<ExclusiveStatus>>,
     /// The ReplayGain normalization choice `(mode, preamp_db)`. Remembered so a
     /// freshly-spawned actor is told the current setting (via a `SetReplayGain`
     /// command) the moment it starts — and, unlike the output device, a change
@@ -395,6 +405,8 @@ impl PlayerHandle {
                 watcher: Mutex::new(None),
                 indexing_mode: Mutex::new(IndexingMode::Maximum),
                 output_device: Mutex::new(None),
+                exclusive: Mutex::new(false),
+                exclusive_status: Arc::new(Mutex::new(ExclusiveStatus::Shared)),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
                 recorder: Mutex::new(None),
@@ -750,6 +762,39 @@ impl PlayerHandle {
         soul_audio_desktop::default_output_device_name()
     }
 
+    /// Ask for bit-perfect **exclusive** output (WASAPI exclusive mode on Windows),
+    /// or shared mode. Like [`set_output_device`](Self::set_output_device), this
+    /// applies to the **next** playback session — the current stream keeps its mode
+    /// until the next actor spawn. If the device can't do exclusive at its native
+    /// format (in use, 16-bit-only, Bluetooth) or this build/platform has no
+    /// exclusive backend, the next session falls back to shared automatically; read
+    /// the outcome from [`exclusive_status`](Self::exclusive_status).
+    pub fn set_exclusive(&self, on: bool) {
+        *self.inner.exclusive.lock().expect("exclusive mutex") = on;
+    }
+
+    /// Whether exclusive output is currently requested (for seeding the Settings
+    /// toggle). Whether it is actually *active* is a property of the live stream —
+    /// see the signal path's `exclusive` flag and
+    /// [`exclusive_status`](Self::exclusive_status).
+    #[must_use]
+    pub fn exclusive_requested(&self) -> bool {
+        *self.inner.exclusive.lock().expect("exclusive mutex")
+    }
+
+    /// What the most recent device spawn's exclusive request resolved to (active at
+    /// a negotiated device format / fell back to shared with a reason / shared by
+    /// choice). The sink factory writes this when it opens the device; before the
+    /// first device spawn it is [`ExclusiveStatus::Shared`].
+    #[must_use]
+    pub fn exclusive_status(&self) -> ExclusiveStatus {
+        self.inner
+            .exclusive_status
+            .lock()
+            .expect("exclusive status mutex")
+            .clone()
+    }
+
     /// Set the ReplayGain playback normalization: `mode` picks track vs album (vs
     /// off) gain, `preamp_db` is a constant dB offset applied on top. Remembered
     /// so the NEXT playback session starts already normalized (the stored value is
@@ -1059,6 +1104,10 @@ impl PlayerHandle {
             .lock()
             .expect("device mutex")
             .clone();
+        // Snapshot the exclusive-output request the same way (applies to this spawn
+        // only); share the status cell so the factory can record what it resolved to.
+        let exclusive = *self.inner.exclusive.lock().expect("exclusive mutex");
+        let exclusive_status = Arc::clone(&self.inner.exclusive_status);
         // Snapshot the ReplayGain choice the same way, then tell the fresh actor so
         // the session starts already normalized. Lock ordering: this holds `guard`
         // (player) then briefly `replay_gain`; `set_replay_gain` never holds
@@ -1075,6 +1124,8 @@ impl PlayerHandle {
         let actor = sink::build_actor(
             self.inner.mode,
             device,
+            exclusive,
+            exclusive_status,
             self.inner.dsp.clone(),
             self.inner.spectrum.clone(),
             lib,
@@ -1140,6 +1191,32 @@ mod tests {
         h.set_output_device(Some("Some Soundcard".to_string()));
         h.set_output_device(Some(String::new())); // empty normalizes to the default
         h.set_output_device(None);
+    }
+
+    #[test]
+    fn exclusive_toggle_is_remembered_and_read_without_spawning() {
+        // The exclusive-output toggle's host surface: set/read the request and read
+        // the resolved status. None of these open a device (the Offline handle never
+        // spawns a real sink), so this runs device-free in CI — it asserts the
+        // plumbing doesn't panic and starts in the shared state.
+        let h = PlayerHandle::offline();
+        assert!(
+            !h.exclusive_requested(),
+            "defaults to shared (not requested)"
+        );
+        assert_eq!(
+            h.exclusive_status(),
+            ExclusiveStatus::Shared,
+            "no device spawned yet → shared"
+        );
+        h.set_exclusive(true);
+        assert!(h.exclusive_requested(), "the request is remembered");
+        h.set_exclusive(false);
+        assert!(!h.exclusive_requested(), "and can be turned back off");
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "no actor is spawned just to set the toggle"
+        );
     }
 
     #[test]
