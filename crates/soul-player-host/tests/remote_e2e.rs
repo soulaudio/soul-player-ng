@@ -5,7 +5,12 @@
 //! This is the "add source and syncing .soulidx working, showing the albums
 //! etc and being able to play tracks" deliverable, proven as one flow:
 //! 1. stand up a real server over a small library of tagged fixtures,
-//! 2. `PlayerHandle::add_remote_source` (the public API a head calls),
+//! 2. log in through the REAL standards-based OAuth 2.1 Authorization-Code
+//!    +PKCE flow (simulating the system browser with a non-redirecting
+//!    `reqwest` client, the same way `soul_player_host::remote`'s own
+//!    `oauth_code_exchange_and_refresh` test does) and
+//!    `PlayerHandle::add_remote_source_with_tokens` (the public API a head
+//!    calls once it holds a `Tokens` pair),
 //! 3. assert the aggregate `views()` reflects the synced catalog,
 //! 4. resolve a remote track id through the same client-side resolution
 //!    (`soul_player_host::remote`) and decode real audio from the
@@ -14,12 +19,14 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::mpsc;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use sha2::{Digest, Sha256};
 use soul_audio_core::Decoder;
 use soul_player_backend::library::TrackSource;
 use soul_player_host::PlayerHandle;
-use soul_player_host::remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer};
+use soul_player_host::remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer, Tokens};
 use soul_server::auth::signer::Signer;
 use soul_server::domain::ports::UserStore;
 use soul_server::domain::service::Services;
@@ -41,34 +48,10 @@ fn testdata_dir() -> PathBuf {
 /// `soul_player_host::remote`'s own `start_server_over` test helper.
 struct TestServer {
     url: String,
-    signer: Arc<Signer>,
-    user_id: soul_server::domain::UserId,
     /// Kept alive so the server's worker threads (and listening socket) keep
     /// running for the test's duration; never read directly.
     _runtime: tokio::runtime::Runtime,
     _dir: tempfile::TempDir,
-}
-
-impl TestServer {
-    /// Mint a fresh, valid JWT access token for this server's seeded
-    /// `"e2e"` user directly off its `Signer` — this E2E test exercises the
-    /// add-source/sync/browse/play path, not the OAuth login dance itself
-    /// (that's `soul_player_host::remote`'s own `oauth_code_exchange_and_refresh`
-    /// test), so minting is the simpler way to get a VALID `access_token`.
-    fn token(&self) -> String {
-        self.signer
-            .mint(self.user_id, 3600, now_unix())
-            .expect("mint a test access token")
-    }
-}
-
-/// Seconds since the Unix epoch, for [`Signer::mint`]'s `now_unix`.
-fn now_unix() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before the Unix epoch")
-        .as_secs()
 }
 
 fn start_server(fixtures: &[&str]) -> TestServer {
@@ -82,48 +65,195 @@ fn start_server(fixtures: &[&str]) -> TestServer {
 
     let index = CoreIndex::scan(vec![library_root]).expect("scan the server library");
     let users = FileUsers::open(&dir.path().join("users.json")).expect("open user store");
-    let user_id = users.add_user("e2e", "pw").expect("seed the e2e user");
+    users.add_user("e2e", "pw").expect("seed the e2e user");
     let services = Arc::new(Services {
         index,
         media: FsMedia,
         users,
     });
+
+    // Bind the ephemeral port SYNCHRONOUSLY, up front — the OAuth discovery
+    // document advertises `authorization_endpoint`/`token_endpoint` built
+    // from `issuer`, so `issuer` must be this server's REAL bound
+    // `http://127.0.0.1:PORT` base (not a portless placeholder), or
+    // `exchange_code`'s discovery fetch would be handed URLs with no port,
+    // to a server that isn't there. Mirrors `soul_player_host::remote`'s own
+    // `start_server_over` test helper.
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+    std_listener
+        .set_nonblocking(true)
+        .expect("set the bound listener non-blocking for tokio");
+    let addr = std_listener.local_addr().expect("bound socket has an addr");
+    let issuer = format!("http://{addr}");
+
     let signer_dir = dir.path().join("signer");
     let signer = Arc::new(
-        Signer::load_or_create(&signer_dir, "http://127.0.0.1".to_string())
-            .expect("load_or_create signer"),
+        Signer::load_or_create(&signer_dir, issuer.clone()).expect("load_or_create signer"),
     );
-    let state = AppState::new(
-        services,
-        signer.clone(),
-        "http://127.0.0.1".to_string(),
-        3600,
-    );
+    let state = AppState::new(services, signer, issuer, 3600);
 
     let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
-    let (addr_tx, addr_rx) = mpsc::channel();
     runtime.spawn(async move {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind an ephemeral port");
-        addr_tx
-            .send(listener.local_addr().expect("bound socket has an addr"))
-            .expect("send bound addr to the test thread");
+        let listener = tokio::net::TcpListener::from_std(std_listener)
+            .expect("convert the bound std listener into a tokio listener");
         axum::serve(listener, native::router(state))
             .await
             .expect("serve the native router");
     });
-    let addr = addr_rx
-        .recv()
-        .expect("server thread reports its bound address");
 
     TestServer {
         url: format!("http://{addr}"),
-        signer,
-        user_id,
         _runtime: runtime,
         _dir: dir,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Minimal, local copies of the browser-side-of-the-flow helpers
+// `soul_player_host::remote`'s own `oauth_code_exchange_and_refresh` test
+// uses — those are private to that module, and this file is a separate
+// integration-test crate, so the PKCE/state/query-param plumbing is
+// reproduced here rather than exposed just for a test.
+// ---------------------------------------------------------------------------
+
+/// A fresh PKCE verifier/challenge pair (RFC 7636 §4.1/§4.2, `S256`):
+/// `verifier` is base64url-no-pad of 32 random bytes; `challenge` is
+/// base64url-no-pad(SHA256(verifier)).
+fn pkce_pair() -> (String, String) {
+    let mut verifier_bytes = [0u8; 32];
+    getrandom::getrandom(&mut verifier_bytes).expect("read CSPRNG bytes for the PKCE verifier");
+    let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    (verifier, challenge)
+}
+
+/// A fresh CSRF `state` value: base64url-no-pad of 16 random bytes.
+fn random_state() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).expect("read CSPRNG bytes for the OAuth state");
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+/// Percent-encodes `s` for safe inclusion as a query-string value (RFC 3986
+/// unreserved set passes through unescaped; everything else becomes `%XX`).
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Builds the `/authorize` URL the (simulated) browser is pointed at.
+fn authorize_url(auth_endpoint: &str, challenge: &str, state: &str, redirect_uri: &str) -> String {
+    format!(
+        "{auth_endpoint}?response_type=code&client_id=soul-player&redirect_uri={}\
+         &code_challenge={challenge}&code_challenge_method=S256&state={state}&scope=library",
+        percent_encode(redirect_uri)
+    )
+}
+
+/// Decodes `%XX` escapes in a query-string value; malformed escapes pass
+/// through unchanged (only ever reads values this test or the trusted
+/// `soul-server` AS produced).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
+            if let Some(byte) = hex {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// Extract `key`'s value out of the server's `302 Location` header (a full
+/// callback URL carrying `code`/`state` in its query string).
+fn location_param(location: &str, key: &str) -> Option<String> {
+    let query = location.split_once('?').map_or(location, |(_, q)| q);
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| percent_decode(v))
+    })
+}
+
+/// Drives the real OAuth 2.1 Authorization-Code+PKCE login against
+/// `server_url`, simulating the system browser with a non-redirecting
+/// blocking `reqwest` client: `GET /authorize` for the login form,
+/// `POST /authorize` with the seeded credentials to get the `302` carrying
+/// the code, then [`soul_player_host::remote::exchange_code`] to redeem it
+/// for a real [`Tokens`] pair — the standards-based replacement for the
+/// `Signer`-minted-token shortcut this test used to take.
+fn oauth_login(server_url: &str, username: &str, password: &str) -> Tokens {
+    let redirect_uri = "http://127.0.0.1:1/callback";
+    let (verifier, challenge) = pkce_pair();
+    let state = random_state();
+
+    let browser = reqwest::blocking::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build a non-redirecting client");
+
+    let auth_endpoint = format!("{server_url}/authorize");
+    let get_url = authorize_url(&auth_endpoint, &challenge, &state, redirect_uri);
+    let get_resp = browser
+        .get(&get_url)
+        .send()
+        .expect("GET /authorize should succeed");
+    assert_eq!(
+        get_resp.status(),
+        reqwest::StatusCode::OK,
+        "expected the login form"
+    );
+
+    let post_resp = browser
+        .post(&auth_endpoint)
+        .form(&[
+            ("response_type", "code"),
+            ("client_id", "soul-player"),
+            ("redirect_uri", redirect_uri),
+            ("code_challenge", challenge.as_str()),
+            ("code_challenge_method", "S256"),
+            ("state", state.as_str()),
+            ("scope", "library"),
+            ("username", username),
+            ("password", password),
+        ])
+        .send()
+        .expect("POST /authorize should succeed");
+    assert_eq!(
+        post_resp.status(),
+        reqwest::StatusCode::FOUND,
+        "right credentials should redirect with a code"
+    );
+    let location = post_resp
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .expect("302 should carry a Location header")
+        .to_str()
+        .expect("Location header should be valid UTF-8")
+        .to_string();
+    let returned_state = location_param(&location, "state").expect("Location should carry state");
+    assert_eq!(returned_state, state, "state must round-trip unchanged");
+    let code = location_param(&location, "code").expect("Location should carry a code");
+
+    soul_player_host::remote::exchange_code(server_url, &code, &verifier, redirect_uri)
+        .expect("exchange_code should succeed with a valid code+verifier")
 }
 
 #[test]
@@ -133,18 +263,18 @@ fn remote_add_sync_browse_play() {
     const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
     let server = start_server(FIXTURES);
 
-    // --- 2. Add + sync, through the public API a head actually calls.
-    //        NOTE (task E3): `add_remote_source(url)` now drives a real
-    //        browser OAuth login, which this E2E test can't do headlessly —
-    //        so it calls the token-taking sibling `add_remote_source_with_tokens`
-    //        with a JWT minted directly off the test server's `Signer`
-    //        instead. `add_remote_source` itself (browser login + keychain)
-    //        is E4's job to wire into a head and exercise interactively.
+    // --- 1/2. Log in via the REAL browser-facing OAuth 2.1 flow, then add +
+    //        sync through the public API a head actually calls once it
+    //        holds a `Tokens` pair. (The interactive `add_remote_source`
+    //        itself — opening the system browser + the loopback catcher —
+    //        is E4's job to wire into a head and exercise interactively;
+    //        this E2E test drives the standards login headlessly the same
+    //        way `soul_player_host::remote`'s own
+    //        `oauth_code_exchange_and_refresh` test does, then hands the
+    //        resulting tokens straight to `add_remote_source_with_tokens`.)
     let handle = PlayerHandle::offline();
-    let tokens = soul_player_host::remote::Tokens {
-        access: server.token(),
-        refresh: "unused-in-this-test".to_string(),
-    };
+    let tokens = oauth_login(&server.url, "e2e", "pw");
+    let access_token = tokens.access.clone();
     handle
         .add_remote_source_with_tokens(&server.url, tokens)
         .expect("add remote source: fetch the index, fold it into the library");
@@ -179,7 +309,7 @@ fn remote_add_sync_browse_play() {
     //        doesn't share the host's real on-disk cache.
     let remote_server = Arc::new(RemoteServer {
         url: server.url.clone(),
-        access_token: server.token(),
+        access_token,
     });
     let blobs = soul_player_host::remote::fetch_index(&remote_server).expect("fetch_index");
     let cache_dir = tempfile::tempdir().expect("create download cache dir");
