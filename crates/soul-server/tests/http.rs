@@ -5,12 +5,16 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use http_body_util::BodyExt;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 use soul_server::auth::signer::Signer;
@@ -33,7 +37,7 @@ fn testdata_dir() -> PathBuf {
 /// (`"u"` / `"p"`). Returns the router plus the `TempDir` guard (keep it
 /// alive for the test's duration) and the `Services` handle for assertions
 /// that need to look something up directly (e.g. `locate`).
-fn test_router() -> (Router, tempfile::TempDir, Arc<AppServices>) {
+fn test_router() -> (Router, tempfile::TempDir, Arc<AppServices>, Arc<Signer>) {
     let dir = tempfile::tempdir().unwrap();
     let index = CoreIndex::scan(vec![testdata_dir()]).expect("scan testdata/");
     let media = FsMedia;
@@ -52,12 +56,51 @@ fn test_router() -> (Router, tempfile::TempDir, Arc<AppServices>) {
     );
     let state = AppState::new(
         services.clone(),
-        signer,
+        signer.clone(),
         "http://test.invalid".to_string(),
         3600,
     );
     let router = native::router(state);
-    (router, dir, services)
+    (router, dir, services, signer)
+}
+
+/// `base64url_no_pad(sha256(verifier))` — the PKCE `S256` code-challenge
+/// derivation (RFC 7636 §4.2), computed inline for tests rather than
+/// depending on a `pub` helper in `soul_server::auth::oauth` (that module
+/// only exports the verifier side, `verify_pkce_s256`).
+fn pkce_challenge(verifier: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()))
+}
+
+fn now_unix() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn post_form(uri: &str, body: String) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Pulls `key`'s value out of a `?a=1&b=2`-style query string (as found in
+/// a `Location` header), unescaped. Panics if absent — every call site
+/// asserts presence anyway.
+fn query_param<'a>(url: &'a str, key: &str) -> &'a str {
+    let query = url.split_once('?').expect("url has a query string").1;
+    query
+        .split('&')
+        .find_map(|pair| {
+            pair.split_once('=')
+                .filter(|(k, _)| *k == key)
+                .map(|(_, v)| v)
+        })
+        .unwrap_or_else(|| panic!("query param {key} not found in {url}"))
 }
 
 async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
@@ -72,7 +115,7 @@ async fn body_bytes(response: axum::response::Response) -> Vec<u8> {
 
 #[tokio::test]
 async fn ping_reports_version_and_index_version() {
-    let (router, _dir, services) = test_router();
+    let (router, _dir, services, _signer) = test_router();
 
     let response = router
         .oneshot(
@@ -92,7 +135,7 @@ async fn ping_reports_version_and_index_version() {
 
 #[tokio::test]
 async fn auth_accepts_right_password_and_rejects_wrong_password() {
-    let (router, _dir, _services) = test_router();
+    let (router, _dir, _services, _signer) = test_router();
 
     let ok = router
         .clone()
@@ -147,7 +190,7 @@ async fn authenticate(router: &Router) -> String {
 
 #[tokio::test]
 async fn index_requires_auth_and_honors_if_none_match() {
-    let (router, _dir, _services) = test_router();
+    let (router, _dir, _services, _signer) = test_router();
 
     let unauthorized = router
         .clone()
@@ -201,7 +244,7 @@ async fn index_requires_auth_and_honors_if_none_match() {
 
 #[tokio::test]
 async fn track_range_returns_partial_content_matching_file_head() {
-    let (router, _dir, services) = test_router();
+    let (router, _dir, services, _signer) = test_router();
     let token = authenticate(&router).await;
 
     let path = services.index.locate(0).expect("track 0 resolves");
@@ -243,7 +286,7 @@ async fn track_range_returns_partial_content_matching_file_head() {
 
 #[tokio::test]
 async fn openid_configuration_is_unauthenticated_and_well_formed() {
-    let (router, _dir, _services) = test_router();
+    let (router, _dir, _services, _signer) = test_router();
 
     let response = router
         .oneshot(
@@ -312,7 +355,7 @@ async fn openid_configuration_is_unauthenticated_and_well_formed() {
 
 #[tokio::test]
 async fn jwks_is_unauthenticated_and_exposes_the_signing_key() {
-    let (router, _dir, _services) = test_router();
+    let (router, _dir, _services, _signer) = test_router();
 
     let response = router
         .oneshot(Request::builder().uri("/jwks").body(Body::empty()).unwrap())
@@ -327,5 +370,195 @@ async fn jwks_is_unauthenticated_and_exposes_the_signing_key() {
     assert!(
         key["kid"].as_str().is_some_and(|s| !s.is_empty()),
         "expected a non-empty kid, got {body}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// OAuth2/PKCE: GET+POST /authorize, POST /token, POST /revoke
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn oauth_authorization_code_and_refresh_flow_end_to_end() {
+    let (router, _dir, _services, signer) = test_router();
+
+    let verifier = "fixed-test-code-verifier-0123456789abcdefghijk";
+    let challenge = pkce_challenge(verifier);
+    let redirect_uri = "http://127.0.0.1:12345/callback";
+    let login_form = format!(
+        "username=u&password=p&response_type=code&client_id=soul-player\
+         &redirect_uri={redirect_uri}&code_challenge={challenge}\
+         &code_challenge_method=S256&state=xyz"
+    );
+
+    // Step 1: GET /authorize -> 200 HTML containing a password field.
+    let get_uri = format!(
+        "/authorize?response_type=code&client_id=soul-player\
+         &redirect_uri={redirect_uri}&code_challenge={challenge}\
+         &code_challenge_method=S256&state=xyz&scope=library"
+    );
+    let response = router
+        .clone()
+        .oneshot(Request::builder().uri(get_uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = String::from_utf8(body_bytes(response).await).unwrap();
+    assert!(
+        html.contains(r#"type="password""#),
+        "expected a password field, got {html}"
+    );
+
+    // Step 2: POST /authorize with correct creds -> 302 to redirect_uri with
+    // a code + the echoed state.
+    let response = router
+        .clone()
+        .oneshot(post_form("/authorize", login_form.clone()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .expect("Location header present")
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        location.starts_with(&format!("{redirect_uri}?")),
+        "expected redirect back to {redirect_uri}, got {location}"
+    );
+    assert_eq!(query_param(&location, "state"), "xyz");
+    let code = query_param(&location, "code").to_string();
+
+    // Step 3: POST /token (authorization_code) -> 200 access+refresh; the
+    // access token verifies via the server's own Signer.
+    let token_form = format!(
+        "grant_type=authorization_code&code={code}&code_verifier={verifier}\
+         &redirect_uri={redirect_uri}&client_id=soul-player"
+    );
+    let response = router
+        .clone()
+        .oneshot(post_form("/token", token_form))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let access_token = body["access_token"].as_str().unwrap().to_string();
+    let refresh_token = body["refresh_token"].as_str().unwrap().to_string();
+    assert_eq!(body["token_type"], "Bearer");
+    assert_eq!(body["scope"], "library");
+    assert!(body["expires_in"].as_u64().unwrap() > 0);
+    assert!(
+        signer.verify(&access_token, now_unix()).is_some(),
+        "access token minted by /token must verify under the server's Signer"
+    );
+
+    // Step 4: POST /token (refresh_token) -> 200 with a NEW access + NEW
+    // refresh token; replaying the old refresh token afterwards -> 400.
+    let refresh_form = format!("grant_type=refresh_token&refresh_token={refresh_token}");
+    let response = router
+        .clone()
+        .oneshot(post_form("/token", refresh_form.clone()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let rotated_access = body["access_token"].as_str().unwrap().to_string();
+    let rotated_refresh = body["refresh_token"].as_str().unwrap().to_string();
+    // Note: the access token itself isn't asserted distinct from the one in
+    // step 3 — `Signer::mint` is deterministic on (user, ttl, iat, exp), so
+    // two mints within the same wall-clock second are legitimately
+    // byte-identical. Rotation's real guarantee is the refresh token below.
+    assert_ne!(rotated_refresh, refresh_token);
+    assert!(signer.verify(&rotated_access, now_unix()).is_some());
+
+    let replay = router
+        .clone()
+        .oneshot(post_form("/token", refresh_form))
+        .await
+        .unwrap();
+    assert_eq!(
+        replay.status(),
+        StatusCode::BAD_REQUEST,
+        "replaying a rotated-away refresh token must fail"
+    );
+
+    // Step 5: POST /authorize with a wrong password -> 200 (form again, no
+    // code/redirect).
+    let wrong_password_form = login_form.replace("password=p&", "password=WRONG&");
+    let response = router
+        .clone()
+        .oneshot(post_form("/authorize", wrong_password_form))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get(header::LOCATION).is_none());
+    let html = String::from_utf8(body_bytes(response).await).unwrap();
+    assert!(html.contains(r#"type="password""#));
+
+    // Step 6: a tampered code_verifier against a freshly issued code -> 400.
+    let response = router
+        .clone()
+        .oneshot(post_form("/authorize", login_form.clone()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let fresh_code = query_param(&location, "code").to_string();
+    let tampered_form = format!(
+        "grant_type=authorization_code&code={fresh_code}&code_verifier=not-the-right-verifier\
+         &redirect_uri={redirect_uri}&client_id=soul-player"
+    );
+    let response = router
+        .clone()
+        .oneshot(post_form("/token", tampered_form))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    // Step 7: POST /revoke with the (still-live) rotated refresh -> 200;
+    // using it for a refresh grant afterwards -> 400.
+    let revoke_form = format!("token={rotated_refresh}");
+    let response = router
+        .clone()
+        .oneshot(post_form("/revoke", revoke_form))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let refresh_after_revoke = format!("grant_type=refresh_token&refresh_token={rotated_refresh}");
+    let response = router
+        .oneshot(post_form("/token", refresh_after_revoke))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn authorize_rejects_open_redirect_to_non_loopback_uri() {
+    let (router, _dir, _services, _signer) = test_router();
+
+    let challenge = pkce_challenge("irrelevant-verifier-for-this-test");
+    let uri = format!(
+        "/authorize?response_type=code&client_id=soul-player\
+         &redirect_uri=http://evil.com/callback&code_challenge={challenge}\
+         &code_challenge_method=S256&state=xyz"
+    );
+    let response = router
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = String::from_utf8(body_bytes(response).await).unwrap();
+    assert!(
+        !body.contains(r#"type="password""#),
+        "an open-redirect rejection must not render the login form, got {body}"
     );
 }
