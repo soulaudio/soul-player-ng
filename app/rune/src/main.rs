@@ -264,6 +264,9 @@ struct State {
     /// hardcoded parent. Pushed by [`navigate_to`], popped by [`go_back`]; cleared
     /// by a top-level sidebar nav.
     nav_history: Vec<NavEntry>,
+    /// Artist-page Discography view mode (ephemeral): `false` = album-card grid
+    /// (default), `true` = compact row list. Toggled by the grid/list buttons.
+    discography_list: bool,
     /// Whether the artist detail's "Top Songs" section is expanded past the first
     /// five (toggled by its Show more/less link). Reset when a new artist opens.
     artist_top_expanded: bool,
@@ -558,6 +561,7 @@ impl State {
             open_artist: None,
             open_genre: None,
             nav_history: Vec::new(),
+            discography_list: false,
             artist_top_expanded: false,
             settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
@@ -6993,6 +6997,45 @@ mod tests {
             rt.find("artist-disc-0").is_some(),
             "a discography album card renders"
         );
+    }
+
+    #[test]
+    fn discography_grid_list_toggle_switches_and_lists_navigate() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        // Default is grid: cards present, no rows.
+        assert!(rt.find("artist-disc-0").is_some(), "grid cards by default");
+        assert!(rt.find("artist-disc-row-0").is_none());
+        // Switch to list.
+        click(&mut rt, "disc-toggle-list");
+        assert!(rt.state.discography_list, "toggle flips to list");
+        // The list is a brand-new subtree (replacing the grid), so it enter-animates
+        // from opacity 0; settle instantly so its rows are pickable (matches the
+        // settle_all pattern used elsewhere in this module).
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find("artist-disc-row-0").is_some(), "list rows render");
+        assert!(rt.find("artist-disc-0").is_none(), "grid cards gone");
+        // A list row opens the album (through the back-stack).
+        click(&mut rt, "artist-disc-row-0");
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "a list row opens the album"
+        );
+        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
     }
 
     /// A discography album card opens that album's detail page.

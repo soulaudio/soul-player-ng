@@ -166,6 +166,20 @@ artist.showLess:
   zh: '收起'
   cs: 'Zobrazit méně'
   ja: '折りたたむ'
+artist.viewGrid:
+  en: 'Grid view'
+  de: 'Rasteransicht'
+  es: 'Vista de cuadrícula'
+  zh: '网格视图'
+  cs: 'Mřížka'
+  ja: 'グリッド表示'
+artist.viewList:
+  en: 'List view'
+  de: 'Listenansicht'
+  es: 'Vista de lista'
+  zh: '列表视图'
+  cs: 'Seznam'
+  ja: 'リスト表示'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
