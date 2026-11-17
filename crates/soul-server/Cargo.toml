@@ -9,11 +9,15 @@ license = "Apache-2.0"
 anyhow = "1"
 argon2 = "0.5"
 axum = "0.7"
+base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
+jsonwebtoken = "9"
 rand = "0.8"
+ring = "0.17"
 rpassword = "7"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 soul-player-backend = { path = "../soul-player-backend" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
