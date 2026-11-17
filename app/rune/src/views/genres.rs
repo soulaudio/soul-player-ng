@@ -83,9 +83,7 @@ fn genre_row(p: &Palette, slot: usize, g: &Genre) -> El {
                 .color(p.text_secondary),
         )
         .on_press(move |st: &mut State| {
-            st.route = crate::Route::Genre;
-            st.open_genre = Some(name.clone());
-            st.mobile_show_content = true;
+            crate::navigate_to(st, crate::Route::Genre, None, None, Some(name.clone()));
         })
 }
 
@@ -123,7 +121,7 @@ fn back_button(p: &Palette) -> El {
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(|st: &mut State| st.route = crate::Route::Genres)
+        .on_press(crate::go_back)
 }
 
 /// A genre's detail page: a back link, the shared hero using a muted music-note

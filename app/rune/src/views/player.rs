@@ -277,11 +277,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
             .cursor(Cursor::Pointer)
             .on_press(move |st: &mut State| {
                 if let Some(a) = &album {
-                    st.route = crate::Route::Album;
-                    st.open_album = Some(a.clone());
-                    // On mobile this panel lives on the menu screen; opening the
-                    // album flips to the content pane.
-                    st.mobile_show_content = true;
+                    crate::navigate_to(st, crate::Route::Album, Some(a.clone()), None, None);
                 }
             });
     }

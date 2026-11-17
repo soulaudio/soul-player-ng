@@ -71,10 +71,8 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
         card_w,
         scale,
         move |st: &mut State| {
-            st.route = crate::Route::Artist;
-            st.open_artist = Some(name.clone());
+            crate::navigate_to(st, crate::Route::Artist, None, Some(name.clone()), None);
             st.artist_top_expanded = false;
-            st.mobile_show_content = true;
         },
     )
 }
@@ -119,7 +117,7 @@ fn back_button(p: &Palette) -> El {
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(|st: &mut State| st.route = crate::Route::Artists)
+        .on_press(crate::go_back)
 }
 
 /// An artist's detail page (the original's ArtistPage): a back link, a circular
@@ -247,9 +245,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 card_w,
                 scale,
                 move |st: &mut State| {
-                    st.route = crate::Route::Album;
-                    st.open_album = Some(name.clone());
-                    st.mobile_show_content = true;
+                    crate::navigate_to(st, crate::Route::Album, Some(name.clone()), None, None);
                 },
             ));
         }
