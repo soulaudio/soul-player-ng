@@ -133,59 +133,49 @@ async fn ping_reports_version_and_index_version() {
     assert_eq!(body["index_version"], services.index.version().0);
 }
 
-#[tokio::test]
-async fn auth_accepts_right_password_and_rejects_wrong_password() {
-    let (router, _dir, _services, _signer) = test_router();
-
-    let ok = router
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v0/auth")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"user":"u","pass":"p"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(ok.status(), StatusCode::OK);
-    let body: Value = serde_json::from_slice(&body_bytes(ok).await).unwrap();
-    assert!(
-        body["token"].as_str().is_some_and(|t| !t.is_empty()),
-        "expected a non-empty token, got {body}"
+/// Drives the standards-based OAuth2/PKCE login flow this server now
+/// requires for `/v0` access: `POST /authorize` with the seeded test user's
+/// credentials (`"u"`/`"p"`), follow the `302` to pull the authorization
+/// `code` out of the `Location` header, then `POST /token` to redeem it for
+/// a JWT access token. This replaces the old `/v0/auth` opaque-token helper
+/// — `/v0` now only accepts a JWT minted by this server's own `Signer`.
+async fn login(router: &Router) -> String {
+    let verifier = "fixed-test-code-verifier-0123456789abcdefghijk";
+    let challenge = pkce_challenge(verifier);
+    let redirect_uri = "http://127.0.0.1:12345/callback";
+    let login_form = format!(
+        "username=u&password=p&response_type=code&client_id=soul-player\
+         &redirect_uri={redirect_uri}&code_challenge={challenge}\
+         &code_challenge_method=S256&state=xyz"
     );
 
-    let bad = router
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v0/auth")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"user":"u","pass":"wrong"}"#))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
-}
-
-async fn authenticate(router: &Router) -> String {
     let response = router
         .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/v0/auth")
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(r#"{"user":"u","pass":"p"}"#))
-                .unwrap(),
-        )
+        .oneshot(post_form("/authorize", login_form))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .expect("Location header present")
+        .to_str()
+        .unwrap()
+        .to_string();
+    let code = query_param(&location, "code").to_string();
+
+    let token_form = format!(
+        "grant_type=authorization_code&code={code}&code_verifier={verifier}\
+         &redirect_uri={redirect_uri}&client_id=soul-player"
+    );
+    let response = router
+        .clone()
+        .oneshot(post_form("/token", token_form))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
-    body["token"].as_str().unwrap().to_string()
+    body["access_token"].as_str().unwrap().to_string()
 }
 
 #[tokio::test]
@@ -204,7 +194,7 @@ async fn index_requires_auth_and_honors_if_none_match() {
         .unwrap();
     assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
 
-    let token = authenticate(&router).await;
+    let token = login(&router).await;
 
     let authorized = router
         .clone()
@@ -243,9 +233,53 @@ async fn index_requires_auth_and_honors_if_none_match() {
 }
 
 #[tokio::test]
+async fn index_rejects_a_garbage_bearer_token() {
+    let (router, _dir, _services, _signer) = test_router();
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/v0/index")
+                .header(header::AUTHORIZATION, "Bearer not-a-real-jwt-at-all")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn index_rejects_a_jwt_signed_by_the_wrong_key() {
+    let (router, _dir, _services, _signer) = test_router();
+
+    // An independent `Signer` (different keypair, same issuer string): a
+    // token it mints has a well-formed `iss`/`aud`/`exp`, but a signature
+    // this server's own `Signer` never produced.
+    let other_dir = tempfile::tempdir().unwrap();
+    let other_signer = Signer::load_or_create(other_dir.path(), "http://test.invalid".to_string())
+        .expect("load_or_create a second, throwaway signer");
+    let forged = other_signer
+        .mint(1, 3600, now_unix())
+        .expect("mint with the wrong key");
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/v0/index")
+                .header(header::AUTHORIZATION, format!("Bearer {forged}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn track_range_returns_partial_content_matching_file_head() {
     let (router, _dir, services, _signer) = test_router();
-    let token = authenticate(&router).await;
+    let token = login(&router).await;
 
     let path = services.index.locate(0).expect("track 0 resolves");
     let file_bytes = std::fs::read(&path).expect("read the located file directly");

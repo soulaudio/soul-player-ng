@@ -82,7 +82,6 @@ impl std::ops::Deref for AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v0/ping", get(ping))
-        .route("/v0/auth", post(auth))
         .route("/v0/index", get(index))
         .route("/v0/track/:id", get(track))
         .route("/v0/art/:album_id", get(art))
@@ -133,7 +132,11 @@ impl axum::extract::FromRequestParts<AppState> for Authed {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let token = bearer_token(&parts.headers).ok_or(StatusCode::UNAUTHORIZED)?;
-        let user_id = state.check(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let claims = state
+            .signer
+            .verify(token, now_unix())
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let user_id: UserId = claims.sub.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
         Ok(Authed(user_id))
     }
 }
@@ -163,28 +166,6 @@ async fn ping(State(services): State<AppState>) -> impl IntoResponse {
         server: crate::version(),
         index_version: services.index.version().0,
     })
-}
-
-// ---------------------------------------------------------------------------
-// POST /v0/auth — no auth (it's how you get one)
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct AuthRequest {
-    user: String,
-    pass: String,
-}
-
-#[derive(Serialize)]
-struct AuthResponse {
-    token: String,
-}
-
-async fn auth(State(services): State<AppState>, Json(body): Json<AuthRequest>) -> Response {
-    match services.authenticate(&body.user, &body.pass) {
-        Ok(token) => Json(AuthResponse { token: token.0 }).into_response(),
-        Err(error) => error_status(&error).into_response(),
-    }
 }
 
 // ---------------------------------------------------------------------------
