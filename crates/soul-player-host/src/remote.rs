@@ -8,21 +8,24 @@
 //! here, only to drive this module's tests against a REAL in-process
 //! server) — the wire format is the contract, not the crate.
 //!
-//! Defines [`TrackLocation`] and [`MediaFetch`] — the seam the (forthcoming)
-//! loader consumes to resolve a catalog track to a local, playable path
-//! regardless of whether it lives on disk or on a remote source.
+//! Defines [`TrackLocation`] and [`MediaFetch`] — the seam the loader
+//! ([`RemoteLibrary`], consumed by `PlayerHandle::add_remote_source`)
+//! resolves a catalog track through to a local, playable path regardless of
+//! whether it lives on disk or on a remote source.
 //!
-//! Nothing outside `#[cfg(test)]` wires this module's public API into the
-//! rest of the crate yet — that's the loader task. Until then, `cargo
-//! build`'s plain (non-test) pass sees every item here as unreachable from
-//! the crate root and would otherwise warn on all of them.
-#![allow(dead_code)]
-
+//! `TrackLocation` itself stays unconsumed for now (`RemoteLibrary::path_of`
+//! goes straight from a compound id to a path without materializing one) —
+//! reserved for a future caller that wants to know *why* a path resolved the
+//! way it did (e.g. a "from <server>" badge); see the narrow `dead_code`
+//! allow on it below instead of the old blanket one.
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, bail};
+use soul_audio_multicatalog::{pack, unpack};
+use soul_player_backend::library::{Library, TrackSource};
 
 /// A soul-server the player has authenticated against: its base URL (no
 /// trailing slash) and the bearer token obtained at add-time via
@@ -42,6 +45,12 @@ pub struct RemoteServer {
 /// server's own catalog knows the track by (needed to GET `/v0/track/{id}`,
 /// which is unrelated to any local id).
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "reserved for a future caller that wants to know *why* a path \
+              resolved the way it did; RemoteLibrary::path_of resolves \
+              straight to a PathBuf without materializing one"
+)]
 pub enum TrackLocation {
     Local(PathBuf),
     Remote {
@@ -112,6 +121,121 @@ impl MediaFetch for DownloadCache {
             .with_context(|| format!("finalizing cache file {}", path.display()))?;
 
         Ok(path)
+    }
+}
+
+/// Per aggregated source (by position in the combined [`Library`] built by
+/// [`RemoteLibrary::build`]): how to turn one of that source's track ids into
+/// a local file.
+enum SourceResolve {
+    /// A local root: delegate straight to [`Library::path_of`].
+    Local,
+    /// One of `server`'s own catalog roots. `base` is the aggregate source
+    /// index of this server's FIRST source — shared by every source in its
+    /// block — needed to recover the server's own id (see
+    /// [`RemoteLibrary::path_of`]).
+    Remote {
+        server: Arc<RemoteServer>,
+        base: usize,
+    },
+}
+
+/// A [`TrackSource`] over an aggregated [`Library`] whose sources are a mix
+/// of local roots and remote servers: local ids resolve straight through the
+/// aggregate; remote ids are downloaded (and cached) via `fetch`.
+///
+/// # The id mapping
+///
+/// [`Library::from_source_bytes`] (via the shared `MultiCatalog`) packs every
+/// id as `(source, local)`: `source` is the position of that track's
+/// root/blob in the combined list passed to `from_source_bytes` (the high
+/// bits), `local` is the id within that one blob's own baked index (the low
+/// bits) — see [`pack`]/[`unpack`]. A remote server bakes its OWN roots into
+/// a `Library` the exact same way (`soul-server`'s index just wraps
+/// `Library::scan_many_incremental`), so for the `j`-th root/blob of a server
+/// occupying this aggregate's sources `[base, base + k)`, the server's own id
+/// for a track is `pack(j, local)`, where `(source, local) = unpack(aggregate_id)`
+/// and `j = source - base`.
+///
+/// Recovering `j` this way — through the packed `source` field, NOT a flat
+/// `aggregate_id - base` subtraction — is the part that must stay correct: a
+/// bare subtraction would mix the high-bits source index into the arithmetic
+/// instead of isolating `local`, and silently fetch the wrong track (or
+/// underflow) the moment any source precedes the remote block.
+pub struct RemoteLibrary {
+    lib: Arc<Library>,
+    resolve: Vec<SourceResolve>,
+    fetch: Arc<dyn MediaFetch>,
+}
+
+impl RemoteLibrary {
+    /// Build the aggregate from `local` (root, baked-bytes) pairs followed by
+    /// each remote server's own (server, per-root blobs) in order — sources
+    /// are laid out local-first, then one block per remote server, in the
+    /// order given. Each remote blob gets a sentinel root path (never read as
+    /// a real filesystem path; it only occupies `Library`'s per-source root
+    /// list so `source_counts` / compound ids line up with `resolve`).
+    #[must_use]
+    pub fn build(
+        local: Vec<(PathBuf, Vec<u8>)>,
+        remotes: Vec<(Arc<RemoteServer>, Vec<Vec<u8>>)>,
+        fetch: Arc<dyn MediaFetch>,
+    ) -> Self {
+        let mut roots = Vec::new();
+        let mut blobs = Vec::new();
+        let mut resolve = Vec::new();
+
+        for (root, bytes) in local {
+            roots.push(root);
+            blobs.push(bytes);
+            resolve.push(SourceResolve::Local);
+        }
+
+        for (server, server_blobs) in remotes {
+            // Shared by every source this server contributes below.
+            let base = resolve.len();
+            for (i, blob) in server_blobs.into_iter().enumerate() {
+                roots.push(PathBuf::from(format!("remote:{}#{i}", server.url)));
+                blobs.push(blob);
+                resolve.push(SourceResolve::Remote {
+                    server: Arc::clone(&server),
+                    base,
+                });
+            }
+        }
+
+        let lib = Arc::new(Library::from_source_bytes(&roots, blobs));
+        Self {
+            lib,
+            resolve,
+            fetch,
+        }
+    }
+
+    /// The aggregate library, for browsing/views — `path_of`
+    /// ([`TrackSource`]) is what resolves a track to a playable file,
+    /// downloading a remote one first.
+    #[must_use]
+    pub fn library(&self) -> Arc<Library> {
+        Arc::clone(&self.lib)
+    }
+}
+
+impl TrackSource for RemoteLibrary {
+    fn path_of(&self, id: u32) -> Option<PathBuf> {
+        let located = self.lib.locate(id)?;
+        match self.resolve.get(located.source)? {
+            SourceResolve::Local => self.lib.path_of(id),
+            SourceResolve::Remote { server, base } => {
+                let (_, local) = unpack(id);
+                let j = u32::try_from(located.source.checked_sub(*base)?).ok()?;
+                self.fetch.fetch(server, pack(j, local)).ok()
+            }
+        }
+    }
+
+    fn duration_of(&self, id: u32) -> Option<f64> {
+        self.lib.duration_of(id)
     }
 }
 
@@ -223,8 +347,15 @@ mod tests {
     }
 
     fn start_server() -> TestServer {
+        start_server_over(vec![testdata_dir()])
+    }
+
+    /// Like [`start_server`], but scanning `roots` instead of the whole
+    /// `testdata/` tree — so a test can stand up a server over a DIFFERENT
+    /// subset of fixtures than whatever it scanned locally.
+    fn start_server_over(roots: Vec<PathBuf>) -> TestServer {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let index = CoreIndex::scan(vec![testdata_dir()]).expect("scan testdata/");
+        let index = CoreIndex::scan(roots).expect("scan the given roots");
         let users = SqliteUsers::open(&dir.path().join("users.db")).expect("open sqlite store");
         users.add_user("u", "p").expect("seed test user");
         let services = Arc::new(Services {
@@ -372,5 +503,115 @@ mod tests {
     fn deframe_rejects_truncated_bytes() {
         let truncated = 1u32.to_le_bytes().to_vec();
         assert!(deframe(&truncated).is_err());
+    }
+
+    /// Bake `root` (a single-root scan) and hand back its one `.soulidx`
+    /// blob — reuses the server's own `CoreIndex`/framing so this is exactly
+    /// the shape `RemoteLibrary::build`'s `local` and `fetch_index`'s remote
+    /// blobs both take.
+    fn scan_blob(root: &std::path::Path) -> Vec<u8> {
+        let index = CoreIndex::scan(vec![root.to_path_buf()]).expect("scan the given root");
+        let framed = index.index_bytes().expect("frame the scanned index");
+        let mut blobs = deframe(&framed).expect("deframe what we just framed");
+        assert_eq!(blobs.len(), 1, "a single-root scan bakes one blob");
+        blobs.remove(0)
+    }
+
+    #[test]
+    fn remote_library_resolves_local_and_remote_tracks_with_a_nonzero_base() {
+        // A local source with exactly ONE track, so its single id is
+        // unambiguous, followed (in the aggregate) by a remote block — this
+        // gives the remote server's sources a nonzero `base`, which is
+        // exactly what would expose a bare `id - base` subtraction instead
+        // of the correct `(source, local)` unpack/repack.
+        let local_dir = tempfile::tempdir().expect("local subset dir");
+        fs::copy(
+            testdata_dir().join("meta.flac"),
+            local_dir.path().join("meta.flac"),
+        )
+        .expect("copy the local fixture");
+        let local_root = local_dir.path().to_path_buf();
+        let local_blob = scan_blob(&local_root);
+        let local_count =
+            Library::from_source_bytes(std::slice::from_ref(&local_root), vec![local_blob.clone()])
+                .len();
+        assert_eq!(local_count, 1, "expected exactly one local track");
+
+        // A DIFFERENT subset of fixtures, served by a REAL in-process server
+        // the local scan above never touched.
+        let remote_src_dir = tempfile::tempdir().expect("remote subset dir");
+        for name in ["tone.flac", "tagged.flac"] {
+            fs::copy(testdata_dir().join(name), remote_src_dir.path().join(name))
+                .unwrap_or_else(|e| panic!("copy remote fixture {name}: {e}"));
+        }
+        let server = start_server_over(vec![remote_src_dir.path().to_path_buf()]);
+        let token = authenticate(&server.url, "u", "p").expect("authenticate");
+        let remote_server = Arc::new(RemoteServer {
+            url: server.url.clone(),
+            token,
+        });
+        let remote_blobs = fetch_index(&remote_server).expect("fetch_index");
+        let remote_count = Library::from_source_bytes(
+            &vec![PathBuf::from("probe"); remote_blobs.len()],
+            remote_blobs.clone(),
+        )
+        .len();
+        assert_eq!(remote_count, 2, "expected both remote fixtures scanned");
+
+        let cache_dir = tempfile::tempdir().expect("download cache dir");
+        let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
+            dir: cache_dir.path().to_path_buf(),
+        });
+        let remote_lib = RemoteLibrary::build(
+            vec![(local_root.clone(), local_blob)],
+            vec![(Arc::clone(&remote_server), remote_blobs)],
+            fetch,
+        );
+
+        let agg = remote_lib.library();
+        assert_eq!(
+            agg.len(),
+            local_count + remote_count,
+            "aggregate should hold every local and remote track"
+        );
+
+        // The local id (source 0, the aggregate's only local source) resolves
+        // to the real local file.
+        let local_id = pack(0, 0);
+        let local_path = remote_lib
+            .path_of(local_id)
+            .expect("local id should resolve to a path");
+        assert_eq!(
+            fs::read(&local_path).expect("read resolved local path"),
+            fs::read(testdata_dir().join("meta.flac")).expect("read the original fixture"),
+            "a local id should resolve straight to the real local file"
+        );
+
+        // Remote ids live in source 1 (base = 1, the single local source
+        // before them) — a nonzero base. For each of the server's own track
+        // ids, the aggregate id is `pack(1, server_id)`; resolving it must
+        // download bytes identical to what the server itself would hand back
+        // for that SAME server-side id, proving the (source, local) unpack
+        // and repack — not a flat subtraction — recovered it correctly.
+        for server_id in 0..remote_count as u32 {
+            let expected_path = server
+                .services
+                .index
+                .locate(server_id)
+                .unwrap_or_else(|| panic!("server should locate its own id {server_id}"));
+            let expected_bytes =
+                fs::read(&expected_path).expect("read the server's reference file");
+
+            let aggregate_id = pack(1, server_id);
+            let downloaded = remote_lib.path_of(aggregate_id).unwrap_or_else(|| {
+                panic!("remote id {aggregate_id} (server id {server_id}) should resolve")
+            });
+            assert_eq!(
+                fs::read(&downloaded).expect("read the downloaded cache file"),
+                expected_bytes,
+                "server id {server_id} (aggregate id {aggregate_id}) should download \
+                 byte-identical to the server's own file"
+            );
+        }
     }
 }

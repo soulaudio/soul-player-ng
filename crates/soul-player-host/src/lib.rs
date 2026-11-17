@@ -17,8 +17,11 @@ use std::time::Duration;
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
+use soul_player_backend::library::TrackSource;
 use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
 use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
+
+use remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
@@ -53,6 +56,9 @@ type ScanProgressSubscriber = Box<dyn Fn(Option<ScanProgress>) + Send>;
 /// Deletions from one rescan: `(root, removed file paths)` for each root that lost
 /// files since its prior cache.
 type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
+/// Remote sources added so far: each authenticated server alongside its
+/// last-fetched per-root index blobs (see [`Inner::remotes`]).
+type RemoteSources = Vec<(Arc<RemoteServer>, Vec<Vec<u8>>)>;
 
 /// Debounce window for the live filesystem watcher: filesystem events for one
 /// logical change (an editor's write-rename, an album copy's many files) are
@@ -118,6 +124,19 @@ fn path_under(path: &Path, root: &Path) -> bool {
             },
         }
     }
+}
+
+/// Where [`PlayerHandle::add_remote_source`]'s [`DownloadCache`] keeps
+/// downloaded remote track originals: a dedicated subdirectory of the OS
+/// cache dir (falling back to the system temp dir if that's unavailable —
+/// headless CI, an exotic platform `dirs` doesn't recognize), so it survives
+/// across launches but is understood by the OS as reclaimable, unlike the
+/// config dir the app's settings live in.
+fn remote_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("soul-player")
+        .join("remote-cache")
 }
 
 /// The configured roots that contain at least one of `paths` — the set a watcher
@@ -358,6 +377,24 @@ struct Inner {
     /// Kept in lock-step with `caches`: refreshed for re-scanned roots, pruned for
     /// de-configured ones.
     source_bytes: Mutex<HashMap<PathBuf, Vec<u8>>>,
+    /// Remote sources added via [`add_remote_source`](PlayerHandle::add_remote_source),
+    /// each authenticated server alongside its last-fetched per-root index
+    /// blobs — the v0 remote state: not threaded through `folders` /
+    /// `caches` / `source_bytes` (a plain rescan never touches it), just
+    /// replayed in order into a fresh [`RemoteLibrary`] on every add.
+    remotes: Mutex<RemoteSources>,
+    /// The remote-aware aggregate built from `remotes` plus the local
+    /// `source_bytes` snapshot at the time of the last
+    /// [`add_remote_source`](PlayerHandle::add_remote_source) call, or `None`
+    /// when no remote has ever been added. When `Some`, this — not the plain
+    /// `library` above — is what the actor resolves ids against; `library`
+    /// still holds `remote_library`'s own aggregate `Library` so
+    /// [`views`](PlayerHandle::views)/[`art`](PlayerHandle::art)/etc. see the
+    /// union unchanged. Cleared by a plain [`set_library`](Self::set_library)
+    /// (e.g. a subsequent local rescan), whose fresh `Library` has a source
+    /// layout this aggregate's compound ids no longer match — see
+    /// `set_library`.
+    remote_library: Mutex<Option<Arc<RemoteLibrary>>>,
     /// Subscribers for a background (watcher-triggered) rescan's [`WatchUpdate`], so
     /// the UI refreshes its library/sources when files change on disk while the app
     /// is open. Registered via [`on_watch_update`](PlayerHandle::on_watch_update);
@@ -484,6 +521,8 @@ impl PlayerHandle {
                 last_sources: Mutex::new(Vec::new()),
                 caches: Mutex::new(HashMap::new()),
                 source_bytes: Mutex::new(HashMap::new()),
+                remotes: Mutex::new(Vec::new()),
+                remote_library: Mutex::new(None),
                 watch_subscribers: Mutex::new(Vec::new()),
                 scan_progress_subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
@@ -1292,13 +1331,110 @@ impl PlayerHandle {
     /// Locks library then player, never both at once, to avoid a lock-order
     /// inversion with `ensure_actor` (which snapshots library before locking
     /// player).
+    ///
+    /// Also drops any active [`remote_library`](Inner::remote_library): a
+    /// plain library swap (a local rescan, `open_folder`, …) hands back a
+    /// fresh `Library` whose source layout the old remote aggregate's
+    /// compound ids no longer match — keeping it would resolve remote ids
+    /// against the wrong source. [`add_remote_source`](Self::add_remote_source)
+    /// rebuilds the remote aggregate from this fresh library's generation of
+    /// local bytes, so remote sources survive an explicit re-add, just not a
+    /// bare rescan yet (v0 — see `add_remote_source`'s doc comment).
     fn set_library(&self, lib: Arc<Library>) {
         {
             *self.inner.library.lock().expect("library mutex") = Some(Arc::clone(&lib));
         }
+        *self
+            .inner
+            .remote_library
+            .lock()
+            .expect("remote_library mutex") = None;
         if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
             actor.set_library(lib);
         }
+    }
+
+    /// Swap in a remote-aware aggregate: like [`set_library`](Self::set_library)
+    /// but the actor resolves ids through `remote_lib` (an `Arc<dyn
+    /// TrackSource>`, so remote ids download on demand) while
+    /// [`views`](Self::views)/[`art`](Self::art)/etc. keep reading
+    /// `remote_lib`'s own aggregate [`Library`] — the same one the actor's
+    /// ids are compound-addressed against, so browsing and playback always
+    /// agree. Locks library then `remote_library` then player, in that order
+    /// (the same discipline as `set_library`), so it can never invert with
+    /// `ensure_actor`.
+    fn set_remote_library(&self, remote_lib: Arc<RemoteLibrary>) {
+        let browse = remote_lib.library();
+        {
+            *self.inner.library.lock().expect("library mutex") = Some(browse);
+        }
+        {
+            *self
+                .inner
+                .remote_library
+                .lock()
+                .expect("remote_library mutex") = Some(Arc::clone(&remote_lib));
+        }
+        if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
+            let ts: Arc<dyn TrackSource> = remote_lib;
+            actor.set_library(ts);
+        }
+    }
+
+    /// Authenticate against a soul-server, fetch its catalog index, and fold
+    /// it into the live library as a remote-resolving source: existing local
+    /// playback is unaffected, and a track whose id falls in the new
+    /// remote's block of sources resolves by downloading into a local cache
+    /// (see [`remote::DownloadCache`]) the first time it's played.
+    ///
+    /// v0: rebuilds the aggregate from the host's already-scanned LOCAL
+    /// `(root, bytes)` cache plus every remote added so far (this one
+    /// included) — a dedicated rebuild path rather than threading remote
+    /// sources through `set_sources`/`WatchUpdate`/`SourceStatus` the way
+    /// local sources are. A follow-up: fold remotes into that machinery (a
+    /// remote `SourceStatus`, surviving a plain rescan without re-adding).
+    pub fn add_remote_source(&self, url: &str, user: &str, pass: &str) -> anyhow::Result<()> {
+        let token = remote::authenticate(url, user, pass)?;
+        let server = Arc::new(RemoteServer {
+            url: url.trim_end_matches('/').to_string(),
+            token,
+        });
+        let blobs = remote::fetch_index(&server)?;
+
+        self.inner
+            .remotes
+            .lock()
+            .expect("remotes mutex")
+            .push((server, blobs));
+
+        self.rebuild_remote_library();
+        Ok(())
+    }
+
+    /// Rebuild the remote-aware aggregate from the current local
+    /// `source_bytes` cache (in configured-source order) plus every remote
+    /// in `self.inner.remotes`, and swap it in via
+    /// [`set_remote_library`](Self::set_remote_library) — the shared tail of
+    /// [`add_remote_source`](Self::add_remote_source) today, and a future
+    /// remove/refresh entry point's too.
+    fn rebuild_remote_library(&self) {
+        let folders = self.inner.folders.lock().expect("folders mutex").clone();
+        let bytes = self.inner.source_bytes.lock().expect("source_bytes mutex");
+        // Configured-source order (not the `HashMap`'s arbitrary one) so the
+        // aggregate's local source indices are stable and match what a plain
+        // rescan would have produced.
+        let local: Vec<(PathBuf, Vec<u8>)> = folders
+            .iter()
+            .filter_map(|f| bytes.get(&f.path).cloned().map(|b| (f.path.clone(), b)))
+            .collect();
+        drop(bytes);
+
+        let remotes = self.inner.remotes.lock().expect("remotes mutex").clone();
+        let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
+            dir: remote_cache_dir(),
+        });
+        let remote_lib = Arc::new(RemoteLibrary::build(local, remotes, fetch));
+        self.set_remote_library(remote_lib);
     }
 
     /// Lazily spawn the actor once a library exists. Snapshots the library WITHOUT
@@ -1308,6 +1444,21 @@ impl PlayerHandle {
         let lib = { self.inner.library.lock().expect("library mutex").clone() };
         let Some(lib) = lib else {
             return; // no folder opened yet
+        };
+        // A remote-aware aggregate (if one is active) is what the actor must
+        // resolve ids against, not the plain `lib` snapshot above — same
+        // precedence as `set_remote_library`/`set_library`. Snapshot it here
+        // (library-then-player order, matching `set_library`/
+        // `set_remote_library`) rather than under `guard`.
+        let remote_lib = self
+            .inner
+            .remote_library
+            .lock()
+            .expect("remote_library mutex")
+            .clone();
+        let ts: Arc<dyn TrackSource> = match remote_lib {
+            Some(remote_lib) => remote_lib,
+            None => lib,
         };
         let mut guard = self.inner.player.lock().expect("player mutex");
         if guard.is_some() {
@@ -1357,7 +1508,7 @@ impl PlayerHandle {
             exclusive_status,
             self.inner.dsp.clone(),
             self.inner.spectrum.clone(),
-            lib,
+            ts,
             forward,
         );
         actor.send(Command::SetReplayGain {
