@@ -5,7 +5,12 @@
 
 pub mod analyzer;
 pub mod eq;
-mod remote;
+// Public (not just `mod`) so the crate's own integration tests
+// (`tests/remote_e2e.rs`, a separate crate) can drive the exact same
+// authenticate/fetch_index/RemoteLibrary/DownloadCache path
+// `add_remote_source` uses below, rather than re-implementing the wire
+// protocol a second time just to prove a downloaded track decodes.
+pub mod remote;
 mod sink;
 
 use std::collections::HashMap;
