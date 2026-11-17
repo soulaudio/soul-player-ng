@@ -91,7 +91,7 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .key("artists-grid")
         .role("grid")
         .flex_wrap()
-        .gap(space::GUTTER)
+        .gaps(space::MD, space::GUTTER)
         .padding(space::PANE);
     for (slot, a) in artists.iter().enumerate() {
         grid = grid.child(artist_card(s, p, slot, a, card_w, scale));
@@ -229,7 +229,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             .key("artist-disc-grid")
             .role("grid")
             .flex_wrap()
-            .gap(space::GUTTER);
+            .gaps(space::MD, space::GUTTER);
         for (slot, alb) in discography.iter().enumerate() {
             let name = alb.name.clone();
             grid_el = grid_el.child(media_card(

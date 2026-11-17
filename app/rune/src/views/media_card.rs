@@ -140,8 +140,10 @@ pub(crate) fn media_card(
         .label(spec.label)
         .focusable(true)
         .w(card_w)
+        // Cover→text gap only. No bottom padding: it used to stack on top of the
+        // grid's row gap, making the space between rows visibly larger than the
+        // gap between columns. The grid's own gap now spaces rows and columns alike.
         .gap(space::SM)
-        .pb(space::SM)
         .cursor(Cursor::Pointer)
         .hover_group()
         .child(cover_area)
