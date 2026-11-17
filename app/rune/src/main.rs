@@ -221,6 +221,22 @@ struct State {
     /// (`(root, count)`). Cleared on the next Sources refresh ([`apply_watch`]) so
     /// it reads as a notice about the *last* scan, not a permanent banner.
     removal_notice: Option<(PathBuf, usize)>,
+    /// Whether the Remote server connect form is open (Settings → Add Source →
+    /// Remote server). Opened by `open_remote_form` (which also closes the
+    /// add-source menu), closed by Cancel/Escape/a successful connect.
+    remote_form_open: bool,
+    /// The connect form's three text buffers (server URL, username, password).
+    /// Each follows the `dsp_rename_buf` lifecycle: a fresh, empty, focused
+    /// buffer when the form opens; read (trimmed) on Connect; ignored while the
+    /// form is closed. The password buffer is always created `.secure()` so it
+    /// masks its display and redacts its accessibility text.
+    remote_url_buf: rune::TextEdit,
+    remote_user_buf: rune::TextEdit,
+    remote_pass_buf: rune::TextEdit,
+    /// The most recent connect attempt's failure message (the host's
+    /// `anyhow::Error`, rendered), shown inline in the form. `None` when the
+    /// form is closed, just opened, or the last attempt succeeded.
+    remote_error: Option<String>,
     /// The library indexing-speed mode (persisted), rendered by Settings → Sources.
     /// Drives how much parallelism the scanner uses; `Automatic` follows CPU load.
     indexing_mode: IndexingMode,
@@ -483,6 +499,11 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
             removal_notice: None,
+            remote_form_open: false,
+            remote_url_buf: rune::TextEdit::new(""),
+            remote_user_buf: rune::TextEdit::new(""),
+            remote_pass_buf: rune::TextEdit::new("").secure(),
+            remote_error: None,
             scan_progress: None,
             scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
@@ -714,6 +735,67 @@ pub(crate) fn toggle_dropdown(s: &mut State, key: &str) {
 /// Close any open dropdown (an outside click, or after a choice is made).
 pub(crate) fn close_dropdown(s: &mut State) {
     s.open_dropdown = None;
+}
+
+// ---- Remote source connect form (Settings → Add Source → Remote server) ----
+
+/// Fresh, empty, `.secure()`d password buffer — shared by `open_remote_form`
+/// and `close_remote_form` so the "secure" flag is never forgotten when the
+/// buffer is reset.
+fn empty_remote_pass_buf() -> rune::TextEdit {
+    rune::TextEdit::new("").secure()
+}
+
+/// Open the Remote server connect form: close the add-source menu first (so
+/// it isn't left open behind the form), then reset the three buffers to
+/// empty, focus the URL field, and clear any stale error. Mirrors
+/// `start_dsp_rename`'s "always start from a clean buffer" shape.
+pub(crate) fn open_remote_form(s: &mut State) {
+    close_dropdown(s);
+    s.remote_url_buf = rune::TextEdit::new("");
+    s.remote_url_buf.focused = true;
+    s.remote_user_buf = rune::TextEdit::new("");
+    s.remote_pass_buf = empty_remote_pass_buf();
+    s.remote_error = None;
+    s.remote_form_open = true;
+}
+
+/// Close the connect form (Cancel, Escape, an outside press, or a successful
+/// connect) and clear its buffers + error so the next open starts fresh.
+pub(crate) fn close_remote_form(s: &mut State) {
+    s.remote_form_open = false;
+    s.remote_url_buf = rune::TextEdit::new("");
+    s.remote_user_buf = rune::TextEdit::new("");
+    s.remote_pass_buf = empty_remote_pass_buf();
+    s.remote_error = None;
+}
+
+/// Read the connect form's fields and try to add the remote source.
+///
+/// v0 calls the host **inline**: `add_remote_source` authenticates against
+/// the server and fetches its whole catalog index over the network, so this
+/// briefly blocks the UI thread. Moving it off-thread — the same
+/// `scan_in_background`/`AppHandle::update` shape the Sources scans use — is
+/// a follow-up once this path needs to stay responsive on a slow link.
+///
+/// On success the library is refreshed from the host (the remote-aware
+/// aggregate is already swapped in) and the form closes. On failure the
+/// message is kept in `remote_error` and the form stays open with its
+/// fields intact so the user can fix a typo and retry.
+pub(crate) fn connect_remote_source(s: &mut State) {
+    let url = s.remote_url_buf.text.trim().to_string();
+    let user = s.remote_user_buf.text.trim().to_string();
+    // Not trimmed: a password may legitimately start or end with a space.
+    let pass = s.remote_pass_buf.text.clone();
+    match s.host.add_remote_source(&url, &user, &pass) {
+        Ok(()) => {
+            s.library = s.host.views();
+            close_remote_form(s);
+        }
+        Err(err) => {
+            s.remote_error = Some(err.to_string());
+        }
+    }
 }
 
 /// Open/close the expanded signal-path panel (pressing the now-playing chain line).
@@ -5456,10 +5538,11 @@ mod tests {
 
     /// The add-source control is a themed `views::dropdown` menu: the trigger
     /// renders on the Music Data tab and, when opened (the same press the language
-    /// picker uses), offers a focusable "Local folder…" item and a "Remote
-    /// server…" item that is present but NOT focusable — a disabled "coming soon".
+    /// picker uses), offers two real, focusable choices — "Local folder…" and
+    /// "Remote server…" (which opens the connect form — see
+    /// `remote_add_source_opens_the_connect_form`).
     #[test]
-    fn add_source_menu_offers_local_and_coming_soon_remote() {
+    fn add_source_menu_offers_local_and_remote_options() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -5486,12 +5569,53 @@ mod tests {
         // Local folder: a real, focusable choice.
         let local = el_info(&rt, "add-source-opt-local");
         assert!(local.focusable, "the Local folder item is focusable");
-        // Remote server: present but not focusable (coming soon → disabled).
+        // Remote server: also a real, focusable choice (it opens the connect form).
         let remote = el_info(&rt, "add-source-opt-remote");
+        assert!(remote.focusable, "the Remote server item is focusable");
+    }
+
+    /// Activating "Remote server" in the add-source menu closes the menu and
+    /// opens the connect form: labelled, focusable `remote-url`/`remote-user`/
+    /// `remote-pass` fields and a `remote-connect` button, each reachable by
+    /// key with a non-empty accessible label and an interactive role. The
+    /// actual network connect (`PlayerHandle::add_remote_source`) is covered
+    /// by the host's `remote_e2e` integration test — this only proves the UI
+    /// is reachable, so it never touches the network.
+    #[test]
+    fn remote_add_source_opens_the_connect_form() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source-opt-remote");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.state.remote_form_open, "the connect form is open");
         assert!(
-            !remote.focusable,
-            "the Remote server item is coming soon → not focusable"
+            rt.state.open_dropdown.is_none(),
+            "opening the connect form closes the add-source menu"
         );
+        for (key, role) in [
+            ("remote-url", "textbox"),
+            ("remote-user", "textbox"),
+            ("remote-pass", "textbox"),
+            ("remote-connect", "button"),
+        ] {
+            let info = el_info(&rt, key);
+            assert!(info.focusable, "{key} is focusable");
+            assert!(
+                info.label.as_deref().is_some_and(|l| !l.is_empty()),
+                "{key} carries a non-empty label"
+            );
+            assert_eq!(info.role, role, "{key} has an interactive role");
+        }
     }
 
     /// The Managed Library card renders on the Music Data tab with its destination
