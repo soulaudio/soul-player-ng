@@ -400,6 +400,10 @@ struct State {
     /// and driven by the drag handle in `views::sidebar`.
     sidebar_width: f32,
     sidebar_collapsed: bool,
+    /// Content-pane zoom factor (Ctrl +/-/0), 1.0 = 100%. Persisted via
+    /// [`config::load_ui_zoom`]/[`config::save_ui_zoom`], adjusted by the Ctrl chords
+    /// in [`handle_key`], and applied to the content pane in [`content_pane`].
+    ui_zoom: f32,
     /// Mobile (narrow window) single-pane state: `false` shows the sidebar
     /// (nav + queue + player), `true` shows the content page with a back bar —
     /// the old app's `mobileShowContent`. Ignored on desktop (both panes show).
@@ -553,6 +557,7 @@ impl State {
             searching: false,
             sidebar_width,
             sidebar_collapsed,
+            ui_zoom: sane_zoom(config::load_ui_zoom()),
             // The menu is the mobile home view; a nav tap flips this true.
             mobile_show_content: false,
             nav_hidden: config::load_nav_hidden(),
@@ -1827,21 +1832,36 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 /// The routed main content area, keyed `"content"`. On desktop it fills the
 /// space beside the sidebar; on mobile it is the whole window.
 fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -> El {
-    col()
-        .key("content")
-        .grow(1.0)
-        .min_h(0.0)
-        .child(match s.route {
-            Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
-            Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
-            Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
-            Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
-            Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
-            Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
-            Route::Genres => views::genres::genres_page(s, p).grow(1.0),
-            Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
-            Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
-        })
+    let page = match s.route {
+        Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
+        Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
+        Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
+        Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
+        Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
+        Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
+        Route::Genres => views::genres::genres_page(s, p).grow(1.0),
+        Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
+        Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
+    };
+    // Content zoom (Ctrl +/-/0): lay the page out in a `pane / zoom` logical box and
+    // scale it back up to fill the pane. Because the page — and its responsive grid —
+    // lays out in that smaller logical width, the grid re-columns: a true reflow zoom,
+    // not a paint-only magnify. At 100 % we skip the wrapper so the common path's
+    // layout is untouched. `content`'s own size is parent-driven (grow), so reading it
+    // back here is stable (no feedback with the wrapper we size from it).
+    let inner = if (s.ui_zoom - 1.0).abs() < 0.001 {
+        page
+    } else {
+        let [pane_w, pane_h] = cx.layout_size("content").unwrap_or([900.0, 700.0]);
+        col()
+            .key("content-zoom")
+            .w(pane_w / s.ui_zoom)
+            .h(pane_h / s.ui_zoom)
+            .scale(s.ui_zoom)
+            .origin(0.0, 0.0)
+            .child(page)
+    };
+    col().key("content").grow(1.0).min_h(0.0).child(inner)
 }
 
 /// Hide the crash prompt for this session — also the modal's Escape / outside-press
@@ -2088,6 +2108,42 @@ fn setup_art(s: &mut State, waker: Waker) {
     s.art.wire(waker);
 }
 
+/// Content-pane zoom bounds and step (Ctrl +/-/0). 1.0 = 100 %. **Zoom-IN only**:
+/// the reflow lays the pane out at `size / zoom`, so below 100 % that box is
+/// *larger* than the window and Rune's paint-scale (which doesn't shrink the
+/// layout box) clips it. The floor is therefore 100 %; a sub-100 % "fit more"
+/// zoom is a follow-up that needs logical size-scaling, not a paint transform.
+const MIN_ZOOM: f32 = 1.0;
+const MAX_ZOOM: f32 = 2.0;
+const ZOOM_STEP: f32 = 0.1;
+
+/// A loaded/requested zoom coerced to a sane value: non-finite → 1.0, else clamped
+/// to `[MIN_ZOOM, MAX_ZOOM]`. Guards a hand-edited config and keeps `set_zoom` total.
+fn sane_zoom(z: f32) -> f32 {
+    if z.is_finite() {
+        z.clamp(MIN_ZOOM, MAX_ZOOM)
+    } else {
+        1.0
+    }
+}
+
+/// The zoom one step `dir` (+1 in / −1 out) from `current`, snapped to the
+/// `ZOOM_STEP` grid and clamped to the legal range. Pure, so view and test agree.
+fn stepped_zoom(current: f32, dir: i32) -> f32 {
+    let steps = (current / ZOOM_STEP).round() + dir as f32;
+    let next = (steps * ZOOM_STEP * 100.0).round() / 100.0;
+    next.clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
+/// Set the content-pane zoom and persist it (a no-op when unchanged).
+fn set_zoom(s: &mut State, zoom: f32) {
+    let zoom = sane_zoom(zoom);
+    if (s.ui_zoom - zoom).abs() > f32::EPSILON {
+        s.ui_zoom = zoom;
+        config::save_ui_zoom(zoom);
+    }
+}
+
 /// `AppSpec::on_key`: transport and volume shortcuts, so the head is
 /// drivable from the keyboard alone (Space, arrows, `s`/`r`). Only
 /// key-*down* events ever reach `on_key` in the first place — Rune's
@@ -2149,6 +2205,11 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
             };
             s.host.send(Command::SetRepeat(next));
         }
+        // Content zoom (Ctrl +/-/0, ⌘ on macOS): "=" / "+" zoom in, "-" / "_" out,
+        // "0" resets to 100 %. Ctrl/⌘ chords arrive as `Key::Command(char)`.
+        Key::Command('=') | Key::Command('+') => set_zoom(s, stepped_zoom(s.ui_zoom, 1)),
+        Key::Command('-') | Key::Command('_') => set_zoom(s, stepped_zoom(s.ui_zoom, -1)),
+        Key::Command('0') => set_zoom(s, 1.0),
         _ => return false,
     }
     true
@@ -2277,6 +2338,85 @@ fn scene_artists(s: &mut State) {
 }
 fn scene_genres(s: &mut State) {
     s.route = Route::Genres;
+}
+/// Seed a synthetic library for `--snap` grid/zoom validation: 20 distinct albums
+/// across 8 artists and 6 genres — enough to fill and scroll the grid. Covers
+/// resolve to the music-note placeholder (no real files in a headless snapshot).
+fn seed_demo_library(s: &mut State) {
+    const ARTISTS: &[&str] = &[
+        "Aurora Fields",
+        "Beacon",
+        "Cobalt Trio",
+        "Dust & Echo",
+        "Elian Vos",
+        "Fenwick",
+        "Glass Harbor",
+        "Halcyon",
+    ];
+    const GENRES: &[&str] = &[
+        "Ambient",
+        "Classical",
+        "Electronic",
+        "Folk",
+        "Jazz",
+        "Hip-Hop",
+    ];
+    const TITLES: &[&str] = &["Nightfall", "Open Skies", "Reverie", "Lantern", "Meridian"];
+    let mut lib = Vec::new();
+    let mut id = 1u32;
+    for a in 0..20u32 {
+        let artist = ARTISTS[a as usize % ARTISTS.len()];
+        let genre = GENRES[a as usize % GENRES.len()];
+        let album = format!("{} {:02}", TITLES[a as usize % TITLES.len()], a + 1);
+        for t in 1..=4u32 {
+            lib.push(soul_player_host::TrackView {
+                id,
+                title: Some(format!("Track {t}")),
+                artist: Some(artist.to_string()),
+                album: Some(album.clone()),
+                genre: Some(genre.to_string()),
+                duration_secs: f64::from(120 + id % 180),
+            });
+            id += 1;
+        }
+    }
+    s.library = lib;
+}
+/// The Albums grid, seeded + at 100 % zoom (for `--snap` size/zoom validation).
+fn scene_grid(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Albums;
+}
+fn scene_grid_z150(s: &mut State) {
+    scene_grid(s);
+    s.ui_zoom = 1.5;
+}
+fn scene_grid_z200(s: &mut State) {
+    scene_grid(s);
+    s.ui_zoom = 2.0;
+}
+/// Seeded Artists browse (circular cards), for `--snap` validation.
+fn scene_demo_artists(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Artists;
+}
+/// Seeded Artist detail (circular hero + Top Songs + Discography) — the first
+/// seeded artist has three albums, so the Discography grid is populated.
+fn scene_demo_artist(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Artist;
+    s.open_artist = s.library.first().and_then(|t| t.artist.clone());
+}
+/// Same, at 150 % zoom — checks the content-pane zoom on a non-grid detail page.
+fn scene_demo_artist_z150(s: &mut State) {
+    scene_demo_artist(s);
+    s.ui_zoom = 1.5;
+}
+/// Seeded Genre detail (icon-tile hero + track list), for `--snap` validation.
+fn scene_demo_genre(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Genre;
+    s.open_genre = s.library.first().and_then(|t| t.genre.clone());
 }
 fn scene_artist_detail(s: &mut State) {
     s.route = Route::Artist;
@@ -2493,6 +2633,13 @@ fn main() -> anyhow::Result<()> {
             ("artists", scene_artists),
             ("artist-detail", scene_artist_detail),
             ("genres", scene_genres),
+            ("grid", scene_grid),
+            ("grid-z150", scene_grid_z150),
+            ("grid-z200", scene_grid_z200),
+            ("demo-artists", scene_demo_artists),
+            ("demo-artist", scene_demo_artist),
+            ("demo-artist-z150", scene_demo_artist_z150),
+            ("demo-genre", scene_demo_genre),
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
@@ -8089,6 +8236,259 @@ mod tests {
             mods: Mods::default(),
         });
         rt.frame(0.0);
+    }
+
+    /// How many album cards sit in the top row (same y as the highest card) — the
+    /// grid's current column count, read from the drawn card centres.
+    fn first_row_count(rt: &Runtime<State>, n: u32) -> usize {
+        let pts: Vec<(f32, f32)> = (0..n)
+            .filter_map(|i| rt.find(&format!("album-{i}")))
+            .collect();
+        let Some(top) = pts.iter().map(|p| p.1).reduce(f32::min) else {
+            return 0;
+        };
+        pts.iter().filter(|p| (p.1 - top).abs() < 5.0).count()
+    }
+
+    /// End-to-end: a Ctrl/⌘ chord driven through the real `Runtime::key` dispatch
+    /// (not a direct `handle_key` call) reaches the zoom handler and zooms. This is
+    /// the live key path; the unit test above can only prove the handler's logic.
+    #[test]
+    fn e2e_ctrl_chord_zooms_reflows_and_resets_via_the_runtime_key_path() {
+        let _g = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.ui_zoom = 1.0;
+        s.route = Route::Albums;
+        s.sidebar_collapsed = false;
+        // 18 distinct albums so the grid is multi-column and can reflow.
+        s.library = (1..=18u32)
+            .map(|a| soul_player_host::TrackView {
+                id: a,
+                title: Some(format!("T{a}")),
+                artist: Some("A".into()),
+                album: Some(format!("Album {a:02}")),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+            })
+            .collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        // `Runtime::new` doesn't wire `AppSpec::on_key`; the live app does. Set it so
+        // the chord routes exactly as it does in production.
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let base_cols = first_row_count(&rt, 18);
+        assert!(
+            base_cols >= 3,
+            "a wide window starts multi-column, got {base_cols}"
+        );
+
+        // Drive the REAL key path (Ctrl/⌘ chords): five `=` steps → 150 %.
+        let chord = |rt: &mut Runtime<State>, c: char| {
+            rt.key(KeyEvent {
+                key: Key::Command(c),
+                mods: Mods {
+                    cmd: true,
+                    ctrl: !cfg!(target_os = "macos"),
+                    ..Mods::default()
+                },
+            });
+            rt.frame(0.0);
+        };
+        for _ in 0..5 {
+            chord(&mut rt, '=');
+        }
+        rt.frame(0.0);
+        assert!(
+            (rt.state.ui_zoom - 1.5).abs() < 1e-4,
+            "five Ctrl+= steps zoom to 150 %, got {}",
+            rt.state.ui_zoom
+        );
+        assert!(
+            rt.find("content-zoom").is_some(),
+            "the zoom wrapper is active"
+        );
+        let zoomed_cols = first_row_count(&rt, 18);
+        assert!(
+            zoomed_cols < base_cols,
+            "zooming reflows to fewer columns: {zoomed_cols} vs {base_cols}"
+        );
+
+        // Ctrl+0 resets the zoom and restores the original column count.
+        chord(&mut rt, '0');
+        rt.frame(0.0);
+        assert_eq!(rt.state.ui_zoom, 1.0, "Ctrl+0 resets");
+        assert!(rt.find("content-zoom").is_none(), "no wrapper at 100 %");
+        assert_eq!(
+            first_row_count(&rt, 18),
+            base_cols,
+            "the column count is restored"
+        );
+    }
+
+    #[test]
+    fn album_grid_rows_are_not_looser_than_columns() {
+        // Regression: the card used to carry bottom padding that stacked on the
+        // grid's row gap, so the space between rows read as larger than between
+        // columns. The row gap must now be ≤ the column gap.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.library = (1..=18u32)
+            .map(|a| soul_player_host::TrackView {
+                id: a,
+                title: Some(format!("T{a}")),
+                artist: Some("A".into()),
+                album: Some(format!("Album {a:02}")),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+            })
+            .collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let rect = |k: &str| rt.presented(k).map(|r| r.0);
+        let cols = first_row_count(&rt, 18);
+        assert!(
+            cols >= 2,
+            "need multiple columns to compare gaps, got {cols}"
+        );
+        let a = rect("album-0").expect("first card present");
+        let b = rect("album-1").expect("second card present");
+        let below = rect(&format!("album-{cols}")).expect("first card of row 2 present");
+        // [x, y, w, h]: column gap between cards 0 and 1; row gap between card 0 and
+        // the card directly beneath it (the first of the next row).
+        let col_gap = b[0] - (a[0] + a[2]);
+        let row_gap = below[1] - (a[1] + a[3]);
+        assert!(row_gap > 0.0, "rows are separated (got {row_gap})");
+        assert!(
+            row_gap <= col_gap + 1.0,
+            "row gap ({row_gap:.1}) must not exceed column gap ({col_gap:.1})"
+        );
+    }
+
+    #[test]
+    fn zoom_step_snaps_to_the_grid_and_clamps() {
+        assert!((stepped_zoom(1.0, 1) - 1.1).abs() < 1e-4, "one step in");
+        assert!(
+            (stepped_zoom(1.5, -1) - 1.4).abs() < 1e-4,
+            "one step out, above the floor"
+        );
+        assert_eq!(
+            stepped_zoom(1.0, -1),
+            MIN_ZOOM,
+            "Ctrl- at 100 % holds at the floor (zoom-in only)"
+        );
+        assert_eq!(stepped_zoom(2.0, 1), MAX_ZOOM, "clamps at the ceiling");
+        assert_eq!(
+            stepped_zoom(0.5, -1),
+            MIN_ZOOM,
+            "a below-floor value clamps up"
+        );
+        assert_eq!(stepped_zoom(1.95, 1), MAX_ZOOM, "a near-max step clamps");
+        assert_eq!(sane_zoom(f32::NAN), 1.0, "non-finite → 100 %");
+        assert_eq!(sane_zoom(5.0), MAX_ZOOM, "out-of-range clamps up");
+        assert_eq!(sane_zoom(0.1), MIN_ZOOM, "out-of-range clamps down");
+    }
+
+    /// A primary-modifier chord (Ctrl elsewhere, ⌘ on macOS) — the form a real
+    /// `Key::Command(c)` carries, which `handle_key`'s zoom arms match.
+    fn cmd_chord(c: char) -> KeyEvent {
+        KeyEvent {
+            key: Key::Command(c),
+            mods: Mods {
+                cmd: true,
+                ctrl: !cfg!(target_os = "macos"),
+                ..Mods::default()
+            },
+        }
+    }
+
+    #[test]
+    fn ctrl_chords_zoom_the_content_and_reset() {
+        // `set_zoom` persists, so isolate the config file from the real one.
+        let _g = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.ui_zoom = 1.0;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // `Runtime::new` doesn't wire `AppSpec::on_key`; wire it so the chord routes
+        // through `Runtime::key` exactly as it does in the live app.
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        let hit = |rt: &mut Runtime<State>, c: char| {
+            rt.key(cmd_chord(c));
+            rt.frame(0.0);
+        };
+        hit(&mut rt, '='); // Ctrl/⌘ +
+        assert!((rt.state.ui_zoom - 1.1).abs() < 1e-4, "Ctrl+= zooms in");
+        hit(&mut rt, '=');
+        assert!((rt.state.ui_zoom - 1.2).abs() < 1e-4, "again → 120 %");
+        hit(&mut rt, '-'); // Ctrl/⌘ -
+        assert!((rt.state.ui_zoom - 1.1).abs() < 1e-4, "Ctrl+- zooms out");
+        hit(&mut rt, '0'); // Ctrl/⌘ 0
+        assert_eq!(rt.state.ui_zoom, 1.0, "Ctrl+0 resets to 100 %");
+    }
+
+    #[test]
+    fn ctrl_zoom_reflows_the_album_grid_into_fewer_columns() {
+        fn distinct_album(id: u32) -> soul_player_host::TrackView {
+            soul_player_host::TrackView {
+                id,
+                title: Some(format!("T{id}")),
+                artist: Some("A".into()),
+                album: Some(format!("Album {id:02}")),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+            }
+        }
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.ui_zoom = 1.0; // don't depend on any persisted zoom
+        s.library = (1..=24).map(distinct_album).collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        // Two frames so the grid reads its committed (post-zoom) width, not the fallback.
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("content-zoom").is_none(),
+            "no zoom wrapper at 100 %"
+        );
+        let base_cols = first_row_count(&rt, 24);
+        assert!(
+            base_cols >= 3,
+            "a wide window has several columns, got {base_cols}"
+        );
+
+        // Zoom to 150 %: the page lays out in pane/1.5 → the grid re-columns to fewer.
+        rt.update(|st: &mut State, _tx: &mut Tx| st.ui_zoom = 1.5);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("content-zoom").is_some(),
+            "the zoom wrapper wraps the pane at 150 %"
+        );
+        let zoomed_cols = first_row_count(&rt, 24);
+        assert!(
+            zoomed_cols < base_cols,
+            "zooming in reflows into fewer columns: {zoomed_cols} vs {base_cols}"
+        );
     }
 
     /// Tab forward until the element keyed `key` is focused, up to `max` presses.

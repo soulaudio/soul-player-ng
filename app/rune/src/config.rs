@@ -90,6 +90,8 @@ struct Config {
     sidebar_width: f32,
     /// Whether the sidebar is collapsed to its rail.
     sidebar_collapsed: bool,
+    /// Content-pane zoom factor (Ctrl +/-/0), 1.0 = 100%. Clamped on load.
+    ui_zoom: f32,
     /// UI language preference: `system` | `en` | `de` | `es` | `zh` | `cs`.
     locale: String,
     /// Primary nav items the user has hidden (by id: `home`/`albums`/`artists`/
@@ -261,6 +263,7 @@ impl Default for Config {
             theme: "system".into(),
             sidebar_width: DEFAULT_WIDTH,
             sidebar_collapsed: false,
+            ui_zoom: 1.0,
             locale: "system".into(),
             nav_hidden: Vec::new(),
             sources_disabled: Vec::new(),
@@ -483,6 +486,18 @@ pub fn save_sidebar(width: f32, collapsed: bool) {
     let mut cfg = load();
     cfg.sidebar_width = width;
     cfg.sidebar_collapsed = collapsed;
+    save(&cfg);
+}
+
+/// The persisted content-pane zoom (1.0 if unset). The caller sanitizes/clamps it.
+pub fn load_ui_zoom() -> f32 {
+    load().ui_zoom
+}
+
+/// Persist the content-pane zoom factor.
+pub fn save_ui_zoom(zoom: f32) {
+    let mut cfg = load();
+    cfg.ui_zoom = zoom;
     save(&cfg);
 }
 
@@ -1067,6 +1082,7 @@ mod tests {
             theme: "dark".into(),
             sidebar_width: 300.0,
             sidebar_collapsed: true,
+            ui_zoom: 1.3,
             locale: "de".into(),
             nav_hidden: vec!["home".into()],
             sources_disabled: Vec::new(),
@@ -1122,6 +1138,7 @@ mod tests {
         assert_eq!(back.window, cfg.window);
         assert_eq!(back.sidebar_width, 300.0);
         assert!(back.sidebar_collapsed);
+        assert_eq!(back.ui_zoom, 1.3);
         assert_eq!(back.locale, "de");
         assert!(back.eq_enabled);
         assert_eq!(back.eq_preamp, -3.0);
