@@ -41,10 +41,34 @@ fn testdata_dir() -> PathBuf {
 /// `soul_player_host::remote`'s own `start_server_over` test helper.
 struct TestServer {
     url: String,
+    signer: Arc<Signer>,
+    user_id: soul_server::domain::UserId,
     /// Kept alive so the server's worker threads (and listening socket) keep
     /// running for the test's duration; never read directly.
     _runtime: tokio::runtime::Runtime,
     _dir: tempfile::TempDir,
+}
+
+impl TestServer {
+    /// Mint a fresh, valid JWT access token for this server's seeded
+    /// `"e2e"` user directly off its `Signer` — this E2E test exercises the
+    /// add-source/sync/browse/play path, not the OAuth login dance itself
+    /// (that's `soul_player_host::remote`'s own `oauth_code_exchange_and_refresh`
+    /// test), so minting is the simpler way to get a VALID `access_token`.
+    fn token(&self) -> String {
+        self.signer
+            .mint(self.user_id, 3600, now_unix())
+            .expect("mint a test access token")
+    }
+}
+
+/// Seconds since the Unix epoch, for [`Signer::mint`]'s `now_unix`.
+fn now_unix() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before the Unix epoch")
+        .as_secs()
 }
 
 fn start_server(fixtures: &[&str]) -> TestServer {
@@ -58,7 +82,7 @@ fn start_server(fixtures: &[&str]) -> TestServer {
 
     let index = CoreIndex::scan(vec![library_root]).expect("scan the server library");
     let users = FileUsers::open(&dir.path().join("users.json")).expect("open user store");
-    users.add_user("e2e", "pw").expect("seed the e2e user");
+    let user_id = users.add_user("e2e", "pw").expect("seed the e2e user");
     let services = Arc::new(Services {
         index,
         media: FsMedia,
@@ -69,7 +93,12 @@ fn start_server(fixtures: &[&str]) -> TestServer {
         Signer::load_or_create(&signer_dir, "http://127.0.0.1".to_string())
             .expect("load_or_create signer"),
     );
-    let state = AppState::new(services, signer, "http://127.0.0.1".to_string(), 3600);
+    let state = AppState::new(
+        services,
+        signer.clone(),
+        "http://127.0.0.1".to_string(),
+        3600,
+    );
 
     let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
     let (addr_tx, addr_rx) = mpsc::channel();
@@ -90,6 +119,8 @@ fn start_server(fixtures: &[&str]) -> TestServer {
 
     TestServer {
         url: format!("http://{addr}"),
+        signer,
+        user_id,
         _runtime: runtime,
         _dir: dir,
     }
@@ -102,11 +133,21 @@ fn remote_add_sync_browse_play() {
     const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
     let server = start_server(FIXTURES);
 
-    // --- 2. Add + sync, through the public API a head actually calls. ---
+    // --- 2. Add + sync, through the public API a head actually calls.
+    //        NOTE (task E3): `add_remote_source(url)` now drives a real
+    //        browser OAuth login, which this E2E test can't do headlessly —
+    //        so it calls the token-taking sibling `add_remote_source_with_tokens`
+    //        with a JWT minted directly off the test server's `Signer`
+    //        instead. `add_remote_source` itself (browser login + keychain)
+    //        is E4's job to wire into a head and exercise interactively.
     let handle = PlayerHandle::offline();
+    let tokens = soul_player_host::remote::Tokens {
+        access: server.token(),
+        refresh: "unused-in-this-test".to_string(),
+    };
     handle
-        .add_remote_source(&server.url, "e2e", "pw")
-        .expect("add remote source: authenticate, fetch the index, fold it into the library");
+        .add_remote_source_with_tokens(&server.url, tokens)
+        .expect("add remote source: fetch the index, fold it into the library");
 
     // --- 3. Browse: the synced `.soulidx` populated the aggregate library. ---
     let views = handle.views();
@@ -132,15 +173,13 @@ fn remote_add_sync_browse_play() {
     );
 
     // --- 4. Play: resolve a remote track id through the SAME client-side
-    //        resolution `add_remote_source` uses (authenticate -> fetch_index
-    //        -> RemoteLibrary), then decode real audio from the downloaded
+    //        resolution `add_remote_source_with_tokens` uses (fetch_index ->
+    //        RemoteLibrary), then decode real audio from the downloaded
     //        original bytes. A separate `DownloadCache` (own temp dir) so this
     //        doesn't share the host's real on-disk cache.
-    let token =
-        soul_player_host::remote::authenticate(&server.url, "e2e", "pw").expect("authenticate");
     let remote_server = Arc::new(RemoteServer {
         url: server.url.clone(),
-        token,
+        access_token: server.token(),
     });
     let blobs = soul_player_host::remote::fetch_index(&remote_server).expect("fetch_index");
     let cache_dir = tempfile::tempdir().expect("create download cache dir");

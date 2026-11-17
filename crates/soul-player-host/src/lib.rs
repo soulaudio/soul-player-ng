@@ -7,7 +7,7 @@ pub mod analyzer;
 pub mod eq;
 // Public (not just `mod`) so the crate's own integration tests
 // (`tests/remote_e2e.rs`, a separate crate) can drive the exact same
-// authenticate/fetch_index/RemoteLibrary/DownloadCache path
+// login/fetch_index/RemoteLibrary/DownloadCache path
 // `add_remote_source` uses below, rather than re-implementing the wire
 // protocol a second time just to prove a downloaded track decodes.
 pub mod remote;
@@ -26,7 +26,7 @@ use soul_player_backend::library::TrackSource;
 use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
 use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
-use remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer};
+use remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer, TokenStore};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
@@ -1364,7 +1364,9 @@ impl PlayerHandle {
     /// against the wrong source. [`add_remote_source`](Self::add_remote_source)
     /// rebuilds the remote aggregate from this fresh library's generation of
     /// local bytes, so remote sources survive an explicit re-add, just not a
-    /// bare rescan yet (v0 — see `add_remote_source`'s doc comment).
+    /// bare rescan yet (v0 — see
+    /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)'s
+    /// doc comment).
     fn set_library(&self, lib: Arc<Library>) {
         {
             *self.inner.library.lock().expect("library mutex") = Some(Arc::clone(&lib));
@@ -1406,11 +1408,26 @@ impl PlayerHandle {
         }
     }
 
-    /// Authenticate against a soul-server, fetch its catalog index, and fold
-    /// it into the live library as a remote-resolving source: existing local
-    /// playback is unaffected, and a track whose id falls in the new
-    /// remote's block of sources resolves by downloading into a local cache
-    /// (see [`remote::DownloadCache`]) the first time it's played.
+    /// Log into a soul-server via the OAuth2.1 Authorization-Code+PKCE
+    /// browser flow ([`remote::login`]), durably store the issued refresh
+    /// token in the OS keychain ([`remote::KeyringStore`]) so a later
+    /// session can skip the interactive login, then fetch the catalog index
+    /// and fold it into the live library — see
+    /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)
+    /// for the shared tail (and for tests/E2E, which drive that entry point
+    /// directly to skip the browser and the real OS keychain).
+    pub fn add_remote_source(&self, url: &str) -> anyhow::Result<()> {
+        let tokens = remote::login(url)?;
+        remote::KeyringStore.save_refresh(url, &tokens.refresh)?;
+        self.add_remote_source_with_tokens(url, tokens)
+    }
+
+    /// Like [`add_remote_source`](Self::add_remote_source), but takes an
+    /// already-obtained [`remote::Tokens`] pair instead of driving the
+    /// browser login itself, and never touches the OS keychain — the entry
+    /// point for tests/E2E (against an in-process AS) and for a caller
+    /// (a head, or a refresh-token-backed relogin) that already has tokens
+    /// in hand.
     ///
     /// v0: rebuilds the aggregate from the host's already-scanned LOCAL
     /// `(root, bytes)` cache plus every remote added so far (this one
@@ -1418,11 +1435,14 @@ impl PlayerHandle {
     /// sources through `set_sources`/`WatchUpdate`/`SourceStatus` the way
     /// local sources are. A follow-up: fold remotes into that machinery (a
     /// remote `SourceStatus`, surviving a plain rescan without re-adding).
-    pub fn add_remote_source(&self, url: &str, user: &str, pass: &str) -> anyhow::Result<()> {
-        let token = remote::authenticate(url, user, pass)?;
+    pub fn add_remote_source_with_tokens(
+        &self,
+        url: &str,
+        tokens: remote::Tokens,
+    ) -> anyhow::Result<()> {
         let server = Arc::new(RemoteServer {
             url: url.trim_end_matches('/').to_string(),
-            token,
+            access_token: tokens.access,
         });
         let blobs = remote::fetch_index(&server)?;
 
