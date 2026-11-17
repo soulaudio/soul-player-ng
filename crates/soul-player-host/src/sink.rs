@@ -11,7 +11,7 @@ use soul_audio_desktop::sink::CpalSink;
 #[cfg(windows)]
 use soul_audio_desktop::{WasapiExclusiveSink, default_output_config};
 use soul_player_backend::library::TrackSource;
-use soul_player_backend::{AudioPlayer, Event};
+use soul_player_backend::{AudioPlayer, Event, OutputConfig};
 
 use crate::analyzer::SpectrumShared;
 use crate::eq::{DspShared, DspSink};
@@ -61,7 +61,7 @@ pub enum ExclusiveStatus {
 /// stream — `soul-audio-desktop`'s `wasapi-exclusive` feature is always enabled on
 /// Windows (see Cargo.toml), so `cfg(windows)` gates the exclusive arm. One concrete
 /// type so the pump's
-/// `FnOnce` factory returns a single `Sink` impl whichever mode wins — the engine
+/// `Fn` factory returns a single `Sink` impl whichever mode wins — the engine
 /// never sees which it got (it reads truth back through [`Sink::exclusive`] /
 /// [`Sink::stream_info`]).
 enum DeviceSink {
@@ -133,23 +133,19 @@ impl Sink for DeviceSink {
 /// Spawn the backend actor over the sink `mode` selects. The sink factory runs on
 /// the pump thread, so a `!Send` device sink is fine.
 ///
-/// `output_device` names the device the `Device` arm should open (one of
-/// [`soul_audio_desktop::output_device_names`]); `None` means the system default.
-/// `exclusive` asks for a bit-perfect WASAPI exclusive stream; `strict` makes that
-/// **exclusive-or-stop** (no fall-back to shared — the actor doesn't start if
-/// exclusive can't open). All are ignored by `Offline` (the `NullSink` has no device
-/// to pick). The outcome is recorded in `status`.
+/// `output_config` is the host's shared, live-mutable desired output (device /
+/// exclusive / strict): the `Device` factory reads it to open the sink, and the pump
+/// re-reads it every block so a device/exclusive change applies to the current track
+/// (it's ignored by `Offline`, whose `NullSink` has no device). The exclusive outcome
+/// is recorded in `status`.
 ///
 /// `lib` is a trait object (not a concrete `Library`) so a remote-aware
 /// aggregate ([`crate::remote::RemoteLibrary`]) can be spawned with it too —
 /// the same reason [`AudioPlayer::spawn`]'s own parameter is `Arc<dyn
 /// TrackSource>`.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_actor(
     mode: SinkMode,
-    output_device: Option<String>,
-    exclusive: bool,
-    strict: bool,
+    output_config: Arc<Mutex<OutputConfig>>,
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
@@ -158,33 +154,38 @@ pub(crate) fn build_actor(
 ) -> AudioPlayer {
     match mode {
         // Offline/headless has no audible output, so the EQ/analyzer are moot there.
-        SinkMode::Offline => AudioPlayer::spawn(|| Ok(NullSink::new(48_000, 2)), lib, on_event),
+        SinkMode::Offline => AudioPlayer::spawn(
+            |_cfg| Ok(NullSink::new(48_000, 2)),
+            output_config,
+            lib,
+            on_event,
+        ),
         SinkMode::Device => AudioPlayer::spawn(
-            device_sink_factory(output_device, exclusive, strict, status, dsp, spectrum),
+            device_sink_factory(status, dsp, spectrum),
+            output_config,
             lib,
             on_event,
         ),
     }
 }
 
-/// Build the pump-thread make-sink closure for the real device: try exclusive first
-/// when asked (bit-perfect, Windows only, at the device's native rate), else — or on
-/// an exclusive failure in non-strict mode — open the named shared device (falling
-/// back to the system default if it is gone), then wrap it in the [`DspSink`] so the
-/// DSP chain runs at the device rate. Called ONCE for the initial sink; per-track
-/// native-rate switching reopens this sink in place (`Sink::reopen`), so it's an
-/// `FnOnce`.
+/// Build the pump-thread make-sink closure for the real device: for the given
+/// [`OutputConfig`], try exclusive first when asked (bit-perfect, Windows only, at the
+/// device's native rate), else — or on an exclusive failure in non-strict mode — open
+/// the named shared device (falling back to the system default if it is gone), then
+/// wrap it in the [`DspSink`] so the DSP chain runs at the device rate. It's an `Fn`,
+/// not `FnOnce`: the pump calls it for the initial sink AND again on each live
+/// device/exclusive change (per-track native-rate switching still reopens the sink in
+/// place via `Sink::reopen`). `dsp` / `spectrum` are `Arc`s cloned into each sink so
+/// the one shared DSP chain + analyzer survive a rebuild.
 fn device_sink_factory(
-    output_device: Option<String>,
-    exclusive: bool,
-    strict: bool,
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
-) -> impl FnOnce() -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
-    move || {
-        let device = open_device_sink(output_device, exclusive, strict, &status)?;
-        Ok(DspSink::new(device, dsp, spectrum))
+) -> impl Fn(&OutputConfig) -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
+    move |cfg: &OutputConfig| {
+        let device = open_device_sink(cfg.device.clone(), cfg.exclusive, cfg.strict, &status)?;
+        Ok(DspSink::new(device, dsp.clone(), spectrum.clone()))
     }
 }
 
