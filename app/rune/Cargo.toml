@@ -45,7 +45,7 @@ rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a7
 # directly — this dep exists only to union that feature on across the graph, so
 # the dictionary segmenter (and the CJK data already baked via icu_segmenter's
 # compiled_data) is used. Must track Rune's parley version (0.12).
-parley_engine = { version = "0.12", features = ["complex-scripts"] }
+parley_engine = { version = "0.13", features = ["complex-scripts"] }
 soul-player-host = { path = "../../crates/soul-player-host" }
 anyhow = "1"
 # Per-user config dir, to persist settings across launches.
