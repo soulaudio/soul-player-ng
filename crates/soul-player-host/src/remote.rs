@@ -24,6 +24,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, bail};
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use sha2::{Digest, Sha256};
 use soul_audio_multicatalog::{pack, unpack};
 use soul_player_backend::library::{Library, TrackSource};
 
@@ -424,11 +427,305 @@ fn deframe(bytes: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
     Ok(blobs)
 }
 
+// ---------------------------------------------------------------------------
+// OAuth2.1 Authorization-Code + PKCE login (RFC 8252 native-app flow)
+// ---------------------------------------------------------------------------
+
+/// A fresh bearer token pair minted by the server's `/token` endpoint:
+/// `access` is the short-lived JWT sent as `Authorization: Bearer` on every
+/// `/v0/*` call (held OPAQUELY — this client never parses or validates it,
+/// it only ever forwards it); `refresh` is the long-lived, rotating token
+/// [`TokenStore`] persists so a later session can skip the interactive
+/// browser login via [`refresh`].
+pub struct Tokens {
+    pub access: String,
+    pub refresh: String,
+}
+
+/// Fetch `{url}/.well-known/openid-configuration` and pull out the two
+/// endpoints this client needs: where to send the user's browser
+/// (`authorization_endpoint`) and where to redeem a code/refresh token
+/// (`token_endpoint`).
+fn discover(url: &str) -> anyhow::Result<(String, String)> {
+    let endpoint = format!("{url}/.well-known/openid-configuration");
+    let response = reqwest::blocking::Client::new()
+        .get(&endpoint)
+        .send()
+        .with_context(|| format!("GET {endpoint}"))?;
+    if !response.status().is_success() {
+        bail!("GET {endpoint} failed: {}", response.status());
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .with_context(|| format!("parsing discovery document from {endpoint}"))?;
+    let authorization_endpoint = body["authorization_endpoint"]
+        .as_str()
+        .context("discovery document had no string `authorization_endpoint`")?
+        .to_string();
+    let token_endpoint = body["token_endpoint"]
+        .as_str()
+        .context("discovery document had no string `token_endpoint`")?
+        .to_string();
+    Ok((authorization_endpoint, token_endpoint))
+}
+
+/// `n` CSPRNG bytes via `getrandom` (the OS random source — no `rand` crate
+/// needed for this).
+fn random_bytes(n: usize) -> anyhow::Result<Vec<u8>> {
+    let mut buf = vec![0u8; n];
+    // `getrandom::Error` doesn't implement `std::error::Error` under this
+    // crate's default (no `std` feature) build, so `anyhow::Context` isn't
+    // available on it — fold it into an anyhow error via `Display` instead.
+    getrandom::getrandom(&mut buf)
+        .map_err(|e| anyhow::anyhow!("reading CSPRNG bytes for OAuth/PKCE: {e}"))?;
+    Ok(buf)
+}
+
+/// A fresh PKCE verifier/challenge pair (RFC 7636 §4.1/§4.2): `verifier` is
+/// base64url-no-pad of 32 random bytes; `challenge` is
+/// base64url-no-pad(SHA256(verifier)) (the `S256` method — the only one this
+/// server, or OAuth 2.1, supports).
+fn pkce_pair() -> anyhow::Result<(String, String)> {
+    let verifier = URL_SAFE_NO_PAD.encode(random_bytes(32)?);
+    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
+    Ok((verifier, challenge))
+}
+
+/// A fresh CSRF `state` value: base64url-no-pad of 16 random bytes.
+fn random_state() -> anyhow::Result<String> {
+    Ok(URL_SAFE_NO_PAD.encode(random_bytes(16)?))
+}
+
+/// Percent-encodes `s` for safe inclusion as a query-string value (RFC 3986
+/// unreserved set passes through unescaped; everything else becomes `%XX`).
+/// Mirrors the server's own `percent_encode` — written by hand here too
+/// rather than pulling in a URL crate for the one value (`redirect_uri`)
+/// this client ever needs to escape.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Builds the `/authorize` URL the system browser is pointed at: `challenge`
+/// and `state` are both already base64url (the unreserved alphabet, so they
+/// need no escaping); `redirect_uri` is the one value that does.
+fn authorize_url(auth_endpoint: &str, challenge: &str, state: &str, redirect_uri: &str) -> String {
+    format!(
+        "{auth_endpoint}?response_type=code&client_id=soul-player&redirect_uri={}\
+         &code_challenge={challenge}&code_challenge_method=S256&state={state}&scope=library",
+        percent_encode(redirect_uri)
+    )
+}
+
+/// Extract `key`'s value out of `url_or_query` (either a full URL or a bare
+/// `a=1&b=2` query string), percent-decoding simple `%XX` escapes. `None` if
+/// `key` isn't present.
+fn query_param(url_or_query: &str, key: &str) -> Option<String> {
+    let query = url_or_query
+        .split_once('?')
+        .map_or(url_or_query, |(_, q)| q);
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == key).then(|| percent_decode(v))
+    })
+}
+
+/// Decodes `%XX` escapes in a query-string value. Any malformed escape (a
+/// stray `%` not followed by two hex digits) is passed through unchanged
+/// rather than erroring — this only ever reads values this client or the
+/// trusted `soul-server` AS produced.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
+            if let Some(byte) = hex {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+}
+
+/// POST `token_endpoint` with `form` and parse a successful response into
+/// [`Tokens`]. Shared by [`exchange_code`] and [`refresh`] — the only
+/// difference between the two grants is which form fields they send.
+fn post_token(token_endpoint: &str, form: &[(&str, &str)]) -> anyhow::Result<Tokens> {
+    let response = reqwest::blocking::Client::new()
+        .post(token_endpoint)
+        .form(form)
+        .send()
+        .with_context(|| format!("POST {token_endpoint}"))?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        bail!("POST {token_endpoint} failed: {status} {body}");
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .with_context(|| format!("parsing token response from {token_endpoint}"))?;
+    let access = body["access_token"]
+        .as_str()
+        .context("token response had no string `access_token`")?
+        .to_string();
+    let refresh = body["refresh_token"]
+        .as_str()
+        .context("token response had no string `refresh_token`")?
+        .to_string();
+    Ok(Tokens { access, refresh })
+}
+
+/// Redeem an authorization `code` (and its PKCE `verifier`) for a fresh
+/// [`Tokens`] pair. The testable seam: everything [`login`] does AFTER the
+/// browser/loopback dance, independently exercisable against a real AS
+/// without a socket or a browser.
+pub fn exchange_code(
+    url: &str,
+    code: &str,
+    verifier: &str,
+    redirect_uri: &str,
+) -> anyhow::Result<Tokens> {
+    let (_, token_endpoint) = discover(url)?;
+    post_token(
+        &token_endpoint,
+        &[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("code_verifier", verifier),
+            ("redirect_uri", redirect_uri),
+            ("client_id", "soul-player"),
+        ],
+    )
+}
+
+/// Redeem a stored refresh token for a fresh [`Tokens`] pair. The server
+/// rotates refresh tokens on every use (see `soul_server::auth::refresh`),
+/// so the caller MUST persist the returned `refresh`, not just `access`.
+pub fn refresh(url: &str, refresh: &str) -> anyhow::Result<Tokens> {
+    let (_, token_endpoint) = discover(url)?;
+    post_token(
+        &token_endpoint,
+        &[("grant_type", "refresh_token"), ("refresh_token", refresh)],
+    )
+}
+
+/// Overall time this client waits for the user to finish the browser login
+/// before giving up — generous (a password manager, an SSO redirect, a
+/// distracted human) but finite, so [`login`] can never hang forever.
+const CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Accepts exactly one connection on `listener` (polling with a timeout
+/// rather than blocking forever, so a browser that never shows up can't hang
+/// the caller), reads its HTTP request line, and pulls `code`/`state` out of
+/// the `GET /callback?code=..&state=..` request — then writes back a
+/// minimal `200 OK` so the browser tab shows a friendly confirmation instead
+/// of hanging or erroring.
+fn accept_callback(listener: &std::net::TcpListener) -> anyhow::Result<(String, String)> {
+    use std::io::BufRead as _;
+
+    listener
+        .set_nonblocking(true)
+        .context("setting the loopback listener non-blocking")?;
+    let deadline = std::time::Instant::now() + CALLBACK_TIMEOUT;
+
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _addr)) => break stream,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= deadline {
+                    bail!("timed out waiting for the browser login to complete");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e).context("accepting the OAuth callback connection"),
+        }
+    };
+    stream
+        .set_nonblocking(false)
+        .context("setting the accepted OAuth callback connection blocking")?;
+
+    let (code, state) = {
+        let mut reader = std::io::BufReader::new(&stream);
+        let mut request_line = String::new();
+        reader
+            .read_line(&mut request_line)
+            .context("reading the OAuth callback request line")?;
+        // "GET /callback?code=..&state=.. HTTP/1.1"
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .context("malformed OAuth callback request line")?;
+        let code = query_param(path, "code").context("OAuth callback had no `code`")?;
+        let state = query_param(path, "state").context("OAuth callback had no `state`")?;
+        (code, state)
+    };
+
+    let body = "You can close this tab and return to soul-player.";
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
+    stream
+        .write_all(response.as_bytes())
+        .context("writing the OAuth callback response")?;
+
+    Ok((code, state))
+}
+
+/// The full interactive login: discover the AS, bind a LOOPBACK-only
+/// listener (never `0.0.0.0` — RFC 8252's native-app redirect is only ever
+/// safe to accept from the local machine), build the PKCE+state
+/// `/authorize` URL, open it in the system browser, accept the single
+/// resulting callback, verify `state` (a CSRF guard — see RFC 6749 §10.12),
+/// and exchange the code for [`Tokens`].
+pub fn login(url: &str) -> anyhow::Result<Tokens> {
+    let (auth_endpoint, _) = discover(url)?;
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .context("binding an ephemeral loopback port for the OAuth callback")?;
+    let port = listener
+        .local_addr()
+        .context("reading the bound loopback port")?
+        .port();
+    let redirect_uri = format!("http://127.0.0.1:{port}/callback");
+
+    let (verifier, challenge) = pkce_pair()?;
+    let state = random_state()?;
+    let open_url = authorize_url(&auth_endpoint, &challenge, &state, &redirect_uri);
+
+    open::that(&open_url).context("opening the system browser for login")?;
+
+    let (code, returned_state) = accept_callback(&listener)?;
+    if returned_state != state {
+        bail!("OAuth callback state mismatch — possible CSRF, aborting login");
+    }
+
+    exchange_code(url, &code, &verifier, &redirect_uri)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::mpsc;
 
     use soul_server::auth::signer::Signer;
     use soul_server::domain::ports::{IndexPort, UserStore};
@@ -523,6 +820,14 @@ mod tests {
     /// Like [`start_server`], but scanning `roots` instead of the whole
     /// `testdata/` tree — so a test can stand up a server over a DIFFERENT
     /// subset of fixtures than whatever it scanned locally.
+    ///
+    /// Binds the ephemeral port SYNCHRONOUSLY, up front, rather than inside
+    /// the spawned async task: the OAuth discovery document advertises
+    /// `authorization_endpoint`/`token_endpoint` built from `issuer`, so
+    /// `issuer` must be this server's actual bound `http://127.0.0.1:PORT`
+    /// base — not a fixed placeholder — or a client that resolves endpoints
+    /// via discovery (as [`exchange_code`]/[`refresh`]/[`login`] do) would
+    /// be handed URLs with no port, to a server that isn't there.
     fn start_server_over(roots: Vec<PathBuf>) -> TestServer {
         let dir = tempfile::tempdir().expect("create temp dir");
         let index = CoreIndex::scan(roots).expect("scan the given roots");
@@ -533,34 +838,29 @@ mod tests {
             media: FsMedia,
             users,
         });
+
+        let std_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        std_listener
+            .set_nonblocking(true)
+            .expect("set the bound listener non-blocking for tokio");
+        let addr = std_listener.local_addr().expect("bound socket has an addr");
+        let issuer = format!("http://{addr}");
+
         let signer_dir = dir.path().join("signer");
         let signer = Arc::new(
-            Signer::load_or_create(&signer_dir, "http://127.0.0.1".to_string())
-                .expect("load_or_create signer"),
+            Signer::load_or_create(&signer_dir, issuer.clone()).expect("load_or_create signer"),
         );
-        let state = AppState::new(
-            services.clone(),
-            signer,
-            "http://127.0.0.1".to_string(),
-            3600,
-        );
+        let state = AppState::new(services.clone(), signer, issuer, 3600);
 
         let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
-        let (addr_tx, addr_rx) = mpsc::channel();
         runtime.spawn(async move {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-                .await
-                .expect("bind an ephemeral port");
-            addr_tx
-                .send(listener.local_addr().expect("bound socket has an addr"))
-                .expect("send bound addr to the test thread");
+            let listener = tokio::net::TcpListener::from_std(std_listener)
+                .expect("convert the bound std listener into a tokio listener");
             axum::serve(listener, native::router(state))
                 .await
                 .expect("serve the native router");
         });
-        let addr = addr_rx
-            .recv()
-            .expect("server thread reports its bound address");
 
         TestServer {
             url: format!("http://{addr}"),
@@ -695,6 +995,115 @@ mod tests {
         let mut blobs = deframe(&framed).expect("deframe what we just framed");
         assert_eq!(blobs.len(), 1, "a single-root scan bakes one blob");
         blobs.remove(0)
+    }
+
+    /// Extract the value of `key` from `location`'s query string (used here
+    /// to pull `code`/`state` back out of the server's `302 Location`
+    /// header — the same parsing [`query_param`] does for the real loopback
+    /// callback in [`login`]).
+    fn location_param(location: &str, key: &str) -> Option<String> {
+        query_param(location, key)
+    }
+
+    /// Drives the full OAuth2.1 Authorization-Code+PKCE dance against a REAL
+    /// in-process AS, standing in for the browser with a non-redirecting
+    /// blocking client (so the test controls the `code`/`state` handoff
+    /// instead of a real loopback socket): `GET`+`POST /authorize` to mint a
+    /// code, [`exchange_code`] it for [`Tokens`] whose `access` the real
+    /// `/v0/index` accepts, then [`refresh`] into a second [`Tokens`] whose
+    /// `access` ALSO works and whose `refresh` has rotated.
+    #[test]
+    fn oauth_code_exchange_and_refresh() {
+        let server = start_server();
+        let redirect_uri = "http://127.0.0.1:1/callback".to_string();
+
+        let (verifier, challenge) = pkce_pair().expect("generate a PKCE pair");
+        let state = random_state().expect("generate a CSRF state");
+
+        let browser = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build a non-redirecting client");
+
+        let auth_endpoint = format!("{}/authorize", server.url);
+        let get_url = authorize_url(&auth_endpoint, &challenge, &state, &redirect_uri);
+        let get_resp = browser
+            .get(&get_url)
+            .send()
+            .expect("GET /authorize should succeed");
+        assert_eq!(
+            get_resp.status(),
+            reqwest::StatusCode::OK,
+            "expected the login form"
+        );
+
+        let post_resp = browser
+            .post(&auth_endpoint)
+            .form(&[
+                ("response_type", "code"),
+                ("client_id", "soul-player"),
+                ("redirect_uri", redirect_uri.as_str()),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+                ("state", state.as_str()),
+                ("scope", "library"),
+                ("username", "u"),
+                ("password", "p"),
+            ])
+            .send()
+            .expect("POST /authorize should succeed");
+        assert_eq!(
+            post_resp.status(),
+            reqwest::StatusCode::FOUND,
+            "right credentials should redirect with a code"
+        );
+        let location = post_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .expect("302 should carry a Location header")
+            .to_str()
+            .expect("Location header should be valid UTF-8")
+            .to_string();
+
+        let code = location_param(&location, "code").expect("Location should carry a code");
+        let returned_state =
+            location_param(&location, "state").expect("Location should carry state");
+        assert_eq!(returned_state, state, "state must round-trip unchanged");
+
+        let tokens = exchange_code(&server.url, &code, &verifier, &redirect_uri)
+            .expect("exchange_code should succeed with a valid code+verifier");
+        assert!(!tokens.access.is_empty());
+        assert!(!tokens.refresh.is_empty());
+
+        let index_resp = reqwest::blocking::Client::new()
+            .get(format!("{}/v0/index", server.url))
+            .bearer_auth(&tokens.access)
+            .send()
+            .expect("GET /v0/index");
+        assert_eq!(
+            index_resp.status(),
+            reqwest::StatusCode::OK,
+            "the exchanged access token should be accepted by /v0/index"
+        );
+
+        let refreshed = refresh(&server.url, &tokens.refresh)
+            .expect("refresh should succeed with a valid refresh token");
+        assert!(!refreshed.access.is_empty());
+        assert_ne!(
+            refreshed.refresh, tokens.refresh,
+            "refresh tokens must rotate on use"
+        );
+
+        let index_resp2 = reqwest::blocking::Client::new()
+            .get(format!("{}/v0/index", server.url))
+            .bearer_auth(&refreshed.access)
+            .send()
+            .expect("GET /v0/index with the refreshed token");
+        assert_eq!(
+            index_resp2.status(),
+            reqwest::StatusCode::OK,
+            "the refreshed access token should also be accepted by /v0/index"
+        );
     }
 
     #[test]
