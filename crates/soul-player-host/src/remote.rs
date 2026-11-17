@@ -30,13 +30,15 @@ use sha2::{Digest, Sha256};
 use soul_audio_multicatalog::{pack, unpack};
 use soul_player_backend::library::{Library, TrackSource};
 
-/// A soul-server the player has authenticated against: its base URL (no
-/// trailing slash) and the bearer token obtained at add-time via
-/// [`authenticate`].
+/// A soul-server the player has logged into via OAuth: its base URL (no
+/// trailing slash) and the short-lived JWT access token obtained via
+/// [`login`] (or [`exchange_code`]/[`refresh`]) and carried OPAQUELY — this
+/// client never parses or validates it, it only ever forwards it as a
+/// bearer token.
 #[derive(Clone, Debug)]
 pub struct RemoteServer {
     pub url: String,
-    pub token: String,
+    pub access_token: String,
 }
 
 /// Where a track's original media lives.
@@ -111,7 +113,7 @@ impl MediaFetch for DownloadCache {
         let endpoint = format!("{}/v0/track/{track_id}", server.url);
         let response = reqwest::blocking::Client::new()
             .get(&endpoint)
-            .bearer_auth(&server.token)
+            .bearer_auth(&server.access_token)
             .send()
             .with_context(|| format!("GET {endpoint}"))?;
         if !response.status().is_success() {
@@ -352,29 +354,6 @@ impl TokenStore for MemStore {
     }
 }
 
-/// Authenticate against `{url}/v0/auth` with a username/password and return
-/// the issued bearer token. A non-2xx response (wrong credentials, server
-/// error) is an `Err`.
-pub fn authenticate(url: &str, user: &str, pass: &str) -> anyhow::Result<String> {
-    let endpoint = format!("{url}/v0/auth");
-    let response = reqwest::blocking::Client::new()
-        .post(&endpoint)
-        .json(&serde_json::json!({ "user": user, "pass": pass }))
-        .send()
-        .with_context(|| format!("POST {endpoint}"))?;
-    if !response.status().is_success() {
-        bail!("POST {endpoint} failed: {}", response.status());
-    }
-
-    let body: serde_json::Value = response
-        .json()
-        .with_context(|| format!("parsing auth response from {endpoint}"))?;
-    body["token"]
-        .as_str()
-        .map(str::to_string)
-        .context("auth response had no string `token` field")
-}
-
 /// Fetch `{server.url}/v0/index` (Bearer-authenticated) and split the
 /// response's framed `.soulidx` bytes back into one blob per source root
 /// (see [`deframe`]). A non-2xx response is an `Err`.
@@ -382,7 +361,7 @@ pub fn fetch_index(server: &RemoteServer) -> anyhow::Result<Vec<Vec<u8>>> {
     let endpoint = format!("{}/v0/index", server.url);
     let response = reqwest::blocking::Client::new()
         .get(&endpoint)
-        .bearer_auth(&server.token)
+        .bearer_auth(&server.access_token)
         .send()
         .with_context(|| format!("GET {endpoint}"))?;
     if !response.status().is_success() {
@@ -728,6 +707,7 @@ mod tests {
     use std::sync::Arc;
 
     use soul_server::auth::signer::Signer;
+    use soul_server::domain::UserId;
     use soul_server::domain::ports::{IndexPort, UserStore};
     use soul_server::domain::service::Services;
     use soul_server::index::CoreIndex;
@@ -807,10 +787,34 @@ mod tests {
     struct TestServer {
         url: String,
         services: Arc<AppServices>,
+        signer: Arc<Signer>,
+        user_id: UserId,
         // Kept alive so the server's worker threads (and listening socket)
         // keep running for the test's duration; never read directly.
         _runtime: tokio::runtime::Runtime,
         _dir: tempfile::TempDir,
+    }
+
+    impl TestServer {
+        /// Mint a fresh, valid JWT access token for this server's seeded test
+        /// user directly off its `Signer` — the cheap stand-in for a full
+        /// browser/OAuth round-trip in tests that only need a VALID
+        /// `access_token` on a [`RemoteServer`], not to exercise login itself
+        /// (that's [`oauth_code_exchange_and_refresh`]'s job).
+        fn token(&self) -> String {
+            self.signer
+                .mint(self.user_id, 3600, now_unix())
+                .expect("mint a test access token")
+        }
+    }
+
+    /// Seconds since the Unix epoch, for [`Signer::mint`]'s `now_unix`.
+    fn now_unix() -> u64 {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before the Unix epoch")
+            .as_secs()
     }
 
     fn start_server() -> TestServer {
@@ -832,7 +836,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("create temp dir");
         let index = CoreIndex::scan(roots).expect("scan the given roots");
         let users = FileUsers::open(&dir.path().join("users.json")).expect("open user store");
-        users.add_user("u", "p").expect("seed test user");
+        let user_id = users.add_user("u", "p").expect("seed test user");
         let services = Arc::new(Services {
             index,
             media: FsMedia,
@@ -851,7 +855,7 @@ mod tests {
         let signer = Arc::new(
             Signer::load_or_create(&signer_dir, issuer.clone()).expect("load_or_create signer"),
         );
-        let state = AppState::new(services.clone(), signer, issuer, 3600);
+        let state = AppState::new(services.clone(), signer.clone(), issuer, 3600);
 
         let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
         runtime.spawn(async move {
@@ -865,29 +869,19 @@ mod tests {
         TestServer {
             url: format!("http://{addr}"),
             services,
+            signer,
+            user_id,
             _runtime: runtime,
             _dir: dir,
         }
     }
 
     #[test]
-    fn authenticate_accepts_right_password_and_rejects_wrong_password() {
-        let server = start_server();
-
-        let token = authenticate(&server.url, "u", "p").expect("authenticate with right creds");
-        assert!(!token.is_empty(), "expected a non-empty token");
-
-        let err = authenticate(&server.url, "u", "wrong").expect_err("wrong password should error");
-        assert!(!err.to_string().is_empty());
-    }
-
-    #[test]
     fn fetch_index_returns_blobs_that_rebuild_a_nonempty_library() {
         let server = start_server();
-        let token = authenticate(&server.url, "u", "p").expect("authenticate");
         let remote = RemoteServer {
             url: server.url.clone(),
-            token,
+            access_token: server.token(),
         };
 
         let blobs = fetch_index(&remote).expect("fetch_index");
@@ -906,7 +900,7 @@ mod tests {
         let server = start_server();
         let remote = RemoteServer {
             url: server.url.clone(),
-            token: "not-a-real-token".to_string(),
+            access_token: "not-a-real-token".to_string(),
         };
 
         assert!(fetch_index(&remote).is_err());
@@ -915,10 +909,9 @@ mod tests {
     #[test]
     fn download_cache_writes_matching_bytes_and_hits_cache_on_the_second_fetch() {
         let server = start_server();
-        let token = authenticate(&server.url, "u", "p").expect("authenticate");
         let remote = RemoteServer {
             url: server.url.clone(),
-            token,
+            access_token: server.token(),
         };
 
         let expected_path = server
@@ -956,10 +949,9 @@ mod tests {
     #[test]
     fn download_cache_fetch_of_unknown_track_errors() {
         let server = start_server();
-        let token = authenticate(&server.url, "u", "p").expect("authenticate");
         let remote = RemoteServer {
             url: server.url.clone(),
-            token,
+            access_token: server.token(),
         };
 
         let cache_dir = tempfile::tempdir().expect("create cache dir");
@@ -1106,6 +1098,85 @@ mod tests {
         );
     }
 
+    /// Drives the same OAuth2.1 Authorization-Code+PKCE dance as
+    /// [`oauth_code_exchange_and_refresh`] (GET+POST `/authorize` standing in
+    /// for the browser, then [`exchange_code`]) against `server`'s seeded
+    /// `"u"`/`"p"` user, returning the resulting [`Tokens`] — the "get Tokens
+    /// via the E2 flow" half of [`add_remote_source_with_tokens_lists_views`].
+    fn login_as_test_user(server: &TestServer) -> Tokens {
+        let redirect_uri = "http://127.0.0.1:1/callback".to_string();
+        let (verifier, challenge) = pkce_pair().expect("generate a PKCE pair");
+        let state = random_state().expect("generate a CSRF state");
+
+        let browser = reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("build a non-redirecting client");
+
+        let auth_endpoint = format!("{}/authorize", server.url);
+        let get_url = authorize_url(&auth_endpoint, &challenge, &state, &redirect_uri);
+        browser
+            .get(&get_url)
+            .send()
+            .expect("GET /authorize should succeed");
+
+        let post_resp = browser
+            .post(&auth_endpoint)
+            .form(&[
+                ("response_type", "code"),
+                ("client_id", "soul-player"),
+                ("redirect_uri", redirect_uri.as_str()),
+                ("code_challenge", challenge.as_str()),
+                ("code_challenge_method", "S256"),
+                ("state", state.as_str()),
+                ("scope", "library"),
+                ("username", "u"),
+                ("password", "p"),
+            ])
+            .send()
+            .expect("POST /authorize should succeed");
+        assert_eq!(
+            post_resp.status(),
+            reqwest::StatusCode::FOUND,
+            "right credentials should redirect with a code"
+        );
+        let location = post_resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .expect("302 should carry a Location header")
+            .to_str()
+            .expect("Location header should be valid UTF-8")
+            .to_string();
+
+        let code = location_param(&location, "code").expect("Location should carry a code");
+        let returned_state =
+            location_param(&location, "state").expect("Location should carry state");
+        assert_eq!(returned_state, state, "state must round-trip unchanged");
+
+        exchange_code(&server.url, &code, &verifier, &redirect_uri)
+            .expect("exchange_code should succeed with a valid code+verifier")
+    }
+
+    /// The E3 seam, end to end: a real OAuth login against an in-process AS
+    /// hands back [`Tokens`] whose `access` [`PlayerHandle::add_remote_source_with_tokens`]
+    /// carries straight into `fetch_index` — no browser, no OS keychain —
+    /// and the synced catalog shows up in [`PlayerHandle::views`].
+    #[test]
+    fn add_remote_source_with_tokens_lists_views() {
+        let server = start_server();
+        let tokens = login_as_test_user(&server);
+
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .add_remote_source_with_tokens(&server.url, tokens)
+            .expect("add remote source with tokens: fetch the index, fold it into the library");
+
+        assert!(
+            !handle.views().is_empty(),
+            "the authed fetch_index should have populated the aggregate library"
+        );
+    }
+
     #[test]
     fn remote_library_resolves_local_and_remote_tracks_with_a_nonzero_base() {
         // A local source with exactly ONE track, so its single id is
@@ -1134,10 +1205,9 @@ mod tests {
                 .unwrap_or_else(|e| panic!("copy remote fixture {name}: {e}"));
         }
         let server = start_server_over(vec![remote_src_dir.path().to_path_buf()]);
-        let token = authenticate(&server.url, "u", "p").expect("authenticate");
         let remote_server = Arc::new(RemoteServer {
             url: server.url.clone(),
-            token,
+            access_token: server.token(),
         });
         let remote_blobs = fetch_index(&remote_server).expect("fetch_index");
         let remote_count = Library::from_source_bytes(
