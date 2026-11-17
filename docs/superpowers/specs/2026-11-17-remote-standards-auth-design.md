@@ -38,7 +38,7 @@ Client libs: `oauth2` (PKCE + the code/refresh exchanges) + `openidconnect` (dis
 - `POST /revoke` (RFC 7009) — `token` (+ optional `token_type_hint`) → invalidate the refresh token; always `200`.
 
 ### Tokens
-- **Access = JWT** (RFC 9068), signed **RS256** (a 2048-bit RSA keypair generated on first run, persisted to the server dir so tokens + JWKS survive restart). Claims: `iss`, `sub` (user id), `aud` ("soul-player"), `exp` (TTL ~1 h), `iat`, `scope`. `/v0/*` verifies signature against the in-memory public key + checks `exp`/`iss`/`aud` — no network, no introspection (single process).
+- **Access = JWT** (RFC 9068), signed **EdDSA** (an Ed25519 keypair generated on first run, persisted to the server dir so tokens + JWKS survive restart). *(Implementation note: the original design said RS256; it was changed to EdDSA to avoid the `rsa` crate's RUSTSEC-2023-0071 Marvin timing advisory — see the plan.)* Claims: `iss`, `sub` (user id), `aud` ("soul-player"), `exp` (TTL ~1 h), `iat`, `scope`. `/v0/*` verifies signature against the in-memory public key + checks `exp`/`iss`/`aud` — no network, no introspection (single process).
 - **Refresh = opaque**, 32 CSPRNG bytes; **persisted durably** in the user store (a `refresh_tokens` section alongside users: `{token_hash, user_id, created_at}` — store a hash, not the raw token). Rotated on use; revocable. (This replaces the ephemeral in-memory tokens from PR #208.)
 - **Auth codes** live in-memory (short TTL) — fine to lose on restart.
 
@@ -46,7 +46,7 @@ Client libs: `oauth2` (PKCE + the code/refresh exchanges) + `openidconnect` (dis
 The `Authed` extractor (`proto/native.rs`) stops calling `state.check(opaque)` and instead **validates the `Bearer` JWT** (verify sig + claims) → `UserId` from `sub`. Remove the old `POST /v0/auth` route, `Services::authenticate`, and `FileUsers::issue_token`/`check` opaque-token methods (replaced by the AS token endpoints + the refresh store). Keep `verify`/`add_user` (used by `/authorize` + the CLI).
 
 ### Domain / hexagon fit
-A new `Auth` module (the AS) composes `UserStore` (verify) + a `RefreshStore` (persist/rotate/revoke refresh tokens) + a `Signer` (RS256 sign/verify, JWKS). These are ports/adapters like the rest. The protocol adapter (`proto/native.rs`) adds the AS routes. `AuthMode::ExternalOidc` (validate an external IdP's JWTs via its discovery/JWKS instead of our own) is **deferred** — the `/v0/*` JWT-validation path is written so it can later accept a configured external issuer with no client change.
+A new `Auth` module (the AS) composes `UserStore` (verify) + a `RefreshStore` (persist/rotate/revoke refresh tokens) + a `Signer` (EdDSA sign/verify, JWKS). These are ports/adapters like the rest. The protocol adapter (`proto/native.rs`) adds the AS routes. `AuthMode::ExternalOidc` (validate an external IdP's JWTs via its discovery/JWKS instead of our own) is **deferred** — the `/v0/*` JWT-validation path is written so it can later accept a configured external issuer with no client change.
 
 ## Client — Relying Party
 
@@ -68,7 +68,7 @@ A new `Auth` module (the AS) composes `UserStore` (verify) + a `RefreshStore` (p
 
 ## Scope (YAGNI)
 
-**In:** discovery, JWKS, `/authorize` (minimal HTML login), `/token` (auth-code+PKCE and refresh with rotation), `/revoke`, RS256 JWT access tokens, durable+rotating refresh tokens, `/v0/*` JWT validation, the client loopback+PKCE+browser login + refresh + keychain storage, migrated tests + E2E.
+**In:** discovery, JWKS, `/authorize` (minimal HTML login), `/token` (auth-code+PKCE and refresh with rotation), `/revoke`, EdDSA JWT access tokens, durable and rotating refresh tokens, `/v0/*` JWT validation, the client loopback+PKCE+browser login + refresh + keychain storage, migrated tests + E2E.
 
 **Out (follow-ups):** external-IdP delegation (`AuthMode::ExternalOidc`); DPoP, PAR, token introspection; multi-client / dynamic client registration; a styled login page / "remember me" browser session; scopes beyond a single `library` scope; **sub-project 2** (persistence of remotes, Sources rows, remove/revoke UI, offline/reconnect UX, off-thread connect).
 
@@ -82,5 +82,5 @@ A new `Auth` module (the AS) composes `UserStore` (verify) + a `RefreshStore` (p
 
 - **Server-side AS is security-sensitive** — PKCE S256 verification, single-use codes, redirect_uri loopback validation, refresh rotation/revocation, JWT `aud`/`iss`/`exp` checks must all be correct; each gets a dedicated test + review.
 - **`keyring` needs an OS secret backend** — headless CI/Linux may lack Secret Service; gate it behind the `TokenStore` trait (in-memory for tests) and document the Linux requirement (or a config-file fallback flagged as less-secure).
-- **RSA keygen on first run** adds a little startup cost (one-time) + a key file in the server dir (persist with tight perms).
+- **Ed25519 keygen on first run** adds a little startup cost (one-time) + a key file in the server dir (persist with tight perms).
 - **3-workspace churn**: server (root), host (client) — same merge discipline as PR #208; new deps (`jsonwebtoken`, `oauth2`, `openidconnect`, `keyring`, `open`) all pure-Rust / cross-platform (watch `cargo audit`/`deny` like last time).
