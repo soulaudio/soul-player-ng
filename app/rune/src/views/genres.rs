@@ -185,6 +185,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         .collect();
     let search = text_input(&s.genre_search, type_::ITEM)
         .key("genre-search")
+        .single_line()
         .label(t!("genre.searchPlaceholder").to_string())
         .w_full()
         .px(space::MD)

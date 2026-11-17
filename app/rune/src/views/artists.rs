@@ -218,7 +218,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .layout_size("artist-discography")
         .map(|[w, _]| w)
         .unwrap_or(820.0);
-    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
+    let card_w = grid::columns(pane, grid::MIN_CARD, space::GUTTER).1;
     let toggle = |key: &str, glyph: &'static rune::Icon, label: String, active: bool| {
         let want_list = key == "disc-toggle-list";
         el().key(key.to_string())

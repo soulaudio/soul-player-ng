@@ -11,18 +11,26 @@ use crate::ui::space;
 /// ~144 pt at a desktop width (its `lg` tier).
 pub(crate) const MIN_CARD: f32 = 130.0;
 
-/// Columns and per-card width for a `pane_w`-wide content pane: the column count
-/// is the most that fit at `min_card` (dropping a column below it), and each card
+/// Columns and per-card width for an already-available inner width (no padding
+/// subtraction): the column count is the most that fit at `min_card`, and each
+/// card takes the exact remaining fraction so the cards stretch to fill. Pure.
+pub(crate) fn columns(avail: f32, min_card: f32, gap: f32) -> (usize, f32) {
+    let avail = avail.max(min_card);
+    let cols = (((avail + gap) / (min_card + gap)).floor() as usize).max(1);
+    let card_w = (avail - (cols as f32 - 1.0) * gap) / cols as f32;
+    (cols, card_w)
+}
+
+/// As [`columns`], but for a `pane_w`-wide pane whose grid carries its own
+/// `space::PANE` padding on each edge (the browse pages). The column count is
+/// the most that fit at `min_card` (dropping a column below it), and each card
 /// takes the **exact** remaining fraction so the cards STRETCH to fill the pane's
 /// full width — edge to edge at every window size, resizing smoothly as the pane
 /// resizes, then reflowing to more/fewer columns past `min_card`. (A floored fixed
 /// width used to leave a trailing gap that grew between breakpoints.) Pure, so grid
 /// and test share one rule.
 pub(crate) fn responsive_grid(pane_w: f32, min_card: f32, gap: f32) -> (usize, f32) {
-    let avail = (pane_w - 2.0 * space::PANE).max(min_card);
-    let cols = (((avail + gap) / (min_card + gap)).floor() as usize).max(1);
-    let card_w = (avail - (cols as f32 - 1.0) * gap) / cols as f32;
-    (cols, card_w)
+    columns(pane_w - 2.0 * space::PANE, min_card, gap)
 }
 
 #[cfg(test)]

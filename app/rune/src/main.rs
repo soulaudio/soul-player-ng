@@ -127,7 +127,16 @@ pub(crate) fn navigate_to(
     open_artist: Option<String>,
     open_genre: Option<String>,
 ) {
-    s.nav_history.push(here(s));
+    let target = NavEntry {
+        route,
+        open_album: open_album.clone(),
+        open_artist: open_artist.clone(),
+        open_genre: open_genre.clone(),
+    };
+    let current = here(s);
+    if current != target {
+        s.nav_history.push(current);
+    }
     s.route = route;
     s.open_album = open_album;
     s.open_artist = open_artist;
