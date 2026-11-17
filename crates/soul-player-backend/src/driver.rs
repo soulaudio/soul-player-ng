@@ -727,6 +727,46 @@ mod tests {
         assert_eq!(tried, None, "a successful switch clears the retry latch");
     }
 
+    /// Regression for "some tracks play ~2× slow / distorted on bit-perfect output":
+    /// an implicit HE-AAC (SBR) track reports its AAC core rate (24k) at load, then
+    /// flips to the 2× SBR rate (48k) after the first frame. On an exclusive device the
+    /// native-rate switch reopens to the live 48k — and the deck must rebuild its
+    /// resampler at the live rate too, else the stale 24k→48k resampler upsamples
+    /// already-48k content 2× (half speed). After the switch the path must be
+    /// bit-perfect (no resampling) at the live rate. With the stale-rate bug
+    /// `resampling` stays true even though `decoded == device`.
+    #[test]
+    fn an_sbr_rate_flip_stays_bit_perfect_on_exclusive() {
+        let mut p = exclusive_player(44_100); // exclusive device defaulting to 44.1k
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            // Core 24k → SBR 48k once the first frame is decoded.
+            p.provide(id, ConstDecoder::new_sbr(24_000, 48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        p.pump().unwrap(); // first decode confirms SBR → the decoder now reports 48k
+
+        let mut tried = None;
+        maybe_switch_native_rate(&mut p, &mut tried);
+
+        let sp = project_signal_path(&p).expect("loaded");
+        assert_eq!(sp.decoded_rate, 48_000, "the live (post-SBR) decode rate");
+        assert_eq!(sp.device_rate, 48_000, "reopened to the live rate");
+        assert!(
+            !sp.resampling,
+            "bit-perfect after the SBR flip — no stale resampler desyncing speed, got {sp:?}"
+        );
+        assert_eq!(tried, None, "a successful switch clears the retry latch");
+    }
+
     #[test]
     fn native_rate_switch_leaves_a_shared_sink_untouched() {
         // A shared sink (NullSink, exclusive() == false) must NEVER reopen — shared
