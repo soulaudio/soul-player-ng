@@ -1,3 +1,4 @@
+pub mod refresh;
 pub mod signer;
 
 /// Claims embedded in a minted EdDSA access token.
