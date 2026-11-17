@@ -163,6 +163,11 @@ impl Sink for CapturingSink {
 /// Seekable (clamps to the total) so it satisfies `SeekableDecoder`.
 pub(crate) struct ConstDecoder {
     rate: u32,
+    /// If set, `stream_info().sample_rate` flips to this once the first frame has been
+    /// decoded — mimicking implicit HE-AAC (SBR), which reports the AAC core rate at
+    /// load and the 2× output rate only after decoding starts.
+    sbr_rate: Option<u32>,
+    confirmed: bool,
     channels: u16,
     total: u64,
     pos: u64,
@@ -173,6 +178,28 @@ impl ConstDecoder {
     pub(crate) fn new(rate: u32, channels: u16, frames: u64, value: i32) -> Self {
         Self {
             rate,
+            sbr_rate: None,
+            confirmed: false,
+            channels,
+            total: frames,
+            pos: 0,
+            value,
+        }
+    }
+
+    /// A decoder that mimics implicit HE-AAC (SBR): reports `core_rate` at load, then
+    /// flips `stream_info().sample_rate` to `sbr_rate` after the first `decode_into`.
+    pub(crate) fn new_sbr(
+        core_rate: u32,
+        sbr_rate: u32,
+        channels: u16,
+        frames: u64,
+        value: i32,
+    ) -> Self {
+        Self {
+            rate: core_rate,
+            sbr_rate: Some(sbr_rate),
+            confirmed: false,
             channels,
             total: frames,
             pos: 0,
@@ -184,12 +211,17 @@ impl ConstDecoder {
 impl Decoder for ConstDecoder {
     fn stream_info(&self) -> StreamInfo {
         StreamInfo {
-            sample_rate: self.rate,
+            sample_rate: if self.confirmed {
+                self.sbr_rate.unwrap_or(self.rate)
+            } else {
+                self.rate
+            },
             channels: self.channels,
             format: SampleFormat::Int { bits: 24 },
         }
     }
     fn decode_into(&mut self, out: &mut [i32]) -> Result<usize, DecodeError> {
+        self.confirmed = true; // decoding the first frame confirms the (SBR) output rate
         let ch = self.channels as u64;
         let remaining_frames = self.total.saturating_sub(self.pos);
         let want_frames = (out.len() as u64 / ch).min(remaining_frames);
