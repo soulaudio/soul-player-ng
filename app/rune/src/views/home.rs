@@ -149,7 +149,7 @@ pub fn home_page(s: &State, p: &Palette, _cx: &Cx<State>, scale: f32) -> El {
             .key("home-albums")
             .role("grid")
             .flex_wrap()
-            .gap(space::GUTTER);
+            .gaps(space::MD, space::GUTTER);
         for (slot, a) in albums.iter().take(PREVIEW).enumerate() {
             grid = grid.child(album_tile(s, p, slot, a.name.clone(), a.cover_id, scale));
         }
