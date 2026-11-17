@@ -2313,6 +2313,29 @@ fn scene_grid_z200(s: &mut State) {
     scene_grid(s);
     s.ui_zoom = 2.0;
 }
+/// Seeded Artists browse (circular cards), for `--snap` validation.
+fn scene_demo_artists(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Artists;
+}
+/// Seeded Artist detail (circular hero + Top Songs + Discography) — the first
+/// seeded artist has three albums, so the Discography grid is populated.
+fn scene_demo_artist(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Artist;
+    s.open_artist = s.library.first().and_then(|t| t.artist.clone());
+}
+/// Same, at 150 % zoom — checks the content-pane zoom on a non-grid detail page.
+fn scene_demo_artist_z150(s: &mut State) {
+    scene_demo_artist(s);
+    s.ui_zoom = 1.5;
+}
+/// Seeded Genre detail (icon-tile hero + track list), for `--snap` validation.
+fn scene_demo_genre(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Genre;
+    s.open_genre = s.library.first().and_then(|t| t.genre.clone());
+}
 fn scene_artist_detail(s: &mut State) {
     s.route = Route::Artist;
     s.open_artist = s.library.first().and_then(|t| t.artist.clone());
@@ -2531,6 +2554,10 @@ fn main() -> anyhow::Result<()> {
             ("grid", scene_grid),
             ("grid-z150", scene_grid_z150),
             ("grid-z200", scene_grid_z200),
+            ("demo-artists", scene_demo_artists),
+            ("demo-artist", scene_demo_artist),
+            ("demo-artist-z150", scene_demo_artist_z150),
+            ("demo-genre", scene_demo_genre),
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
