@@ -2395,6 +2395,16 @@ fn scene_grid_z200(s: &mut State) {
     scene_grid(s);
     s.ui_zoom = 2.0;
 }
+/// Albums at 150 %/200 % zoom over the *loaded* library (no seed): pair with
+/// `SOUL_PLAYER_FOLDER=<dir>` to snapshot real covers under zoom.
+fn scene_albums_z150(s: &mut State) {
+    s.route = Route::Albums;
+    s.ui_zoom = 1.5;
+}
+fn scene_albums_z200(s: &mut State) {
+    s.route = Route::Albums;
+    s.ui_zoom = 2.0;
+}
 /// Seeded Artists browse (circular cards), for `--snap` validation.
 fn scene_demo_artists(s: &mut State) {
     seed_demo_library(s);
@@ -2636,6 +2646,8 @@ fn main() -> anyhow::Result<()> {
             ("grid", scene_grid),
             ("grid-z150", scene_grid_z150),
             ("grid-z200", scene_grid_z200),
+            ("albums-z150", scene_albums_z150),
+            ("albums-z200", scene_albums_z200),
             ("demo-artists", scene_demo_artists),
             ("demo-artist", scene_demo_artist),
             ("demo-artist-z150", scene_demo_artist_z150),
