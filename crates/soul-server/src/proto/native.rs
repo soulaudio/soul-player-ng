@@ -24,12 +24,12 @@ use crate::domain::service::Services;
 use crate::domain::{DomainError, UserId};
 use crate::index::CoreIndex;
 use crate::media::FsMedia;
-use crate::store::SqliteUsers;
+use crate::store::FileUsers;
 
 /// The concrete `Services` instantiation the native protocol serves —
-/// the real core/filesystem/sqlite adapters, not the domain layer's test
+/// the real core/filesystem/flat-file adapters, not the domain layer's test
 /// fakes.
-pub type AppServices = Services<CoreIndex, FsMedia, SqliteUsers>;
+pub type AppServices = Services<CoreIndex, FsMedia, FileUsers>;
 
 /// Router/extractor state: one shared `Services` for the process lifetime.
 type AppState = Arc<AppServices>;

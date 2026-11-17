@@ -1,7 +1,7 @@
 //! HTTP-level tests for the native `/v0` protocol, exercised through
 //! [`tower::ServiceExt::oneshot`] over a real `Services` (no socket bound):
 //! a `CoreIndex` scanning the repo's `testdata/` fixtures, the real
-//! `FsMedia`, and a temp-file `SqliteUsers` with one seeded user.
+//! `FsMedia`, and a temp-file `FileUsers` with one seeded user.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use soul_server::domain::service::Services;
 use soul_server::index::CoreIndex;
 use soul_server::media::FsMedia;
 use soul_server::proto::native::{self, AppServices};
-use soul_server::store::SqliteUsers;
+use soul_server::store::FileUsers;
 
 /// Path to the committed `testdata/` fixtures, two levels up from this
 /// crate's manifest dir to the repo root (same convention `index.rs`'s own
@@ -28,7 +28,7 @@ fn testdata_dir() -> PathBuf {
 }
 
 /// Build a router over a real `Services`: `CoreIndex` scanning `testdata/`,
-/// `FsMedia`, and a fresh temp-file `SqliteUsers` with one seeded user
+/// `FsMedia`, and a fresh temp-file `FileUsers` with one seeded user
 /// (`"u"` / `"p"`). Returns the router plus the `TempDir` guard (keep it
 /// alive for the test's duration) and the `Services` handle for assertions
 /// that need to look something up directly (e.g. `locate`).
@@ -36,7 +36,7 @@ fn test_router() -> (Router, tempfile::TempDir, Arc<AppServices>) {
     let dir = tempfile::tempdir().unwrap();
     let index = CoreIndex::scan(vec![testdata_dir()]).expect("scan testdata/");
     let media = FsMedia;
-    let users = SqliteUsers::open(&dir.path().join("users.db")).expect("open sqlite store");
+    let users = FileUsers::open(&dir.path().join("users.json")).expect("open user store");
     users.add_user("u", "p").expect("seed test user");
 
     let services = Arc::new(Services {

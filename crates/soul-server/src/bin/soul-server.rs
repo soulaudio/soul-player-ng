@@ -11,7 +11,7 @@ use soul_server::domain::service::Services;
 use soul_server::index::CoreIndex;
 use soul_server::media::FsMedia;
 use soul_server::proto::native;
-use soul_server::store::SqliteUsers;
+use soul_server::store::FileUsers;
 
 #[derive(Parser)]
 #[command(name = "soul-server", about = "Soul Audio remote source server")]
@@ -59,7 +59,7 @@ async fn run_serve(config_path: &std::path::Path) -> anyhow::Result<()> {
     let cfg = config::load(config_path)?;
     let index = CoreIndex::scan(cfg.roots.clone())?;
     let media = FsMedia;
-    let users = SqliteUsers::open(&cfg.db)?;
+    let users = FileUsers::open(&cfg.db)?;
     let services = Arc::new(Services {
         index,
         media,
@@ -72,7 +72,7 @@ fn run_user_command(config_path: &std::path::Path, command: UserCommand) -> anyh
     match command {
         UserCommand::Add { name, password } => {
             let cfg = config::load(config_path)?;
-            let store = SqliteUsers::open(&cfg.db)?;
+            let store = FileUsers::open(&cfg.db)?;
             let password = match password {
                 Some(password) => password,
                 None => rpassword::prompt_password(format!("Password for {name}: "))?,

@@ -336,7 +336,7 @@ mod tests {
     use soul_server::index::CoreIndex;
     use soul_server::media::FsMedia;
     use soul_server::proto::native::{self, AppServices};
-    use soul_server::store::SqliteUsers;
+    use soul_server::store::FileUsers;
 
     use super::*;
 
@@ -367,7 +367,7 @@ mod tests {
     fn start_server_over(roots: Vec<PathBuf>) -> TestServer {
         let dir = tempfile::tempdir().expect("create temp dir");
         let index = CoreIndex::scan(roots).expect("scan the given roots");
-        let users = SqliteUsers::open(&dir.path().join("users.db")).expect("open sqlite store");
+        let users = FileUsers::open(&dir.path().join("users.json")).expect("open user store");
         users.add_user("u", "p").expect("seed test user");
         let services = Arc::new(Services {
             index,

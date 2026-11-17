@@ -25,7 +25,7 @@ use soul_server::domain::service::Services;
 use soul_server::index::CoreIndex;
 use soul_server::media::FsMedia;
 use soul_server::proto::native;
-use soul_server::store::SqliteUsers;
+use soul_server::store::FileUsers;
 
 /// Path to the repo's committed `testdata/` fixtures, three levels up from
 /// this crate's manifest dir to the repo root (same convention as
@@ -56,7 +56,7 @@ fn start_server(fixtures: &[&str]) -> TestServer {
     }
 
     let index = CoreIndex::scan(vec![library_root]).expect("scan the server library");
-    let users = SqliteUsers::open(&dir.path().join("users.db")).expect("open sqlite user store");
+    let users = FileUsers::open(&dir.path().join("users.json")).expect("open user store");
     users.add_user("e2e", "pw").expect("seed the e2e user");
     let services = Arc::new(Services {
         index,

@@ -3,12 +3,12 @@
 use assert_cmd::Command;
 
 use soul_server::domain::ports::UserStore;
-use soul_server::store::SqliteUsers;
+use soul_server::store::FileUsers;
 
 #[test]
 fn user_add_creates_a_verifiable_user() {
     let dir = tempfile::tempdir().unwrap();
-    let db_path = dir.path().join("u.db");
+    let db_path = dir.path().join("u.json");
     let config_path = dir.path().join("soul-server.toml");
     std::fs::write(
         &config_path,
@@ -33,6 +33,6 @@ fn user_add_creates_a_verifiable_user() {
         .assert()
         .success();
 
-    let store = SqliteUsers::open(&db_path).unwrap();
+    let store = FileUsers::open(&db_path).unwrap();
     assert!(store.verify("bob", "pw").is_some());
 }
