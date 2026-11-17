@@ -46,8 +46,7 @@ impl Signer {
             let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
                 .map_err(|_| anyhow::anyhow!("failed to generate Ed25519 keypair"))?;
             let bytes = pkcs8.as_ref().to_vec();
-            std::fs::write(&key_path, &bytes)?;
-            restrict_permissions(&key_path)?;
+            create_key_file(&key_path, &bytes)?;
             bytes
         };
 
@@ -113,6 +112,19 @@ impl Signer {
         Some(claims)
     }
 
+    /// Test-only: signs `claims` verbatim with this signer's real EdDSA key,
+    /// bypassing the normalization `mint` applies (issuer/audience/expiry).
+    /// This lets adversarial tests forge specific claim values (a bad `aud`
+    /// or `iss`) while still producing a token with a genuinely valid
+    /// signature, so `verify` is exercised on the claims check rather than
+    /// the signature check.
+    #[cfg(test)]
+    fn sign_claims_for_test(&self, claims: &AccessClaims) -> String {
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(self.kid.clone());
+        encode(&header, claims, &self.encoding_key).expect("encode forged claims")
+    }
+
     /// Exports the public half of the keypair as a JWK Set, suitable for
     /// serving at `/jwks`.
     pub fn jwks(&self) -> serde_json::Value {
@@ -129,15 +141,34 @@ impl Signer {
     }
 }
 
+/// Creates `path` and writes `bytes` to it as a single atomic operation. On
+/// Unix, the file is opened with mode `0600` from the moment it is created,
+/// so the private key is never briefly world-readable (unlike a separate
+/// write-then-chmod, which leaves a window with the default, more permissive
+/// mode). `create_new` ensures we never clobber a pre-existing key file.
 #[cfg(unix)]
-fn restrict_permissions(path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+fn create_key_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    file.write_all(bytes)?;
     Ok(())
 }
 
 #[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) -> anyhow::Result<()> {
+fn create_key_file(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
     Ok(())
 }
 
@@ -196,5 +227,141 @@ mod tests {
         assert_eq!(jwks["keys"][0]["alg"], "EdDSA");
         let x = jwks["keys"][0]["x"].as_str().expect("x is a string");
         assert!(!x.is_empty());
+    }
+
+    // --- Adversarial regression guards -------------------------------
+    //
+    // These pin down `verify`'s rejection behavior against the classic JWT
+    // forgery attacks, so a future refactor can't silently start accepting
+    // forged tokens. Each constructs a forged token and asserts `verify`
+    // returns `None`.
+
+    #[test]
+    fn rejects_token_signed_by_a_different_keypair() {
+        let dir1 = tempfile::tempdir().expect("tempdir 1");
+        let dir2 = tempfile::tempdir().expect("tempdir 2");
+        let now = now_unix();
+
+        let signer1 =
+            Signer::load_or_create(dir1.path(), "http://h".to_string()).expect("signer 1");
+        // Independent keypair: a different temp dir, same issuer, so only
+        // the signature differs.
+        let signer2 =
+            Signer::load_or_create(dir2.path(), "http://h".to_string()).expect("signer 2");
+
+        let forged = signer2.mint(7, 3600, now).expect("mint with wrong key");
+
+        assert!(
+            signer1.verify(&forged, now).is_none(),
+            "a token signed by a different keypair must not verify"
+        );
+    }
+
+    #[test]
+    fn rejects_token_with_forged_audience() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = now_unix();
+        let signer =
+            Signer::load_or_create(dir.path(), "http://h".to_string()).expect("load_or_create");
+
+        let forged_claims = AccessClaims {
+            iss: "http://h".to_string(),
+            sub: "7".to_string(),
+            aud: "not-soul-player".to_string(),
+            exp: usize::try_from(now + 3600).expect("exp fits usize"),
+            iat: usize::try_from(now).expect("iat fits usize"),
+            scope: "library".to_string(),
+        };
+        let forged = signer.sign_claims_for_test(&forged_claims);
+
+        assert!(
+            signer.verify(&forged, now).is_none(),
+            "a token with a forged `aud` must not verify, even genuinely signed"
+        );
+    }
+
+    #[test]
+    fn rejects_token_with_forged_issuer() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = now_unix();
+        let signer =
+            Signer::load_or_create(dir.path(), "http://h".to_string()).expect("load_or_create");
+
+        let forged_claims = AccessClaims {
+            iss: "http://attacker".to_string(),
+            sub: "7".to_string(),
+            aud: "soul-player".to_string(),
+            exp: usize::try_from(now + 3600).expect("exp fits usize"),
+            iat: usize::try_from(now).expect("iat fits usize"),
+            scope: "library".to_string(),
+        };
+        let forged = signer.sign_claims_for_test(&forged_claims);
+
+        assert!(
+            signer.verify(&forged, now).is_none(),
+            "a token with a forged `iss` must not verify, even genuinely signed"
+        );
+    }
+
+    #[test]
+    fn rejects_hs256_alg_confusion_using_public_key_as_hmac_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = now_unix();
+        let signer =
+            Signer::load_or_create(dir.path(), "http://h".to_string()).expect("load_or_create");
+
+        // The classic alg-confusion attack: take the *public* Ed25519 key
+        // (published at /jwks) and (ab)use its raw bytes as an HMAC-SHA256
+        // secret, hoping a verifier that doesn't pin the expected algorithm
+        // will accept a token "signed" this way.
+        let jwks = signer.jwks();
+        let x_b64 = jwks["keys"][0]["x"].as_str().expect("x is a string");
+        let public_key_bytes = URL_SAFE_NO_PAD.decode(x_b64).expect("valid base64url");
+
+        let legit_claims = AccessClaims {
+            iss: "http://h".to_string(),
+            sub: "7".to_string(),
+            aud: "soul-player".to_string(),
+            exp: usize::try_from(now + 3600).expect("exp fits usize"),
+            iat: usize::try_from(now).expect("iat fits usize"),
+            scope: "library".to_string(),
+        };
+        let header = Header::new(Algorithm::HS256);
+        let hmac_key = EncodingKey::from_secret(&public_key_bytes);
+        let forged = encode(&header, &legit_claims, &hmac_key).expect("encode HS256 token");
+
+        assert!(
+            signer.verify(&forged, now).is_none(),
+            "an HS256 token 'signed' with the public key as secret must not verify"
+        );
+    }
+
+    #[test]
+    fn rejects_alg_none_token_with_empty_signature() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = now_unix();
+        let signer =
+            Signer::load_or_create(dir.path(), "http://h".to_string()).expect("load_or_create");
+
+        let header_json = r#"{"alg":"none","typ":"JWT"}"#;
+        let claims = AccessClaims {
+            iss: "http://h".to_string(),
+            sub: "7".to_string(),
+            aud: "soul-player".to_string(),
+            exp: usize::try_from(now + 3600).expect("exp fits usize"),
+            iat: usize::try_from(now).expect("iat fits usize"),
+            scope: "library".to_string(),
+        };
+        let claims_json = serde_json::to_vec(&claims).expect("serialize claims");
+
+        let header_b64 = URL_SAFE_NO_PAD.encode(header_json.as_bytes());
+        let claims_b64 = URL_SAFE_NO_PAD.encode(claims_json);
+        // `alg: none` tokens carry an empty signature segment.
+        let forged = format!("{header_b64}.{claims_b64}.");
+
+        assert!(
+            signer.verify(&forged, now).is_none(),
+            "an `alg: none` token with an empty signature must not verify"
+        );
     }
 }
