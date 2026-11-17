@@ -97,6 +97,74 @@ pub(crate) enum Route {
     Settings,
 }
 
+/// One entry in the navigation back-stack: a full location (route + which
+/// album/artist/genre is open). Pushed by `navigate_to`, restored by `go_back`.
+#[derive(Clone, PartialEq)]
+pub(crate) struct NavEntry {
+    pub route: Route,
+    pub open_album: Option<String>,
+    pub open_artist: Option<String>,
+    pub open_genre: Option<String>,
+}
+
+/// The current location as a `NavEntry`.
+fn here(s: &State) -> NavEntry {
+    NavEntry {
+        route: s.route,
+        open_album: s.open_album.clone(),
+        open_artist: s.open_artist.clone(),
+        open_genre: s.open_genre.clone(),
+    }
+}
+
+/// Open a detail location, remembering where we were so `go_back` can return. The
+/// five "open a detail" interactions (album/artist/genre cards, the Discography
+/// card, and the now-playing → album link) route through this.
+pub(crate) fn navigate_to(
+    s: &mut State,
+    route: Route,
+    open_album: Option<String>,
+    open_artist: Option<String>,
+    open_genre: Option<String>,
+) {
+    let target = NavEntry {
+        route,
+        open_album: open_album.clone(),
+        open_artist: open_artist.clone(),
+        open_genre: open_genre.clone(),
+    };
+    let current = here(s);
+    if current != target {
+        s.nav_history.push(current);
+    }
+    s.route = route;
+    s.open_album = open_album;
+    s.open_artist = open_artist;
+    s.open_genre = open_genre;
+    s.mobile_show_content = true;
+    s.genre_search = rune::TextEdit::new("");
+}
+
+/// The detail back button: pop to the previous location, or — if the stack is
+/// empty — fall back to the current page's browse parent so back is never a dead
+/// end.
+pub(crate) fn go_back(s: &mut State) {
+    s.genre_search = rune::TextEdit::new("");
+    if let Some(prev) = s.nav_history.pop() {
+        s.route = prev.route;
+        s.open_album = prev.open_album;
+        s.open_artist = prev.open_artist;
+        s.open_genre = prev.open_genre;
+    } else {
+        s.route = match s.route {
+            Route::Album | Route::Albums => Route::Albums,
+            Route::Artist | Route::Artists => Route::Artists,
+            Route::Genre | Route::Genres => Route::Genres,
+            _ => Route::Home,
+        };
+    }
+}
+
 /// Which Settings category the content pane shows — a sub-navigation inside the
 /// Settings route, mirroring the original soul-player's settings rail
 /// (Appearance / Music Data / Audio / About). Ephemeral UI state (not persisted);
@@ -202,6 +270,18 @@ struct State {
     /// Which genre's detail page is showing, when `route == Route::Genre`.
     /// Set from a genre row's click.
     open_genre: Option<String>,
+    /// The navigation back-stack (ephemeral): locations behind the current one, so
+    /// a detail's back button returns to where you came from rather than a
+    /// hardcoded parent. Pushed by [`navigate_to`], popped by [`go_back`]; cleared
+    /// by a top-level sidebar nav.
+    nav_history: Vec<NavEntry>,
+    /// Artist-page Discography view mode (ephemeral): `false` = album-card grid
+    /// (default), `true` = compact row list. Toggled by the grid/list buttons.
+    discography_list: bool,
+    /// The Genre-detail in-page search box (ephemeral): filters the open genre's
+    /// track list. Separate from the library search so the two never cross over;
+    /// reset whenever we navigate (see [`navigate_to`]/[`go_back`]).
+    genre_search: rune::TextEdit,
     /// Whether the artist detail's "Top Songs" section is expanded past the first
     /// five (toggled by its Show more/less link). Reset when a new artist opens.
     artist_top_expanded: bool,
@@ -495,6 +575,9 @@ impl State {
             open_album: None,
             open_artist: None,
             open_genre: None,
+            nav_history: Vec::new(),
+            discography_list: false,
+            genre_search: rune::TextEdit::new(""),
             artist_top_expanded: false,
             settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
@@ -6932,6 +7015,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn discography_grid_list_toggle_switches_and_lists_navigate() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        // Default is grid: cards present, no rows.
+        assert!(rt.find("artist-disc-0").is_some(), "grid cards by default");
+        assert!(rt.find("artist-disc-row-0").is_none());
+        // Switch to list.
+        click(&mut rt, "disc-toggle-list");
+        assert!(rt.state.discography_list, "toggle flips to list");
+        // The list is a brand-new subtree (replacing the grid), so it enter-animates
+        // from opacity 0; settle instantly so its rows are pickable (matches the
+        // settle_all pattern used elsewhere in this module).
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find("artist-disc-row-0").is_some(), "list rows render");
+        assert!(rt.find("artist-disc-0").is_none(), "grid cards gone");
+        // A list row opens the album (through the back-stack).
+        click(&mut rt, "artist-disc-row-0");
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "a list row opens the album"
+        );
+        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+    }
+
     /// A discography album card opens that album's detail page.
     #[test]
     fn a_discography_card_opens_the_album() {
@@ -6956,6 +7078,66 @@ mod tests {
             "a disc card opens the album"
         );
         assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+    }
+
+    #[test]
+    fn back_returns_to_where_you_came_from() {
+        // Artist → (Discography) → Album → Back must return to the ARTIST, not the
+        // hardcoded Albums parent.
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artists;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "card-text"); // open the artist (Bach) — pushes Artists
+        assert!(matches!(rt.state.route, Route::Artist));
+        // The artist detail page is a brand-new subtree this frame, so its cards
+        // enter-animate from opacity 0; settle instantly so the disc card below is
+        // pickable (matches the settle_all pattern used elsewhere in this module).
+        rt.settle_all();
+        rt.frame(0.0);
+        rt.frame(0.0);
+        click(&mut rt, "card-text"); // first Discography album — pushes the artist
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "a disc card opens the album"
+        );
+        // Same reason: the album detail page just mounted this frame.
+        rt.settle_all();
+        rt.frame(0.0);
+        click(&mut rt, "album-back"); // Back
+        assert!(
+            matches!(rt.state.route, Route::Artist),
+            "back returns to the artist"
+        );
+        assert_eq!(rt.state.open_artist.as_deref(), Some("Bach"));
+        // The artist detail page is remounted on the way back too.
+        rt.settle_all();
+        rt.frame(0.0);
+        click(&mut rt, "artist-back"); // Back again
+        assert!(
+            matches!(rt.state.route, Route::Artists),
+            "and then to the Artists list"
+        );
+    }
+
+    #[test]
+    fn back_falls_back_to_the_parent_with_an_empty_stack() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.route = Route::Album; // reached without history (e.g. deep link)
+        go_back(&mut s);
+        assert!(matches!(s.route, Route::Albums), "album → albums");
+        s.route = Route::Genre;
+        go_back(&mut s);
+        assert!(matches!(s.route, Route::Genres), "genre → genres");
     }
 
     /// With more than five tracks, Show more expands the Top-Songs list.
@@ -7097,6 +7279,52 @@ mod tests {
                 start: 0
             }],
             "Play All plays only this genre's tracks, from the top"
+        );
+    }
+
+    #[test]
+    fn genre_in_page_search_filters_the_track_list() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        // Two tracks with distinct titles in the one genre.
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Blue".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Jazz".into()),
+                duration_secs: 1.0,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("Green".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Jazz".into()),
+                duration_secs: 1.0,
+            },
+        ];
+        s.route = Route::Genre;
+        s.open_genre = Some("Jazz".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("genre-search").is_some(), "the search box renders");
+        assert!(
+            rt.find("album-track-0").is_some() && rt.find("album-track-1").is_some(),
+            "both tracks show"
+        );
+        // Type a query that matches only "Blue".
+        rt.update(|st: &mut State, _tx: &mut Tx| st.genre_search = rune::TextEdit::new("blue"));
+        rt.frame(0.0);
+        assert!(rt.find("album-track-0").is_some(), "the match stays");
+        assert!(
+            rt.find("album-track-1").is_none(),
+            "the non-match is filtered out"
         );
     }
 

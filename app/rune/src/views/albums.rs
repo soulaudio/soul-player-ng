@@ -101,9 +101,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
         card_w,
         scale,
         move |st: &mut State| {
-            st.route = crate::Route::Album;
-            st.open_album = Some(name.clone());
-            st.mobile_show_content = true;
+            crate::navigate_to(st, crate::Route::Album, Some(name.clone()), None, None);
         },
     )
 }
@@ -139,8 +137,8 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     )
 }
 
-/// A back link to the Albums grid — a `←` glyph. Our focused shell keeps no page
-/// history, so it simply returns to the grid.
+/// A back link — a `←` glyph. Returns to wherever this album was opened from
+/// (the back-stack), falling back to the Albums grid if reached without one.
 fn back_button(p: &Palette) -> El {
     el().key("album-back")
         .role("button")
@@ -153,7 +151,7 @@ fn back_button(p: &Palette) -> El {
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(|st: &mut State| st.route = crate::Route::Albums)
+        .on_press(crate::go_back)
 }
 
 /// One row on the album detail page: the track number (or a ⏸/▶ state glyph when
