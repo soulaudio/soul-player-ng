@@ -2511,6 +2511,20 @@ fn scene_demo_genre(s: &mut State) {
     s.route = Route::Genre;
     s.open_genre = s.library.first().and_then(|t| t.genre.clone());
 }
+/// Seeded Artist detail with the Discography in LIST mode (the row view), so
+/// `--snap` can validate the grid/list toggle's compact-row layout — the lit
+/// list icon and each album as a cover thumb + "{n} tracks · {duration}".
+fn scene_demo_artist_list(s: &mut State) {
+    scene_demo_artist(s);
+    s.discography_list = true;
+}
+/// Seeded Genre detail with an active in-page search ("lantern" matches only the
+/// "Lantern 19" album's tracks within the Ambient genre), so `--snap` can
+/// validate the filter narrowing the list while the header counts stay unfiltered.
+fn scene_demo_genre_search(s: &mut State) {
+    scene_demo_genre(s);
+    s.genre_search = rune::TextEdit::new("lantern");
+}
 fn scene_artist_detail(s: &mut State) {
     s.route = Route::Artist;
     s.open_artist = s.library.first().and_then(|t| t.artist.clone());
@@ -2734,7 +2748,9 @@ fn main() -> anyhow::Result<()> {
             ("demo-artists", scene_demo_artists),
             ("demo-artist", scene_demo_artist),
             ("demo-artist-z150", scene_demo_artist_z150),
+            ("demo-artist-list", scene_demo_artist_list),
             ("demo-genre", scene_demo_genre),
+            ("demo-genre-search", scene_demo_genre_search),
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
