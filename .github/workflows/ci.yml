@@ -41,12 +41,14 @@ jobs:
         run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       # soul-player-host links cpal → ALSA on Linux. Windows uses WASAPI and macOS
-      # CoreAudio, which need no extra packages.
-      - name: Audio build deps (cpal/ALSA — Linux only)
+      # CoreAudio, which need no extra packages. It also links keyring →
+      # dbus-secret-service → libdbus-sys (the OS keychain / Secret Service),
+      # which needs libdbus-1-dev at build time on Linux.
+      - name: Audio + keychain build deps (cpal/ALSA, D-Bus — Linux only)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev pkg-config
+          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
 
       - name: Set up Rust components (Linux — for fmt/clippy)
         if: runner.os == 'Linux'
@@ -118,7 +120,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-x11-0 libxkbcommon-dev libwayland-dev \
-            mesa-vulkan-drivers vulkan-tools libasound2-dev pkg-config xvfb
+            mesa-vulkan-drivers vulkan-tools libasound2-dev libdbus-1-dev pkg-config xvfb
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
