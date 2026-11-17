@@ -13,11 +13,12 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
+use soul_server::auth::signer::Signer;
 use soul_server::domain::ports::{IndexPort, UserStore};
 use soul_server::domain::service::Services;
 use soul_server::index::CoreIndex;
 use soul_server::media::FsMedia;
-use soul_server::proto::native::{self, AppServices};
+use soul_server::proto::native::{self, AppServices, AppState};
 use soul_server::store::FileUsers;
 
 /// Path to the committed `testdata/` fixtures, two levels up from this
@@ -44,7 +45,18 @@ fn test_router() -> (Router, tempfile::TempDir, Arc<AppServices>) {
         media,
         users,
     });
-    let router = native::router(services.clone());
+    let signer_dir = dir.path().join("signer");
+    let signer = Arc::new(
+        Signer::load_or_create(&signer_dir, "http://test.invalid".to_string())
+            .expect("load_or_create signer"),
+    );
+    let state = AppState::new(
+        services.clone(),
+        signer,
+        "http://test.invalid".to_string(),
+        3600,
+    );
+    let router = native::router(state);
     (router, dir, services)
 }
 
@@ -227,4 +239,93 @@ async fn track_range_returns_partial_content_matching_file_head() {
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn openid_configuration_is_unauthenticated_and_well_formed() {
+    let (router, _dir, _services) = test_router();
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/.well-known/openid-configuration")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    assert_eq!(body["issuer"], "http://test.invalid");
+    assert!(
+        body["authorization_endpoint"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("/authorize")),
+        "expected authorization_endpoint to end with /authorize, got {body}"
+    );
+    assert!(
+        body["token_endpoint"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("/token")),
+        "expected token_endpoint to end with /token, got {body}"
+    );
+    assert!(
+        body["revocation_endpoint"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("/revoke")),
+        "expected revocation_endpoint to end with /revoke, got {body}"
+    );
+    assert!(
+        body["jwks_uri"]
+            .as_str()
+            .is_some_and(|s| s.ends_with("/jwks")),
+        "expected jwks_uri to end with /jwks, got {body}"
+    );
+    assert_eq!(
+        body["response_types_supported"],
+        serde_json::json!(["code"])
+    );
+    let grant_types = body["grant_types_supported"]
+        .as_array()
+        .expect("grant_types_supported is an array");
+    assert!(grant_types.contains(&serde_json::json!("authorization_code")));
+    assert!(grant_types.contains(&serde_json::json!("refresh_token")));
+    assert_eq!(
+        body["code_challenge_methods_supported"],
+        serde_json::json!(["S256"])
+    );
+    assert_eq!(
+        body["token_endpoint_auth_methods_supported"],
+        serde_json::json!(["none"])
+    );
+    assert_eq!(body["scopes_supported"], serde_json::json!(["library"]));
+    assert_eq!(
+        body["subject_types_supported"],
+        serde_json::json!(["public"])
+    );
+    assert_eq!(
+        body["id_token_signing_alg_values_supported"],
+        serde_json::json!(["EdDSA"])
+    );
+}
+
+#[tokio::test]
+async fn jwks_is_unauthenticated_and_exposes_the_signing_key() {
+    let (router, _dir, _services) = test_router();
+
+    let response = router
+        .oneshot(Request::builder().uri("/jwks").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body: Value = serde_json::from_slice(&body_bytes(response).await).unwrap();
+    let key = &body["keys"][0];
+    assert_eq!(key["kty"], "OKP");
+    assert_eq!(key["alg"], "EdDSA");
+    assert!(
+        key["kid"].as_str().is_some_and(|s| !s.is_empty()),
+        "expected a non-empty kid, got {body}"
+    );
 }

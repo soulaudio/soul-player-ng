@@ -19,6 +19,7 @@ use axum::routing::{get, post};
 use axum::{Json, async_trait};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::signer::Signer;
 use crate::domain::ports::IndexPort;
 use crate::domain::service::Services;
 use crate::domain::{DomainError, UserId};
@@ -31,24 +32,64 @@ use crate::store::FileUsers;
 /// fakes.
 pub type AppServices = Services<CoreIndex, FsMedia, FileUsers>;
 
-/// Router/extractor state: one shared `Services` for the process lifetime.
-type AppState = Arc<AppServices>;
+/// Router/extractor state: the shared `Services`, plus the pieces needed to
+/// mint and verify OIDC-standard tokens — the signing key, this server's
+/// `issuer` (its own base URL, used both to self-describe in discovery and
+/// to stamp/validate the `iss` claim), and the access-token lifetime later
+/// token-issuing handlers mint against.
+#[derive(Clone)]
+pub struct AppState {
+    pub services: Arc<AppServices>,
+    pub signer: Arc<Signer>,
+    pub issuer: String,
+    pub access_ttl: u64,
+}
 
-/// Build the `/v0` router over `services`.
-pub fn router(services: Arc<AppServices>) -> Router {
+impl AppState {
+    pub fn new(
+        services: Arc<AppServices>,
+        signer: Arc<Signer>,
+        issuer: String,
+        access_ttl: u64,
+    ) -> Self {
+        Self {
+            services,
+            signer,
+            issuer,
+            access_ttl,
+        }
+    }
+}
+
+impl std::ops::Deref for AppState {
+    type Target = AppServices;
+
+    fn deref(&self) -> &Self::Target {
+        &self.services
+    }
+}
+
+/// Build the `/v0` router, plus the unauthenticated OIDC discovery and JWKS
+/// endpoints, over `state`.
+pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v0/ping", get(ping))
         .route("/v0/auth", post(auth))
         .route("/v0/index", get(index))
         .route("/v0/track/:id", get(track))
         .route("/v0/art/:album_id", get(art))
-        .with_state(services)
+        .route(
+            "/.well-known/openid-configuration",
+            get(openid_configuration),
+        )
+        .route("/jwks", get(jwks))
+        .with_state(state)
 }
 
-/// Bind `bind` and serve the `/v0` router until the process stops.
-pub async fn serve(bind: &str, services: Arc<AppServices>) -> anyhow::Result<()> {
+/// Bind `bind` and serve the router until the process stops.
+pub async fn serve(bind: &str, state: AppState) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, router(services)).await?;
+    axum::serve(listener, router(state)).await?;
     Ok(())
 }
 
@@ -255,4 +296,39 @@ async fn track(
 /// Always `404` until that lands.
 async fn art(_auth: Authed, Path(_album_id): Path<u32>) -> StatusCode {
     StatusCode::NOT_FOUND
+}
+
+// ---------------------------------------------------------------------------
+// GET /.well-known/openid-configuration — no auth (it's the discovery doc)
+// ---------------------------------------------------------------------------
+
+/// OIDC discovery document. Advertises this server's token/authorization
+/// endpoints and the subset of the spec it actually implements: an
+/// authorization-code flow with PKCS (`S256` only, no client secret — this
+/// is a public-client, native-app deployment) and refresh tokens, signed
+/// with the single `EdDSA` key `/jwks` publishes.
+async fn openid_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let issuer = &state.issuer;
+    Json(serde_json::json!({
+        "issuer": issuer,
+        "authorization_endpoint": format!("{issuer}/authorize"),
+        "token_endpoint": format!("{issuer}/token"),
+        "revocation_endpoint": format!("{issuer}/revoke"),
+        "jwks_uri": format!("{issuer}/jwks"),
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": ["library"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["EdDSA"],
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /jwks — no auth (it's how clients verify tokens)
+// ---------------------------------------------------------------------------
+
+async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(state.signer.jwks())
 }

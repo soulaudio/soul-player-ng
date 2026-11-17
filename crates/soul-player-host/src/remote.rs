@@ -331,11 +331,12 @@ mod tests {
     use std::sync::Arc;
     use std::sync::mpsc;
 
+    use soul_server::auth::signer::Signer;
     use soul_server::domain::ports::{IndexPort, UserStore};
     use soul_server::domain::service::Services;
     use soul_server::index::CoreIndex;
     use soul_server::media::FsMedia;
-    use soul_server::proto::native::{self, AppServices};
+    use soul_server::proto::native::{self, AppServices, AppState};
     use soul_server::store::FileUsers;
 
     use super::*;
@@ -374,10 +375,20 @@ mod tests {
             media: FsMedia,
             users,
         });
+        let signer_dir = dir.path().join("signer");
+        let signer = Arc::new(
+            Signer::load_or_create(&signer_dir, "http://127.0.0.1".to_string())
+                .expect("load_or_create signer"),
+        );
+        let state = AppState::new(
+            services.clone(),
+            signer,
+            "http://127.0.0.1".to_string(),
+            3600,
+        );
 
         let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
         let (addr_tx, addr_rx) = mpsc::channel();
-        let router_services = services.clone();
         runtime.spawn(async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
                 .await
@@ -385,7 +396,7 @@ mod tests {
             addr_tx
                 .send(listener.local_addr().expect("bound socket has an addr"))
                 .expect("send bound addr to the test thread");
-            axum::serve(listener, native::router(router_services))
+            axum::serve(listener, native::router(state))
                 .await
                 .expect("serve the native router");
         });
