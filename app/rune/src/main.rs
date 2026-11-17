@@ -8099,6 +8099,131 @@ mod tests {
         pts.iter().filter(|p| (p.1 - top).abs() < 5.0).count()
     }
 
+    /// End-to-end: a Ctrl/⌘ chord driven through the real `Runtime::key` dispatch
+    /// (not a direct `handle_key` call) reaches the zoom handler and zooms. This is
+    /// the live key path; the unit test above can only prove the handler's logic.
+    #[test]
+    fn e2e_ctrl_chord_zooms_reflows_and_resets_via_the_runtime_key_path() {
+        let _g = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.ui_zoom = 1.0;
+        s.route = Route::Albums;
+        s.sidebar_collapsed = false;
+        // 18 distinct albums so the grid is multi-column and can reflow.
+        s.library = (1..=18u32)
+            .map(|a| soul_player_host::TrackView {
+                id: a,
+                title: Some(format!("T{a}")),
+                artist: Some("A".into()),
+                album: Some(format!("Album {a:02}")),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+            })
+            .collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        // `Runtime::new` doesn't wire `AppSpec::on_key`; the live app does. Set it so
+        // the chord routes exactly as it does in production.
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let base_cols = first_row_count(&rt, 18);
+        assert!(
+            base_cols >= 3,
+            "a wide window starts multi-column, got {base_cols}"
+        );
+
+        // Drive the REAL key path (Ctrl/⌘ chords): five `=` steps → 150 %.
+        let chord = |rt: &mut Runtime<State>, c: char| {
+            rt.key(KeyEvent {
+                key: Key::Command(c),
+                mods: Mods {
+                    cmd: true,
+                    ctrl: !cfg!(target_os = "macos"),
+                    ..Mods::default()
+                },
+            });
+            rt.frame(0.0);
+        };
+        for _ in 0..5 {
+            chord(&mut rt, '=');
+        }
+        rt.frame(0.0);
+        assert!(
+            (rt.state.ui_zoom - 1.5).abs() < 1e-4,
+            "five Ctrl+= steps zoom to 150 %, got {}",
+            rt.state.ui_zoom
+        );
+        assert!(
+            rt.find("content-zoom").is_some(),
+            "the zoom wrapper is active"
+        );
+        let zoomed_cols = first_row_count(&rt, 18);
+        assert!(
+            zoomed_cols < base_cols,
+            "zooming reflows to fewer columns: {zoomed_cols} vs {base_cols}"
+        );
+
+        // Ctrl+0 resets the zoom and restores the original column count.
+        chord(&mut rt, '0');
+        rt.frame(0.0);
+        assert_eq!(rt.state.ui_zoom, 1.0, "Ctrl+0 resets");
+        assert!(rt.find("content-zoom").is_none(), "no wrapper at 100 %");
+        assert_eq!(
+            first_row_count(&rt, 18),
+            base_cols,
+            "the column count is restored"
+        );
+    }
+
+    #[test]
+    fn album_grid_rows_are_not_looser_than_columns() {
+        // Regression: the card used to carry bottom padding that stacked on the
+        // grid's row gap, so the space between rows read as larger than between
+        // columns. The row gap must now be ≤ the column gap.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.library = (1..=18u32)
+            .map(|a| soul_player_host::TrackView {
+                id: a,
+                title: Some(format!("T{a}")),
+                artist: Some("A".into()),
+                album: Some(format!("Album {a:02}")),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+            })
+            .collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let rect = |k: &str| rt.presented(k).map(|r| r.0);
+        let cols = first_row_count(&rt, 18);
+        assert!(
+            cols >= 2,
+            "need multiple columns to compare gaps, got {cols}"
+        );
+        let a = rect("album-0").expect("first card present");
+        let b = rect("album-1").expect("second card present");
+        let below = rect(&format!("album-{cols}")).expect("first card of row 2 present");
+        // [x, y, w, h]: column gap between cards 0 and 1; row gap between card 0 and
+        // the card directly beneath it (the first of the next row).
+        let col_gap = b[0] - (a[0] + a[2]);
+        let row_gap = below[1] - (a[1] + a[3]);
+        assert!(row_gap > 0.0, "rows are separated (got {row_gap})");
+        assert!(
+            row_gap <= col_gap + 1.0,
+            "row gap ({row_gap:.1}) must not exceed column gap ({col_gap:.1})"
+        );
+    }
+
     #[test]
     fn zoom_step_snaps_to_the_grid_and_clamps() {
         assert!((stepped_zoom(1.0, 1) - 1.1).abs() < 1e-4, "one step in");
@@ -8147,14 +8272,13 @@ mod tests {
             scale: 2.0,
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // `Runtime::new` doesn't wire `AppSpec::on_key`; wire it so the chord routes
+        // through `Runtime::key` exactly as it does in the live app.
+        rt.on_key = Some(handle_key);
         rt.frame(0.0);
-        // Drive the real key handler (the live path routes Ctrl/⌘ chords here as
-        // `Key::Command(c)`; a headless Runtime's focus routing differs, so invoke
-        // it directly to assert the binding deterministically).
         let hit = |rt: &mut Runtime<State>, c: char| {
-            rt.update(move |s: &mut State, tx: &mut Tx| {
-                handle_key(s, &cmd_chord(c), tx);
-            });
+            rt.key(cmd_chord(c));
+            rt.frame(0.0);
         };
         hit(&mut rt, '='); // Ctrl/⌘ +
         assert!((rt.state.ui_zoom - 1.1).abs() < 1e-4, "Ctrl+= zooms in");
