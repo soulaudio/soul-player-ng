@@ -1,6 +1,6 @@
 pub mod signer;
 
-/// Claims embedded in a minted RS256 access token.
+/// Claims embedded in a minted EdDSA access token.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct AccessClaims {
     pub iss: String,

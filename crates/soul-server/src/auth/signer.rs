@@ -2,9 +2,8 @@ use std::path::Path;
 
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
-use rsa::RsaPrivateKey;
-use rsa::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};
-use rsa::traits::PublicKeyParts;
+use ring::rand::SystemRandom;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use sha2::{Digest, Sha256};
 
 use super::AccessClaims;
@@ -14,68 +13,64 @@ use crate::domain::UserId;
 const AUDIENCE: &str = "soul-player";
 /// The default scope minted into every access token (library browsing/streaming).
 const SCOPE: &str = "library";
-/// File name of the persisted RSA keypair, relative to the signer's data dir.
-const KEY_FILE_NAME: &str = "jwt_key.pem";
+/// File name of the persisted Ed25519 keypair (PKCS#8 DER), relative to the
+/// signer's data dir.
+const KEY_FILE_NAME: &str = "jwt_key.der";
 
-/// Mints and verifies RS256 JWT access tokens off a single, on-disk RSA
-/// keypair, and exposes the public half as a JWK Set for `/jwks`.
+/// Mints and verifies EdDSA (Ed25519) JWT access tokens off a single, on-disk
+/// Ed25519 keypair, and exposes the public half as a JWK Set for `/jwks`.
 pub struct Signer {
     encoding_key: EncodingKey,
     decoding_key: DecodingKey,
     /// Key id: a stable, content-derived identifier for the current keypair.
     kid: String,
     issuer: String,
-    /// Base64url (no padding) RSA modulus, cached for `jwks()`.
-    n_b64: String,
-    /// Base64url (no padding) RSA public exponent, cached for `jwks()`.
-    e_b64: String,
+    /// Base64url (no padding) raw 32-byte Ed25519 public key, cached for
+    /// `jwks()`.
+    x_b64: String,
 }
 
 impl Signer {
-    /// Loads the RSA keypair at `dir/jwt_key.pem`, generating and persisting
-    /// a fresh RSA-2048 PKCS#8 keypair if none exists yet. The key file is
-    /// created with `0600` permissions on platforms that support Unix-style
-    /// file modes.
+    /// Loads the Ed25519 keypair at `dir/jwt_key.der`, generating and
+    /// persisting a fresh Ed25519 PKCS#8 keypair if none exists yet. The key
+    /// file is created with `0600` permissions on platforms that support
+    /// Unix-style file modes.
     pub fn load_or_create(dir: &Path, issuer: String) -> anyhow::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let key_path = dir.join(KEY_FILE_NAME);
 
-        let private_key = if key_path.exists() {
-            let pem = std::fs::read_to_string(&key_path)?;
-            RsaPrivateKey::from_pkcs8_pem(&pem)?
+        let pkcs8_bytes = if key_path.exists() {
+            std::fs::read(&key_path)?
         } else {
-            let mut rng = rand::rngs::OsRng;
-            let key = RsaPrivateKey::new(&mut rng, 2048)?;
-            let pem = key.to_pkcs8_pem(LineEnding::LF)?;
-            std::fs::write(&key_path, pem.as_bytes())?;
+            let rng = SystemRandom::new();
+            let pkcs8 = Ed25519KeyPair::generate_pkcs8(&rng)
+                .map_err(|_| anyhow::anyhow!("failed to generate Ed25519 keypair"))?;
+            let bytes = pkcs8.as_ref().to_vec();
+            std::fs::write(&key_path, &bytes)?;
             restrict_permissions(&key_path)?;
-            key
+            bytes
         };
 
-        let private_pem = private_key.to_pkcs8_pem(LineEnding::LF)?;
-        let public_key = private_key.to_public_key();
-        let public_pem = public_key.to_public_key_pem(LineEnding::LF)?;
+        let keypair = Ed25519KeyPair::from_pkcs8(&pkcs8_bytes)
+            .map_err(|_| anyhow::anyhow!("invalid Ed25519 PKCS#8 keypair"))?;
+        let public_key_bytes = keypair.public_key().as_ref();
 
-        let encoding_key = EncodingKey::from_rsa_pem(private_pem.as_bytes())?;
-        let decoding_key = DecodingKey::from_rsa_pem(public_pem.as_bytes())?;
+        let encoding_key = EncodingKey::from_ed_der(&pkcs8_bytes);
+        let decoding_key = DecodingKey::from_ed_der(public_key_bytes);
 
-        let n_b64 = URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be());
-        let e_b64 = URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be());
-
-        let public_der = public_key.to_public_key_der()?;
-        let kid = URL_SAFE_NO_PAD.encode(Sha256::digest(public_der.as_bytes()));
+        let x_b64 = URL_SAFE_NO_PAD.encode(public_key_bytes);
+        let kid = URL_SAFE_NO_PAD.encode(Sha256::digest(public_key_bytes));
 
         Ok(Self {
             encoding_key,
             decoding_key,
             kid,
             issuer,
-            n_b64,
-            e_b64,
+            x_b64,
         })
     }
 
-    /// Mints an RS256 JWT access token for `user`, valid for `ttl_secs`
+    /// Mints an EdDSA JWT access token for `user`, valid for `ttl_secs`
     /// seconds starting at `now_unix`.
     pub fn mint(&self, user: UserId, ttl_secs: u64, now_unix: u64) -> anyhow::Result<String> {
         let claims = AccessClaims {
@@ -87,7 +82,7 @@ impl Signer {
             scope: SCOPE.to_string(),
         };
 
-        let mut header = Header::new(Algorithm::RS256);
+        let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(self.kid.clone());
 
         Ok(encode(&header, &claims, &self.encoding_key)?)
@@ -96,7 +91,7 @@ impl Signer {
     /// Verifies `token`'s signature, issuer, and audience, and checks that it
     /// has not expired as of `now_unix`. Returns `None` on any failure.
     pub fn verify(&self, token: &str, now_unix: u64) -> Option<AccessClaims> {
-        let mut validation = Validation::new(Algorithm::RS256);
+        let mut validation = Validation::new(Algorithm::EdDSA);
         validation.set_audience(&[AUDIENCE]);
         validation.set_issuer(&[self.issuer.as_str()]);
         // Expiry is checked manually below against the caller-supplied clock
@@ -123,12 +118,12 @@ impl Signer {
     pub fn jwks(&self) -> serde_json::Value {
         serde_json::json!({
             "keys": [{
-                "kty": "RSA",
+                "kty": "OKP",
+                "crv": "Ed25519",
                 "use": "sig",
-                "alg": "RS256",
+                "alg": "EdDSA",
                 "kid": self.kid,
-                "n": self.n_b64,
-                "e": self.e_b64,
+                "x": self.x_b64,
             }]
         })
     }
@@ -159,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn mints_and_verifies_rs256_tokens_with_persisted_keypair() {
+    fn mints_and_verifies_eddsa_tokens_with_persisted_keypair() {
         let dir = tempfile::tempdir().expect("tempdir");
         let now = now_unix();
 
@@ -196,6 +191,10 @@ mod tests {
         let jwks = signer.jwks();
         let kid = jwks["keys"][0]["kid"].as_str().expect("kid is a string");
         assert!(!kid.is_empty());
-        assert_eq!(jwks["keys"][0]["alg"], "RS256");
+        assert_eq!(jwks["keys"][0]["kty"], "OKP");
+        assert_eq!(jwks["keys"][0]["crv"], "Ed25519");
+        assert_eq!(jwks["keys"][0]["alg"], "EdDSA");
+        let x = jwks["keys"][0]["x"].as_str().expect("x is a string");
+        assert!(!x.is_empty());
     }
 }
