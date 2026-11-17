@@ -82,6 +82,17 @@ pub static MUSIC: Icon = stroke_icon!(
     r#"<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>"#
 );
 
+/// lucide `layout-grid` — the Discography grid-view toggle.
+pub static GRID: Icon = stroke_icon!(
+    "grid",
+    r#"<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>"#
+);
+/// lucide `list` — the Discography list-view toggle.
+pub static LIST: Icon = stroke_icon!(
+    "list",
+    r#"<line x1="8" x2="21" y1="6" y2="6"/><line x1="8" x2="21" y1="12" y2="12"/><line x1="8" x2="21" y1="18" y2="18"/><line x1="3" x2="3.01" y1="6" y2="6"/><line x1="3" x2="3.01" y1="12" y2="12"/><line x1="3" x2="3.01" y1="18" y2="18"/>"#
+);
+
 /// lucide `palette` — the Appearance settings category. A stroked blob with four
 /// filled swatch dots (each carries its own `fill="currentColor"`, overriding the
 /// group's `fill:none`, so they read as solid dots). Source: lucide.dev/icons/palette.

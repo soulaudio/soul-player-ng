@@ -47,9 +47,7 @@ fn album_tile(s: &State, p: &Palette, slot: usize, name: String, cover_id: u32, 
                 .group_opacity(1.0, 0.8),
         )
         .on_press(move |st: &mut State| {
-            st.route = crate::Route::Album;
-            st.open_album = Some(open.clone());
-            st.mobile_show_content = true;
+            crate::navigate_to(st, crate::Route::Album, Some(open.clone()), None, None);
         })
 }
 
