@@ -68,6 +68,26 @@ enum DeviceSink {
     Shared(CpalSink),
     #[cfg(windows)]
     Exclusive(WasapiExclusiveSink),
+    /// A device-FREE placeholder: owns no hardware and discards writes. Used to PARK
+    /// the deck during a live output change — swapping this in drops the real sink,
+    /// which releases its device, so the new sink can acquire it (exclusive WASAPI is
+    /// one-client-per-device). The pump swaps it out in the same step, so it's never
+    /// actually written to; it reports a sane rate/channels only so `Deck::swap_sink`
+    /// can rebuild the resampler without failing.
+    Silent {
+        rate: u32,
+        channels: u16,
+    },
+}
+
+impl DeviceSink {
+    /// A standard-rate device-free placeholder for parking (see [`DeviceSink::Silent`]).
+    fn silent() -> Self {
+        DeviceSink::Silent {
+            rate: 48_000,
+            channels: 2,
+        }
+    }
 }
 
 impl Sink for DeviceSink {
@@ -76,6 +96,11 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.stream_info(),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.stream_info(),
+            DeviceSink::Silent { rate, channels } => StreamInfo {
+                sample_rate: *rate,
+                channels: *channels,
+                format: SampleFormat::Int { bits: 24 },
+            },
         }
     }
 
@@ -84,6 +109,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.exclusive(),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.exclusive(),
+            DeviceSink::Silent { .. } => false,
         }
     }
 
@@ -92,6 +118,9 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.write(frames),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.write(frames),
+            // Device-free placeholder: discard (never actually reached — the pump
+            // swaps it out before pumping).
+            DeviceSink::Silent { .. } => Ok(()),
         }
     }
 
@@ -100,6 +129,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.flush(),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.flush(),
+            DeviceSink::Silent { .. } => Ok(()),
         }
     }
 
@@ -108,6 +138,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.discard(),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.discard(),
+            DeviceSink::Silent { .. } => Ok(()),
         }
     }
 
@@ -116,6 +147,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.set_volume(volume),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.set_volume(volume),
+            DeviceSink::Silent { .. } => {}
         }
     }
 
@@ -126,6 +158,11 @@ impl Sink for DeviceSink {
             // The exclusive sink releases + re-acquires the device at the new rate.
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.reopen(rate),
+            // Placeholder adopts the requested rate (no device to reopen).
+            DeviceSink::Silent { rate: r, .. } => {
+                *r = rate;
+                Ok(())
+            }
         }
     }
 }
@@ -156,17 +193,32 @@ pub(crate) fn build_actor(
         // Offline/headless has no audible output, so the EQ/analyzer are moot there.
         SinkMode::Offline => AudioPlayer::spawn(
             |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
             output_config,
             lib,
             on_event,
         ),
         SinkMode::Device => AudioPlayer::spawn(
-            device_sink_factory(status, dsp, spectrum),
+            device_sink_factory(status, dsp.clone(), spectrum.clone()),
+            device_park_factory(dsp, spectrum),
             output_config,
             lib,
             on_event,
         ),
     }
+}
+
+/// Build the pump-thread PARK closure: a device-FREE [`DeviceSink::Silent`] wrapped in
+/// a [`DspSink`] (same concrete `K` as [`device_sink_factory`] produces). The pump
+/// swaps this in to drop the real sink — releasing its device — before opening the new
+/// one on a live output change. It owns no hardware, so it never contends for the
+/// device. `dsp` / `spectrum` are cloned into it only to match the sink type; the
+/// placeholder is swapped out before any audio flows.
+fn device_park_factory(
+    dsp: DspShared,
+    spectrum: SpectrumShared,
+) -> impl Fn() -> DspSink<DeviceSink> + Send + 'static {
+    move || DspSink::new(DeviceSink::silent(), dsp.clone(), spectrum.clone())
 }
 
 /// Build the pump-thread make-sink closure for the real device: for the given

@@ -45,12 +45,16 @@ impl AudioPlayer {
     /// startup from `output_desired`, and again whenever the host changes the device
     /// or exclusive mode live (the pump rebuilds the sink in place — per-track
     /// native-rate switching still reopens that sink via `Sink::reopen`).
-    /// `output_desired` is the shared, host-mutable desired output config the pump
-    /// watches. `on_event` is called from the pump thread on every emitted event.
-    /// `library` is the initial `id → path` map (swap later via
+    /// `make_park` builds a device-FREE placeholder sink (same `K`): the pump parks on
+    /// it to drop the old sink (freeing its device) before `make_sink` opens the new
+    /// one — release-then-acquire, required so a same-device exclusive switch doesn't
+    /// hit device-in-use. `output_desired` is the shared, host-mutable desired output
+    /// config the pump watches. `on_event` is called from the pump thread on every
+    /// emitted event. `library` is the initial `id → path` map (swap later via
     /// [`set_library`](Self::set_library)).
-    pub fn spawn<K, Mk, Ev>(
+    pub fn spawn<K, Mk, Pk, Ev>(
         make_sink: Mk,
+        make_park: Pk,
         output_desired: Arc<Mutex<OutputConfig>>,
         library: Arc<dyn TrackSource>,
         on_event: Ev,
@@ -58,6 +62,7 @@ impl AudioPlayer {
     where
         K: Sink + 'static,
         Mk: Fn(&OutputConfig) -> anyhow::Result<K> + Send + 'static,
+        Pk: Fn() -> K + Send + 'static,
         Ev: Fn(Event) + Send + 'static,
     {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -74,7 +79,16 @@ impl AudioPlayer {
         let pump = thread::Builder::new()
             .name("player-pump".into())
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || pump_thread(make_sink, output_desired, cmd_rx, loader_lib, on_event))
+            .spawn(move || {
+                pump_thread(
+                    make_sink,
+                    make_park,
+                    output_desired,
+                    cmd_rx,
+                    loader_lib,
+                    on_event,
+                )
+            })
             .expect("spawn pump thread");
 
         Self {
@@ -155,8 +169,9 @@ fn read_rg_tags(path: &Path) -> RgInfo {
     }
 }
 
-fn pump_thread<K, Mk, Ev>(
+fn pump_thread<K, Mk, Pk, Ev>(
     make_sink: Mk,
+    make_park: Pk,
     output_desired: Arc<Mutex<OutputConfig>>,
     cmd_rx: Receiver<Command>,
     library: Arc<Mutex<Arc<dyn TrackSource>>>,
@@ -164,6 +179,7 @@ fn pump_thread<K, Mk, Ev>(
 ) where
     K: Sink + 'static,
     Mk: Fn(&OutputConfig) -> anyhow::Result<K>,
+    Pk: Fn() -> K,
     Ev: Fn(Event),
 {
     // The output config the current sink was built for. Starts at the host's desired
@@ -216,6 +232,13 @@ fn pump_thread<K, Mk, Ev>(
     // we don't retry the same unsupported rate every pump (which would thrash the
     // device or loop). A different track rate, or a success, clears the suppression.
     let mut native_rate_tried: Option<u32> = None;
+
+    // --- Live output-switching state ---
+    // A desired output config whose device/sink last FAILED to open. We skip
+    // re-applying the same failing config every block (which would park + rebuild the
+    // device in a thrash loop). Cleared on a successful apply or when `desired` changes
+    // to anything else.
+    let mut output_apply_failed: Option<OutputConfig> = None;
 
     // --- ReplayGain state ---
     // Config, updated by `Command::SetReplayGain` (the host sends the persisted
@@ -305,19 +328,30 @@ fn pump_thread<K, Mk, Ev>(
         maybe_switch_native_rate(&mut player, &mut native_rate_tried);
 
         // 2c. Live output switching: if the host changed the output device or
-        //     exclusive mode since the last pump, rebuild the sink in place now
-        //     (position + ReplayGain preserved) so the change takes effect on the
-        //     CURRENT track — not just the next playback session (best practice;
-        //     foobar/Roon apply immediately). A strict-only change is recorded
-        //     without a rebuild (see `output_change_needs_rebuild`). On a build /
-        //     swap failure the current sink is kept and the change is retried next
-        //     pump, so a transient "device in use" never kills playback.
+        //     exclusive mode since the last pump, apply it to the CURRENT track now
+        //     (not just the next session; best practice — foobar/Roon apply
+        //     immediately). `maybe_apply_output_change` does a release-then-acquire
+        //     swap (park → drop old sink → build new on the freed device → swap),
+        //     preserving position + ReplayGain, so a same-device exclusive switch
+        //     doesn't hit device-in-use. A strict-only change is just recorded. On a
+        //     failure it restores the old device (playback never dies) and we LATCH
+        //     the failing config so we don't park/rebuild it every block.
         {
             let desired = output_desired.lock().expect("output config mutex").clone();
-            if let Err(e) =
-                maybe_apply_output_change(&mut player, &desired, &mut output_applied, &make_sink)
-            {
-                eprintln!("player: live output change failed (keeping current sink): {e:#}");
+            if output_apply_failed.as_ref() != Some(&desired) {
+                match maybe_apply_output_change(
+                    &mut player,
+                    &desired,
+                    &mut output_applied,
+                    &make_sink,
+                    &make_park,
+                ) {
+                    Ok(()) => output_apply_failed = None,
+                    Err(e) => {
+                        eprintln!("player: live output change failed (kept current device): {e:#}");
+                        output_apply_failed = Some(desired);
+                    }
+                }
             }
         }
 
@@ -511,6 +545,7 @@ mod tests {
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
             |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
             Arc::new(Mutex::new(OutputConfig::default())),
             {
                 let c = Arc::clone(&lib);
@@ -575,6 +610,7 @@ mod tests {
                     Ok(NullSink::new(48_000, 2))
                 }
             },
+            || NullSink::new(48_000, 2),
             Arc::clone(&desired),
             {
                 let c = Arc::clone(&lib);
@@ -673,6 +709,7 @@ mod tests {
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
             |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
             Arc::new(Mutex::new(OutputConfig::default())),
             {
                 let c = Arc::clone(&lib_a);
@@ -720,6 +757,7 @@ mod tests {
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
             |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
             Arc::new(Mutex::new(OutputConfig::default())),
             {
                 let c = Arc::clone(&lib);

@@ -255,6 +255,11 @@ pub(crate) struct ConfigSink {
     pub rate: u32,
     pub channels: u16,
     pub frames: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// When set, counts live "device holders": incremented on construction and
+    /// decremented on `Drop`. Lets a test prove release-then-acquire — the OLD sink
+    /// must be dropped (its device freed) BEFORE the new one opens. `None` = a
+    /// device-free placeholder (the parked sink), which never counts.
+    device_live: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
 }
 
 impl ConfigSink {
@@ -271,6 +276,36 @@ impl ConfigSink {
             rate,
             channels,
             frames,
+            device_live: None,
+        }
+    }
+
+    /// Like [`ConfigSink::new`] but counts as a live device holder in `device_live`
+    /// (incremented now, decremented on `Drop`) — for release-then-acquire tests.
+    pub(crate) fn new_counting(
+        device: Option<String>,
+        exclusive: bool,
+        rate: u32,
+        channels: u16,
+        frames: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        device_live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
+        device_live.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            device,
+            exclusive,
+            rate,
+            channels,
+            frames,
+            device_live: Some(device_live),
+        }
+    }
+}
+
+impl Drop for ConfigSink {
+    fn drop(&mut self) {
+        if let Some(live) = &self.device_live {
+            live.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
