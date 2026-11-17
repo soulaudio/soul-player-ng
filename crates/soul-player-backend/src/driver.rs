@@ -377,6 +377,63 @@ pub fn maybe_switch_native_rate<K: Sink, D: SeekableDecoder>(
     }
 }
 
+/// The desired output configuration — which device, whether to drive it exclusively
+/// (bit-perfect), and (exclusive only) whether to STOP rather than fall back to shared.
+/// The host updates this live; the pump applies it to the current track via
+/// [`maybe_apply_output_change`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OutputConfig {
+    /// The selected output device, or `None` for the system default.
+    pub device: Option<String>,
+    /// Drive the device exclusively (bypass the OS mixer, feed the DAC untouched).
+    pub exclusive: bool,
+    /// Exclusive-or-stop: don't fall back to shared on an exclusive failure.
+    pub strict: bool,
+}
+
+/// Whether a desired output change needs the sink **rebuilt**. A **device** or
+/// **exclusive-mode** change alters the hardware stream, so the sink must be swapped;
+/// a **strict-only** change does not (it only affects how a FUTURE exclusive-open
+/// handles a device refusal), so it's just recorded. Pure — the decision is unit-tested
+/// without a device.
+#[must_use]
+pub fn output_change_needs_rebuild(current: &OutputConfig, desired: &OutputConfig) -> bool {
+    current.device != desired.device || current.exclusive != desired.exclusive
+}
+
+/// Apply a desired output config to the CURRENTLY playing track: if the device or
+/// exclusive mode changed, build a fresh sink via `build` and swap it in
+/// ([`Deck::swap_sink`], which preserves playback position + ReplayGain), so the change
+/// takes effect **live**, not on the next track (best practice — foobar/Roon apply the
+/// change immediately, accepting the brief hardware reopen). `applied` is set to
+/// `desired` on success, so a strict-only change is recorded even without a rebuild.
+///
+/// # Errors
+/// Propagates a `build` failure (the device couldn't be opened) or a swap failure; on
+/// either, `applied` is left unchanged so the pump keeps its working sink and retries
+/// when the config changes again.
+pub fn maybe_apply_output_change<K, D, F>(
+    player: &mut ServicePlayer<K, D>,
+    desired: &OutputConfig,
+    applied: &mut OutputConfig,
+    build: F,
+) -> anyhow::Result<()>
+where
+    K: Sink,
+    D: SeekableDecoder,
+    F: FnOnce(&OutputConfig) -> anyhow::Result<K>,
+{
+    if output_change_needs_rebuild(applied, desired) {
+        let new_sink = build(desired)?;
+        player
+            .deck_mut()
+            .swap_sink(new_sink)
+            .map_err(|e| anyhow::anyhow!("swap_sink for output change: {e:?}"))?;
+    }
+    *applied = desired.clone();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,6 +822,116 @@ mod tests {
             "bit-perfect after the SBR flip — no stale resampler desyncing speed, got {sp:?}"
         );
         assert_eq!(tried, None, "a successful switch clears the retry latch");
+    }
+
+    /// Changing the output config (device or exclusive mode) must apply to the
+    /// CURRENTLY playing track — rebuild the sink in place (`swap_sink`, which keeps
+    /// playback position + ReplayGain) and keep playing — not wait for the next track.
+    /// Best practice (foobar/Roon): apply live, accept the brief hardware reopen; only
+    /// "applies next session" when nothing is playing.
+    #[test]
+    fn an_output_config_change_applies_live_and_keeps_playing() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The pure decision: a device OR exclusive change needs a rebuild; strict alone
+        // does not (it only changes how a FUTURE exclusive-open handles a refusal).
+        let shared = OutputConfig {
+            device: None,
+            exclusive: false,
+            strict: false,
+        };
+        assert!(!output_change_needs_rebuild(&shared, &shared));
+        assert!(output_change_needs_rebuild(
+            &shared,
+            &OutputConfig {
+                exclusive: true,
+                ..shared.clone()
+            }
+        ));
+        assert!(output_change_needs_rebuild(
+            &shared,
+            &OutputConfig {
+                device: Some("DAC".into()),
+                ..shared.clone()
+            }
+        ));
+        assert!(!output_change_needs_rebuild(
+            &shared,
+            &OutputConfig {
+                strict: true,
+                ..shared.clone()
+            }
+        ));
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let frames_c = Arc::clone(&frames);
+        let build = move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+            Ok(ConfigSink::new(
+                cfg.device.clone(),
+                cfg.exclusive,
+                48_000,
+                2,
+                Arc::clone(&frames_c),
+            ))
+        };
+
+        let mut applied = shared.clone();
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq);
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        assert!(!p.deck().sink().exclusive, "starts shared");
+        let pos_before = project_tick(&p, 1.0, false).position_secs;
+        let written_before = frames.load(Ordering::Relaxed);
+        assert!(written_before > 0, "playing before the change");
+
+        // Flip to EXCLUSIVE live.
+        let desired = OutputConfig {
+            device: None,
+            exclusive: true,
+            strict: false,
+        };
+        maybe_apply_output_change(&mut p, &desired, &mut applied, build).unwrap();
+
+        assert!(
+            p.deck().sink().exclusive,
+            "exclusive applied LIVE to the current track, not next session"
+        );
+        assert_eq!(
+            p.deck().sink().device,
+            None,
+            "the exclusive flip didn't disturb the device selection"
+        );
+        assert_eq!(applied, desired, "applied config tracks the desired one");
+        let pos_after = project_tick(&p, 1.0, false).position_secs;
+        assert!(
+            pos_after >= pos_before,
+            "playback position preserved across the live swap (no restart): {pos_after} < {pos_before}"
+        );
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        assert!(
+            frames.load(Ordering::Relaxed) > written_before,
+            "playback keeps flowing through the rebuilt sink"
+        );
     }
 
     #[test]

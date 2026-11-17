@@ -243,3 +243,57 @@ impl SeekableDecoder for ConstDecoder {
         Some(self.total)
     }
 }
+
+/// A [`Sink`] that carries an output IDENTITY — the selected device + exclusive mode —
+/// and counts the frames written to it, for testing LIVE output-config changes (where
+/// changing the device or exclusive mode rebuilds the sink mid-playback via
+/// `swap_sink`). It discards the audio but records that writes keep flowing after a
+/// swap, and reports `exclusive()` from its config so a test can see the mode changed.
+pub(crate) struct ConfigSink {
+    pub device: Option<String>,
+    pub exclusive: bool,
+    pub rate: u32,
+    pub channels: u16,
+    pub frames: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ConfigSink {
+    pub(crate) fn new(
+        device: Option<String>,
+        exclusive: bool,
+        rate: u32,
+        channels: u16,
+        frames: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
+        Self {
+            device,
+            exclusive,
+            rate,
+            channels,
+            frames,
+        }
+    }
+}
+
+impl Sink for ConfigSink {
+    fn stream_info(&self) -> StreamInfo {
+        StreamInfo {
+            sample_rate: self.rate,
+            channels: self.channels,
+            format: SampleFormat::Int { bits: 24 },
+        }
+    }
+    fn exclusive(&self) -> bool {
+        self.exclusive
+    }
+    fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
+        self.frames.fetch_add(
+            frames.len() / usize::from(self.channels.max(1)),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
+}
