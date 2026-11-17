@@ -8,7 +8,7 @@
 use std::io;
 
 use super::ports::{IndexPort, MediaStore, ReadSeek, UserStore};
-use super::{DomainError, IndexVersion, Token, UserId};
+use super::{DomainError, IndexVersion, UserId};
 
 /// The use-case layer: one instance per running server, generic over the
 /// concrete port adapters so tests can swap in fakes.
@@ -19,23 +19,6 @@ pub struct Services<I, M, U> {
 }
 
 impl<I: IndexPort, M: MediaStore, U: UserStore> Services<I, M, U> {
-    /// Verify a username/password pair and, on success, issue a bearer
-    /// token. Wrong credentials (unknown user or bad password) map to
-    /// [`DomainError::Unauthorized`] — the port doesn't distinguish the two,
-    /// and neither should the response.
-    pub fn authenticate(&self, user: &str, pass: &str) -> Result<Token, DomainError> {
-        let id = self
-            .users
-            .verify(user, pass)
-            .ok_or(DomainError::Unauthorized)?;
-        Ok(self.users.issue_token(id)?)
-    }
-
-    /// Resolve a bearer token to the user it was issued for.
-    pub fn check(&self, token: &str) -> Result<UserId, DomainError> {
-        self.users.check(token).ok_or(DomainError::Unauthorized)
-    }
-
     /// The current catalog bytes plus the version they were baked at.
     pub fn index(&self) -> Result<(Vec<u8>, IndexVersion), DomainError> {
         Ok((self.index.index_bytes()?, self.index.version()))
@@ -57,8 +40,9 @@ fn io_err(e: io::Error) -> DomainError {
     DomainError::Other(e.into())
 }
 
-/// OAuth-flow use cases: credential verification without the legacy `/v0/auth`
-/// bearer-token issuance, plus the refresh-token lifecycle. Bounded on
+/// OAuth-flow use cases: credential verification (minting the actual access
+/// token is `/token`'s job, via [`crate::auth::signer::Signer`], not this
+/// store), plus the refresh-token lifecycle. Bounded on
 /// [`RefreshStore`] in addition to [`UserStore`] because — unlike the
 /// `/v0` native protocol — the `/authorize`/`/token`/`/revoke` endpoints
 /// need durable, rotating refresh tokens, which only a store backing both
@@ -68,8 +52,8 @@ where
     U: UserStore + crate::auth::refresh::RefreshStore,
 {
     /// Verify a username/password pair, returning the matched user without
-    /// issuing a `/v0`-style bearer token — the `/authorize` login form only
-    /// needs a yes/no answer before minting an OAuth authorization code.
+    /// issuing a token — the `/authorize` login form only needs a yes/no
+    /// answer before minting an OAuth authorization code.
     pub fn verify_credentials(&self, user: &str, pass: &str) -> Option<UserId> {
         self.users.verify(user, pass)
     }
@@ -99,7 +83,6 @@ mod tests {
     use std::collections::HashMap;
     use std::io::Read;
     use std::path::{Path, PathBuf};
-    use std::sync::Mutex;
 
     use super::*;
 
@@ -124,27 +107,16 @@ mod tests {
         }
     }
 
-    /// In-memory [`UserStore`] fake: one fixed user, tokens tracked in a map.
+    /// In-memory [`UserStore`] fake: one fixed user.
     struct FakeUsers {
         user: &'static str,
         pass: &'static str,
         user_id: UserId,
-        tokens: Mutex<HashMap<String, UserId>>,
     }
 
     impl UserStore for FakeUsers {
         fn verify(&self, user: &str, pass: &str) -> Option<UserId> {
             (user == self.user && pass == self.pass).then_some(self.user_id)
-        }
-
-        fn issue_token(&self, user: UserId) -> anyhow::Result<Token> {
-            let token = format!("token-for-{user}");
-            self.tokens.lock().unwrap().insert(token.clone(), user);
-            Ok(Token(token))
-        }
-
-        fn check(&self, token: &str) -> Option<UserId> {
-            self.tokens.lock().unwrap().get(token).copied()
         }
 
         fn add_user(&self, _user: &str, _pass: &str) -> anyhow::Result<UserId> {
@@ -199,46 +171,9 @@ mod tests {
                 user: "alice",
                 pass: "hunter2",
                 user_id: 42,
-                tokens: Mutex::new(HashMap::new()),
             },
         };
         (services, dir)
-    }
-
-    #[test]
-    fn authenticate_rejects_wrong_password() {
-        let (services, _dir) = services();
-        let err = services.authenticate("alice", "wrong").unwrap_err();
-        assert!(matches!(err, DomainError::Unauthorized));
-    }
-
-    #[test]
-    fn authenticate_rejects_unknown_user() {
-        let (services, _dir) = services();
-        let err = services.authenticate("nobody", "hunter2").unwrap_err();
-        assert!(matches!(err, DomainError::Unauthorized));
-    }
-
-    #[test]
-    fn authenticate_accepts_right_password_and_issues_a_token() {
-        let (services, _dir) = services();
-        let token = services.authenticate("alice", "hunter2").unwrap();
-        assert_eq!(token, Token("token-for-42".to_string()));
-    }
-
-    #[test]
-    fn check_rejects_unknown_token() {
-        let (services, _dir) = services();
-        let err = services.check("not-a-token").unwrap_err();
-        assert!(matches!(err, DomainError::Unauthorized));
-    }
-
-    #[test]
-    fn check_accepts_a_token_from_authenticate() {
-        let (services, _dir) = services();
-        let token = services.authenticate("alice", "hunter2").unwrap();
-        let id = services.check(&token.0).unwrap();
-        assert_eq!(id, 42);
     }
 
     #[test]
