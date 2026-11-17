@@ -1425,6 +1425,10 @@ impl PlayerHandle {
         // rescan would have produced.
         let local: Vec<(PathBuf, Vec<u8>)> = folders
             .iter()
+            // Same gate as a plain rescan (enabled + reachable), so the aggregate's
+            // local sources match what a rescan would produce — a disabled/offline
+            // folder with stale cached bytes must not leak back in.
+            .filter(|f| f.enabled && f.path.is_dir())
             .filter_map(|f| bytes.get(&f.path).cloned().map(|b| (f.path.clone(), b)))
             .collect();
         drop(bytes);

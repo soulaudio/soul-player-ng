@@ -76,23 +76,34 @@ pub struct DownloadCache {
 }
 
 impl DownloadCache {
-    /// The cache file path for `track_id` — stable and extension-less, since
-    /// the loader opens tracks by content/format sniffing rather than by
+    /// This server's own cache subdirectory, named by a stable hash of its URL.
+    /// Track ids are per-server (compound catalog ids), so two different servers
+    /// routinely emit the same low id — keeping each server's downloads in its own
+    /// namespace prevents serving one server's bytes for another's track.
+    fn server_dir(&self, server: &RemoteServer) -> PathBuf {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        server.url.hash(&mut hasher);
+        self.dir.join(format!("{:016x}", hasher.finish()))
+    }
+    /// The cache file path for `server`'s `track_id` — stable and extension-less,
+    /// since the loader opens tracks by content/format sniffing rather than by
     /// file extension.
-    fn cache_path(&self, track_id: u32) -> PathBuf {
-        self.dir.join(track_id.to_string())
+    fn cache_path(&self, server: &RemoteServer, track_id: u32) -> PathBuf {
+        self.server_dir(server).join(track_id.to_string())
     }
 }
 
 impl MediaFetch for DownloadCache {
     fn fetch(&self, server: &RemoteServer, track_id: u32) -> anyhow::Result<PathBuf> {
-        let path = self.cache_path(track_id);
+        let dir = self.server_dir(server);
+        let path = self.cache_path(server, track_id);
         if fs::metadata(&path).is_ok_and(|meta| meta.len() > 0) {
             return Ok(path);
         }
 
-        fs::create_dir_all(&self.dir)
-            .with_context(|| format!("creating download cache dir {}", self.dir.display()))?;
+        fs::create_dir_all(&dir)
+            .with_context(|| format!("creating download cache dir {}", dir.display()))?;
 
         let endpoint = format!("{}/v0/track/{track_id}", server.url);
         let response = reqwest::blocking::Client::new()
@@ -110,7 +121,7 @@ impl MediaFetch for DownloadCache {
         // Download to a sibling temp file and rename into place, so a
         // crash mid-download can never leave a short/corrupt file sitting
         // at `path` masquerading as a cache hit.
-        let tmp = self.dir.join(format!("{track_id}.part"));
+        let tmp = dir.join(format!("{track_id}.part"));
         {
             let mut file =
                 fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
