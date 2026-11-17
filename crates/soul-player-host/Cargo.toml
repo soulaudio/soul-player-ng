@@ -57,6 +57,18 @@ serde_json = "1"
 # (`add_remote_source`'s `DownloadCache`). Same version the app/rune head uses
 # for its own config dir.
 dirs = "6"
+# OS keychain storage for the remote-source OAuth refresh token
+# (`remote::KeyringStore`). keyring 3.x ships NO backend by default, so the
+# native platform backends must be enabled explicitly: `windows-native`
+# (Credential Manager, for local dev + Windows CI), `apple-native` (macOS
+# Keychain), and `sync-secret-service` + `crypto-rust` (Linux Secret Service
+# using pure-Rust crypto, avoiding an OpenSSL/libsecret C dependency).
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+] }
 
 # On Windows, also pull in the WASAPI exclusive / bit-perfect output backend.
 # Cargo unions features across this and the base dependency, so the host builds

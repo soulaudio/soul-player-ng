@@ -250,6 +250,105 @@ impl TrackSource for RemoteLibrary {
     }
 }
 
+/// Where the desktop client persists the OAuth **refresh token** obtained at
+/// login, keyed by the remote server's base URL (so logging into several
+/// servers keeps independent tokens). A trait so production code can depend
+/// on [`KeyringStore`] (the OS keychain) while tests swap in [`MemStore`]
+/// without touching the real Credential Manager/Keychain/Secret Service.
+///
+/// The OAuth **access** token is short-lived and never persisted here — only
+/// kept in memory on [`RemoteServer`]; only the long-lived refresh token
+/// needs durable, secret storage.
+pub trait TokenStore: Send + Sync {
+    /// Persist `refresh` for `server_url`, overwriting any previous value.
+    fn save_refresh(&self, server_url: &str, refresh: &str) -> anyhow::Result<()>;
+    /// Look up the refresh token for `server_url`, or `None` if there isn't one.
+    fn load_refresh(&self, server_url: &str) -> Option<String>;
+    /// Remove the refresh token for `server_url`. Deleting an entry that was
+    /// never saved (or already deleted) is not an error.
+    fn delete_refresh(&self, server_url: &str) -> anyhow::Result<()>;
+}
+
+/// [`TokenStore`] backed by the OS keychain (Windows Credential Manager,
+/// macOS Keychain, Linux Secret Service) via the `keyring` crate. Every
+/// server's refresh token is stored under the fixed service name
+/// `"soul-player"` with the server's base URL as the account name, so
+/// multiple servers never collide.
+pub struct KeyringStore;
+
+impl KeyringStore {
+    const SERVICE: &'static str = "soul-player";
+}
+
+impl TokenStore for KeyringStore {
+    fn save_refresh(&self, server_url: &str, refresh: &str) -> anyhow::Result<()> {
+        let entry = keyring::Entry::new(Self::SERVICE, server_url)
+            .with_context(|| format!("opening keyring entry for {server_url}"))?;
+        entry
+            .set_password(refresh)
+            .with_context(|| format!("saving refresh token for {server_url}"))
+    }
+
+    fn load_refresh(&self, server_url: &str) -> Option<String> {
+        let entry = keyring::Entry::new(Self::SERVICE, server_url).ok()?;
+        match entry.get_password() {
+            Ok(refresh) => Some(refresh),
+            Err(keyring::Error::NoEntry) => None,
+            Err(_) => None,
+        }
+    }
+
+    fn delete_refresh(&self, server_url: &str) -> anyhow::Result<()> {
+        let entry = keyring::Entry::new(Self::SERVICE, server_url)
+            .with_context(|| format!("opening keyring entry for {server_url}"))?;
+        match entry.delete_credential() {
+            Ok(()) => Ok(()),
+            // Deleting an entry that was never saved (or already deleted)
+            // is not an error — the caller just wants it gone.
+            Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e).with_context(|| format!("deleting refresh token for {server_url}")),
+        }
+    }
+}
+
+/// In-memory [`TokenStore`] for tests: round-trips through a `Mutex<HashMap>`
+/// keyed by server URL, never touching the real OS keychain.
+#[derive(Default)]
+pub struct MemStore(std::sync::Mutex<std::collections::HashMap<String, String>>);
+
+impl MemStore {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl TokenStore for MemStore {
+    fn save_refresh(&self, server_url: &str, refresh: &str) -> anyhow::Result<()> {
+        self.0
+            .lock()
+            .expect("MemStore mutex poisoned")
+            .insert(server_url.to_string(), refresh.to_string());
+        Ok(())
+    }
+
+    fn load_refresh(&self, server_url: &str) -> Option<String> {
+        self.0
+            .lock()
+            .expect("MemStore mutex poisoned")
+            .get(server_url)
+            .cloned()
+    }
+
+    fn delete_refresh(&self, server_url: &str) -> anyhow::Result<()> {
+        self.0
+            .lock()
+            .expect("MemStore mutex poisoned")
+            .remove(server_url);
+        Ok(())
+    }
+}
+
 /// Authenticate against `{url}/v0/auth` with a username/password and return
 /// the issued bearer token. A non-2xx response (wrong credentials, server
 /// error) is an `Err`.
@@ -340,6 +439,65 @@ mod tests {
     use soul_server::store::FileUsers;
 
     use super::*;
+
+    #[test]
+    fn token_store_round_trips_save_load_delete() {
+        let store = MemStore::new();
+        assert_eq!(store.load_refresh("http://server-a"), None);
+
+        store
+            .save_refresh("http://server-a", "refresh-a")
+            .expect("save should succeed");
+        assert_eq!(
+            store.load_refresh("http://server-a"),
+            Some("refresh-a".to_string())
+        );
+
+        store
+            .delete_refresh("http://server-a")
+            .expect("delete should succeed");
+        assert_eq!(store.load_refresh("http://server-a"), None);
+    }
+
+    #[test]
+    fn token_store_keeps_different_server_urls_independent() {
+        let store = MemStore::new();
+        store
+            .save_refresh("http://server-a", "refresh-a")
+            .expect("save a");
+        store
+            .save_refresh("http://server-b", "refresh-b")
+            .expect("save b");
+
+        assert_eq!(
+            store.load_refresh("http://server-a"),
+            Some("refresh-a".to_string())
+        );
+        assert_eq!(
+            store.load_refresh("http://server-b"),
+            Some("refresh-b".to_string())
+        );
+
+        store.delete_refresh("http://server-a").expect("delete a");
+        assert_eq!(store.load_refresh("http://server-a"), None);
+        assert_eq!(
+            store.load_refresh("http://server-b"),
+            Some("refresh-b".to_string()),
+            "deleting one server's token must not disturb another's"
+        );
+    }
+
+    #[test]
+    fn token_store_load_of_unknown_url_is_none() {
+        let store = MemStore::new();
+        assert_eq!(store.load_refresh("http://never-saved"), None);
+    }
+
+    #[test]
+    fn token_store_delete_of_unknown_url_is_not_an_error() {
+        let store = MemStore::new();
+        assert!(store.delete_refresh("http://never-saved").is_ok());
+    }
 
     /// Path to the repo's committed `testdata/` fixtures, three levels up
     /// from this crate's manifest dir to the repo root.
