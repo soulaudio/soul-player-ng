@@ -28,10 +28,11 @@ use crate::views::sidebar::{NAV_DEFS, nav_label};
 use crate::views::slider::slider;
 use crate::{
     NumField, OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band,
-    apply_and_save, apply_watch, close_dropdown, commit_dsp_rename, commit_eq_edit,
-    commit_profile_rename, cycle_eq_band_kind, delete_profile, duplicate_profile, eq_edit_start,
-    eq_num_drag_end, eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, export_profile,
-    import_eq, import_profile, new_profile, organize_begin, organize_confirm, organize_dismiss,
+    apply_and_save, apply_watch, close_dropdown, close_remote_form, commit_dsp_rename,
+    commit_eq_edit, commit_profile_rename, connect_remote_source, cycle_eq_band_kind,
+    delete_profile, duplicate_profile, eq_edit_start, eq_num_drag_end, eq_num_drag_move,
+    eq_num_drag_start, eq_num_scroll, export_eq, export_profile, import_eq, import_profile,
+    new_profile, open_remote_form, organize_begin, organize_confirm, organize_dismiss,
     organize_ready, remove_dsp_unit, remove_eq_band, reorder_dsp_units, scan_in_background,
     set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict,
     set_indexing_mode, set_locale_pref, set_managed_dest, set_managed_strategy,
@@ -232,20 +233,9 @@ fn source_option_text(label: String, desc: String, label_color: Color, p: &Palet
 /// bespoke rows rather than a uniform choice list:
 /// - **Local folder…** — focusable; closes the menu, then opens the native folder
 ///   dialog and folds the pick in (the flow the old button used).
-/// - **Remote server…** — a disabled "coming soon" item: not focusable, greyed,
-///   with a trailing chip; no handler.
+/// - **Remote server…** — focusable; closes the menu, then opens the
+///   [`remote_form_overlay`] connect form.
 fn add_source_menu(s: &State, p: &Palette) -> El {
-    let coming_soon = row()
-        .center_y()
-        .px(space::SNUG)
-        .py(space::XXS)
-        .radius(radius::XS)
-        .fill(p.muted)
-        .child(
-            text(t!("settings.comingSoon").to_string())
-                .font(type_::LABEL)
-                .color(p.text_secondary),
-        );
     let local = row()
         .key("add-source-opt-local")
         .role("option")
@@ -284,21 +274,24 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
     let remote = row()
         .key("add-source-opt-remote")
         .role("option")
-        // Not focusable: it's a "coming soon" placeholder, so it can't be activated.
+        .focusable(true)
         .w_full()
         .center_y()
         .gap(space::SM)
         .px(space::MD)
         .py(space::SM)
         .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        // Same hover wash as `dropdown::panel`'s rows, so the menu reads identically.
+        .hover(p.fg.alpha(0.06))
         .child(icon(&icons::SERVER, 16.0).color(p.text_secondary))
         .child(source_option_text(
             t!("settings.addRemoteServer").to_string(),
             t!("settings.addRemoteServerDesc").to_string(),
-            p.text_secondary,
+            p.fg,
             p,
         ))
-        .child(coming_soon);
+        .on_press(open_remote_form);
     // The dialog card: a title over the option rows. `modal` traps focus, makes the
     // background inert, and dismisses on Escape or an outside (scrim) press.
     let dialog = col()
@@ -334,6 +327,145 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         .center()
         .fill(Color::BLACK.alpha(0.45))
         .child(dialog)
+}
+
+/// Min / max width of the remote-connect form card, echoing the add-source
+/// dialog's own bounds (a small login-style card, not a wide one).
+const REMOTE_FORM_MIN_W: f32 = 320.0;
+const REMOTE_FORM_MAX_W: f32 = 440.0;
+
+/// One labelled text field of the [`remote_form_overlay`]: a small caption
+/// above a bordered single-line input bound to `buf` through `accessor`.
+/// `key` becomes both the input's a11y key and (with a `-group` suffix) its
+/// wrapping column's key; `label` is both the caption text and the input's
+/// `.label(...)` (its accessible name — a `textbox` isn't named from its
+/// content). The password field's masking comes from `buf` itself having
+/// been created with [`rune::TextEdit::secure`] (see `empty_remote_pass_buf`
+/// in `main.rs`), not from anything here.
+fn remote_field(
+    key: &'static str,
+    label: String,
+    buf: &rune::TextEdit,
+    accessor: fn(&mut State) -> &mut rune::TextEdit,
+    p: &Palette,
+) -> El {
+    col()
+        .key(format!("{key}-group"))
+        .w_full()
+        .gap(space::XXS)
+        .child(
+            text(label.clone())
+                .font(type_::LABEL)
+                .color(p.text_secondary),
+        )
+        .child(
+            text_input(buf, type_::BODY)
+                .key(key)
+                .label(label)
+                .single_line()
+                .w_full()
+                .px(space::SM)
+                .py(space::XS)
+                .radius(radius::SM)
+                .fill(p.muted)
+                .color(p.fg)
+                .border_sides([1.0; 4], p.border)
+                .on_edit(accessor)
+                .on_submit(|s: &mut State, _tx| connect_remote_source(s)),
+        )
+}
+
+/// The Remote server connect form: a small centered card over a dim scrim,
+/// mounted on the root overlay layer (via [`settings_overlays`]) once
+/// [`open_remote_form`] sets `State::remote_form_open`. Three labelled fields
+/// (server URL, username, password) over a Cancel / Connect button row;
+/// Connect reads the buffers and calls the host (`connect_remote_source`). A
+/// failed attempt's message shows inline above the buttons without closing
+/// the form. `modal` traps focus, dims the background, and dismisses on
+/// Escape or an outside (scrim) press — same as the add-source dialog.
+pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
+    if !s.remote_form_open {
+        return None;
+    }
+    let mut dialog = col()
+        .key("remote-form")
+        .focus_group()
+        .focus_return(ADD_SOURCE_MENU.to_string())
+        .min_w(REMOTE_FORM_MIN_W)
+        .max_w(REMOTE_FORM_MAX_W)
+        .fill(p.card)
+        .radius(radius::MD)
+        .border_sides([1.0; 4], p.border)
+        .padding(space::LG)
+        .gap(space::SM)
+        .min_h(space::NONE)
+        .child(
+            text(t!("settings.remoteConnectTitle").to_string())
+                .font(type_::ITEM_STRONG)
+                .color(p.fg)
+                .wrap(),
+        )
+        .child(remote_field(
+            "remote-url",
+            t!("settings.remoteUrlLabel").to_string(),
+            &s.remote_url_buf,
+            |s: &mut State| &mut s.remote_url_buf,
+            p,
+        ))
+        .child(remote_field(
+            "remote-user",
+            t!("settings.remoteUserLabel").to_string(),
+            &s.remote_user_buf,
+            |s: &mut State| &mut s.remote_user_buf,
+            p,
+        ))
+        .child(remote_field(
+            "remote-pass",
+            t!("settings.remotePassLabel").to_string(),
+            &s.remote_pass_buf,
+            |s: &mut State| &mut s.remote_pass_buf,
+            p,
+        ));
+    if let Some(msg) = &s.remote_error {
+        dialog = dialog.child(
+            text(t!("settings.remoteConnectError", error => msg).to_string())
+                .key("remote-error")
+                .font(type_::CAPTION)
+                .color(p.accent)
+                .wrap(),
+        );
+    }
+    let dialog = dialog
+        .child(
+            row()
+                .gap(space::SM)
+                .flex_wrap()
+                .child(organize_button(
+                    "remote-cancel",
+                    t!("settings.cancel").to_string(),
+                    false,
+                    p,
+                    close_remote_form,
+                ))
+                .child(organize_button(
+                    "remote-connect",
+                    t!("settings.remoteConnect").to_string(),
+                    true,
+                    p,
+                    connect_remote_source,
+                )),
+        )
+        .modal(true, close_remote_form);
+    Some(
+        col()
+            .key("remote-form-scrim")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(Color::BLACK.alpha(0.45))
+            .child(dialog),
+    )
 }
 
 /// The **Add music…** menu row: it runs the managed-library organizer (the
@@ -2843,6 +2975,11 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
     }
     if dropdown::is_open(s, ADD_SOURCE_MENU) {
         overlays.push(add_source_menu(s, p));
+    }
+    // The remote connect form outlives the add-source menu (opening it closes
+    // the menu), so it's gated on its own flag rather than `dropdown::is_open`.
+    if let Some(form) = remote_form_overlay(s, p) {
+        overlays.push(form);
     }
     if dropdown::is_open(s, ADD_DSP_MENU) {
         overlays.push(add_dsp_menu(p));

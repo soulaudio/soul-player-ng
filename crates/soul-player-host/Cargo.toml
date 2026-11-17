@@ -29,6 +29,12 @@ soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", bra
 # Write-path "managed library" organizer (copy/move into a path-template tree),
 # re-exported so a UI head can plan/apply without a direct core git dep.
 soul-audio-organize = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+# The `pack`/`unpack` compound-id helpers the remote-source client needs to
+# recover a server's OWN track id from an aggregate (local+remote) id — see
+# `remote::RemoteLibrary::path_of`. `soul-player-backend` already depends on
+# this crate for the same `Library`/`MultiCatalog` plumbing; declaring it here
+# too just names the dependency the host code itself calls directly.
+soul-audio-multicatalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 anyhow = "1"
 # Real-input FFT for the EQ spectrum analyzer (std host only — the no_std core
 # never sees it). Wraps rustfft with an r2c API and reused buffers.
@@ -41,6 +47,16 @@ notify-debouncer-mini = "0.4"
 # Read current CPU load so the "Automatic" indexing mode can scale scan
 # parallelism to how busy the machine is. Minimal features (system/CPU only).
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+# Blocking HTTP client for the remote-source client: auth, index fetch, and
+# track download all happen synchronously on the loader's thread.
+reqwest = { version = "0.12", features = ["blocking", "json"] }
+# JSON bodies for the remote-source `/v0/auth` request/response (via
+# `serde_json::json!`/`Value` — no derive macros needed for two string fields).
+serde_json = "1"
+# Per-OS cache directory for the remote-source download cache
+# (`add_remote_source`'s `DownloadCache`). Same version the app/rune head uses
+# for its own config dir.
+dirs = "6"
 
 # On Windows, also pull in the WASAPI exclusive / bit-perfect output backend.
 # Cargo unions features across this and the base dependency, so the host builds
@@ -53,3 +69,9 @@ features = ["wasapi-exclusive"]
 
 [dev-dependencies]
 tempfile = "3"
+# The `remote` module's tests drive a REAL in-process soul-server rather than
+# faking the HTTP boundary — a dev-only dependency; the shipped player never
+# links soul-server (the client speaks its wire protocol over plain HTTP).
+soul-server = { path = "../soul-server" }
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+axum = "0.7"

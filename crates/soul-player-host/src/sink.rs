@@ -10,7 +10,8 @@ use soul_audio_core::{SampleFormat, Sink, SinkError, StreamInfo};
 use soul_audio_desktop::sink::CpalSink;
 #[cfg(windows)]
 use soul_audio_desktop::{WasapiExclusiveSink, default_output_config};
-use soul_player_backend::{AudioPlayer, Event, Library};
+use soul_player_backend::library::TrackSource;
+use soul_player_backend::{AudioPlayer, Event};
 
 use crate::analyzer::SpectrumShared;
 use crate::eq::{DspShared, DspSink};
@@ -138,6 +139,11 @@ impl Sink for DeviceSink {
 /// **exclusive-or-stop** (no fall-back to shared — the actor doesn't start if
 /// exclusive can't open). All are ignored by `Offline` (the `NullSink` has no device
 /// to pick). The outcome is recorded in `status`.
+///
+/// `lib` is a trait object (not a concrete `Library`) so a remote-aware
+/// aggregate ([`crate::remote::RemoteLibrary`]) can be spawned with it too —
+/// the same reason [`AudioPlayer::spawn`]'s own parameter is `Arc<dyn
+/// TrackSource>`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_actor(
     mode: SinkMode,
@@ -147,7 +153,7 @@ pub(crate) fn build_actor(
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
-    lib: Arc<Library>,
+    lib: Arc<dyn TrackSource>,
     on_event: impl Fn(Event) + Send + 'static,
 ) -> AudioPlayer {
     match mode {
