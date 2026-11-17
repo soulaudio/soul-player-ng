@@ -10,9 +10,11 @@
 //! pitch/speed. It catches: silence (nothing plays), wrong speed (bad resampling or a
 //! broken rate handshake — a shifted Goertzel peak), clipping, and channel swaps.
 //! Where `signal_path_matrix` asserts the projected rates/flags against a `NullSink`
-//! (no audio), this asserts the real samples that reach the device. DSD rate variants
-//! (128/256/512) are covered for the signal path by `signal_path_matrix` and for audio
-//! by `dsd_playback_e2e`; here `tone.dsf` (DSD64) stands in for the DSD decode path.
+//! (no audio), this asserts the real samples that reach the device. Coverage is the
+//! full codec set: PCM (WAV/AIFF), FLAC, ALAC, MP3, AAC-LC (ADTS + MP4), **HE-AAC
+//! (SBR)** — the format whose post-load rate flip caused the half-speed bug, so it's a
+//! live regression guard — MPEG Layer II, Opus, Vorbis, and DSD64/128/256/512 (DSF +
+//! DFF). Only MPEG Layer I (`tone.mp1`) is excluded; see the note below.
 
 use std::path::PathBuf;
 
@@ -29,15 +31,24 @@ use soul_player_backend::{Command, ServicePlayer, apply_command, project_signal_
 /// Opus, 32 kHz for MP1, DSD decimates to 44.1 kHz) — so at a 48 kHz device several of
 /// these resample, exercising the exact path that mangled speed in the wild.
 const FIXTURES: &[&str] = &[
-    "tone.wav",  // PCM
-    "tone.flac", // FLAC (lossless)
-    "tone.m4a",  // ALAC (lossless, MP4)
-    "tone.aif",  // AIFF PCM
-    "tone.mp3",  // MP3
-    "tone.aac",  // AAC (ADTS)
-    "tone.mp2",  // MPEG Layer II
-    "tone.opus", // Opus (48 kHz)
-    "tone.dsf",  // DSD64 → 44.1 kHz PCM
+    "tone.wav",     // PCM
+    "tone.flac",    // FLAC (lossless)
+    "tone.m4a",     // ALAC (lossless, MP4)
+    "tone-aac.m4a", // AAC-LC (MP4)
+    "tone.aif",     // AIFF PCM
+    "tone.mp3",     // MP3
+    "tone.aac",     // AAC-LC (ADTS)
+    // HE-AAC (SBR): its reported rate flips after the first frame — the exact format
+    // whose stale-rate caching played at half speed. A decode-path regression guard.
+    "tone-sbr.m4a",
+    "tone.mp2",        // MPEG Layer II
+    "tone.opus",       // Opus (48 kHz)
+    "tone-vorbis.ogg", // Vorbis (Ogg)
+    "tone.dsf",        // DSD64 (DSF)
+    "tone.dff",        // DSD64 (DFF)
+    "tone-dsd128.dsf", // DSD128
+    "tone-dsd256.dsf", // DSD256
+    "tone-dsd512.dsf", // DSD512
 ];
 // NOTE: `tone.mp1` (MPEG-1 **Layer I**, 32 kHz) is intentionally NOT in the gate —
 // this suite caught that it decodes GARBLED (energy smeared across 220/440 Hz, not a
@@ -213,11 +224,14 @@ fn audit(file: &str, device_rate: u32) -> Result<(), String> {
         "{file}@{device_rate}: audio peak={peak} rms={rms:.0} — silent or clipped (nothing playing?)"
     );
 
-    // Analyse a steady window past the ~8 ms fade-in.
-    let skip = (device_rate as usize / 20) * ch; // ~50 ms
+    // Analyse a steady window past the deck's ~8 ms fade-in. The high-rate DSD fixtures
+    // (DSD256/512) are deliberately short (~50 ms), so skip only ~10 ms and require only
+    // ~30 ms — still enough Goertzel resolution (~17 cycles of 440 Hz) to separate the
+    // tone from the wrong-speed candidates.
+    let skip = (device_rate as usize / 100) * ch; // ~10 ms (clears the fade)
     let analysis = &written[skip.min(written.len())..];
     require!(
-        analysis.len() >= device_rate as usize * ch / 4,
+        analysis.len() >= device_rate as usize * ch / 33, // ~30 ms
         "{file}@{device_rate}: too little steady audio captured ({} samples)",
         analysis.len()
     );
@@ -235,19 +249,24 @@ fn audit(file: &str, device_rate: u32) -> Result<(), String> {
         "{file}@{device_rate}: channels swapped (L/R tones crossed)"
     );
 
-    // The projected chain must agree the device really ran at `device_rate`.
-    let sp = project_signal_path(&player)
-        .ok_or_else(|| format!("{file}@{device_rate}: no signal path while live"))?;
-    require!(
-        sp.device_rate == device_rate,
-        "{file}@{device_rate}: signal-path device_rate {} != {device_rate}",
-        sp.device_rate
-    );
-
-    println!(
-        "  {file}@{device_rate}Hz: peak={peak} rms={rms:.0} decoded={} resample={} — L=440 R=659.25 OK",
-        sp.decoded_rate, sp.resampling
-    );
+    // When the track is still live (not a short fixture that already ended during the
+    // render), the projected chain must agree the device really ran at `device_rate`.
+    // The tone assertion above is the real speed proof; this is a secondary cross-check.
+    if let Some(sp) = project_signal_path(&player) {
+        require!(
+            sp.device_rate == device_rate,
+            "{file}@{device_rate}: signal-path device_rate {} != {device_rate}",
+            sp.device_rate
+        );
+        println!(
+            "  {file}@{device_rate}Hz: peak={peak} rms={rms:.0} decoded={} resample={} — L=440 R=659.25 OK",
+            sp.decoded_rate, sp.resampling
+        );
+    } else {
+        println!(
+            "  {file}@{device_rate}Hz: peak={peak} rms={rms:.0} (short fixture, ended) — L=440 R=659.25 OK"
+        );
+    }
     Ok(())
 }
 
