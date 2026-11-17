@@ -57,6 +57,43 @@ fn io_err(e: io::Error) -> DomainError {
     DomainError::Other(e.into())
 }
 
+/// OAuth-flow use cases: credential verification without the legacy `/v0/auth`
+/// bearer-token issuance, plus the refresh-token lifecycle. Bounded on
+/// [`RefreshStore`] in addition to [`UserStore`] because — unlike the
+/// `/v0` native protocol — the `/authorize`/`/token`/`/revoke` endpoints
+/// need durable, rotating refresh tokens, which only a store backing both
+/// traits (`FileUsers`) can provide.
+impl<I: IndexPort, M: MediaStore, U> Services<I, M, U>
+where
+    U: UserStore + crate::auth::refresh::RefreshStore,
+{
+    /// Verify a username/password pair, returning the matched user without
+    /// issuing a `/v0`-style bearer token — the `/authorize` login form only
+    /// needs a yes/no answer before minting an OAuth authorization code.
+    pub fn verify_credentials(&self, user: &str, pass: &str) -> Option<UserId> {
+        self.users.verify(user, pass)
+    }
+
+    /// Issue a fresh refresh token for `user`.
+    pub fn issue_refresh(&self, user: UserId, now: u64) -> anyhow::Result<String> {
+        self.users.issue(user, now)
+    }
+
+    /// Redeem-and-rotate a refresh token: verify `raw`, invalidate it, and
+    /// mint its replacement in one atomic step.
+    pub fn rotate_refresh(&self, raw: &str, now: u64) -> Option<(UserId, String)> {
+        self.users.consume_rotate(raw, now)
+    }
+
+    /// Revoke a refresh token. The caller (RFC 7009's `/revoke`) always
+    /// responds `200` regardless of this method's result — it exists so the
+    /// handler doesn't need to know the store's internals, not so it can
+    /// branch on whether the token existed.
+    pub fn revoke_refresh(&self, raw: &str) -> bool {
+        self.users.revoke(raw)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
