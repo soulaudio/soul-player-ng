@@ -180,6 +180,20 @@ artist.viewList:
   zh: '列表视图'
   cs: 'Seznam'
   ja: 'リスト表示'
+genre.searchPlaceholder:
+  en: 'Search this genre'
+  de: 'In diesem Genre suchen'
+  es: 'Buscar en este género'
+  zh: '搜索此流派'
+  cs: 'Hledat v žánru'
+  ja: 'このジャンルを検索'
+genre.noMatches:
+  en: 'No matches'
+  de: 'Keine Treffer'
+  es: 'Sin coincidencias'
+  zh: '无匹配项'
+  cs: 'Žádné shody'
+  ja: '一致なし'
 
 player.nowPlaying:
   en: 'NOW PLAYING'

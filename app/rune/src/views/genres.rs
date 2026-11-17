@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use rune::{Cursor, El, ScrollSpec, col, el, row, text};
+use rune::{Cursor, El, ScrollSpec, col, el, row, text, text_input};
 use soul_player_host::TrackView;
 
 use crate::State;
@@ -170,17 +170,50 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         play_all_pill("genre-play-all", genre.ids.clone(), p),
     );
 
+    let q = s.genre_search.text.to_lowercase();
+    let shown: Vec<u32> = genre
+        .ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            q.is_empty()
+                || s.library
+                    .iter()
+                    .find(|t| t.id == *id)
+                    .is_some_and(|t| crate::views::library::track_matches(t, &q))
+        })
+        .collect();
+    let search = text_input(&s.genre_search, type_::ITEM)
+        .key("genre-search")
+        .label(t!("genre.searchPlaceholder").to_string())
+        .w_full()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .color(p.fg)
+        .on_edit(|st: &mut State| &mut st.genre_search);
     let mut list = col().key("genre-tracks").role("list").gap(space::XXS);
-    for (i, &id) in genre.ids.iter().enumerate() {
-        if let Some(t) = s.library.iter().find(|t| t.id == id) {
-            list = list.child(detail_track_row(
-                s.now_playing_id,
-                s.playing,
-                p,
-                &genre.ids,
-                i,
-                t,
-            ));
+    if shown.is_empty() {
+        list = list.child(
+            text(t!("genre.noMatches").to_string())
+                .font(type_::ITEM)
+                .color(p.text_secondary)
+                .px(space::MD)
+                .py(space::SM),
+        );
+    } else {
+        for (i, &id) in shown.iter().enumerate() {
+            if let Some(t) = s.library.iter().find(|t| t.id == id) {
+                list = list.child(detail_track_row(
+                    s.now_playing_id,
+                    s.playing,
+                    p,
+                    &shown,
+                    i,
+                    t,
+                ));
+            }
         }
     }
 
@@ -194,6 +227,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
                 .key("genre-detail-content")
                 .padding(space::PANE)
                 .child(hero)
+                .child(search)
                 .child(list)
                 .scroll(ScrollSpec {
                     stick_bottom: false,

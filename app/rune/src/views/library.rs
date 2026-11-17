@@ -28,7 +28,7 @@ pub(crate) fn fmt_dur(secs: f64) -> String {
 
 /// Case-insensitive substring match over the fields a user would search by.
 /// `q` is already lowercased by the caller.
-fn track_matches(t: &TrackView, q: &str) -> bool {
+pub(crate) fn track_matches(t: &TrackView, q: &str) -> bool {
     let hit = |o: &Option<String>| o.as_deref().is_some_and(|v| v.to_lowercase().contains(q));
     hit(&t.title) || hit(&t.artist) || hit(&t.album)
 }

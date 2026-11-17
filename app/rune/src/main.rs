@@ -133,12 +133,14 @@ pub(crate) fn navigate_to(
     s.open_artist = open_artist;
     s.open_genre = open_genre;
     s.mobile_show_content = true;
+    s.genre_search = rune::TextEdit::new("");
 }
 
 /// The detail back button: pop to the previous location, or — if the stack is
 /// empty — fall back to the current page's browse parent so back is never a dead
 /// end.
 pub(crate) fn go_back(s: &mut State) {
+    s.genre_search = rune::TextEdit::new("");
     if let Some(prev) = s.nav_history.pop() {
         s.route = prev.route;
         s.open_album = prev.open_album;
@@ -267,6 +269,10 @@ struct State {
     /// Artist-page Discography view mode (ephemeral): `false` = album-card grid
     /// (default), `true` = compact row list. Toggled by the grid/list buttons.
     discography_list: bool,
+    /// The Genre-detail in-page search box (ephemeral): filters the open genre's
+    /// track list. Separate from the library search so the two never cross over;
+    /// reset whenever we navigate (see [`navigate_to`]/[`go_back`]).
+    genre_search: rune::TextEdit,
     /// Whether the artist detail's "Top Songs" section is expanded past the first
     /// five (toggled by its Show more/less link). Reset when a new artist opens.
     artist_top_expanded: bool,
@@ -562,6 +568,7 @@ impl State {
             open_genre: None,
             nav_history: Vec::new(),
             discography_list: false,
+            genre_search: rune::TextEdit::new(""),
             artist_top_expanded: false,
             settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
@@ -7263,6 +7270,52 @@ mod tests {
                 start: 0
             }],
             "Play All plays only this genre's tracks, from the top"
+        );
+    }
+
+    #[test]
+    fn genre_in_page_search_filters_the_track_list() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        // Two tracks with distinct titles in the one genre.
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Blue".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Jazz".into()),
+                duration_secs: 1.0,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("Green".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Jazz".into()),
+                duration_secs: 1.0,
+            },
+        ];
+        s.route = Route::Genre;
+        s.open_genre = Some("Jazz".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("genre-search").is_some(), "the search box renders");
+        assert!(
+            rt.find("album-track-0").is_some() && rt.find("album-track-1").is_some(),
+            "both tracks show"
+        );
+        // Type a query that matches only "Blue".
+        rt.update(|st: &mut State, _tx: &mut Tx| st.genre_search = rune::TextEdit::new("blue"));
+        rt.frame(0.0);
+        assert!(rt.find("album-track-0").is_some(), "the match stays");
+        assert!(
+            rt.find("album-track-1").is_none(),
+            "the non-match is filtered out"
         );
     }
 
