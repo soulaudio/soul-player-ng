@@ -2,15 +2,15 @@
 //! chain shown stage by stage — Source → Decode → ReplayGain → Resample →
 //! Output — opened by pressing the now-playing signal-path line. ReplayGain
 //! toggles inline (the one stage that is a real on/off today); exclusive /
-//! bit-perfect output is live (lit when the stream bypasses the OS mixer), and a
-//! DSP/EQ chain is still surfaced as **"soon"** so the whole pipeline is visible
-//! even before that stage is projected here. Rendered as a themed
+//! bit-perfect output is live (lit when the stream bypasses the OS mixer), and the
+//! DSP/EQ stage is live too — lit when the active chain shapes the signal, dim
+//! **"Bypassed"** when the path stays bit-exact through it. Rendered as a themed
 //! overlay anchored to the `"signal-path"` line and `modal` (dismiss on an
 //! outside press / Escape), the same mechanism as [`crate::views::dropdown`].
 #![forbid(unsafe_code)]
 
 use rune::{Align, Color, Cursor, El, Icon, Side, col, el, icon, row, text};
-use soul_player_host::{ReplayGainMode, SignalPath, SourceCodec, SourceFormat};
+use soul_player_host::{DspUnit, ReplayGainMode, SignalPath, SourceCodec, SourceFormat};
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
@@ -108,23 +108,29 @@ fn replay_gain_value(mode: ReplayGainMode, gain_db: f32) -> String {
     }
 }
 
-/// A non-interactive "soon" chip marking a stage/toggle that isn't built yet.
-fn soon_chip(p: &Palette) -> El {
-    text(t!("player.signalPath.soon").to_string())
-        .font(type_::LABEL)
-        .color(p.text_secondary)
-        .px(space::SM)
-        .py(space::XXS)
-        .radius(radius::SM)
-        .fill(p.muted)
+/// DSP/EQ stage value: **"Active"** when any unit in the chain would actually alter
+/// the signal, else **"Bypassed"**. Keys off [`DspUnit::affects`], so an enabled-but-
+/// flat EQ — or a disabled unit — honestly reads as a bit-exact passthrough.
+pub(crate) fn dsp_value(units: &[DspUnit]) -> String {
+    if dsp_active(units) {
+        t!("player.signalPath.dspActive").to_string()
+    } else {
+        t!("player.signalPath.dspBypassed").to_string()
+    }
+}
+
+/// Whether the DSP/EQ chain is shaping the signal (any unit
+/// [`affects`](DspUnit::affects) it) — drives the stage's lit/accent vs dim/clean look.
+pub(crate) fn dsp_active(units: &[DspUnit]) -> bool {
+    units.iter().any(DspUnit::affects)
 }
 
 /// One **stage card** in the signal-path pipeline. Each pipeline stage is its own
 /// card (foobar/Roon style: Decoder → ReplayGain → DSP → Output), with a Roon-like
 /// quality dot — `primary` for a clean/lossless pass, `accent` for a stage that
 /// *enhances/processes* the signal (ReplayGain on, a resample) — a stage icon, the
-/// name, its value, and an optional trailing control (the ReplayGain toggle, or a
-/// "soon" chip). Dim cards are not-yet-built stages. `key` is stable for tests.
+/// name, its value, and an optional trailing control (e.g. the ReplayGain toggle).
+/// A dim card is an inactive stage (bypassed / shared). `key` is stable for tests.
 #[allow(clippy::too_many_arguments)]
 fn stage_card(
     key: &str,
@@ -229,7 +235,8 @@ fn rg_toggle(mode: ReplayGainMode, p: &Palette) -> El {
 
 /// The pipeline stage rows (the reusable body shared by the now-playing popover
 /// and the Settings → Audio card): the live chain when a track is playing, then
-/// the not-yet-built Exclusive output & DSP/EQ stages surfaced as "soon".
+/// the Exclusive output and DSP/EQ stages — both live, lit when active and dim when
+/// the path stays bit-exact (shared / bypassed).
 pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
     let mut rows = col().key("signal-path-stages").w_full().gap(space::XS);
     if let Some(sp) = s.signal_path {
@@ -308,6 +315,9 @@ pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
     // Exclusive (bit-perfect) output — live: lit when the current stream bypasses
     // the OS mixer (the device gets exactly these samples), dim "shared" otherwise.
     let excl_live = s.signal_path.filter(|x| x.exclusive);
+    // DSP/EQ is host/app-owned live state (the active chain), not per-track — read it
+    // straight from the app's `dsp_units` rather than the backend SignalPath.
+    let dsp_on = dsp_active(&s.dsp_units);
     rows.child(stage_card(
         "sp-row-exclusive",
         &icons::SETTINGS,
@@ -321,17 +331,114 @@ pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
         p,
     ))
     .child(connector(true, p))
-    // DSP/EQ projection into this compact panel isn't wired yet — still "soon".
+    // DSP/EQ: lit + accent when the active chain shapes the signal, dim "Bypassed"
+    // when the path is bit-exact through it (empty chain, or every unit flat/disabled).
     .child(stage_card(
         "sp-row-dsp",
         &icons::SETTINGS,
         t!("player.signalPath.dsp").to_string(),
-        String::new(),
-        Some(soon_chip(p)),
-        p.primary,
-        true,
+        dsp_value(&s.dsp_units),
+        None,
+        if dsp_on { p.accent } else { p.primary },
+        !dsp_on,
         p,
     ))
+}
+
+/// Per-track **loudness & dynamic-range** readouts (from the hybrid-ReplayGain
+/// background analysis): integrated LUFS, LRA, true-peak, PLR, and DR. Shown under
+/// the pipeline; "analyzing…" until the current track has been measured.
+pub(crate) fn loudness_block(s: &State, p: &Palette) -> El {
+    let mut block = col()
+        .key("signal-path-loudness")
+        .w_full()
+        .gap(space::XXS)
+        .pt(space::XS)
+        .child(
+            text(t!("player.signalPath.loudness").to_string())
+                .font(type_::SECTION)
+                .color(p.text_secondary),
+        );
+    block = match s.signal_path.and_then(|sp| sp.loudness) {
+        Some(m) => block
+            .child(metric_row(
+                "signal-path-integrated",
+                t!("player.signalPath.integrated").to_string(),
+                format!("{:.1} LUFS", m.integrated_lufs),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-lra",
+                t!("player.signalPath.lra").to_string(),
+                format!("{:.1} LU", m.lra),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-truepeak",
+                t!("player.signalPath.truePeak").to_string(),
+                format!("{:+.1} dBTP", m.true_peak_dbtp),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-plr",
+                t!("player.signalPath.plr").to_string(),
+                format!("{:.1} LU", m.plr),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-dr",
+                t!("player.signalPath.dynamicRange").to_string(),
+                format!("DR{}", m.dr as i32),
+                dr_color(m.dr, p),
+                p,
+            )),
+        None => block.child(
+            text(t!("player.signalPath.analyzing").to_string())
+                .key("signal-path-analyzing")
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        ),
+    };
+    block
+}
+
+/// One labelled metric row: label left, mono value right (the value colour is the
+/// caller's — DR uses the banded [`dr_color`]).
+fn metric_row(
+    key: &'static str,
+    label: String,
+    value: String,
+    value_color: Color,
+    p: &Palette,
+) -> El {
+    row()
+        .key(key)
+        .w_full()
+        .items_center()
+        .child(
+            text(label)
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .grow(1.0),
+        )
+        .child(text(value).font(type_::LABEL.mono()).color(value_color))
+}
+
+/// DR colour band (TT/Dynameter convention): dynamic (≥ 14) highlighted in the
+/// brand colour, compressed (< 8) flagged with the attention accent, in-between
+/// neutral.
+fn dr_color(dr: f32, p: &Palette) -> Color {
+    if dr >= 14.0 {
+        p.primary
+    } else if dr < 8.0 {
+        p.accent
+    } else {
+        p.fg
+    }
 }
 
 /// The signal-path popover, mounted at the window root (via [`crate::view`]'s
@@ -358,12 +465,15 @@ pub fn overlay(s: &State, p: &Palette) -> Option<El> {
                     .font(type_::SECTION)
                     .color(p.text_secondary),
             )
-            .child(pipeline_rows(s, p)),
+            .child(pipeline_rows(s, p))
+            .child(loudness_block(s, p)),
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use soul_player_host::EqUnit;
+
     use super::*;
 
     fn sp(
@@ -384,6 +494,7 @@ mod tests {
             resampling,
             output_bits: 24,
             exclusive: false,
+            loudness: None,
         }
     }
 
@@ -436,6 +547,66 @@ mod tests {
             ..base
         };
         assert_eq!(exclusive_value(&excl), "96 kHz · 24-bit");
+    }
+
+    /// An EQ unit that actually shapes the signal (a boosted preamp is enough —
+    /// independent of the band layout).
+    fn affecting_eq() -> DspUnit {
+        DspUnit::Eq(EqUnit {
+            preamp_db: 6.0,
+            enabled: true,
+            ..EqUnit::default()
+        })
+    }
+
+    /// The DSP/EQ stage reads as **bypassed** whenever the chain can't alter the
+    /// signal: empty, every unit disabled, or every unit flat. An enabled-but-flat
+    /// EQ is an honest bit-exact passthrough (`DspUnit::affects`), and a boosted
+    /// unit that is disabled is still a passthrough.
+    #[test]
+    fn dsp_stage_is_bypassed_for_empty_disabled_or_flat_chains() {
+        let bypassed = t!("player.signalPath.dspBypassed").to_string();
+
+        assert!(!dsp_active(&[]));
+        assert_eq!(dsp_value(&[]), bypassed);
+
+        // A default EQ unit is flat → alters nothing.
+        let flat = [DspUnit::Eq(EqUnit::default())];
+        assert!(!dsp_active(&flat));
+        assert_eq!(dsp_value(&flat), bypassed);
+
+        // A boosted unit that is disabled is a passthrough — the boost is bypassed.
+        let disabled = [DspUnit::Eq(EqUnit {
+            preamp_db: 6.0,
+            enabled: false,
+            ..EqUnit::default()
+        })];
+        assert!(!dsp_active(&disabled));
+        assert_eq!(dsp_value(&disabled), bypassed);
+    }
+
+    /// A unit that shapes the signal lights the stage; flat / disabled units next to
+    /// it don't change that reading.
+    #[test]
+    fn dsp_stage_is_active_when_a_unit_shapes_the_signal() {
+        let active = t!("player.signalPath.dspActive").to_string();
+
+        let one = [affecting_eq()];
+        assert!(dsp_active(&one));
+        assert_eq!(dsp_value(&one), active);
+
+        // An affecting unit beside a flat one and a disabled one still reads active.
+        let mixed = [
+            affecting_eq(),
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit {
+                preamp_db: 6.0,
+                enabled: false,
+                ..EqUnit::default()
+            }),
+        ];
+        assert!(dsp_active(&mixed));
+        assert_eq!(dsp_value(&mixed), active);
     }
 
     /// The Source stage names the real codec on an otherwise-identical PCM stream:

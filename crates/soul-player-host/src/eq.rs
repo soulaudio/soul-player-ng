@@ -54,6 +54,9 @@ pub struct DspSink<K: Sink> {
     buf_f32: Vec<f32>,
     buf_i32: Vec<i32>,
     analyzer: Analyzer,
+    /// Kept so [`reopen`](Sink::reopen) can rebuild the analyzer for a new device rate
+    /// (its bin→frequency map is rate-dependent).
+    spectrum: SpectrumShared,
 }
 
 impl<K: Sink> DspSink<K> {
@@ -73,7 +76,8 @@ impl<K: Sink> DspSink<K> {
             channels: usize::from(info.channels.max(1)),
             buf_f32: Vec::new(),
             buf_i32: Vec::new(),
-            analyzer: Analyzer::new(rate as f32, spectrum),
+            analyzer: Analyzer::new(rate as f32, spectrum.clone()),
+            spectrum,
         }
     }
 
@@ -122,6 +126,27 @@ impl<K: Sink> Sink for DspSink<K> {
     /// switching, so it must reflect the real (inner) sink, not the trait default.
     fn exclusive(&self) -> bool {
         self.inner.exclusive()
+    }
+
+    /// Reopen the wrapped device at `rate` (native-rate switching), then re-set up the
+    /// DSP chain for the device's NEW rate: the EQ filters are designed per sample rate
+    /// and the analyzer's bin→frequency map is rate-dependent, so a stale rate would
+    /// mis-design both. The filter bank is rebuilt fresh (no stale state across the
+    /// rate change) on the next block.
+    fn reopen(&mut self, rate: u32) -> Result<(), SinkError> {
+        self.inner.reopen(rate)?;
+        let info = self.inner.stream_info();
+        if info.sample_rate != self.rate {
+            self.rate = info.sample_rate;
+            self.channels = usize::from(info.channels.max(1));
+            // Force `sync()` to redesign every unit for the new rate (clearing the old
+            // filter bank so no stale history carries across the rate change).
+            self.units.clear();
+            self.preamps.clear();
+            self.applied_gen = None;
+            self.analyzer = Analyzer::new(self.rate as f32, self.spectrum.clone());
+        }
+        Ok(())
     }
 
     fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
@@ -203,6 +228,13 @@ mod tests {
             Ok(())
         }
         fn flush(&mut self) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn reopen(&mut self, rate: u32) -> Result<(), SinkError> {
+            // Model an in-place device reopen at a new rate (what `DspSink::reopen`
+            // forwards to) and forget prior output so a test can see only post-reopen.
+            self.info.sample_rate = rate;
+            self.out.clear();
             Ok(())
         }
     }
@@ -322,6 +354,58 @@ mod tests {
         assert!(
             (gain / want - 1.0).abs() < 0.08,
             "a DspUnit::Eq +6 dB band should ~double the 1 kHz amplitude: gain {gain:.3}, want {want:.3}"
+        );
+    }
+
+    #[test]
+    fn dsp_sink_reopen_redesigns_the_eq_for_the_new_rate() {
+        // After a native-rate reopen, the EQ must be RE-designed for the device's NEW
+        // rate. A bell at 1 kHz boosts a 1 kHz tone at 48k; after reopening at 96k, a
+        // 1 kHz tone (generated at 96k) must STILL be boosted — if the filter kept its
+        // 48k coefficients, that tone would land at the wrong normalized frequency and
+        // NOT be boosted (the staleness bug this guards against).
+        let n = 24_000;
+        let amp = 3_000_000.0;
+        let mut unit = EqUnit::default();
+        unit.bands[3] = bell(1000.0, 6.0, 1.0);
+        let shared = Arc::new(Mutex::new(DspChain {
+            units: vec![DspUnit::Eq(unit)],
+            generation: 1,
+        }));
+        let mut sink = dsp_sink(
+            Capture {
+                info: info(48_000, 1),
+                out: Vec::new(),
+            },
+            shared,
+        );
+
+        // At 48k: the 1 kHz tone is boosted ~+6 dB.
+        let in48 = sine(1000.0, 48_000.0, n, amp);
+        let in_peak = tail_peak(&in48);
+        sink.write(&in48).unwrap();
+        let gain48 = tail_peak(&sink.inner.out) / in_peak;
+        assert!(
+            (gain48 / db_to_lin(6.0) - 1.0).abs() < 0.1,
+            "1 kHz boosted at 48k: gain {gain48:.3}"
+        );
+
+        // Reopen the device at 96k (Capture::reopen changes its rate + clears output).
+        sink.reopen(96_000).unwrap();
+        assert_eq!(
+            sink.stream_info().sample_rate,
+            96_000,
+            "reopen forwards the new device rate"
+        );
+
+        // At 96k: a 1 kHz tone (generated at 96k) is STILL boosted — EQ redesigned.
+        let in96 = sine(1000.0, 96_000.0, n, amp);
+        let in_peak96 = tail_peak(&in96);
+        sink.write(&in96).unwrap();
+        let gain96 = tail_peak(&sink.inner.out) / in_peak96;
+        assert!(
+            (gain96 / db_to_lin(6.0) - 1.0).abs() < 0.15,
+            "the 1 kHz band must follow the rate change (redesigned for 96k): gain {gain96:.3}"
         );
     }
 
@@ -538,6 +622,225 @@ mod tests {
         assert!(
             (gain / want - 1.0).abs() < 0.1,
             "the disabled unit must not add gain: gain {gain:.3}, want {want:.3}"
+        );
+    }
+
+    // ---- End-to-end: EQ applied to RESAMPLED audio (the previously untested seam) --
+
+    use soul_audio_core::{Deck, DecodeError, Decoder, Progress, Quality, SeekableDecoder};
+
+    /// A synthetic interleaved sine source at `rate` Hz, 24-bit — so a real `Deck` can
+    /// decode → resample → (EQ) exactly as it does for a 44.1 kHz file into a 48 kHz
+    /// device.
+    struct SineDecoder {
+        rate: u32,
+        ch: usize,
+        freq: f32,
+        amp: f32,
+        frames: u64,
+        pos: u64,
+    }
+    impl Decoder for SineDecoder {
+        fn stream_info(&self) -> StreamInfo {
+            StreamInfo {
+                sample_rate: self.rate,
+                channels: self.ch as u16,
+                format: SampleFormat::Int { bits: 24 },
+            }
+        }
+        fn decode_into(&mut self, out: &mut [i32]) -> Result<usize, DecodeError> {
+            let want = ((out.len() / self.ch) as u64).min(self.frames - self.pos) as usize;
+            for f in 0..want {
+                let t = (self.pos + f as u64) as f32 / self.rate as f32;
+                let v = (self.amp * (2.0 * PI * self.freq * t).sin()).round() as i32;
+                for c in 0..self.ch {
+                    out[f * self.ch + c] = v;
+                }
+            }
+            self.pos += want as u64;
+            Ok(want * self.ch)
+        }
+    }
+    impl SeekableDecoder for SineDecoder {
+        fn seek_to(&mut self, sample: u64) -> Result<u64, DecodeError> {
+            self.pos = sample.min(self.frames);
+            Ok(self.pos)
+        }
+        fn total_frames(&self) -> Option<u64> {
+            Some(self.frames)
+        }
+    }
+
+    /// Goertzel magnitude of `freq` over one (deinterleaved) channel.
+    fn goertzel(x: &[f32], freq: f32, fs: f32) -> f32 {
+        let w = 2.0 * PI * freq / fs;
+        let coeff = 2.0 * w.cos();
+        let (mut s1, mut s2) = (0.0f32, 0.0f32);
+        for &v in x {
+            let s0 = v + coeff * s1 - s2;
+            s2 = s1;
+            s1 = s0;
+        }
+        (s1 * s1 + s2 * s2 - coeff * s1 * s2).sqrt()
+    }
+
+    /// The left channel of interleaved stereo i32, as f32.
+    fn left(interleaved: &[i32]) -> Vec<f32> {
+        interleaved.iter().step_by(2).map(|&x| x as f32).collect()
+    }
+
+    /// Render ~1 s of a 1 kHz tone at `src_rate` through a real resampling `Deck` into
+    /// a 48 kHz `DspSink` carrying `chain`, returning the captured device output.
+    fn render_resampled(src_rate: u32, amp: f32, chain: DspShared) -> Vec<i32> {
+        let cap = Capture {
+            info: info(48_000, 2),
+            out: Vec::new(),
+        };
+        let mut deck: Deck<_, _, 1> = Deck::new(dsp_sink(cap, chain), Quality::Hq);
+        deck.load(SineDecoder {
+            rate: src_rate,
+            ch: 2,
+            freq: 1000.0,
+            amp,
+            frames: u64::from(src_rate),
+            pos: 0,
+        })
+        .unwrap();
+        deck.play();
+        loop {
+            match deck.pump().unwrap() {
+                Progress::Ended | Progress::Idle => break,
+                _ => {}
+            }
+        }
+        deck.sink().inner.out.clone()
+    }
+
+    /// THE regression for the resample→EQ seam: a 44.1 kHz tone into a 48 kHz device
+    /// WITH an active EQ band must come out at the right SPEED (frame count scales by
+    /// 48000/44100), the right PITCH (still 1 kHz, not shifted), and boosted at the
+    /// correct POST-resample frequency — never slower / distorted.
+    #[test]
+    fn eq_on_a_resampled_tone_keeps_speed_pitch_and_boosts_correctly() {
+        let amp = CANONICAL_MAX * 0.45; // headroom for a +6 dB boost without clipping
+        let flat = chain_with(|u| {
+            u.enabled = true;
+            u.bands = default_bands().to_vec();
+        });
+        let boosted = chain_with(|u| {
+            u.enabled = true;
+            u.bands = vec![bell(1000.0, 6.0, 1.0)];
+        });
+
+        let flat_out = render_resampled(44_100, amp, flat);
+        let boost_out = render_resampled(44_100, amp, boosted);
+        let fs = 48_000.0;
+
+        // SPEED: 44.1k → 48k stretches the frame count by 48000/44100. The slack
+        // (±1024, as in the engine's single_track_plays_once_and_ends) absorbs the HQ
+        // resampler's latency tail + 256-frame block padding — a wrong SPEED (e.g. not
+        // resampling at all → ~44100 frames, or ×2 → ~24000) is far outside it.
+        let want_frames = 44_100f64 * 48_000.0 / 44_100.0;
+        let got_frames = (flat_out.len() / 2) as f64;
+        assert!(
+            (got_frames - want_frames).abs() <= 1024.0,
+            "resampled output is the wrong length (wrong speed): got {got_frames}, want ~{want_frames}"
+        );
+
+        // PITCH: 1 kHz dominates; the wrong-speed candidates stay far below it.
+        let l = left(&flat_out);
+        let at_1k = goertzel(&l, 1000.0, fs);
+        for cand in [500.0, 2000.0, 1000.0 * 48.0 / 44.1, 1000.0 * 44.1 / 48.0] {
+            let other = goertzel(&l, cand, fs);
+            assert!(
+                other < at_1k * 0.1,
+                "wrong-speed pitch candidate {cand:.0} Hz too strong: {other:.0} vs 1k {at_1k:.0}"
+            );
+        }
+
+        // BOOST hits the right POST-resample frequency: +6 dB ≈ ×2 at 1 kHz.
+        let boost_1k = goertzel(&left(&boost_out), 1000.0, fs);
+        let ratio = boost_1k / at_1k;
+        assert!(
+            (ratio / 2.0 - 1.0).abs() < 0.15,
+            "the +6 dB band should ~double 1 kHz on resampled audio: ratio {ratio:.2}"
+        );
+
+        // No gross clipping at this headroom (the boosted peak stays in 24-bit range).
+        let peak = boost_out.iter().map(|&x| x.unsigned_abs()).max().unwrap() as f32;
+        assert!(
+            peak <= CANONICAL_MAX + 1.0,
+            "unexpected clip at safe headroom: peak {peak}"
+        );
+    }
+
+    /// Documents the ONE real distortion source in the EQ path: a boost beyond
+    /// headroom hard-clips at the 24-bit sink — independent of resampling. The user's
+    /// saved unit carried a +7.2 dB preamp (×2.29), which clips hot audio. (Not a
+    /// pipeline bug; this pins the behavior that motivates clip-headroom UX.)
+    #[test]
+    fn a_boosting_preamp_clips_hot_audio() {
+        let hot = sine(1000.0, FS, 4_800, CANONICAL_MAX * 0.95);
+        let shared = chain_with(|u| {
+            u.enabled = true;
+            u.preamp_db = 7.2;
+        });
+        let mut sink = dsp_sink(
+            Capture {
+                info: info(48_000, 1),
+                out: Vec::new(),
+            },
+            shared,
+        );
+        sink.write(&hot).unwrap();
+        let peak = sink
+            .inner
+            .out
+            .iter()
+            .map(|&x| x.unsigned_abs())
+            .max()
+            .unwrap() as f32;
+        assert!(
+            (peak - CANONICAL_MAX).abs() < 2.0,
+            "a +7.2 dB preamp clips hot audio to full scale (peak {peak})"
+        );
+    }
+
+    /// Reproduces the reported fault end-to-end through the REAL resampling `Deck`:
+    /// the user's saved unit (a big +7.2 dB preamp + a modest band) clips a hot
+    /// 44.1 kHz tone played into a 48 kHz device, while the SAME bands at 0 dB preamp
+    /// stay within full scale. This pins "weird audio when EQ is applied" to the
+    /// configured gain (clipping), not the resample→EQ pipeline — and proves dropping
+    /// the preamp is the fix, without touching a live device.
+    #[test]
+    fn configured_gain_drives_clipping_through_the_resample_path() {
+        let amp = CANONICAL_MAX * 0.7; // a realistically hot (~-3 dBFS) source
+
+        // The user's unit: +7.2 dB preamp (×2.29) → pushes the signal past full scale.
+        let user_cfg = chain_with(|u| {
+            u.enabled = true;
+            u.preamp_db = 7.2;
+            u.bands = vec![bell(349.0, 2.1, 1.0)];
+        });
+        let clipped = render_resampled(44_100, amp, user_cfg);
+        let clamp = CANONICAL_MAX as i32;
+        let n_clipped = clipped.iter().filter(|&&x| x.abs() >= clamp).count();
+        assert!(
+            n_clipped > 100,
+            "the +7.2 dB preamp must hard-clip the resampled signal (clipped samples: {n_clipped})"
+        );
+
+        // The same bands at 0 dB preamp are within headroom → no clipping (clean).
+        let safe_cfg = chain_with(|u| {
+            u.enabled = true;
+            u.preamp_db = 0.0;
+            u.bands = vec![bell(349.0, 2.1, 1.0)];
+        });
+        let clean = render_resampled(44_100, amp, safe_cfg);
+        let peak = clean.iter().map(|&x| x.unsigned_abs()).max().unwrap() as f32;
+        assert!(
+            peak < CANONICAL_MAX,
+            "at 0 dB preamp the resampled signal stays within full scale (peak {peak})"
         );
     }
 }

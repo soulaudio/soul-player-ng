@@ -40,15 +40,14 @@ pub struct AudioPlayer {
 
 impl AudioPlayer {
     /// Spawn the actor. `make_sink` runs on the pump thread (so `K` need not be
-    /// `Send`) and is **reusable**: called with `None` to build the initial sink,
-    /// and with `Some(rate)` to reopen the device at a track's native rate for
-    /// bit-perfect exclusive output (native-rate switching). `on_event` is called
-    /// from the pump thread on every emitted event. `library` is the initial
+    /// `Send`) and builds the initial sink; per-track native-rate switching reopens
+    /// that sink in place (`Sink::reopen`), so it's only called once. `on_event` is
+    /// called from the pump thread on every emitted event. `library` is the initial
     /// `id → path` map (swap later via [`set_library`](Self::set_library)).
     pub fn spawn<K, Mk, Ev>(make_sink: Mk, library: Arc<dyn TrackSource>, on_event: Ev) -> Self
     where
         K: Sink + 'static,
-        Mk: Fn(Option<u32>) -> anyhow::Result<K> + Send + 'static,
+        Mk: FnOnce() -> anyhow::Result<K> + Send + 'static,
         Ev: Fn(Event) + Send + 'static,
     {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -153,13 +152,10 @@ fn pump_thread<K, Mk, Ev>(
     on_event: Ev,
 ) where
     K: Sink + 'static,
-    Mk: Fn(Option<u32>) -> anyhow::Result<K>,
+    Mk: FnOnce() -> anyhow::Result<K>,
     Ev: Fn(Event),
 {
-    // `None` = the initial sink (device default / shared, or exclusive at the device
-    // rate). `Some(rate)` later reopens it at a track's native rate (native-rate
-    // switching), below.
-    let sink = match make_sink(None) {
+    let sink = match make_sink() {
         Ok(s) => s,
         Err(e) => {
             eprintln!("player: sink init failed: {e:#}");
@@ -190,7 +186,7 @@ fn pump_thread<K, Mk, Ev>(
     //     the loader's decoder results) so this pump — the one event source —
     //     emits the `TrackLoudnessAnalyzed` event. The cache is read synchronously
     //     at the RG gate below.
-    let (loud_res_tx, loud_res_rx) = mpsc::channel::<(PathBuf, f32)>();
+    let (loud_res_tx, loud_res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
     let (loudness, analyzer) = LoudnessCache::spawn(loud_res_tx);
 
     let mut vol = VolumeState::new();
@@ -290,7 +286,7 @@ fn pump_thread<K, Mk, Ev>(
         //     native rate when it differs — see `maybe_switch_native_rate` for the
         //     guards (shared sinks never reopen; the latch suppresses retrying a rate
         //     the device just refused; the current exclusive sink is kept on failure).
-        maybe_switch_native_rate(&mut player, &mut native_rate_tried, &make_sink);
+        maybe_switch_native_rate(&mut player, &mut native_rate_tried);
 
         // 3. Pump one block (paced by the real sink's backpressure; NullSink
         //    returns immediately, so tests run briefly then drop the actor).
@@ -309,8 +305,8 @@ fn pump_thread<K, Mk, Ev>(
         //     emitting one event per newly-computed gain so the app can persist
         //     it. The worker already wrote the cache, so the gain is usable below
         //     and on the NEXT play of that track.
-        while let Ok((path, gain_db)) = loud_res_rx.try_recv() {
-            on_event(Event::TrackLoudnessAnalyzed { path, gain_db });
+        while let Ok((path, loudness)) = loud_res_rx.try_recv() {
+            on_event(Event::TrackLoudnessAnalyzed { path, loudness });
         }
 
         // 3c. Re-apply ReplayGain when the current track changes, or when the
@@ -350,9 +346,20 @@ fn pump_thread<K, Mk, Ev>(
             {
                 tick.duration_secs = Some(d);
             }
+            let cur_id = tick.now_playing_id;
             on_event(Event::Tick(tick));
             on_event(Event::Queue(project_queue(&player)));
-            on_event(Event::SignalPath(project_signal_path(&player)));
+            // Attach the current track's cached loudness metrics to the signal path
+            // (the pure projection can't reach the actor's cache). Re-emitted every
+            // tick, so it fills in within ~125 ms of the background analysis landing.
+            let mut sp = project_signal_path(&player);
+            if let Some(sp) = sp.as_mut()
+                && let Some(id) = cur_id
+                && let Some(path) = library.lock().expect("library mutex").path_of(id)
+            {
+                sp.loudness = loudness.metrics(&path);
+            }
+            on_event(Event::SignalPath(sp));
             last_tick = Instant::now();
         }
 
@@ -470,8 +477,12 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            |_rate| Ok(NullSink::new(48_000, 2)),
-            lib,
+            || Ok(NullSink::new(48_000, 2)),
+            {
+                let c = Arc::clone(&lib);
+                let d: Arc<dyn TrackSource> = c;
+                d
+            },
             move |ev| {
                 let _ = ev_tx.send(ev);
             },
@@ -545,8 +556,12 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            |_rate| Ok(NullSink::new(48_000, 2)),
-            lib_a,
+            || Ok(NullSink::new(48_000, 2)),
+            {
+                let c = Arc::clone(&lib_a);
+                let d: Arc<dyn TrackSource> = c;
+                d
+            },
             move |ev| {
                 let _ = ev_tx.send(ev);
             },
@@ -587,8 +602,12 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            |_rate| Ok(NullSink::new(48_000, 2)),
-            lib,
+            || Ok(NullSink::new(48_000, 2)),
+            {
+                let c = Arc::clone(&lib);
+                let d: Arc<dyn TrackSource> = c;
+                d
+            },
             move |ev| {
                 let _ = ev_tx.send(ev);
             },
@@ -648,10 +667,20 @@ mod tests {
 
         // A cache seeded (as `SeedLoudness` would) with a computed gain for the
         // untagged WAV at id 0 — no worker interaction needed to observe the fold.
-        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, f32)>();
+        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
         let (loudness, _worker) = LoudnessCache::spawn(res_tx);
         let path0 = library.lock().unwrap().path_of(0).unwrap();
-        loudness.seed(&[(path0, -7.5)]);
+        // integrated −10.5 LUFS → derived RG gain −7.5 dB (to the −18 target).
+        loudness.seed(&[(
+            path0,
+            crate::TrackLoudness {
+                integrated_lufs: -10.5,
+                lra: 0.0,
+                true_peak_dbtp: 0.0,
+                plr: 0.0,
+                dr: 0.0,
+            },
+        )]);
         let rg_tags: BTreeMap<u32, RgInfo> = BTreeMap::new(); // WAV fixtures: untagged
 
         // Track mode: the cached gain stands in as the track gain.
@@ -708,7 +737,7 @@ mod tests {
         let ts: Arc<dyn TrackSource> = lib;
         let library = Arc::new(Mutex::new(ts));
 
-        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, f32)>();
+        let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
         let (loudness, _worker) = LoudnessCache::spawn(res_tx);
         let rg_tags: BTreeMap<u32, RgInfo> = BTreeMap::new();
 

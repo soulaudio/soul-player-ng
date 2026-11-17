@@ -34,19 +34,37 @@ impl Sink for NullSink {
     }
 }
 
-/// A [`Sink`] that reports **exclusive** output at a configurable rate — for
-/// testing native-rate switching, where the engine reopens an exclusive device at
-/// each track's rate. Discards output like [`NullSink`]; the only thing that
-/// matters is that [`exclusive`](Sink::exclusive) is `true` and the rate is what a
-/// reopen requested.
+/// A [`Sink`] that reports **exclusive** output at a configurable rate — for testing
+/// native-rate switching, where the engine reopens an exclusive device **in place** at
+/// each track's rate. Discards output like [`NullSink`]. [`reopen`](Sink::reopen)
+/// models a real exclusive device: by default it adopts the requested rate (the device
+/// supports it); with `refuse_reopen` set it KEEPS its current rate (the device refused
+/// the new rate and the real sink would fall back). `reopens` counts reopen calls so a
+/// test can assert the engine doesn't thrash a refused rate.
 pub(crate) struct ExclusiveSink {
     pub rate: u32,
     pub channels: u16,
+    pub refuse_reopen: bool,
+    pub reopens: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl ExclusiveSink {
     pub(crate) fn new(rate: u32, channels: u16) -> Self {
-        Self { rate, channels }
+        Self {
+            rate,
+            channels,
+            refuse_reopen: false,
+            reopens: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// An exclusive sink whose device REFUSES a reopen (keeps its current rate). The
+    /// returned `reopens` counter lets a test assert the refused rate isn't retried.
+    pub(crate) fn refusing(rate: u32, channels: u16) -> Self {
+        Self {
+            refuse_reopen: true,
+            ..Self::new(rate, channels)
+        }
     }
 }
 
@@ -65,6 +83,15 @@ impl Sink for ExclusiveSink {
         Ok(())
     }
     fn flush(&mut self) -> Result<(), SinkError> {
+        Ok(())
+    }
+    fn reopen(&mut self, rate: u32) -> Result<(), SinkError> {
+        self.reopens
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if !self.refuse_reopen {
+            self.rate = rate; // device supports the new rate → adopt it
+        }
+        // else: keep the current rate (the real exclusive sink falls back on refusal)
         Ok(())
     }
 }
@@ -136,6 +163,11 @@ impl Sink for CapturingSink {
 /// Seekable (clamps to the total) so it satisfies `SeekableDecoder`.
 pub(crate) struct ConstDecoder {
     rate: u32,
+    /// If set, `stream_info().sample_rate` flips to this once the first frame has been
+    /// decoded — mimicking implicit HE-AAC (SBR), which reports the AAC core rate at
+    /// load and the 2× output rate only after decoding starts.
+    sbr_rate: Option<u32>,
+    confirmed: bool,
     channels: u16,
     total: u64,
     pos: u64,
@@ -146,6 +178,28 @@ impl ConstDecoder {
     pub(crate) fn new(rate: u32, channels: u16, frames: u64, value: i32) -> Self {
         Self {
             rate,
+            sbr_rate: None,
+            confirmed: false,
+            channels,
+            total: frames,
+            pos: 0,
+            value,
+        }
+    }
+
+    /// A decoder that mimics implicit HE-AAC (SBR): reports `core_rate` at load, then
+    /// flips `stream_info().sample_rate` to `sbr_rate` after the first `decode_into`.
+    pub(crate) fn new_sbr(
+        core_rate: u32,
+        sbr_rate: u32,
+        channels: u16,
+        frames: u64,
+        value: i32,
+    ) -> Self {
+        Self {
+            rate: core_rate,
+            sbr_rate: Some(sbr_rate),
+            confirmed: false,
             channels,
             total: frames,
             pos: 0,
@@ -157,12 +211,17 @@ impl ConstDecoder {
 impl Decoder for ConstDecoder {
     fn stream_info(&self) -> StreamInfo {
         StreamInfo {
-            sample_rate: self.rate,
+            sample_rate: if self.confirmed {
+                self.sbr_rate.unwrap_or(self.rate)
+            } else {
+                self.rate
+            },
             channels: self.channels,
             format: SampleFormat::Int { bits: 24 },
         }
     }
     fn decode_into(&mut self, out: &mut [i32]) -> Result<usize, DecodeError> {
+        self.confirmed = true; // decoding the first frame confirms the (SBR) output rate
         let ch = self.channels as u64;
         let remaining_frames = self.total.saturating_sub(self.pos);
         let want_frames = (out.len() as u64 / ch).min(remaining_frames);

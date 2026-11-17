@@ -24,8 +24,8 @@ use parley_engine as _;
 use soul_player_host::{
     Band, BandKind, BrowseAxis, Command, DspUnit, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
     IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
-    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus, TrackView,
-    WatchUpdate, default_bands,
+    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus,
+    TrackLoudness, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
 };
 
@@ -202,6 +202,9 @@ struct State {
     /// Which genre's detail page is showing, when `route == Route::Genre`.
     /// Set from a genre row's click.
     open_genre: Option<String>,
+    /// Whether the artist detail's "Top Songs" section is expanded past the first
+    /// five (toggled by its Show more/less link). Reset when a new artist opens.
+    artist_top_expanded: bool,
     /// Which Settings category the content pane shows (ephemeral; defaults to
     /// `Appearance`). Switched by the settings page's own category rail.
     settings_tab: SettingsTab,
@@ -257,6 +260,10 @@ struct State {
     /// device may fall back to shared if it can't open exclusive (reflected live in
     /// the signal path's Exclusive stage).
     exclusive: bool,
+    /// Whether **strict** exclusive (exclusive-or-stop) is requested (persisted). With
+    /// `exclusive`, the next session won't fall back to shared if exclusive can't open
+    /// — playback stops instead (the purist stance). Only meaningful when `exclusive`.
+    exclusive_strict: bool,
     /// ReplayGain normalization mode (persisted), rendered by Settings →
     /// ReplayGain; `Off` = no normalization.
     replaygain_mode: ReplayGainMode,
@@ -484,6 +491,7 @@ impl State {
             open_album: None,
             open_artist: None,
             open_genre: None,
+            artist_top_expanded: false,
             settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
@@ -504,6 +512,7 @@ impl State {
             output_device: config::load_output_device(),
             output_devices,
             exclusive: config::load_output_exclusive(),
+            exclusive_strict: config::load_output_exclusive_strict(),
             replaygain_mode,
             replaygain_preamp,
             dsp_units,
@@ -823,6 +832,17 @@ pub(crate) fn set_exclusive(s: &mut State, on: bool) {
     s.exclusive = on;
     config::save_output_exclusive(on);
     s.host.set_exclusive(on);
+}
+
+/// Toggle + persist **strict** exclusive (exclusive-or-stop). Like
+/// [`set_exclusive`], it applies on the next playback session: with exclusive on and
+/// strict on, that session won't downgrade to shared if exclusive can't open — it
+/// stops instead (shown in the Exclusive card).
+pub(crate) fn set_exclusive_strict(s: &mut State, on: bool) {
+    tracing::info!(strict = on, "strict exclusive toggled");
+    s.exclusive_strict = on;
+    config::save_output_exclusive_strict(on);
+    s.host.set_exclusive_strict(on);
 }
 
 /// Choose + persist the ReplayGain mode (used by the ReplayGain settings buttons).
@@ -1817,9 +1837,9 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
             Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
             Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
             Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
-            Route::Artist => views::artists::artist_detail(s, p, scale).grow(1.0),
+            Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
             Route::Genres => views::genres::genres_page(s, p).grow(1.0),
-            Route::Genre => views::genres::genre_detail(s, p).grow(1.0),
+            Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
             Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
         })
 }
@@ -2317,6 +2337,13 @@ fn scene_signal_path(s: &mut State) {
         resampling: true,
         output_bits: 24,
         exclusive: false,
+        loudness: Some(TrackLoudness {
+            integrated_lufs: -14.2,
+            lra: 9.5,
+            true_peak_dbtp: -0.8,
+            plr: 13.4,
+            dr: 12.0,
+        }),
     });
 }
 
@@ -2396,6 +2423,7 @@ fn main() -> anyhow::Result<()> {
     // session opens exclusive (bit-perfect) if the user asked for it — falling back
     // to shared if the device refuses, which the signal path then shows.
     host.set_exclusive(config::load_output_exclusive());
+    host.set_exclusive_strict(config::load_output_exclusive_strict());
     // Restore the persisted ReplayGain choice before any spawn, so the first
     // playback session is already normalized (the host banks it and tells the
     // actor on spawn).
@@ -2604,8 +2632,8 @@ fn main() -> anyhow::Result<()> {
         // Persist a completed background analysis to the on-disk cache (best-effort,
         // off the UI thread) so it seeds the NEXT launch; the fold into playback is
         // the backend's, already in its in-memory cache.
-        if let Event::TrackLoudnessAnalyzed { path, gain_db } = &ev {
-            config::record_loudness(path, *gain_db);
+        if let Event::TrackLoudnessAnalyzed { path, loudness } = &ev {
+            config::record_loudness(path, loudness);
         }
         ah.update(move |s: &mut State, tx: &mut Tx| {
             s.apply(&ev);
@@ -3391,6 +3419,7 @@ mod tests {
             resampling: true,
             output_bits: 24,
             exclusive: false,
+            loudness: None,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
@@ -3442,6 +3471,7 @@ mod tests {
             resampling: false,
             output_bits: 24,
             exclusive: false,
+            loudness: None,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
@@ -3460,6 +3490,43 @@ mod tests {
                 "stage card {k} renders in the Settings → Audio pipeline"
             );
         }
+    }
+
+    /// The strict (exclusive-or-stop) sub-toggle only appears once exclusive output
+    /// is on — it's a sub-option of exclusive, so hiding it keeps the card uncluttered
+    /// for the common (shared) case.
+    #[test]
+    fn strict_exclusive_toggle_only_shows_when_exclusive_is_on() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+
+        // Exclusive OFF → the Exclusive card renders but no strict sub-toggle.
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::Audio;
+        s.exclusive = false;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("sp-stage-exclusive").is_some(), "the card renders");
+        assert!(
+            rt.find("exclusive-strict-toggle").is_none(),
+            "no strict toggle when exclusive is off"
+        );
+
+        // Exclusive ON → the strict sub-toggle appears.
+        let mut s2 = populated_state();
+        s2.route = Route::Settings;
+        s2.settings_tab = SettingsTab::Audio;
+        s2.exclusive = true;
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("exclusive-strict-toggle").is_some(),
+            "the strict toggle shows once exclusive is on"
+        );
     }
 
     /// The DSP chain's unit card renders the real graphic-EQ controls — a per-unit
@@ -4814,6 +4881,7 @@ mod tests {
             resampling: false,
             output_bits: 24,
             exclusive: false,
+            loudness: None,
         });
         apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
@@ -5285,8 +5353,8 @@ mod tests {
     }
 
     /// Pressing the signal-path line opens the stage-by-stage panel: every stage
-    /// row renders, the not-yet-built stages are present (as "soon"), and the
-    /// ReplayGain toggle flips the mode.
+    /// row renders, every pipeline stage is present (Exclusive output and DSP/EQ
+    /// now live, not "soon"), and the ReplayGain toggle flips the mode.
     #[test]
     fn signal_path_panel_opens_with_stages_and_rg_toggle() {
         use soul_player_host::{SignalPath, SourceFormat};
@@ -5309,6 +5377,13 @@ mod tests {
             resampling: true,
             output_bits: 24,
             exclusive: false,
+            loudness: Some(TrackLoudness {
+                integrated_lufs: -14.2,
+                lra: 9.5,
+                true_peak_dbtp: -0.8,
+                plr: 13.4,
+                dr: 12.0,
+            }),
         });
         s.replaygain_mode = ReplayGainMode::Off;
         apply_locale("en");
@@ -5335,9 +5410,21 @@ mod tests {
             "sp-row-resample",
             "sp-row-output",
             "sp-row-exclusive", // live (bit-perfect) or dim "shared"
-            "sp-row-dsp",       // "soon"
+            "sp-row-dsp",       // live: accent "Active" or dim "Bypassed"
         ] {
             assert!(rt.find(k).is_some(), "stage row {k} renders");
+        }
+
+        // The per-track loudness & dynamic-range readouts render (#110): integrated
+        // LUFS, LRA, true-peak, PLR, and the DR value.
+        for k in [
+            "signal-path-integrated",
+            "signal-path-lra",
+            "signal-path-truepeak",
+            "signal-path-plr",
+            "signal-path-dr",
+        ] {
+            assert!(rt.find(k).is_some(), "loudness row {k} renders");
         }
 
         // The ReplayGain toggle is the one real pipeline toggle: Off → Track.
@@ -6593,7 +6680,7 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        click(&mut rt, "artist-0"); // the first grouped artist (Bach)
+        click(&mut rt, "card-text"); // the first grouped artist's title (Bach)
         assert!(
             matches!(rt.state.route, Route::Artist),
             "the card opens the artist detail page"
@@ -6646,6 +6733,112 @@ mod tests {
             }],
             "Play All plays only this artist's tracks, from the top"
         );
+    }
+
+    /// The artist detail shows both a Top-Songs section and a Discography grid.
+    #[test]
+    fn the_artist_detail_has_top_songs_and_discography() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        // Two albums for Bach so the discography has cards to show.
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Cello Suites"),
+            artist_album_track(3, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0); // second frame: discography grid reads its committed width
+        assert!(
+            rt.find("artist-header").is_some(),
+            "the circular hero renders"
+        );
+        assert!(
+            rt.find("artist-top-songs").is_some(),
+            "Top Songs section renders"
+        );
+        assert!(
+            rt.find("artist-discography").is_some(),
+            "Discography section renders"
+        );
+        assert!(
+            rt.find("artist-disc-0").is_some(),
+            "a discography album card renders"
+        );
+    }
+
+    /// A discography album card opens that album's detail page.
+    #[test]
+    fn a_discography_card_opens_the_album() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        click(&mut rt, "card-text"); // first disc card's title area (Cello Suites)
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "a disc card opens the album"
+        );
+        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+    }
+
+    /// With more than five tracks, Show more expands the Top-Songs list.
+    #[test]
+    fn show_more_expands_top_songs() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = (1..=7)
+            .map(|i| artist_album_track(i, "Bach", "Cello Suites"))
+            .collect();
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Only the first five tracks show; the sixth row is hidden.
+        assert!(rt.find("album-track-4").is_some(), "the fifth track shows");
+        assert!(rt.find("album-track-5").is_none(), "the sixth is collapsed");
+        assert!(
+            rt.find("artist-top-toggle").is_some(),
+            "a Show more toggle renders"
+        );
+        click(&mut rt, "artist-top-toggle");
+        assert!(rt.state.artist_top_expanded, "the toggle expands Top Songs");
+        assert!(
+            rt.find("album-track-5").is_some(),
+            "the sixth track shows once expanded"
+        );
+    }
+
+    fn artist_album_track(id: u32, artist: &str, album: &str) -> soul_player_host::TrackView {
+        soul_player_host::TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some(artist.to_string()),
+            album: Some(album.to_string()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+        }
     }
 
     /// The sidebar offers a Genres nav entry, and pressing it switches the route
@@ -6993,7 +7186,7 @@ mod tests {
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        click(&mut rt, "album-text"); // the title/artist area — not the play button
+        click(&mut rt, "card-text"); // the title/artist area — not the play button
         assert!(
             matches!(rt.state.route, Route::Album),
             "the card body opens the album detail page"
@@ -7089,6 +7282,33 @@ mod tests {
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
+        click(&mut rt, "album-play-all");
+        assert_eq!(
+            rt.state.host.recorded_commands(),
+            vec![Command::PlayContext {
+                ids: vec![1, 2],
+                start: 0
+            }],
+            "Play All plays the album from the top"
+        );
+    }
+
+    /// The album detail header's Play-All pill plays the album from the top.
+    #[test]
+    fn the_album_detail_play_all_plays_the_album() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
+        s.route = Route::Album;
+        s.open_album = Some("Alb".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("album-header").is_some(), "the shared hero renders");
+        assert!(rt.find("album-cover").is_some(), "the hero cover renders");
         click(&mut rt, "album-play-all");
         assert_eq!(
             rt.state.host.recorded_commands(),
