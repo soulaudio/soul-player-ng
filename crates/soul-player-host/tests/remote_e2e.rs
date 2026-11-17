@@ -20,11 +20,12 @@ use soul_audio_core::Decoder;
 use soul_player_backend::library::TrackSource;
 use soul_player_host::PlayerHandle;
 use soul_player_host::remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer};
+use soul_server::auth::signer::Signer;
 use soul_server::domain::ports::UserStore;
 use soul_server::domain::service::Services;
 use soul_server::index::CoreIndex;
 use soul_server::media::FsMedia;
-use soul_server::proto::native;
+use soul_server::proto::native::{self, AppState};
 use soul_server::store::FileUsers;
 
 /// Path to the repo's committed `testdata/` fixtures, three levels up from
@@ -63,6 +64,12 @@ fn start_server(fixtures: &[&str]) -> TestServer {
         media: FsMedia,
         users,
     });
+    let signer_dir = dir.path().join("signer");
+    let signer = Arc::new(
+        Signer::load_or_create(&signer_dir, "http://127.0.0.1".to_string())
+            .expect("load_or_create signer"),
+    );
+    let state = AppState::new(services, signer, "http://127.0.0.1".to_string(), 3600);
 
     let runtime = tokio::runtime::Runtime::new().expect("build tokio runtime");
     let (addr_tx, addr_rx) = mpsc::channel();
@@ -73,7 +80,7 @@ fn start_server(fixtures: &[&str]) -> TestServer {
         addr_tx
             .send(listener.local_addr().expect("bound socket has an addr"))
             .expect("send bound addr to the test thread");
-        axum::serve(listener, native::router(services))
+        axum::serve(listener, native::router(state))
             .await
             .expect("serve the native router");
     });
