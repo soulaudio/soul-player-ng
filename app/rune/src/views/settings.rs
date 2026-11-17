@@ -339,9 +339,7 @@ const REMOTE_FORM_MAX_W: f32 = 440.0;
 /// `key` becomes both the input's a11y key and (with a `-group` suffix) its
 /// wrapping column's key; `label` is both the caption text and the input's
 /// `.label(...)` (its accessible name — a `textbox` isn't named from its
-/// content). The password field's masking comes from `buf` itself having
-/// been created with [`rune::TextEdit::secure`] (see `empty_remote_pass_buf`
-/// in `main.rs`), not from anything here.
+/// content).
 fn remote_field(
     key: &'static str,
     label: String,
@@ -375,14 +373,45 @@ fn remote_field(
         )
 }
 
+/// The Connect button: like `organize_button` while idle, but while
+/// `connecting` it switches to the "waiting for your browser" label and
+/// drops `focusable`/`on_press`/`cursor` in favour of a dimmed, inert state —
+/// the same enabled/disabled shape `player.rs`'s `transport_button` uses for
+/// a control with nothing to invoke right now.
+fn remote_connect_button(connecting: bool, p: &Palette) -> El {
+    let label = if connecting {
+        t!("settings.remoteConnecting").to_string()
+    } else {
+        t!("settings.remoteConnect").to_string()
+    };
+    let base = el()
+        .key("remote-connect")
+        .role("button")
+        .label(label.clone())
+        .focusable(!connecting)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .fill(if connecting { p.muted } else { p.primary })
+        .child(text(label).color(if connecting { p.text_secondary } else { p.bg }));
+    if connecting {
+        base.opacity(fx::DISABLED)
+    } else {
+        base.cursor(Cursor::Pointer).on_press(connect_remote_source)
+    }
+}
+
 /// The Remote server connect form: a small centered card over a dim scrim,
 /// mounted on the root overlay layer (via [`settings_overlays`]) once
-/// [`open_remote_form`] sets `State::remote_form_open`. Three labelled fields
-/// (server URL, username, password) over a Cancel / Connect button row;
-/// Connect reads the buffers and calls the host (`connect_remote_source`). A
-/// failed attempt's message shows inline above the buttons without closing
-/// the form. `modal` traps focus, dims the background, and dismisses on
-/// Escape or an outside (scrim) press — same as the add-source dialog.
+/// [`open_remote_form`] sets `State::remote_form_open`. A single labelled
+/// field (server URL) over a Cancel / Connect button row — there is no
+/// username/password field, since signing in happens in the system browser
+/// (OAuth), not the app. Connect reads the URL and calls the host off-thread
+/// (`connect_remote_source`); while that's in flight `remote_connecting`
+/// swaps the Connect button for a disabled "waiting for your browser" state
+/// and a status line replaces where an error would show. A failed attempt's
+/// message shows inline above the buttons without closing the form. `modal`
+/// traps focus, dims the background, and dismisses on Escape or an outside
+/// (scrim) press — same as the add-source dialog.
 pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
     if !s.remote_form_open {
         return None;
@@ -405,28 +434,28 @@ pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
                 .color(p.fg)
                 .wrap(),
         )
+        .child(
+            text(t!("settings.remoteConnectHint").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .wrap(),
+        )
         .child(remote_field(
             "remote-url",
             t!("settings.remoteUrlLabel").to_string(),
             &s.remote_url_buf,
             |s: &mut State| &mut s.remote_url_buf,
             p,
-        ))
-        .child(remote_field(
-            "remote-user",
-            t!("settings.remoteUserLabel").to_string(),
-            &s.remote_user_buf,
-            |s: &mut State| &mut s.remote_user_buf,
-            p,
-        ))
-        .child(remote_field(
-            "remote-pass",
-            t!("settings.remotePassLabel").to_string(),
-            &s.remote_pass_buf,
-            |s: &mut State| &mut s.remote_pass_buf,
-            p,
         ));
-    if let Some(msg) = &s.remote_error {
+    if s.remote_connecting {
+        dialog = dialog.child(
+            text(t!("settings.remoteConnecting").to_string())
+                .key("remote-connecting-status")
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .wrap(),
+        );
+    } else if let Some(msg) = &s.remote_error {
         dialog = dialog.child(
             text(t!("settings.remoteConnectError", error => msg).to_string())
                 .key("remote-error")
@@ -447,13 +476,7 @@ pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
                     p,
                     close_remote_form,
                 ))
-                .child(organize_button(
-                    "remote-connect",
-                    t!("settings.remoteConnect").to_string(),
-                    true,
-                    p,
-                    connect_remote_source,
-                )),
+                .child(remote_connect_button(s.remote_connecting, p)),
         )
         .modal(true, close_remote_form);
     Some(

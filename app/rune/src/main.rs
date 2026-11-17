@@ -225,18 +225,22 @@ struct State {
     /// Remote server). Opened by `open_remote_form` (which also closes the
     /// add-source menu), closed by Cancel/Escape/a successful connect.
     remote_form_open: bool,
-    /// The connect form's three text buffers (server URL, username, password).
-    /// Each follows the `dsp_rename_buf` lifecycle: a fresh, empty, focused
-    /// buffer when the form opens; read (trimmed) on Connect; ignored while the
-    /// form is closed. The password buffer is always created `.secure()` so it
-    /// masks its display and redacts its accessibility text.
+    /// The connect form's server-URL buffer. Follows the `dsp_rename_buf`
+    /// lifecycle: a fresh, empty, focused buffer when the form opens; read
+    /// (trimmed) on Connect; ignored while the form is closed. There is no
+    /// username/password buffer — the login itself happens in the system
+    /// browser (OAuth), so the app never holds a password.
     remote_url_buf: rune::TextEdit,
-    remote_user_buf: rune::TextEdit,
-    remote_pass_buf: rune::TextEdit,
     /// The most recent connect attempt's failure message (the host's
     /// `anyhow::Error`, rendered), shown inline in the form. `None` when the
     /// form is closed, just opened, or the last attempt succeeded.
     remote_error: Option<String>,
+    /// Whether a connect attempt is in flight on the background thread
+    /// `connect_remote_source` spawns (waiting on the browser round-trip).
+    /// Disables the Connect button and switches the form to a "waiting for
+    /// your browser" status line while `true`. Cleared when the thread's
+    /// result lands back on the UI thread via `AppHandle::update`.
+    remote_connecting: bool,
     /// The library indexing-speed mode (persisted), rendered by Settings → Sources.
     /// Drives how much parallelism the scanner uses; `Automatic` follows CPU load.
     indexing_mode: IndexingMode,
@@ -501,9 +505,8 @@ impl State {
             removal_notice: None,
             remote_form_open: false,
             remote_url_buf: rune::TextEdit::new(""),
-            remote_user_buf: rune::TextEdit::new(""),
-            remote_pass_buf: rune::TextEdit::new("").secure(),
             remote_error: None,
+            remote_connecting: false,
             scan_progress: None,
             scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
@@ -739,55 +742,75 @@ pub(crate) fn close_dropdown(s: &mut State) {
 
 // ---- Remote source connect form (Settings → Add Source → Remote server) ----
 
-/// Fresh, empty, `.secure()`d password buffer — shared by `open_remote_form`
-/// and `close_remote_form` so the "secure" flag is never forgotten when the
-/// buffer is reset.
-fn empty_remote_pass_buf() -> rune::TextEdit {
-    rune::TextEdit::new("").secure()
-}
-
 /// Open the Remote server connect form: close the add-source menu first (so
-/// it isn't left open behind the form), then reset the three buffers to
-/// empty, focus the URL field, and clear any stale error. Mirrors
+/// it isn't left open behind the form), then reset the URL buffer to empty,
+/// focus it, and clear any stale error/connecting state. Mirrors
 /// `start_dsp_rename`'s "always start from a clean buffer" shape.
 pub(crate) fn open_remote_form(s: &mut State) {
     close_dropdown(s);
     s.remote_url_buf = rune::TextEdit::new("");
     s.remote_url_buf.focused = true;
-    s.remote_user_buf = rune::TextEdit::new("");
-    s.remote_pass_buf = empty_remote_pass_buf();
     s.remote_error = None;
+    s.remote_connecting = false;
     s.remote_form_open = true;
 }
 
 /// Close the connect form (Cancel, Escape, an outside press, or a successful
-/// connect) and clear its buffers + error so the next open starts fresh.
+/// connect) and clear its buffer + error so the next open starts fresh. A
+/// connect thread already spawned by `connect_remote_source` keeps running —
+/// there is no cancelling the browser round-trip — its result still lands via
+/// `apply_remote_connect` once it finishes, just onto a form that (if
+/// reopened) has moved on.
 pub(crate) fn close_remote_form(s: &mut State) {
     s.remote_form_open = false;
     s.remote_url_buf = rune::TextEdit::new("");
-    s.remote_user_buf = rune::TextEdit::new("");
-    s.remote_pass_buf = empty_remote_pass_buf();
     s.remote_error = None;
 }
 
-/// Read the connect form's fields and try to add the remote source.
+/// Read the connect form's URL and start a login against it **off the UI
+/// thread**: `add_remote_source` opens the system browser and blocks on the
+/// OAuth round-trip (the user signing in there, then the redirect back), so
+/// running it inline would freeze the window for as long as that takes. This
+/// spawns a background thread and folds the result back onto the UI thread
+/// via `AppHandle::update` — the same shape `scan_in_background` uses for the
+/// Sources scans — falling back to an inline call when there's no
+/// `app_handle` (headless tests), so behaviour there is unchanged.
 ///
-/// v0 calls the host **inline**: `add_remote_source` authenticates against
-/// the server and fetches its whole catalog index over the network, so this
-/// briefly blocks the UI thread. Moving it off-thread — the same
-/// `scan_in_background`/`AppHandle::update` shape the Sources scans use — is
-/// a follow-up once this path needs to stay responsive on a slow link.
-///
-/// On success the library is refreshed from the host (the remote-aware
-/// aggregate is already swapped in) and the form closes. On failure the
-/// message is kept in `remote_error` and the form stays open with its
-/// fields intact so the user can fix a typo and retry.
+/// While the thread is in flight, `remote_connecting` is `true`: the form
+/// disables the Connect button and shows a "waiting for your browser" status
+/// line instead. A press while already connecting is a no-op, so double
+/// presses (or a stray Enter in the URL field) can't start a second attempt.
 pub(crate) fn connect_remote_source(s: &mut State) {
+    if s.remote_connecting {
+        return;
+    }
     let url = s.remote_url_buf.text.trim().to_string();
-    let user = s.remote_user_buf.text.trim().to_string();
-    // Not trimmed: a password may legitimately start or end with a space.
-    let pass = s.remote_pass_buf.text.clone();
-    match s.host.add_remote_source(&url, &user, &pass) {
+    s.remote_connecting = true;
+    s.remote_error = None;
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                let result = host.add_remote_source(&url);
+                handle.update(move |s: &mut State, _tx: &mut Tx| apply_remote_connect(s, result));
+            });
+        }
+        None => {
+            let result = s.host.add_remote_source(&url);
+            apply_remote_connect(s, result);
+        }
+    }
+}
+
+/// Fold a finished connect attempt's result back onto the UI thread (see
+/// `connect_remote_source`). On success, the library is refreshed from the
+/// host (the remote-aware aggregate is already swapped in) and the form
+/// closes. On failure, the message is kept in `remote_error` and the form (if
+/// still open) stays open with its field intact so the user can fix a typo
+/// and retry.
+fn apply_remote_connect(s: &mut State, result: anyhow::Result<()>) {
+    s.remote_connecting = false;
+    match result {
         Ok(()) => {
             s.library = s.host.views();
             close_remote_form(s);
@@ -5575,12 +5598,14 @@ mod tests {
     }
 
     /// Activating "Remote server" in the add-source menu closes the menu and
-    /// opens the connect form: labelled, focusable `remote-url`/`remote-user`/
-    /// `remote-pass` fields and a `remote-connect` button, each reachable by
-    /// key with a non-empty accessible label and an interactive role. The
-    /// actual network connect (`PlayerHandle::add_remote_source`) is covered
-    /// by the host's `remote_e2e` integration test — this only proves the UI
-    /// is reachable, so it never touches the network.
+    /// opens the connect form: a labelled, focusable `remote-url` field and a
+    /// `remote-connect` button, each reachable by key with a non-empty
+    /// accessible label and an interactive role. There is no username/password
+    /// field — the password is entered in the system browser (OAuth), not the
+    /// app — so `remote-user`/`remote-pass` must not render at all. The actual
+    /// network connect (`PlayerHandle::add_remote_source`) is covered by the
+    /// host's `remote_e2e` integration test — this only proves the UI is
+    /// reachable, so it never touches the network.
     #[test]
     fn remote_add_source_opens_the_connect_form() {
         let env = Env {
@@ -5602,12 +5627,7 @@ mod tests {
             rt.state.open_dropdown.is_none(),
             "opening the connect form closes the add-source menu"
         );
-        for (key, role) in [
-            ("remote-url", "textbox"),
-            ("remote-user", "textbox"),
-            ("remote-pass", "textbox"),
-            ("remote-connect", "button"),
-        ] {
+        for (key, role) in [("remote-url", "textbox"), ("remote-connect", "button")] {
             let info = el_info(&rt, key);
             assert!(info.focusable, "{key} is focusable");
             assert!(
@@ -5616,6 +5636,43 @@ mod tests {
             );
             assert_eq!(info.role, role, "{key} has an interactive role");
         }
+        // The username/password fields are gone: this is a browser-login form
+        // now, not a password form.
+        assert!(
+            rt.find("remote-user").is_none(),
+            "remote-user no longer renders (login happens in the browser)"
+        );
+        assert!(
+            rt.find("remote-pass").is_none(),
+            "remote-pass no longer renders (login happens in the browser)"
+        );
+    }
+
+    /// While a connect attempt is in flight (`State::remote_connecting`), the
+    /// Connect button goes inert (nothing to press until the browser
+    /// round-trip returns) and a "waiting for your browser" status line
+    /// renders in the form, in place of where an error would show.
+    #[test]
+    fn remote_connect_form_shows_a_waiting_state_while_connecting() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.remote_form_open = true;
+        s.remote_connecting = true;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let connect = el_info(&rt, "remote-connect");
+        assert!(
+            !connect.focusable,
+            "the Connect button is inert while a connect attempt is in flight"
+        );
+        assert!(
+            rt.find("remote-connecting-status").is_some(),
+            "a waiting-for-browser status line renders while connecting"
+        );
     }
 
     /// The Managed Library card renders on the Music Data tab with its destination
