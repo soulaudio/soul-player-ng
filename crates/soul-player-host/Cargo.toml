@@ -57,6 +57,30 @@ serde_json = "1"
 # (`add_remote_source`'s `DownloadCache`). Same version the app/rune head uses
 # for its own config dir.
 dirs = "6"
+# OS keychain storage for the remote-source OAuth refresh token
+# (`remote::KeyringStore`). keyring 3.x ships NO backend by default, so the
+# native platform backends must be enabled explicitly: `windows-native`
+# (Credential Manager, for local dev + Windows CI), `apple-native` (macOS
+# Keychain), and `sync-secret-service` + `crypto-rust` (Linux Secret Service
+# using pure-Rust crypto, avoiding an OpenSSL/libsecret C dependency).
+keyring = { version = "3", features = [
+    "apple-native",
+    "windows-native",
+    "sync-secret-service",
+    "crypto-rust",
+] }
+# Hand-rolled OAuth2.1 Authorization-Code+PKCE client against the remote
+# source server's own AS (`remote::login`/`refresh`/`exchange_code`). No
+# `openidconnect`/`oauth2` crate: the client only ever carries the access
+# token opaquely as a `Bearer` header, so it needs zero JWT-validation
+# machinery (and the transitive `rsa` crate, RUSTSEC-2023-0071, that pulls
+# in) — just the PKCE verifier/challenge hash and four plain HTTP calls.
+sha2 = "0.10"
+base64 = "0.22"
+# CSPRNG for the PKCE code verifier and the `/authorize` CSRF `state`.
+getrandom = "0.2"
+# Opens the system browser on the native-app login redirect (RFC 8252).
+open = "5"
 
 # On Windows, also pull in the WASAPI exclusive / bit-perfect output backend.
 # Cargo unions features across this and the base dependency, so the host builds

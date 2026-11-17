@@ -11,14 +11,16 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, async_trait};
 use serde::{Deserialize, Serialize};
 
+use crate::auth::oauth::{CodeStore, is_loopback_redirect};
+use crate::auth::signer::Signer;
 use crate::domain::ports::IndexPort;
 use crate::domain::service::Services;
 use crate::domain::{DomainError, UserId};
@@ -31,24 +33,73 @@ use crate::store::FileUsers;
 /// fakes.
 pub type AppServices = Services<CoreIndex, FsMedia, FileUsers>;
 
-/// Router/extractor state: one shared `Services` for the process lifetime.
-type AppState = Arc<AppServices>;
+/// Router/extractor state: the shared `Services`, plus the pieces needed to
+/// mint and verify OIDC-standard tokens — the signing key, this server's
+/// `issuer` (its own base URL, used both to self-describe in discovery and
+/// to stamp/validate the `iss` claim), and the access-token lifetime later
+/// token-issuing handlers mint against.
+#[derive(Clone)]
+pub struct AppState {
+    pub services: Arc<AppServices>,
+    pub signer: Arc<Signer>,
+    pub issuer: String,
+    pub access_ttl: u64,
+    /// In-memory, single-use authorization-code store for the PKCE
+    /// `/authorize` → `/token` handoff. Constructed fresh here rather than
+    /// threaded through as a constructor parameter: codes are short-lived
+    /// (60s) and process-local by design, so every `AppState` simply gets
+    /// its own empty store, and no existing caller of `new` has to change.
+    pub code_store: Arc<CodeStore>,
+}
 
-/// Build the `/v0` router over `services`.
-pub fn router(services: Arc<AppServices>) -> Router {
+impl AppState {
+    pub fn new(
+        services: Arc<AppServices>,
+        signer: Arc<Signer>,
+        issuer: String,
+        access_ttl: u64,
+    ) -> Self {
+        Self {
+            services,
+            signer,
+            issuer,
+            access_ttl,
+            code_store: Arc::new(CodeStore::new()),
+        }
+    }
+}
+
+impl std::ops::Deref for AppState {
+    type Target = AppServices;
+
+    fn deref(&self) -> &Self::Target {
+        &self.services
+    }
+}
+
+/// Build the `/v0` router, plus the unauthenticated OIDC discovery and JWKS
+/// endpoints, over `state`.
+pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/v0/ping", get(ping))
-        .route("/v0/auth", post(auth))
         .route("/v0/index", get(index))
         .route("/v0/track/:id", get(track))
         .route("/v0/art/:album_id", get(art))
-        .with_state(services)
+        .route(
+            "/.well-known/openid-configuration",
+            get(openid_configuration),
+        )
+        .route("/jwks", get(jwks))
+        .route("/authorize", get(authorize_get).post(authorize_post))
+        .route("/token", post(token))
+        .route("/revoke", post(revoke))
+        .with_state(state)
 }
 
-/// Bind `bind` and serve the `/v0` router until the process stops.
-pub async fn serve(bind: &str, services: Arc<AppServices>) -> anyhow::Result<()> {
+/// Bind `bind` and serve the router until the process stops.
+pub async fn serve(bind: &str, state: AppState) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, router(services)).await?;
+    axum::serve(listener, router(state)).await?;
     Ok(())
 }
 
@@ -81,7 +132,11 @@ impl axum::extract::FromRequestParts<AppState> for Authed {
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
         let token = bearer_token(&parts.headers).ok_or(StatusCode::UNAUTHORIZED)?;
-        let user_id = state.check(token).map_err(|_| StatusCode::UNAUTHORIZED)?;
+        let claims = state
+            .signer
+            .verify(token, now_unix())
+            .ok_or(StatusCode::UNAUTHORIZED)?;
+        let user_id: UserId = claims.sub.parse().map_err(|_| StatusCode::UNAUTHORIZED)?;
         Ok(Authed(user_id))
     }
 }
@@ -111,28 +166,6 @@ async fn ping(State(services): State<AppState>) -> impl IntoResponse {
         server: crate::version(),
         index_version: services.index.version().0,
     })
-}
-
-// ---------------------------------------------------------------------------
-// POST /v0/auth — no auth (it's how you get one)
-// ---------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-struct AuthRequest {
-    user: String,
-    pass: String,
-}
-
-#[derive(Serialize)]
-struct AuthResponse {
-    token: String,
-}
-
-async fn auth(State(services): State<AppState>, Json(body): Json<AuthRequest>) -> Response {
-    match services.authenticate(&body.user, &body.pass) {
-        Ok(token) => Json(AuthResponse { token: token.0 }).into_response(),
-        Err(error) => error_status(&error).into_response(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -255,4 +288,379 @@ async fn track(
 /// Always `404` until that lands.
 async fn art(_auth: Authed, Path(_album_id): Path<u32>) -> StatusCode {
     StatusCode::NOT_FOUND
+}
+
+// ---------------------------------------------------------------------------
+// GET /.well-known/openid-configuration — no auth (it's the discovery doc)
+// ---------------------------------------------------------------------------
+
+/// OIDC discovery document. Advertises this server's token/authorization
+/// endpoints and the subset of the spec it actually implements: an
+/// authorization-code flow with PKCS (`S256` only, no client secret — this
+/// is a public-client, native-app deployment) and refresh tokens, signed
+/// with the single `EdDSA` key `/jwks` publishes.
+async fn openid_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let issuer = &state.issuer;
+    Json(serde_json::json!({
+        "issuer": issuer,
+        "authorization_endpoint": format!("{issuer}/authorize"),
+        "token_endpoint": format!("{issuer}/token"),
+        "revocation_endpoint": format!("{issuer}/revoke"),
+        "jwks_uri": format!("{issuer}/jwks"),
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        "scopes_supported": ["library"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["EdDSA"],
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// GET /jwks — no auth (it's how clients verify tokens)
+// ---------------------------------------------------------------------------
+
+async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(state.signer.jwks())
+}
+
+// ---------------------------------------------------------------------------
+// GET+POST /authorize, POST /token, POST /revoke — the OAuth2/PKCE
+// Authorization Server surface. No auth required (this *is* how you get
+// one); the security boundary is the validation inside each handler, not
+// the `Authed` extractor.
+// ---------------------------------------------------------------------------
+
+/// Current time as unix seconds — the real authorization server's clock, so
+/// expiry checks are always against actual wall-clock time (not a
+/// test-injected value, unlike the pure [`CodeStore`]/`RefreshStore` logic
+/// those handlers call into).
+fn now_unix() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock before unix epoch")
+        .as_secs()
+}
+
+/// Lifetime (seconds) of a freshly issued authorization code. Deliberately
+/// short — the code only has to survive the single redirect from this
+/// server's login form back to the client's loopback listener.
+const AUTH_CODE_TTL_SECS: u64 = 60;
+
+/// `Some(s)` form of `opt` with empty strings treated as absent — a client
+/// that sends `redirect_uri=` is, for validation purposes, the same as one
+/// that omits `redirect_uri` entirely.
+fn non_empty(opt: &Option<String>) -> Option<&str> {
+    opt.as_deref().filter(|s| !s.is_empty())
+}
+
+/// Percent-encodes `s` for safe inclusion as a query-string value appended
+/// to a redirect URI (RFC 3986 unreserved set passes through unescaped;
+/// everything else becomes `%XX`). Written by hand instead of pulling in a
+/// URL-encoding crate — `code` and `state` are the only values this server
+/// ever appends this way.
+fn percent_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+/// Escapes `s` for safe embedding as HTML text/attribute content — the
+/// minimal set RFC-wise unsafe characters, since the login form is a plain
+/// `format!` string rather than a template engine that would do this for
+/// us automatically.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Query/form parameters shared by `GET /authorize` (query string) and
+/// `POST /authorize` (form body, plus `username`/`password`). One struct
+/// serves both: `Query` and `Form` both deserialize missing `Option` fields
+/// as `None`, so the GET path simply never populates `username`/`password`.
+#[derive(Deserialize)]
+struct AuthorizeParams {
+    response_type: Option<String>,
+    client_id: Option<String>,
+    redirect_uri: Option<String>,
+    code_challenge: Option<String>,
+    code_challenge_method: Option<String>,
+    state: Option<String>,
+    scope: Option<String>,
+    username: Option<String>,
+    password: Option<String>,
+}
+
+/// An `/authorize` request whose OAuth parameters have all passed
+/// validation — safe to render into a login form or exchange for a code.
+struct ValidAuthorize {
+    redirect_uri: String,
+    code_challenge: String,
+    state: String,
+    scope: Option<String>,
+}
+
+/// Validates `/authorize` parameters in the exact order the spec requires.
+/// On ANY failure, returns the error message for a direct `400` (plain
+/// text) rather than ever bouncing back to the caller-supplied
+/// `redirect_uri` — an unvalidated redirect target is an open-redirect
+/// primitive, so `redirect_uri` itself is validated (step 3) before
+/// anything is rendered, and no failure path here ever produces a `3xx`
+/// response. (Returns the message, not a built [`Response`]: a `Response`
+/// `Err` variant is 100+ bytes, which clippy's `result_large_err` flags —
+/// the caller turns this into a `400` via [`bad_request`].)
+fn validate_authorize(params: &AuthorizeParams) -> Result<ValidAuthorize, &'static str> {
+    if params.response_type.as_deref() != Some("code") {
+        return Err("unsupported response_type: expected \"code\"");
+    }
+    if params.client_id.as_deref() != Some("soul-player") {
+        return Err("unknown client_id");
+    }
+    let redirect_uri = match non_empty(&params.redirect_uri) {
+        Some(uri) if is_loopback_redirect(uri) => uri.to_string(),
+        _ => return Err("redirect_uri must be a loopback http:// URI (127.0.0.1 or [::1])"),
+    };
+    let code_challenge = match non_empty(&params.code_challenge) {
+        Some(challenge) => challenge.to_string(),
+        None => return Err("missing code_challenge"),
+    };
+    if params.code_challenge_method.as_deref() != Some("S256") {
+        return Err("code_challenge_method must be \"S256\"");
+    }
+    let state = match non_empty(&params.state) {
+        Some(state) => state.to_string(),
+        None => return Err("missing state"),
+    };
+
+    Ok(ValidAuthorize {
+        redirect_uri,
+        code_challenge,
+        state,
+        scope: params.scope.clone(),
+    })
+}
+
+/// A direct, plain-text `400` — never a redirect.
+fn bad_request(message: &str) -> Response {
+    (StatusCode::BAD_REQUEST, message.to_string()).into_response()
+}
+
+/// Renders the minimal login form: a username/password pair that POSTs back
+/// to `/authorize`, with every oauth parameter echoed as a hidden,
+/// HTML-escaped field so the POST handler can re-validate them (never
+/// trusting the redirect target just because it was already validated once
+/// on the GET).
+fn render_login_form(valid: &ValidAuthorize, error: Option<&str>) -> Response {
+    let error_html = match error {
+        Some(message) => format!(r#"<p class="error">{}</p>"#, html_escape(message)),
+        None => String::new(),
+    };
+    let scope_field = match &valid.scope {
+        Some(scope) => format!(
+            r#"<input type="hidden" name="scope" value="{}">"#,
+            html_escape(scope)
+        ),
+        None => String::new(),
+    };
+
+    Html(format!(
+        r#"<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Sign in</title></head>
+<body>
+<h1>Sign in to soul-player</h1>
+{error_html}
+<form method="post" action="/authorize">
+<input type="hidden" name="response_type" value="code">
+<input type="hidden" name="client_id" value="soul-player">
+<input type="hidden" name="redirect_uri" value="{redirect_uri}">
+<input type="hidden" name="code_challenge" value="{code_challenge}">
+<input type="hidden" name="code_challenge_method" value="S256">
+<input type="hidden" name="state" value="{state}">
+{scope_field}
+<label>Username <input type="text" name="username" autocomplete="username" required></label>
+<label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+<button type="submit">Sign in</button>
+</form>
+</body>
+</html>
+"#,
+        error_html = error_html,
+        redirect_uri = html_escape(&valid.redirect_uri),
+        code_challenge = html_escape(&valid.code_challenge),
+        state = html_escape(&valid.state),
+        scope_field = scope_field,
+    ))
+    .into_response()
+}
+
+async fn authorize_get(Query(params): Query<AuthorizeParams>) -> Response {
+    match validate_authorize(&params) {
+        Ok(valid) => render_login_form(&valid, None),
+        Err(message) => bad_request(message),
+    }
+}
+
+async fn authorize_post(
+    State(state): State<AppState>,
+    Form(params): Form<AuthorizeParams>,
+) -> Response {
+    let valid = match validate_authorize(&params) {
+        Ok(valid) => valid,
+        Err(message) => return bad_request(message),
+    };
+
+    let username = params.username.as_deref().unwrap_or_default();
+    let password = params.password.as_deref().unwrap_or_default();
+
+    match state.verify_credentials(username, password) {
+        Some(user) => {
+            let now = now_unix();
+            let code = state.code_store.issue(
+                user,
+                valid.code_challenge.clone(),
+                valid.redirect_uri.clone(),
+                now,
+                AUTH_CODE_TTL_SECS,
+            );
+            let location = format!(
+                "{}?code={}&state={}",
+                valid.redirect_uri,
+                percent_encode(&code),
+                percent_encode(&valid.state),
+            );
+            Response::builder()
+                .status(StatusCode::FOUND)
+                .header(header::LOCATION, location)
+                .body(Body::empty())
+                .expect("static headers + empty body always build")
+        }
+        None => render_login_form(&valid, Some("Incorrect username or password.")),
+    }
+}
+
+#[derive(Deserialize)]
+struct TokenParams {
+    grant_type: Option<String>,
+    code: Option<String>,
+    code_verifier: Option<String>,
+    redirect_uri: Option<String>,
+    client_id: Option<String>,
+    refresh_token: Option<String>,
+}
+
+#[derive(Serialize)]
+struct TokenSuccess {
+    access_token: String,
+    token_type: &'static str,
+    expires_in: u64,
+    refresh_token: String,
+    scope: &'static str,
+}
+
+#[derive(Serialize)]
+struct OauthErrorBody {
+    error: &'static str,
+}
+
+/// A standard OAuth error-response body (RFC 6749 §5.2), e.g.
+/// `{"error":"invalid_grant"}`.
+fn oauth_error(status: StatusCode, error: &'static str) -> Response {
+    (status, Json(OauthErrorBody { error })).into_response()
+}
+
+/// Mints a fresh access token for `user` and assembles the success JSON
+/// body paired with `refresh_token` (either a brand-new one from the
+/// `authorization_code` grant, or a just-rotated one from `refresh_token`).
+fn mint_token_pair(state: &AppState, user: UserId, refresh_token: String, now: u64) -> Response {
+    match state.signer.mint(user, state.access_ttl, now) {
+        Ok(access_token) => Json(TokenSuccess {
+            access_token,
+            token_type: "Bearer",
+            expires_in: state.access_ttl,
+            refresh_token,
+            scope: "library",
+        })
+        .into_response(),
+        Err(_) => oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+    }
+}
+
+async fn token(State(state): State<AppState>, Form(params): Form<TokenParams>) -> Response {
+    let now = now_unix();
+
+    match params.grant_type.as_deref() {
+        Some("authorization_code") => {
+            let (Some(code), Some(verifier), Some(redirect_uri), Some(_client_id)) = (
+                non_empty(&params.code),
+                non_empty(&params.code_verifier),
+                non_empty(&params.redirect_uri),
+                non_empty(&params.client_id),
+            ) else {
+                return oauth_error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+
+            let Some(user) = state.code_store.consume(code, verifier, redirect_uri, now) else {
+                return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
+            };
+
+            let refresh_token = match state.issue_refresh(user, now) {
+                Ok(token) => token,
+                Err(_) => return oauth_error(StatusCode::INTERNAL_SERVER_ERROR, "server_error"),
+            };
+
+            mint_token_pair(&state, user, refresh_token, now)
+        }
+        Some("refresh_token") => {
+            let Some(refresh_token) = non_empty(&params.refresh_token) else {
+                return oauth_error(StatusCode::BAD_REQUEST, "invalid_request");
+            };
+
+            let Some((user, new_refresh)) = state.rotate_refresh(refresh_token, now) else {
+                return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
+            };
+
+            mint_token_pair(&state, user, new_refresh, now)
+        }
+        _ => oauth_error(StatusCode::BAD_REQUEST, "unsupported_grant_type"),
+    }
+}
+
+#[derive(Deserialize)]
+struct RevokeParams {
+    token: Option<String>,
+    /// RFC 7009 token-type hint. Accepted but unused: `revoke_refresh` just
+    /// tries the refresh-token store directly, and this server has no other
+    /// token kind worth hinting at.
+    #[allow(dead_code)]
+    token_type_hint: Option<String>,
+}
+
+/// Always `200`, regardless of whether `token` matched anything — RFC 7009
+/// §2.2 requires the revocation endpoint not to leak whether a presented
+/// token was valid.
+async fn revoke(State(state): State<AppState>, Form(params): Form<RevokeParams>) -> StatusCode {
+    if let Some(token) = non_empty(&params.token) {
+        let _ = state.revoke_refresh(token);
+    }
+    StatusCode::OK
 }
