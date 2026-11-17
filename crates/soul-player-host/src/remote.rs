@@ -676,7 +676,26 @@ fn accept_callback(listener: &std::net::TcpListener) -> anyhow::Result<(String, 
 /// `/authorize` URL, open it in the system browser, accept the single
 /// resulting callback, verify `state` (a CSRF guard — see RFC 6749 §10.12),
 /// and exchange the code for [`Tokens`].
+///
+/// A thin wrapper over [`login_with_opener`] that opens the URL in the
+/// user's actual system browser — see that function for the real logic and
+/// for how tests exercise it without a browser.
 pub fn login(url: &str) -> anyhow::Result<Tokens> {
+    login_with_opener(url, |u| open::that(u).map_err(anyhow::Error::from))
+}
+
+/// [`login`]'s real logic, with how the `/authorize` URL gets opened
+/// factored out behind `open_fn` so tests can stand in for the system
+/// browser: a test's `open_fn` typically spawns a thread that plays browser
+/// (GET the login form, POST credentials, follow the redirect back to this
+/// function's OWN loopback listener) and returns immediately, exactly like
+/// [`open::that`] does — `login_with_opener` can't call `open_fn` and THEN
+/// `accept()`, waiting for a return that never comes, if `open_fn` blocked
+/// until the whole browser flow finished.
+pub(crate) fn login_with_opener(
+    url: &str,
+    open_fn: impl FnOnce(&str) -> anyhow::Result<()>,
+) -> anyhow::Result<Tokens> {
     let (auth_endpoint, _) = discover(url)?;
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
@@ -691,7 +710,7 @@ pub fn login(url: &str) -> anyhow::Result<Tokens> {
     let state = random_state()?;
     let open_url = authorize_url(&auth_endpoint, &challenge, &state, &redirect_uri);
 
-    open::that(&open_url).context("opening the system browser for login")?;
+    open_fn(&open_url).context("opening the system browser for login")?;
 
     let (code, returned_state) = accept_callback(&listener)?;
     if returned_state != state {
@@ -704,7 +723,7 @@ pub fn login(url: &str) -> anyhow::Result<Tokens> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use soul_server::auth::signer::Signer;
     use soul_server::domain::UserId;
@@ -997,6 +1016,29 @@ mod tests {
         query_param(location, key)
     }
 
+    /// GETs `url` (the loopback callback) with a few short retries rather
+    /// than one shot — tolerating the brief window between
+    /// `login_with_opener` binding its `TcpListener` and actually reaching
+    /// its `accept()` loop. In practice the listener is bound long before
+    /// the browser-thread finishes the AS round-trip below, so this almost
+    /// never retries; it exists so the test fails loudly on a real timeout
+    /// instead of racily, if that ordering ever tightens.
+    fn browser_get_loopback(client: &reqwest::blocking::Client, url: &str) {
+        let mut last_err = None;
+        for attempt in 0..20 {
+            match client.get(url).send() {
+                Ok(_) => return,
+                Err(e) => {
+                    last_err = Some(e);
+                    if attempt < 19 {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                }
+            }
+        }
+        panic!("GET {url} (the loopback callback) failed after retries: {last_err:?}");
+    }
+
     /// Drives the full OAuth2.1 Authorization-Code+PKCE dance against a REAL
     /// in-process AS, standing in for the browser with a non-redirecting
     /// blocking client (so the test controls the `code`/`state` handoff
@@ -1272,5 +1314,219 @@ mod tests {
                  byte-identical to the server's own file"
             );
         }
+    }
+
+    /// Drives [`login_with_opener`] through its REAL bind→accept→parse→
+    /// state-verify→exchange path — the one `login` itself has but no
+    /// prior test exercised, since [`oauth_code_exchange_and_refresh`]
+    /// calls [`exchange_code`] directly and never touches a loopback
+    /// socket at all.
+    ///
+    /// The `open_fn` here stands in for `open::that`: it spawns a thread
+    /// (so this call returns immediately, exactly like the real browser
+    /// launcher does) that plays the browser — GET the login form POSTed
+    /// to by the AS, POST the seeded user's credentials plus the echoed
+    /// PKCE/state params, follow the resulting `302` BY HAND to its
+    /// `Location`, and `GET` that loopback URL. That last GET is the one
+    /// connection `login_with_opener`'s own `TcpListener` accepts, proving
+    /// the real listener → request-line parse → `state` check → code
+    /// exchange chain end to end.
+    #[test]
+    fn login_full_flow_catches_loopback_redirect() {
+        let server = start_server();
+        let server_url = server.url.clone();
+
+        // The opener must return immediately (like `open::that`), so the
+        // thread it spawns is handed back to the test via this slot rather
+        // than joined inline — joined below, AFTER `login_with_opener`
+        // returns, so a panic inside the browser-thread still fails the
+        // test instead of vanishing silently.
+        let handle_slot: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&handle_slot);
+
+        let tokens = login_with_opener(&server_url, move |open_url| {
+            let open_url = open_url.to_string();
+            let handle = std::thread::spawn(move || {
+                let browser = reqwest::blocking::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .timeout(std::time::Duration::from_secs(5))
+                    .connect_timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .expect("build a non-redirecting blocking client");
+
+                let get_resp = browser
+                    .get(&open_url)
+                    .send()
+                    .expect("GET the authorize URL (the login form) should succeed");
+                assert_eq!(
+                    get_resp.status(),
+                    reqwest::StatusCode::OK,
+                    "expected the login form"
+                );
+
+                let auth_endpoint = open_url
+                    .split_once('?')
+                    .map_or(open_url.as_str(), |(base, _)| base)
+                    .to_string();
+                let redirect_uri = query_param(&open_url, "redirect_uri")
+                    .expect("authorize URL should carry redirect_uri");
+                let challenge = query_param(&open_url, "code_challenge")
+                    .expect("authorize URL should carry code_challenge");
+                let state =
+                    query_param(&open_url, "state").expect("authorize URL should carry state");
+
+                let post_resp = browser
+                    .post(&auth_endpoint)
+                    .form(&[
+                        ("response_type", "code"),
+                        ("client_id", "soul-player"),
+                        ("redirect_uri", redirect_uri.as_str()),
+                        ("code_challenge", challenge.as_str()),
+                        ("code_challenge_method", "S256"),
+                        ("state", state.as_str()),
+                        ("scope", "library"),
+                        ("username", "u"),
+                        ("password", "p"),
+                    ])
+                    .send()
+                    .expect("POST /authorize should succeed");
+                assert_eq!(
+                    post_resp.status(),
+                    reqwest::StatusCode::FOUND,
+                    "right credentials should redirect with a code"
+                );
+                let location = post_resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .expect("302 should carry a Location header")
+                    .to_str()
+                    .expect("Location header should be valid UTF-8")
+                    .to_string();
+
+                // THIS is the connection login_with_opener's own
+                // TcpListener accepts — the real loopback redirect catch.
+                browser_get_loopback(&browser, &location);
+            });
+            *slot.lock().expect("lock the browser-thread handle slot") = Some(handle);
+            Ok(())
+        })
+        .expect("login_with_opener should complete the real loopback flow");
+
+        handle_slot
+            .lock()
+            .expect("lock the browser-thread handle slot")
+            .take()
+            .expect("opener should have stored a browser-thread handle")
+            .join()
+            .expect("browser thread should not panic");
+
+        assert!(!tokens.access.is_empty());
+        assert!(!tokens.refresh.is_empty());
+
+        let index_resp = reqwest::blocking::Client::new()
+            .get(format!("{server_url}/v0/index"))
+            .bearer_auth(&tokens.access)
+            .send()
+            .expect("GET /v0/index");
+        assert_eq!(
+            index_resp.status(),
+            reqwest::StatusCode::OK,
+            "the access token from login_with_opener should be accepted by /v0/index"
+        );
+    }
+
+    /// The CSRF guard, exercised through the same real loopback path as
+    /// [`login_full_flow_catches_loopback_redirect`]: the browser-thread
+    /// hits `login_with_opener`'s OWN loopback listener directly with a
+    /// `state` that does NOT match what `login_with_opener` generated —
+    /// this must be rejected before ever reaching [`exchange_code`], so no
+    /// AS round-trip (GET/POST `/authorize`) is needed here at all.
+    #[test]
+    fn login_rejects_mismatched_state() {
+        let server = start_server();
+
+        let handle_slot: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&handle_slot);
+
+        let result = login_with_opener(&server.url, move |open_url| {
+            let open_url = open_url.to_string();
+            let handle = std::thread::spawn(move || {
+                let redirect_uri = query_param(&open_url, "redirect_uri")
+                    .expect("authorize URL should carry redirect_uri");
+                let loopback = format!("{redirect_uri}?code=bogus-code&state=totally-wrong-state");
+
+                let browser = reqwest::blocking::Client::builder()
+                    .timeout(std::time::Duration::from_secs(5))
+                    .connect_timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .expect("build a blocking client");
+
+                browser_get_loopback(&browser, &loopback);
+            });
+            *slot.lock().expect("lock the browser-thread handle slot") = Some(handle);
+            Ok(())
+        });
+
+        handle_slot
+            .lock()
+            .expect("lock the browser-thread handle slot")
+            .take()
+            .expect("opener should have stored a browser-thread handle")
+            .join()
+            .expect("browser thread should not panic");
+
+        assert!(
+            result.is_err(),
+            "a mismatched state must abort login as a possible CSRF, never return Tokens"
+        );
+    }
+
+    /// Round-trips a refresh token through the REAL OS keychain backend
+    /// (Windows Credential Manager, via the `windows-native` `keyring`
+    /// feature) — every other [`TokenStore`] test here uses [`MemStore`],
+    /// which never touches the OS at all. `#[ignore]`d because it mutates
+    /// real machine state; run explicitly with `--ignored`.
+    ///
+    /// Cleans up via a `Drop` guard so a failed assertion can never leave a
+    /// stray credential behind in the user's Credential Manager.
+    #[test]
+    #[ignore = "hits the real OS keychain"]
+    fn keyring_store_real_round_trip() {
+        let server_url = format!("soul-player-test://ci-roundtrip-{}", std::process::id());
+        let store = KeyringStore;
+
+        struct DeleteGuard<'a> {
+            store: &'a KeyringStore,
+            server_url: &'a str,
+        }
+        impl Drop for DeleteGuard<'_> {
+            fn drop(&mut self) {
+                let _ = self.store.delete_refresh(self.server_url);
+            }
+        }
+        let _guard = DeleteGuard {
+            store: &store,
+            server_url: &server_url,
+        };
+
+        store
+            .save_refresh(&server_url, "real-keychain-refresh-token")
+            .expect("save_refresh should write to the real OS keychain");
+        assert_eq!(
+            store.load_refresh(&server_url),
+            Some("real-keychain-refresh-token".to_string()),
+            "load_refresh should read back what save_refresh wrote from the real OS keychain"
+        );
+
+        store
+            .delete_refresh(&server_url)
+            .expect("delete_refresh should succeed against the real OS keychain");
+        assert_eq!(
+            store.load_refresh(&server_url),
+            None,
+            "load_refresh after delete_refresh should be None"
+        );
     }
 }
