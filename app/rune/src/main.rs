@@ -2026,8 +2026,12 @@ fn setup_art(s: &mut State, waker: Waker) {
     s.art.wire(waker);
 }
 
-/// Content-pane zoom bounds and step (Ctrl +/-/0). 1.0 = 100 %.
-const MIN_ZOOM: f32 = 0.5;
+/// Content-pane zoom bounds and step (Ctrl +/-/0). 1.0 = 100 %. **Zoom-IN only**:
+/// the reflow lays the pane out at `size / zoom`, so below 100 % that box is
+/// *larger* than the window and Rune's paint-scale (which doesn't shrink the
+/// layout box) clips it. The floor is therefore 100 %; a sub-100 % "fit more"
+/// zoom is a follow-up that needs logical size-scaling, not a paint transform.
+const MIN_ZOOM: f32 = 1.0;
 const MAX_ZOOM: f32 = 2.0;
 const ZOOM_STEP: f32 = 0.1;
 
@@ -2253,6 +2257,62 @@ fn scene_artists(s: &mut State) {
 fn scene_genres(s: &mut State) {
     s.route = Route::Genres;
 }
+/// Seed a synthetic library for `--snap` grid/zoom validation: 20 distinct albums
+/// across 8 artists and 6 genres — enough to fill and scroll the grid. Covers
+/// resolve to the music-note placeholder (no real files in a headless snapshot).
+fn seed_demo_library(s: &mut State) {
+    const ARTISTS: &[&str] = &[
+        "Aurora Fields",
+        "Beacon",
+        "Cobalt Trio",
+        "Dust & Echo",
+        "Elian Vos",
+        "Fenwick",
+        "Glass Harbor",
+        "Halcyon",
+    ];
+    const GENRES: &[&str] = &[
+        "Ambient",
+        "Classical",
+        "Electronic",
+        "Folk",
+        "Jazz",
+        "Hip-Hop",
+    ];
+    const TITLES: &[&str] = &["Nightfall", "Open Skies", "Reverie", "Lantern", "Meridian"];
+    let mut lib = Vec::new();
+    let mut id = 1u32;
+    for a in 0..20u32 {
+        let artist = ARTISTS[a as usize % ARTISTS.len()];
+        let genre = GENRES[a as usize % GENRES.len()];
+        let album = format!("{} {:02}", TITLES[a as usize % TITLES.len()], a + 1);
+        for t in 1..=4u32 {
+            lib.push(soul_player_host::TrackView {
+                id,
+                title: Some(format!("Track {t}")),
+                artist: Some(artist.to_string()),
+                album: Some(album.clone()),
+                genre: Some(genre.to_string()),
+                duration_secs: f64::from(120 + id % 180),
+            });
+            id += 1;
+        }
+    }
+    s.library = lib;
+}
+/// The Albums grid, seeded + at 100 % zoom (for `--snap` size/zoom validation).
+fn scene_grid(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Albums;
+}
+fn scene_grid_z150(s: &mut State) {
+    scene_grid(s);
+    s.ui_zoom = 1.5;
+}
+fn scene_grid_z200(s: &mut State) {
+    scene_grid(s);
+    s.ui_zoom = 2.0;
+}
 fn scene_artist_detail(s: &mut State) {
     s.route = Route::Artist;
     s.open_artist = s.library.first().and_then(|t| t.artist.clone());
@@ -2468,6 +2528,9 @@ fn main() -> anyhow::Result<()> {
             ("artists", scene_artists),
             ("artist-detail", scene_artist_detail),
             ("genres", scene_genres),
+            ("grid", scene_grid),
+            ("grid-z150", scene_grid_z150),
+            ("grid-z200", scene_grid_z200),
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
@@ -8039,9 +8102,21 @@ mod tests {
     #[test]
     fn zoom_step_snaps_to_the_grid_and_clamps() {
         assert!((stepped_zoom(1.0, 1) - 1.1).abs() < 1e-4, "one step in");
-        assert!((stepped_zoom(1.0, -1) - 0.9).abs() < 1e-4, "one step out");
+        assert!(
+            (stepped_zoom(1.5, -1) - 1.4).abs() < 1e-4,
+            "one step out, above the floor"
+        );
+        assert_eq!(
+            stepped_zoom(1.0, -1),
+            MIN_ZOOM,
+            "Ctrl- at 100 % holds at the floor (zoom-in only)"
+        );
         assert_eq!(stepped_zoom(2.0, 1), MAX_ZOOM, "clamps at the ceiling");
-        assert_eq!(stepped_zoom(0.5, -1), MIN_ZOOM, "clamps at the floor");
+        assert_eq!(
+            stepped_zoom(0.5, -1),
+            MIN_ZOOM,
+            "a below-floor value clamps up"
+        );
         assert_eq!(stepped_zoom(1.95, 1), MAX_ZOOM, "a near-max step clamps");
         assert_eq!(sane_zoom(f32::NAN), 1.0, "non-finite → 100 %");
         assert_eq!(sane_zoom(5.0), MAX_ZOOM, "out-of-range clamps up");
