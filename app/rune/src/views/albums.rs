@@ -122,7 +122,9 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .key("albums-grid")
         .role("grid")
         .flex_wrap()
-        .gap(space::GUTTER)
+        // Rows a touch tighter than columns: each card's caption adds visual
+        // whitespace below the tile, so an even gap reads as too much between rows.
+        .gaps(space::MD, space::GUTTER)
         .padding(space::PANE);
     for (slot, a) in albums.iter().enumerate() {
         grid = grid.child(album_card(s, p, slot, a, card_w, scale));
