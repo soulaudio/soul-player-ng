@@ -24,6 +24,7 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 
+use crate::auth::refresh::{self, RefreshRecord, RefreshStore};
 use crate::domain::ports::UserStore;
 use crate::domain::{Token, UserId};
 
@@ -42,14 +43,21 @@ struct UserRec {
     subsonic_secret: Option<String>,
 }
 
-/// The store's full in-memory state: persisted `users` plus in-memory-only
-/// `tokens`. `#[serde(skip)]` keeps tokens out of the JSON file entirely —
-/// a freshly loaded `Store` always starts with an empty token map.
+/// The store's full in-memory state: persisted `users` and `refresh` tokens,
+/// plus in-memory-only `tokens` (bearer access tokens). `#[serde(skip)]`
+/// keeps access tokens out of the JSON file entirely — a freshly loaded
+/// `Store` always starts with an empty token map. `refresh` carries only
+/// SHA-256 hashes (see [`RefreshRecord`]), so it's safe — and required for
+/// OAuth 2.1 rotation to survive a restart — to persist durably.
+/// `#[serde(default)]` lets a store file written before refresh tokens
+/// existed still load, with an empty refresh list.
 #[derive(Default, Serialize, Deserialize)]
 struct Store {
     users: Vec<UserRec>,
     #[serde(skip)]
     tokens: HashMap<String, UserId>,
+    #[serde(default)]
+    refresh: Vec<RefreshRecord>,
 }
 
 /// Flat-file user/credential store. Bearer tokens live only in memory (per
@@ -155,10 +163,109 @@ impl UserStore for FileUsers {
     }
 }
 
+impl RefreshStore for FileUsers {
+    fn issue(&self, user: UserId, now: u64) -> Result<String> {
+        let raw = refresh::generate_raw_token()?;
+        let rec = RefreshRecord {
+            token_sha256: refresh::sha256_hex(&raw),
+            user_id: user,
+            created_at: now,
+        };
+
+        let mut store = self.lock()?;
+        store.refresh.push(rec);
+        self.persist(&store)?;
+        Ok(raw)
+    }
+
+    fn consume_rotate(&self, raw: &str, now: u64) -> Option<(UserId, String)> {
+        let hash = refresh::sha256_hex(raw);
+
+        // Hold the lock across verify + delete-old + issue-new + persist so
+        // a token can never be redeemed by two concurrent callers (no
+        // double-spend of a rotated refresh token).
+        let mut store = self.lock().ok()?;
+        let idx = store.refresh.iter().position(|r| r.token_sha256 == hash)?;
+        let user_id = store.refresh.remove(idx).user_id;
+
+        let new_raw = refresh::generate_raw_token().ok()?;
+        store.refresh.push(RefreshRecord {
+            token_sha256: refresh::sha256_hex(&new_raw),
+            user_id,
+            created_at: now,
+        });
+        self.persist(&store).ok()?;
+        Some((user_id, new_raw))
+    }
+
+    fn revoke(&self, raw: &str) -> bool {
+        let hash = refresh::sha256_hex(raw);
+        let Ok(mut store) = self.lock() else {
+            return false;
+        };
+
+        let before = store.refresh.len();
+        store.refresh.retain(|r| r.token_sha256 != hash);
+        let revoked = store.refresh.len() != before;
+        if revoked {
+            let _ = self.persist(&store);
+        }
+        revoked
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::FileUsers;
+    use crate::auth::refresh::RefreshStore;
     use crate::domain::ports::UserStore;
+
+    #[test]
+    fn refresh_tokens_rotate_revoke_and_never_persist_raw() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("u.json");
+        let now = 1_000;
+
+        let s = FileUsers::open(&path).unwrap();
+        let t1 = s.issue(5, now).unwrap();
+
+        let (user, t2) = s.consume_rotate(&t1, now).expect("t1 rotates");
+        assert_eq!(user, 5);
+        assert_ne!(t2, t1, "rotation must mint a new token");
+
+        assert!(
+            s.consume_rotate(&t1, now).is_none(),
+            "old token must be invalid after rotation"
+        );
+
+        let (user2, t3) = s.consume_rotate(&t2, now).expect("t2 rotates");
+        assert_eq!(user2, 5);
+        assert_ne!(t3, t2);
+
+        assert!(s.revoke(&t3), "revoke must report the token existed");
+        assert!(
+            s.consume_rotate(&t3, now).is_none(),
+            "revoked token must not rotate"
+        );
+
+        // Issue one more token that should survive a reopen, proving
+        // persistence across process restarts.
+        let t4 = s.issue(5, now).unwrap();
+        drop(s);
+
+        let s2 = FileUsers::open(&path).unwrap();
+        let (user4, _t5) = s2
+            .consume_rotate(&t4, now)
+            .expect("surviving token rotates after reopen");
+        assert_eq!(user4, 5);
+        drop(s2);
+
+        let raw_file = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !raw_file.contains(&t1),
+            "raw refresh token must never appear in the on-disk store"
+        );
+    }
 
     #[test]
     fn add_verify_token_roundtrip() {
