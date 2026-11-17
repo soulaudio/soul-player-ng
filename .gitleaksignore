@@ -1,0 +1,2 @@
+# Documentation false positives (gitleaks generic-api-key on prose, not secrets).
+docs/superpowers/specs/2026-11-17-remote-standards-auth-design.md:generic-api-key:71
