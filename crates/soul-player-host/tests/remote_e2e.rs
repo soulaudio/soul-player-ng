@@ -503,3 +503,88 @@ fn remote_health_flips_offline_after_the_server_goes_away_but_track_count_surviv
         "going offline must not touch the enabled flag"
     );
 }
+
+/// Dedup: calling `add_remote_source_with_tokens` twice for the SAME url
+/// (e.g. a reconnect, or the user re-running the connect flow) must REPLACE
+/// the existing `Inner::remotes` entry, never append a second one — pins the
+/// `retain` fix in `add_remote_source_with_tokens`. Proven with a fresh
+/// `Tokens` pair each time (a real second OAuth login), the way a real
+/// reconnect would present tokens.
+#[test]
+fn remote_add_twice_same_url_replaces_not_duplicates() {
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    let server = start_server(FIXTURES);
+
+    let handle = PlayerHandle::offline();
+
+    let first_tokens = oauth_login(&server.url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&server.url, first_tokens)
+        .expect("first add: fetch the index, fold it into the library");
+
+    let second_tokens = oauth_login(&server.url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&server.url, second_tokens)
+        .expect("second add of the SAME url: should replace, not duplicate");
+
+    let remotes: Vec<_> = handle
+        .sources()
+        .into_iter()
+        .filter(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .collect();
+    assert_eq!(
+        remotes.len(),
+        1,
+        "re-adding the same url must leave exactly one Remote source, got {remotes:?}"
+    );
+
+    let views = handle.views();
+    assert_eq!(
+        views.len(),
+        FIXTURES.len(),
+        "re-adding the same url must not double the aggregated track count, got {views:?}"
+    );
+}
+
+/// Normalization: a url re-added with a trailing slash (`"{url}/"`) must
+/// match the same server's already-retained entry (added without one) — the
+/// `trim_end_matches('/')` normalization `add_remote_source_with_tokens` and
+/// `remove_remote_source`/`set_remote_enabled` share. Without it, the two
+/// forms would be treated as different urls and the server would show up
+/// twice.
+#[test]
+fn remote_add_with_trailing_slash_collapses_to_the_same_entry() {
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    let server = start_server(FIXTURES);
+
+    let handle = PlayerHandle::offline();
+
+    let tokens = oauth_login(&server.url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&server.url, tokens)
+        .expect("first add (no trailing slash): fetch the index, fold it into the library");
+
+    let trailing_slash_url = format!("{}/", server.url);
+    let tokens_again = oauth_login(&server.url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&trailing_slash_url, tokens_again)
+        .expect("second add (trailing slash): should normalize onto the same entry");
+
+    let remotes: Vec<_> = handle
+        .sources()
+        .into_iter()
+        .filter(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .collect();
+    assert_eq!(
+        remotes.len(),
+        1,
+        "a trailing-slash re-add must normalize onto the same Remote entry, got {remotes:?}"
+    );
+
+    let views = handle.views();
+    assert_eq!(
+        views.len(),
+        FIXTURES.len(),
+        "a trailing-slash re-add must not double the aggregated track count, got {views:?}"
+    );
+}

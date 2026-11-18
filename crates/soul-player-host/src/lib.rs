@@ -1714,17 +1714,21 @@ impl PlayerHandle {
         url: &str,
         tokens: remote::Tokens,
     ) -> anyhow::Result<()> {
+        let normalized = url.trim_end_matches('/').to_string();
         let server = Arc::new(RemoteServer {
-            url: url.trim_end_matches('/').to_string(),
+            url: normalized.clone(),
             access_token: tokens.access,
         });
         let blobs = remote::fetch_index(&server)?;
 
-        self.inner
-            .remotes
-            .lock()
-            .expect("remotes mutex")
-            .push((server, blobs));
+        {
+            let mut remotes = self.inner.remotes.lock().expect("remotes mutex");
+            // No duplicate sources: re-adding or reconnecting a URL already in
+            // the set REPLACES its entry (fresh token + freshly-fetched index)
+            // rather than appending a second row for the same server.
+            remotes.retain(|(existing, _blobs)| existing.url != normalized);
+            remotes.push((server, blobs));
+        }
 
         self.rebuild_remote_library();
         Ok(())
