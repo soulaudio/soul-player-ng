@@ -8906,6 +8906,78 @@ mod tests {
         );
     }
 
+    /// The gap between the album grid's right inner edge and the furthest-right
+    /// card on the TOP row — how many points of empty column the grid leaves on the
+    /// right at this window size. ~0 means the cards fill the width. Anchors to the
+    /// true top row (min y over the cards), not `album-0`, so it is robust to draw
+    /// order.
+    fn album_grid_right_slack(rt: &Runtime<State>) -> f32 {
+        let grid = el_info(rt, "albums-grid").rect; // [x, y, w, h]
+        let inner_right = grid[0] + grid[2] - crate::ui::space::PANE;
+        let cards: Vec<[f32; 4]> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .and_then(|k| k.strip_prefix("album-"))
+                    .is_some_and(|rest| rest.parse::<u32>().is_ok())
+            })
+            .map(|e| e.rect)
+            .collect();
+        let top = cards.iter().map(|r| r[1]).fold(f32::MAX, f32::min);
+        let max_right = cards
+            .iter()
+            .filter(|r| (r[1] - top).abs() < 5.0)
+            .map(|r| r[0] + r[2])
+            .fold(f32::MIN, f32::max);
+        inner_right - max_right
+    }
+
+    /// The album grid must fill its width at EVERY window size, not only the lucky
+    /// ones. The exact-fill card width is fractional; the renderer rounds each card
+    /// to physical pixels, so at unlucky widths the rounded cards sum a few points
+    /// short of the pane — a thin empty column on the right the user sees "rarely".
+    /// Sweeping many widths catches it; the fix lets the layout engine distribute
+    /// the rounding remainder (flex-grow with a cap) so every width fills.
+    #[test]
+    fn the_album_grid_fills_the_width_at_every_window_size() {
+        rust_i18n::set_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 1.0,
+        };
+        let mut worst = f32::MIN;
+        let mut worst_w = 0.0f32;
+        // Irrational-ish step so the fractional part of the card width varies.
+        for step in 0..56u32 {
+            let win_w = 980.0 + step as f32 * 7.3;
+            let mut s = State::new(PlayerHandle::offline());
+            s.sidebar_collapsed = false;
+            s.route = Route::Albums;
+            s.ui_zoom = 1.0;
+            s.library = (1..=40).map(grid_album).collect();
+            let mut rt = Runtime::new(s, view, (win_w, 900.0), env);
+            // Settle: the first frame sizes the grid from the fallback width (no prior
+            // layout), so give the readback-driven column width a few frames to reach
+            // the committed pane width — the steady state the user actually sees.
+            for _ in 0..5 {
+                rt.frame(0.0);
+            }
+            let slack = album_grid_right_slack(&rt);
+            if slack > worst {
+                worst = slack;
+                worst_w = win_w;
+            }
+        }
+        // One physical pixel of residual rounding is unavoidable and invisible; a
+        // multi-point empty column is the bug.
+        assert!(
+            worst <= 1.0,
+            "the grid fills within 1 pt at every width; worst empty column {worst:.1} pt at window {worst_w:.0}"
+        );
+    }
+
     /// Tab forward until the element keyed `key` is focused, up to `max` presses.
     fn tab_to(rt: &mut Runtime<State>, target: &str, max: usize) -> bool {
         for _ in 0..max {
