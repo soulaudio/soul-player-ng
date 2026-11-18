@@ -8958,7 +8958,11 @@ mod tests {
                 s.route = route;
                 s.ui_zoom = 1.0;
                 s.library = (1..=24).map(grid_album).collect();
-                let mut rt = Runtime::new(s, view, (win_w, 900.0), Env { system_dark: true, scale });
+                let env = Env {
+                    system_dark: true,
+                    scale,
+                };
+                let mut rt = Runtime::new(s, view, (win_w, 900.0), env);
                 // Settle: the first frame sizes the grid from the fallback width (no
                 // prior layout), so give the readback-driven width two more frames to
                 // reach the committed pane width — the steady state the user sees.
