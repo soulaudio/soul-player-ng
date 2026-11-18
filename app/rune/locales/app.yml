@@ -138,6 +138,13 @@ detail.albumsAndTracks:
   zh: '%{albums} 张专辑 · %{tracks} 首'
   cs: '%{albums} alb · %{tracks} skladeb'
   ja: '%{albums} アルバム · %{tracks} 曲'
+detail.reissued:
+  en: 'reissued %{year}'
+  de: 'Neuauflage %{year}'
+  es: 'reeditado %{year}'
+  zh: '%{year} 再版'
+  cs: 'reedice %{year}'
+  ja: '%{year}年 再発'
 artist.topSongs:
   en: 'Top Songs'
   de: 'Top-Titel'

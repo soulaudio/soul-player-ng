@@ -1,8 +1,9 @@
 //! Albums grid + an album's detail page, mirroring the old app's
 //! AlbumsPage/MediaCard and AlbumPage. Each card is a square cover + title +
-//! artist; the hover play button plays/pauses the album, the card body opens its
-//! detail page. `TrackView` carries no year, so (unlike the original's "artist •
-//! year") the card shows the artist alone.
+//! an "Artist · year" subtitle (the old app's "artist • year"), the year read
+//! from `State.album_year`'s selected date with a fallback to the other one;
+//! the hover play button plays/pauses the album, the card body opens its
+//! detail page.
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
@@ -20,12 +21,17 @@ use crate::views::media_card::{CardSpec, media_card};
 use crate::views::player::remote_badge;
 
 /// One grouped album: display name, its artist, a track id to draw the cover
-/// from, and every track id (in library order) to play on click.
+/// from, every track id (in library order) to play on click, and the album's
+/// original/release dates (packed `(year<<9)|(month<<5)|day`, `0` = unknown;
+/// see [`album_year`]).
+#[derive(Clone)]
 pub(crate) struct Album {
     pub(crate) name: String,
     pub(crate) artist: String,
     pub(crate) cover_id: u32,
     pub(crate) ids: Vec<u32>,
+    pub(crate) original_date: u32,
+    pub(crate) release_date: u32,
 }
 
 /// Group the flat library into albums, preserving first-seen (library) order so
@@ -44,12 +50,40 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
                 artist: t.artist.clone().unwrap_or_default(),
                 cover_id: t.id,
                 ids: Vec::new(),
+                original_date: t.original_date,
+                release_date: t.release_date,
             });
             albums.len() - 1
         });
         albums[i].ids.push(t.id);
     }
     albums
+}
+
+/// The album's display year for the chosen source: the selected date, falling
+/// back to the other when the selected one is unknown; `None` if both are
+/// unknown. Packed `u32` → year via `>> 9`; `0` = unknown.
+pub(crate) fn album_year(a: &Album, src: crate::config::AlbumYearSource) -> Option<u16> {
+    use crate::config::AlbumYearSource::Original;
+    let (first, second) = if src == Original {
+        (a.original_date, a.release_date)
+    } else {
+        (a.release_date, a.original_date)
+    };
+    let d = if first != 0 { first } else { second };
+    (d != 0).then_some((d >> 9) as u16)
+}
+
+/// The card/detail subtitle: "Artist · year" when both are known, the artist
+/// alone when the year is unknown, the year alone when the artist is empty, or
+/// `None` when neither is available (the card renders no second line).
+fn album_subtitle(a: &Album, src: crate::config::AlbumYearSource) -> Option<String> {
+    match (a.artist.is_empty(), album_year(a, src)) {
+        (true, Some(y)) => Some(y.to_string()),
+        (true, None) => None,
+        (false, Some(y)) => Some(format!("{} · {y}", a.artist)),
+        (false, None) => Some(a.artist.clone()),
+    }
 }
 
 /// Sum of track seconds as a coarse human total — "1 h 23 min" or "45 min"
@@ -94,7 +128,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             key: format!("album-{slot}"),
             label: a.name.clone(),
             title: a.name.clone(),
-            subtitle: Some(a.artist.clone()),
+            subtitle: album_subtitle(a, s.album_year),
             cover_id: a.cover_id,
             circular: false,
             play_ids: a.ids.clone(),
@@ -271,12 +305,21 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         .filter_map(|id| s.library.iter().find(|t| t.id == *id))
         .map(|t| t.duration_secs)
         .sum();
-    let meta = t!(
+    let mut meta = t!(
         "detail.tracksAndDuration",
         count => album.ids.len(),
         dur => fmt_total_dur(total)
     )
     .to_string();
+    // A reissue note when the release actually differs from the original
+    // (both known) — e.g. a 2015 remaster of a 1973 album.
+    if album.original_date != 0
+        && album.release_date != 0
+        && album.release_date != album.original_date
+    {
+        let release_year = album.release_date >> 9;
+        meta = format!("{meta} · {}", t!("detail.reissued", year => release_year));
+    }
 
     let hero = detail_hero(
         s,
@@ -289,7 +332,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         },
         t!("album.eyebrow").to_uppercase(),
         album.name.clone(),
-        Some(album.artist.clone()),
+        album_subtitle(&album, s.album_year),
         meta,
         play_all_pill("album-play-all", album.ids.clone(), p),
     );
@@ -363,6 +406,35 @@ mod tests {
     }
 
     #[test]
+    fn album_year_prefers_selected_source_with_fallback() {
+        use crate::config::AlbumYearSource::*;
+        let a = Album {
+            name: "x".into(),
+            artist: "y".into(),
+            cover_id: 0,
+            ids: vec![],
+            original_date: 1973u32 << 9,
+            release_date: 2015u32 << 9,
+        };
+        assert_eq!(album_year(&a, Original), Some(1973));
+        assert_eq!(album_year(&a, Release), Some(2015));
+        // fallback: release known, original unknown, Original selected → release
+        let b = Album {
+            original_date: 0,
+            release_date: 2015u32 << 9,
+            ..a.clone()
+        };
+        assert_eq!(album_year(&b, Original), Some(2015));
+        // both unknown → None
+        let c = Album {
+            original_date: 0,
+            release_date: 0,
+            ..a.clone()
+        };
+        assert_eq!(album_year(&c, Original), None);
+    }
+
+    #[test]
     fn albums_of_artist_folds_only_that_artists_albums_first_seen() {
         rust_i18n::set_locale("en");
         let lib = vec![
@@ -381,5 +453,51 @@ mod tests {
         );
         assert_eq!(albums[1].name, "Goldberg");
         assert_eq!(albums[1].ids, vec![4]);
+    }
+
+    /// End-to-end through the real Albums grid: a seeded 1973 album's card
+    /// shows "Artist · 1973"; an album with no known year falls back to the
+    /// artist alone — never a stray "· 0".
+    #[test]
+    fn album_card_renders_the_year_or_falls_back_to_the_artist_alone() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            albums_page(s, &p, cx, scale)
+        }
+
+        rust_i18n::set_locale("en");
+        let mut dated = atv(1, "Pavement", "Crooked Rain");
+        dated.original_date = 1973u32 << 9;
+        let undated = atv(2, "NoYear", "Mystery");
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![dated, undated];
+        s.route = crate::Route::Albums;
+        // Pin the source rather than trust the ambient persisted config.
+        s.album_year = crate::config::AlbumYearSource::Original;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(
+            texts.iter().any(|t| t == "Pavement · 1973"),
+            "a known year renders as \"Artist · year\"; got {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "NoYear"),
+            "an unknown year falls back to the artist alone; got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("· 0")),
+            "never render a bare zero year; got {texts:?}"
+        );
     }
 }
