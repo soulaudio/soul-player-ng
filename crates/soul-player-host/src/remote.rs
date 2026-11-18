@@ -18,8 +18,14 @@
 //! reserved for a future caller that wants to know *why* a path resolved the
 //! way it did (e.g. a "from <server>" badge); see the narrow `dead_code`
 //! allow on it below instead of the old blanket one.
+//!
+//! [`HttpRangeReader`] is the streaming alternative to [`MediaFetch`]'s
+//! download-then-play: a `Read + Seek` over `GET /v0/track/{id}` HTTP Range
+//! requests, for a decoder to open directly without materializing the whole
+//! file first. Wiring a decoder over it is a separate, later increment —
+//! this is just the reader.
 use std::fs;
-use std::io::Write;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -254,6 +260,207 @@ impl TrackSource for RemoteLibrary {
 
     fn duration_of(&self, id: u32) -> Option<f64> {
         self.lib.duration_of(id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP-Range-backed streaming reader (Inc 4b): a `Read + Seek` over
+// `GET /v0/track/{id}` for a decoder to open directly, as the streaming
+// alternative to `DownloadCache`'s download-then-play. Self-contained — a
+// SEPARATE later increment wires a decoder over this via core's
+// `open_seekable`.
+// ---------------------------------------------------------------------------
+
+/// How many bytes to pull per HTTP Range request: large enough that a
+/// decoder's small, frequent reads during sequential playback don't turn
+/// into one request apiece, small enough to keep memory and first-byte
+/// latency reasonable.
+const CHUNK_SIZE: u64 = 512 * 1024;
+
+/// The current in-memory window of fetched bytes: `[start, start +
+/// bytes.len())` of the track, in absolute track-byte offsets.
+struct Window {
+    start: u64,
+    bytes: Vec<u8>,
+}
+
+/// A `std::io::Read + Seek` stream over a remote track's bytes, backed by
+/// HTTP Range requests against `GET {url}/v0/track/{id}` rather than
+/// downloading the whole file up front (see [`DownloadCache`] for that
+/// alternative). Reads are served from a small in-memory [`Window`]; a read
+/// that runs past it (or a [`Seek`] that lands outside it) triggers exactly
+/// one more Range request, fetched lazily on the next `read`.
+///
+/// Built so a decoder can be opened directly over it on the loader thread —
+/// `Send` (every field is), no interior mutability shared with anything
+/// else, no `unsafe`.
+pub struct HttpRangeReader {
+    client: reqwest::blocking::Client,
+    url: String,
+    track_id: u32,
+    access_token: String,
+    /// The track's total byte length, learned from the first request's
+    /// `Content-Range` header (see [`HttpRangeReader::new`]) and stable for
+    /// the reader's whole lifetime.
+    total_len: u64,
+    /// The next byte offset [`Read::read`] will serve, and
+    /// [`Seek::seek`]'s current position.
+    pos: u64,
+    /// `None` right after a [`Seek`] that landed outside the current
+    /// window — cleared rather than refetched immediately, so a seek itself
+    /// never touches the network; the next `read` refetches at `pos`.
+    window: Option<Window>,
+}
+
+impl HttpRangeReader {
+    /// Opens a streaming reader over `server`'s track `track_id`. Issues one
+    /// HTTP Range request up front (`bytes=0-<CHUNK_SIZE-1>`) to learn the
+    /// track's total length AND prime the window for the common case of
+    /// reading sequentially from the start, rather than a separate `HEAD`-ish
+    /// probe followed by a second request for the first chunk.
+    pub fn new(server: &RemoteServer, track_id: u32) -> anyhow::Result<Self> {
+        let mut reader = Self {
+            client: reqwest::blocking::Client::new(),
+            url: server.url.clone(),
+            track_id,
+            access_token: server.access_token.clone(),
+            total_len: 0,
+            pos: 0,
+            window: None,
+        };
+        let (bytes, total_len) = reader
+            .fetch_chunk(0)
+            .with_context(|| format!("opening HttpRangeReader for track {track_id}"))?;
+        reader.total_len = total_len;
+        reader.window = Some(Window { start: 0, bytes });
+        Ok(reader)
+    }
+
+    /// The track's total byte length (learned at construction time).
+    // Not a collection — there's no meaningful `is_empty` beyond `len() ==
+    // 0`, which a caller can already spell directly.
+    #[allow(clippy::len_without_is_empty)]
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        self.total_len
+    }
+
+    /// Whether `pos` falls within the currently buffered [`Window`].
+    fn window_contains(&self, pos: u64) -> bool {
+        self.window
+            .as_ref()
+            .is_some_and(|w| pos >= w.start && pos < w.start + w.bytes.len() as u64)
+    }
+
+    /// Fetches one [`CHUNK_SIZE`] window starting at `start` via an HTTP
+    /// Range request, returning the fetched bytes alongside the track's
+    /// total length (parsed from the response's `Content-Range` header).
+    ///
+    /// The server clamps an over-long range to end-of-file (see
+    /// `soul_server::proto::native::track`), so this never errors just
+    /// because `start + CHUNK_SIZE` runs past EOF — except when the WHOLE
+    /// track is empty, in which case the server answers `416 Range Not
+    /// Satisfiable` for any range at all; that degenerate case is reported
+    /// back as `(no bytes, length 0)` rather than an `Err`, so opening a
+    /// reader over an empty track still succeeds (immediately at EOF).
+    fn fetch_chunk(&self, start: u64) -> io::Result<(Vec<u8>, u64)> {
+        let end = start.saturating_add(CHUNK_SIZE - 1);
+        let endpoint = format!("{}/v0/track/{}", self.url, self.track_id);
+        let response = self
+            .client
+            .get(&endpoint)
+            .bearer_auth(&self.access_token)
+            .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
+            .send()
+            .map_err(io::Error::other)?;
+
+        if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            return Ok((Vec::new(), 0));
+        }
+        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+            return Err(io::Error::other(format!(
+                "GET {endpoint} (Range: bytes={start}-{end}) returned {}",
+                response.status()
+            )));
+        }
+
+        let total_len = response
+            .headers()
+            .get(reqwest::header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_content_range_total)
+            .ok_or_else(|| {
+                io::Error::other(
+                    "206 Partial Content response had no parsable Content-Range header",
+                )
+            })?;
+
+        let bytes = response.bytes().map_err(io::Error::other)?;
+        Ok((bytes.to_vec(), total_len))
+    }
+}
+
+/// Parses the `TOTAL` out of a `Content-Range: bytes START-END/TOTAL` header
+/// value.
+fn parse_content_range_total(value: &str) -> Option<u64> {
+    value.rsplit_once('/')?.1.parse().ok()
+}
+
+impl Read for HttpRangeReader {
+    /// Serves bytes from the current window, growing/sliding it with one
+    /// Range request whenever `pos` has moved outside it. Returns `Ok(0)` at
+    /// EOF (`pos >= total_len`) per the trait's contract, rather than
+    /// issuing a request the server would just reject.
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() || self.pos >= self.total_len {
+            return Ok(0);
+        }
+
+        if !self.window_contains(self.pos) {
+            let (bytes, _total_len) = self.fetch_chunk(self.pos)?;
+            self.window = Some(Window {
+                start: self.pos,
+                bytes,
+            });
+        }
+
+        let window = self
+            .window
+            .as_ref()
+            .expect("window was just populated above");
+        let offset = (self.pos - window.start) as usize;
+        let available = &window.bytes[offset..];
+        let n = available.len().min(buf.len());
+        buf[..n].copy_from_slice(&available[..n]);
+        self.pos += n as u64;
+        Ok(n)
+    }
+}
+
+impl Seek for HttpRangeReader {
+    /// Computes the new absolute position and, if it falls outside the
+    /// current window, drops the window so the next [`Read::read`] refetches
+    /// at the new `pos` — this method itself never touches the network
+    /// (`total_len` is already known from construction, so even
+    /// `SeekFrom::End` is a pure offset computation).
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos = match pos {
+            SeekFrom::Start(p) => Some(p),
+            SeekFrom::End(delta) => self.total_len.checked_add_signed(delta),
+            SeekFrom::Current(delta) => self.pos.checked_add_signed(delta),
+        };
+        let new_pos = new_pos.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek to a negative or overflowing position",
+            )
+        })?;
+
+        self.pos = new_pos;
+        if !self.window_contains(self.pos) {
+            self.window = None;
+        }
+        Ok(self.pos)
     }
 }
 
@@ -1031,6 +1238,151 @@ mod tests {
         };
 
         assert!(cache.fetch(&remote, 999_999).is_err());
+    }
+
+    /// Finds the first track id in `server`'s index whose original file is
+    /// at least `min_len` bytes — used by the [`HttpRangeReader`] tests
+    /// below to pick a track big enough to span more than one window, so
+    /// reading it all the way through actually exercises the "window
+    /// exhausted → refetch" path and not just the chunk primed at
+    /// construction.
+    fn find_track_at_least(server: &TestServer, min_len: u64) -> (u32, Vec<u8>) {
+        (0u32..10_000)
+            .find_map(|id| {
+                let path = server.services.index.locate(id)?;
+                let bytes = fs::read(&path).expect("read fixture file");
+                (bytes.len() as u64 >= min_len).then_some((id, bytes))
+            })
+            .unwrap_or_else(|| {
+                panic!("no track in the test server's index is at least {min_len} bytes")
+            })
+    }
+
+    #[test]
+    fn http_range_reader_streams_the_whole_track_byte_identical_to_a_full_download() {
+        let server = start_server();
+        let remote = RemoteServer {
+            url: server.url.clone(),
+            access_token: server.token(),
+        };
+        // Bigger than one window, so reading it start to finish also proves
+        // the refetch-on-exhaustion path, not just the chunk primed at
+        // construction.
+        let (track_id, expected_bytes) = find_track_at_least(&server, CHUNK_SIZE + 1);
+
+        let mut reader =
+            HttpRangeReader::new(&remote, track_id).expect("construct HttpRangeReader");
+        assert_eq!(
+            reader.len(),
+            expected_bytes.len() as u64,
+            "len() should report the track's real size"
+        );
+
+        let mut got = Vec::new();
+        reader
+            .read_to_end(&mut got)
+            .expect("read the whole stream sequentially");
+        assert_eq!(
+            got, expected_bytes,
+            "streamed bytes should exactly match a full download of the same track"
+        );
+    }
+
+    #[test]
+    fn http_range_reader_seek_from_start_then_read_matches_the_slice() {
+        let server = start_server();
+        let remote = RemoteServer {
+            url: server.url.clone(),
+            access_token: server.token(),
+        };
+        let (track_id, expected_bytes) = find_track_at_least(&server, CHUNK_SIZE + 1);
+
+        let mut reader =
+            HttpRangeReader::new(&remote, track_id).expect("construct HttpRangeReader");
+
+        // Seek past the window primed at construction, so this also proves a
+        // seek-then-read refetches rather than silently serving stale bytes.
+        let k = CHUNK_SIZE + 100;
+        let n = 4096usize;
+        let pos = reader
+            .seek(SeekFrom::Start(k))
+            .expect("seek to an absolute offset should succeed");
+        assert_eq!(pos, k, "seek should report the new absolute position");
+
+        let mut got = vec![0u8; n];
+        reader
+            .read_exact(&mut got)
+            .expect("read N bytes after seeking");
+
+        let k = k as usize;
+        assert_eq!(
+            got,
+            expected_bytes[k..k + n],
+            "bytes read after seek(Start(k)) should equal the file's [k..k+n) slice"
+        );
+    }
+
+    #[test]
+    fn http_range_reader_seek_from_end_lands_at_len_and_reads_zero_at_eof() {
+        let server = start_server();
+        let remote = RemoteServer {
+            url: server.url.clone(),
+            access_token: server.token(),
+        };
+        let expected_path = server
+            .services
+            .index
+            .locate(0)
+            .expect("track 0 resolves to a path");
+        let expected_len = fs::metadata(&expected_path)
+            .expect("stat the reference file")
+            .len();
+
+        let mut reader = HttpRangeReader::new(&remote, 0).expect("construct HttpRangeReader");
+        assert_eq!(
+            reader.len(),
+            expected_len,
+            "len() should match the real file size"
+        );
+
+        let pos = reader
+            .seek(SeekFrom::End(0))
+            .expect("seek to end should succeed without touching the network");
+        assert_eq!(
+            pos,
+            reader.len(),
+            "SeekFrom::End(0) should land exactly at len()"
+        );
+
+        let mut buf = [0u8; 16];
+        let n = reader.read(&mut buf).expect("read at EOF should not error");
+        assert_eq!(n, 0, "reading at EOF should return Ok(0), never an error");
+    }
+
+    #[test]
+    fn http_range_reader_seek_before_the_start_errors() {
+        let server = start_server();
+        let remote = RemoteServer {
+            url: server.url.clone(),
+            access_token: server.token(),
+        };
+        let mut reader = HttpRangeReader::new(&remote, 0).expect("construct HttpRangeReader");
+
+        assert!(
+            reader.seek(SeekFrom::Current(-1)).is_err(),
+            "seeking to a negative absolute position must be an error, not wrap/clamp"
+        );
+    }
+
+    #[test]
+    fn http_range_reader_new_for_an_unknown_track_errors() {
+        let server = start_server();
+        let remote = RemoteServer {
+            url: server.url.clone(),
+            access_token: server.token(),
+        };
+
+        assert!(HttpRangeReader::new(&remote, 999_999).is_err());
     }
 
     #[test]
