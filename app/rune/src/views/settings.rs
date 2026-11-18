@@ -16,7 +16,9 @@ use rune::{
     Tx, WheelEvent, col, el, icon, row, text, text_input,
 };
 use soul_player_host::organize;
-use soul_player_host::{BandKind, DspUnit, GAIN_LIMIT_DB, ReplayGainMode};
+use soul_player_host::{
+    BandKind, DspUnit, GAIN_LIMIT_DB, RemoteHealth, ReplayGainMode, SourceKind,
+};
 
 use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
@@ -602,60 +604,215 @@ const TOGGLE_PX: f32 = 20.0;
 /// The check glyph inside the enable toggle.
 const TOGGLE_ICON_PX: f32 = 14.0;
 
-/// One watched source, richly: a leading enable/disable toggle, the source name
-/// over its full path, a per-source track count, an "offline" badge if currently
-/// unavailable, and a remove (✕) that drops it from the set and re-aggregates.
+/// Side of the remote online/offline status dot — small, like the toggle it
+/// stands in for on a remote row (there is no enable/disable concept for a
+/// remote source; see `SourceStatus::enabled`'s doc). Diameter, not a radius
+/// token: a circular control uses `size * 0.5` for its corner radius.
+const HEALTH_DOT_PX: f32 = 10.0;
+
+/// `url`'s host (and port, if non-default), for a remote row's title line — a
+/// bare `https://` isn't informative, but the whole URL (shown in full below,
+/// as the "path" line) is more than a title needs. Falls back to the whole
+/// `url` if it carries no recognizable scheme.
+fn display_host(url: &str) -> String {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    without_scheme
+        .split('/')
+        .next()
+        .unwrap_or(without_scheme)
+        .to_string()
+}
+
+/// A small Local/Remote pill identifying a source row's [`SourceKind`] — the
+/// "clear local/remote distinction" the Inc-2 program spec asks for. Styled
+/// like the row's other chips (`enable`/`remove`): a filled, rounded box
+/// around a short label. Remote reads in the accent color so it stands out
+/// as the kind with telemetry attached.
+fn source_kind_badge(index: usize, kind: &SourceKind, p: &Palette) -> El {
+    let (label, color) = match kind {
+        SourceKind::Local { .. } => (t!("settings.sourceLocal").to_string(), p.text_secondary),
+        SourceKind::Remote { .. } => (t!("settings.sourceRemote").to_string(), p.accent),
+    };
+    el().key(format!("source-badge-{index}"))
+        .px(space::XS)
+        .py(space::XXS)
+        .radius(radius::FULL)
+        .fill(p.muted)
+        .child(text(label).font(type_::LABEL).color(color))
+}
+
+/// A remote row's online/offline status dot — green while the last probe
+/// succeeded, dim otherwise. Not rendered for a local source (locality has no
+/// "online" concept); carries an accessible label since color alone isn't.
+fn health_dot(index: usize, online: bool, p: &Palette) -> El {
+    el().key(format!("source-online-{index}"))
+        .role("status")
+        .label(if online {
+            t!("settings.remoteOnline").to_string()
+        } else {
+            t!("settings.offline").to_string()
+        })
+        .size(HEALTH_DOT_PX, HEALTH_DOT_PX)
+        .radius(HEALTH_DOT_PX * 0.5)
+        .fill(if online { p.online } else { p.text_secondary })
+}
+
+/// Round-trip latency as `"{ms}ms"`, or an em-dash placeholder when the
+/// remote has never answered a probe (offline, or not yet checked) — mirrors
+/// the band-table's own "—" convention for an unset numeric value. Plain text,
+/// not localized: a unit abbreviation and a glyph, not prose.
+fn latency_text(latency_ms: Option<u64>) -> String {
+    match latency_ms {
+        Some(ms) => format!("{ms}ms"),
+        None => "—".to_string(),
+    }
+}
+
+/// Seconds since the Unix epoch, for [`relative_time`]. Falls back to 0 on a
+/// clock set before the epoch rather than panicking — this is display-only.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// `then` (a [`RemoteHealth::last_checked_unix`]) as a short, localized
+/// relative time against `now` — "just now" / "%{count}m ago" / "%{count}h
+/// ago" / "%{count}d ago". `None` (never probed) reads as the same em-dash
+/// placeholder [`latency_text`] uses for "no value yet".
+fn relative_time(now: u64, then: Option<u64>) -> String {
+    let Some(then) = then else {
+        return "—".to_string();
+    };
+    let secs = now.saturating_sub(then);
+    if secs < 60 {
+        t!("settings.justNow").to_string()
+    } else if secs < 3600 {
+        t!("settings.minutesAgo", count => secs / 60).to_string()
+    } else if secs < 86_400 {
+        t!("settings.hoursAgo", count => secs / 3600).to_string()
+    } else {
+        t!("settings.daysAgo", count => secs / 86_400).to_string()
+    }
+}
+
+/// The compact data line under a remote source's identity — the telemetry the
+/// Inc-2 program spec asks for: round-trip latency, the server's own crate
+/// version, and a relative "last checked" time, read straight off
+/// [`RemoteHealth`]. One row, wrapping (`flex_wrap`) so a narrow pane drops
+/// items to a second line instead of overflowing, not a wall of text.
+fn remote_health_line(index: usize, health: &RemoteHealth, p: &Palette) -> El {
+    let version = health
+        .server_version
+        .clone()
+        .unwrap_or_else(|| "—".to_string());
+    row()
+        .key(format!("source-health-{index}"))
+        .gap(space::SM)
+        .flex_wrap()
+        .child(
+            text(latency_text(health.latency_ms))
+                .key(format!("source-latency-{index}"))
+                .font(type_::LABEL.mono())
+                .color(p.text_secondary),
+        )
+        .child(
+            text(version)
+                .key(format!("source-version-{index}"))
+                .font(type_::LABEL.mono())
+                .color(p.text_secondary),
+        )
+        .child(
+            text(relative_time(now_unix(), health.last_checked_unix))
+                .key(format!("source-last-checked-{index}"))
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+}
+
+/// One watched source, richly: a Local/Remote badge, a leading control (the
+/// enable/disable toggle for a local root; the online/offline dot for a
+/// remote server), the source's name over its full path/URL, a per-source
+/// track count, a remote's health/telemetry line, an "offline" badge if a
+/// LOCAL root is currently unreachable, and a remove (✕) that drops the
+/// source and re-aggregates.
 fn source_row(s: &State, p: &Palette, index: usize) -> El {
     let status = &s.sources[index];
-    let folder = status.path.clone();
-    let name = basename(&folder);
-    let full_path = folder.to_string_lossy().into_owned();
     let enabled = status.enabled;
     let unavailable = !status.available;
-    let toggle_for = folder.clone();
-    let remove_for = folder.clone();
+    let is_remote = matches!(status.kind, SourceKind::Remote { .. });
 
-    // Leading enable/disable toggle: a small square, filled `primary` (with a
-    // check) when enabled, `muted` when disabled. Its accessible label states the
-    // action it performs (enable when off, disable when on).
-    let mut toggle = el()
-        .key(format!("enable-{index}"))
-        .role("button")
-        .label(if enabled {
-            t!("settings.disableSource").to_string()
-        } else {
-            t!("settings.enableSource").to_string()
-        })
-        .focusable(true)
-        .size(TOGGLE_PX, TOGGLE_PX)
-        .radius(radius::XS)
-        .center()
-        .cursor(Cursor::Pointer)
-        .fill(if enabled { p.primary } else { p.muted })
-        .on_press(move |st: &mut State| {
-            let toggle_for = toggle_for.clone();
-            scan_in_background(
-                st,
-                move |h| h.set_folder_enabled(&toggle_for, !enabled),
-                apply_and_save,
-            );
-        });
-    if enabled {
-        toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
-    }
+    // A local source's title/subtitle is its basename over its full path (as
+    // before); a remote has no filesystem path, so its title is the host and
+    // the subtitle is the full base URL.
+    let (name, full_path) = match &status.kind {
+        SourceKind::Local { path } => (basename(path), path.to_string_lossy().into_owned()),
+        SourceKind::Remote { url } => (display_host(url), url.clone()),
+    };
 
-    // Name over full path. A disabled source reads inactive, so its name dims to
-    // the secondary colour. Both lines truncate and the column grows + shrinks to
-    // zero so a long path can't shove the count / badge / ✕ off the card.
+    // Leading control: a local source gets the enable/disable toggle (unique
+    // per-source state); a remote has no enable concept (v0 has no remote
+    // toggle — `SourceStatus::enabled` is always `true` for one), so its
+    // leading slot is the health dot instead.
+    let leading = match &status.kind {
+        SourceKind::Local { path } => {
+            let toggle_for = path.clone();
+            let mut toggle = el()
+                .key(format!("enable-{index}"))
+                .role("button")
+                .label(if enabled {
+                    t!("settings.disableSource").to_string()
+                } else {
+                    t!("settings.enableSource").to_string()
+                })
+                .focusable(true)
+                .size(TOGGLE_PX, TOGGLE_PX)
+                .radius(radius::XS)
+                .center()
+                .cursor(Cursor::Pointer)
+                .fill(if enabled { p.primary } else { p.muted })
+                .on_press(move |st: &mut State| {
+                    let toggle_for = toggle_for.clone();
+                    scan_in_background(
+                        st,
+                        move |h| h.set_folder_enabled(&toggle_for, !enabled),
+                        apply_and_save,
+                    );
+                });
+            if enabled {
+                toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
+            }
+            toggle
+        }
+        SourceKind::Remote { .. } => {
+            let online = status.remote.as_ref().is_some_and(|h| h.online);
+            health_dot(index, online, p)
+        }
+    };
+
+    // Name + kind badge over full path/URL. A disabled source reads inactive,
+    // so its name dims to the secondary colour. Both lines truncate and the
+    // column grows + shrinks to zero so a long path/URL can't shove the
+    // count / ✕ off the card.
     let name_color = if enabled { p.fg } else { p.text_secondary };
-    let identity = col()
+    let mut identity = col()
         .grow(1.0)
         .min_w(space::NONE)
         .child(
-            text(name.clone())
-                .font(type_::ITEM)
-                .color(name_color)
-                .truncate(),
+            row()
+                .gap(space::XS)
+                .center_y()
+                .child(
+                    text(name.clone())
+                        .font(type_::ITEM)
+                        .color(name_color)
+                        .truncate(),
+                )
+                .child(source_kind_badge(index, &status.kind, p)),
         )
         .child(
             text(full_path)
@@ -663,6 +820,9 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
                 .color(p.text_secondary)
                 .truncate(),
         );
+    if let Some(health) = &status.remote {
+        identity = identity.child(remote_health_line(index, health, p));
+    }
 
     let mut r = row()
         // Key by POSITION, not basename: two sources can share a final path
@@ -672,7 +832,7 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
         .gap(space::MD)
         .center_y()
         .padding(space::SM)
-        .child(toggle)
+        .child(leading)
         .child(identity)
         .child(
             // Keyed so tests can assert the count renders without depending on the
@@ -683,12 +843,16 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
                     .color(p.text_secondary),
             ),
         );
-    if unavailable {
+    // The health line + dot already surface a remote's offline state; this
+    // generic badge stays for an unreachable LOCAL root (an unplugged drive)
+    // only, so a remote doesn't show the same signal twice.
+    if unavailable && !is_remote {
         r = r.child(
             el().key(format!("offline-{index}"))
                 .child(text(t!("settings.offline").to_string()).color(p.text_secondary)),
         );
     }
+    let remove_for = status.path.clone();
     r.child(
         el().key(format!("remove-{index}"))
             .role("button")
