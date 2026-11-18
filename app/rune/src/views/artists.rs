@@ -391,6 +391,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 

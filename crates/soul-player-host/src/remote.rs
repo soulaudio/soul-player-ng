@@ -1390,6 +1390,37 @@ mod tests {
         );
     }
 
+    /// The Inc-3 library marker, end to end: `views()` stamps
+    /// [`crate::TrackView::remote`] from the aggregate's compound id, using
+    /// the SAME sentinel-root convention `sources_lists_remote_with_kind_and_health`
+    /// already proved for `track_count` — a remote server's tracks come back
+    /// `remote == true`, the configured local folder's stay `remote == false`.
+    #[test]
+    fn views_marks_remote_tracks_remote_and_local_tracks_not_remote() {
+        let server = start_server();
+        let tokens = login_as_test_user(&server);
+
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .set_sources(&[(testdata_dir(), true)])
+            .expect("seed a local source");
+        handle
+            .add_remote_source_with_tokens(&server.url, tokens)
+            .expect("add remote source with tokens");
+
+        let views = handle.views();
+        assert!(!views.is_empty(), "the aggregate should list tracks");
+
+        assert!(
+            views.iter().any(|v| v.remote),
+            "the synced remote catalog should contribute at least one track marked remote"
+        );
+        assert!(
+            views.iter().any(|v| !v.remote),
+            "the configured local folder should still contribute at least one non-remote track"
+        );
+    }
+
     #[test]
     fn remote_library_resolves_local_and_remote_tracks_with_a_nonzero_base() {
         // A local source with exactly ONE track, so its single id is

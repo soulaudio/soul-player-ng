@@ -17,6 +17,7 @@ use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::grid;
 use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
+use crate::views::player::remote_badge;
 
 /// One grouped album: display name, its artist, a track id to draw the cover
 /// from, and every track id (in library order) to play on click.
@@ -189,28 +190,34 @@ pub(crate) fn detail_track_row(
         // The now-playing row keeps an accent wash (old app's `bg-accent/20`).
         r = r.fill(p.accent.alpha(0.2));
     }
-    r.child(
-        text(if playing {
-            (if is_playing { "⏸" } else { "▶" }).to_string()
-        } else {
-            format!("{}", i + 1)
-        })
-        .font(type_::ITEM)
-        .color(if playing { p.accent } else { p.text_secondary })
-        .w(28.0),
-    )
-    .child(
-        text(
-            t.title
-                .clone()
-                .unwrap_or_else(|| t!("library.unknown").to_string()),
+    r = r
+        .child(
+            text(if playing {
+                (if is_playing { "⏸" } else { "▶" }).to_string()
+            } else {
+                format!("{}", i + 1)
+            })
+            .font(type_::ITEM)
+            .color(if playing { p.accent } else { p.text_secondary })
+            .w(28.0),
         )
-        .font(type_::ITEM)
-        .color(if playing { p.accent } else { p.fg })
-        .truncate()
-        .grow(1.0),
-    )
-    .child(
+        .child(
+            text(
+                t.title
+                    .clone()
+                    .unwrap_or_else(|| t!("library.unknown").to_string()),
+            )
+            .font(type_::ITEM)
+            .color(if playing { p.accent } else { p.fg })
+            .truncate()
+            .grow(1.0),
+        );
+    // A subtle cloud badge for a track streaming from a remote source;
+    // nothing renders for a local track, the unremarked default.
+    if t.remote {
+        r = r.child(remote_badge(t.id, p));
+    }
+    r.child(
         text(fmt_dur(t.duration_secs))
             .font(type_::ITEM)
             .color(p.text_secondary)
@@ -330,6 +337,7 @@ mod tests {
             album: Some(album.to_string()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
