@@ -757,6 +757,17 @@ enum SourceRow<'a> {
     Offline(&'a str),
 }
 
+/// Normalizes a remote URL for equality comparisons only (never for
+/// display or for the host, which does its own normalizing): trims a single
+/// trailing `/`, the one variance a persisted URL and a live one can differ
+/// by (the host normalizes the same way in
+/// `add_remote_source_with_tokens`/`remove_remote_source`). Mirrors that
+/// host-side `trim_end_matches('/')` so a persisted `http://h:8080` and a
+/// live `http://h:8080/` are recognized as the same source here too.
+fn normalize_remote_url(url: &str) -> &str {
+    url.trim_end_matches('/')
+}
+
 /// `s.sources` (live: local roots + currently-connected remotes) followed by
 /// every persisted remote URL (`s.remote_urls`, seeded from
 /// `config::load_remotes()` by `reconnect_remotes_on_startup`) that has no
@@ -765,16 +776,28 @@ enum SourceRow<'a> {
 /// action instead of silently vanishing from the Sources list (Inc 6). Live
 /// rows keep the host's own order; offline rows are appended in the order
 /// they were added, so the ordering never reshuffles as health changes.
+///
+/// Both comparisons are normalized ([`normalize_remote_url`]) and the
+/// offline pass itself dedupes, so sources never duplicate even if
+/// `s.remote_urls` and a live entry (or two `remote_urls` entries) differ
+/// only by a trailing slash, or `remote_urls` somehow carries the same URL
+/// twice: at most one row per distinct normalized URL, ever.
 fn merged_source_rows(s: &State) -> Vec<SourceRow<'_>> {
     let mut rows: Vec<SourceRow> = s.sources.iter().map(SourceRow::Live).collect();
+    let mut offline_seen: Vec<&str> = Vec::new();
     for url in &s.remote_urls {
-        let connected = s
-            .sources
-            .iter()
-            .any(|st| matches!(&st.kind, SourceKind::Remote { url: live } if live == url));
-        if !connected {
-            rows.push(SourceRow::Offline(url));
+        let normalized = normalize_remote_url(url);
+        let connected = s.sources.iter().any(|st| {
+            matches!(&st.kind, SourceKind::Remote { url: live } if normalize_remote_url(live) == normalized)
+        });
+        if connected {
+            continue;
         }
+        if offline_seen.contains(&normalized) {
+            continue;
+        }
+        offline_seen.push(normalized);
+        rows.push(SourceRow::Offline(url));
     }
     rows
 }
