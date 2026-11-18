@@ -11,6 +11,7 @@ use soul_player_host::Command;
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
+use crate::views::grid;
 use crate::views::icons;
 use crate::views::player::cover;
 
@@ -139,7 +140,16 @@ pub(crate) fn media_card(
         .role("button")
         .label(spec.label)
         .focusable(true)
-        .w(card_w)
+        // A flex item, not a fixed fractional width: wrap at [`MIN_CARD`] (the same
+        // threshold `responsive_grid` counts columns by, so the column count agrees),
+        // then grow to fill the row. A fixed `card_w` is a float that can't tile the
+        // integer container — it rounds a hair too wide and wraps the last column, or
+        // too narrow and leaves a thin gap; growing lets the engine distribute the
+        // remainder so every window width fills exactly. Capped at `card_w + FILL_SLOP`
+        // so a partial last row stays aligned with the full rows above.
+        .min_w(grid::MIN_CARD)
+        .max_w(card_w + grid::FILL_SLOP)
+        .grow(1.0)
         // Cover→text gap only. No bottom padding: it used to stack on top of the
         // grid's row gap, making the space between rows visibly larger than the
         // gap between columns. The grid's own gap now spaces rows and columns alike.
