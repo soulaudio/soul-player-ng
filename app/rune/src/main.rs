@@ -2850,7 +2850,7 @@ fn seed_demo_library(s: &mut State) {
                 album: Some(album.clone()),
                 genre: Some(genre.to_string()),
                 duration_secs: f64::from(120 + id % 180),
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             });
@@ -8222,7 +8222,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -8236,7 +8236,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -8250,7 +8250,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some(genre.to_string()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -8552,7 +8552,7 @@ mod tests {
             album: Some(album.to_string()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -8671,7 +8671,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             },
@@ -8682,7 +8682,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             },
@@ -9216,11 +9216,13 @@ mod tests {
     }
 
     /// The now-playing title line shows the remote badge when the current track
-    /// streams from a remote source (`TrackView::remote`) — the one spot outside
-    /// the track lists where the badge cleanly fits, since `now_playing_row`
-    /// already carries the real `TrackView` the Inc-3 marker lives on.
+    /// streams from a remote source (`TrackView::remote_source`) — the one spot
+    /// outside the track lists where the badge cleanly fits, since
+    /// `now_playing_row` already carries the real `TrackView` the Inc-3 marker
+    /// lives on. The badge's hover tooltip ([`El::help`]) names that source.
     #[test]
     fn now_playing_shows_the_remote_badge_for_a_remote_track() {
+        rust_i18n::set_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.library = vec![soul_player_host::TrackView {
@@ -9230,7 +9232,7 @@ mod tests {
             album: None,
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: true,
+            remote_source: Some("listen.home.lan".into()),
             original_date: 0,
             release_date: 0,
         }];
@@ -9241,11 +9243,18 @@ mod tests {
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
+        let badge = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("track-remote-1") && e.opacity > 0.01);
         assert!(
-            rt.elements()
-                .iter()
-                .any(|e| e.key.as_deref() == Some("track-remote-1") && e.opacity > 0.01),
+            badge.is_some(),
             "the now-playing line should show the remote badge for a remote track"
+        );
+        assert_eq!(
+            badge.unwrap().help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the badge's hover tooltip should name the remote source"
         );
     }
 
@@ -9507,11 +9516,13 @@ mod tests {
         );
     }
 
-    /// A track row for a remote-flagged track (`TrackView::remote == true`, the
-    /// per-track Local/Remote marker) shows the subtle cloud badge; a local one
-    /// (`remote == false`, the unremarked default) shows none.
+    /// A track row for a track carrying a remote source (`TrackView::remote_source
+    /// == Some(host)`, the per-track Local/Remote marker) shows the subtle cloud
+    /// badge, whose hover tooltip ([`El::help`]) names that host; a local one
+    /// (`remote_source == None`, the unremarked default) shows none.
     #[test]
     fn a_remote_track_row_shows_the_remote_badge_a_local_one_does_not() {
+        rust_i18n::set_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.library = vec![
@@ -9522,7 +9533,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: true,
+                remote_source: Some("listen.home.lan".into()),
                 original_date: 0,
                 release_date: 0,
             },
@@ -9533,7 +9544,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             },
@@ -9556,6 +9567,16 @@ mod tests {
         assert!(
             !badge_visible(&rt, "track-remote-2"),
             "a local track's row should not show a remote badge"
+        );
+        let help = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("track-remote-1"))
+            .and_then(|e| e.help);
+        assert_eq!(
+            help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the remote badge's hover tooltip should name the source host"
         );
     }
 
@@ -9985,7 +10006,7 @@ mod tests {
                 album: Some(format!("Album {a:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             })
@@ -10065,7 +10086,7 @@ mod tests {
                 album: Some(format!("Album {a:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             })
@@ -10173,7 +10194,7 @@ mod tests {
                 album: Some(format!("Album {id:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             }
@@ -10226,7 +10247,7 @@ mod tests {
             album: Some(format!("Album {id:02}")),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
