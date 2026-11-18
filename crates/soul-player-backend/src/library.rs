@@ -768,6 +768,101 @@ mod tests {
         assert_eq!(t.release_date, (2015u32) << 9);
     }
 
+    /// End-to-end: a realistic reissue-shaped library (one artist, several albums
+    /// with a mix of date tags) scanned through the WHOLE chain -- file tags ->
+    /// `soul-audio-import` parse -> `.soulidx` v5 bake -> `IndexReader` -> the
+    /// `album_dates` projection -> `TrackView`. Proves per-album dates survive at
+    /// full precision AND that the artist's albums come out ordered chronologically
+    /// by the ORIGINAL date (core's `year_at` default), with undated albums last.
+    #[test]
+    fn reissue_library_scans_to_dated_tracks_in_original_year_order() {
+        let root = tmpdir("reissue_e2e");
+        // One track per album, same artist. Written in a scrambled filename order
+        // so the result order can only come from the baked ArtistAlbumTrack axis,
+        // not from the filesystem.
+        let write = |file: &str, comments: &[&str]| {
+            std::fs::write(root.join(file), flac_with_comments(comments)).unwrap();
+        };
+        write(
+            "z-later.flac",
+            &[
+                "TITLE=L",
+                "ARTIST=Aja Band",
+                "ALBUM=Later",
+                "ORIGINALDATE=1980",
+                "DATE=1980",
+            ],
+        );
+        write(
+            "a-peak.flac",
+            &[
+                "TITLE=P",
+                "ARTIST=Aja Band",
+                "ALBUM=Peak",
+                "ORIGINALDATE=1977-09-23",
+                "DATE=2011",
+            ],
+        );
+        write(
+            "m-early.flac",
+            &[
+                "TITLE=E",
+                "ARTIST=Aja Band",
+                "ALBUM=Early Works",
+                "ORIGINALDATE=1972",
+                "DATE=2010",
+            ],
+        );
+        // Release date only (no ORIGINALDATE): original stays unknown (0).
+        write(
+            "q-relonly.flac",
+            &[
+                "TITLE=R",
+                "ARTIST=Aja Band",
+                "ALBUM=ReleaseOnly",
+                "DATE=1995",
+            ],
+        );
+        // No date tags at all: both dates unknown (0).
+        write(
+            "b-untag.flac",
+            &["TITLE=U", "ARTIST=Aja Band", "ALBUM=Untagged"],
+        );
+
+        let views = Library::scan(&root)
+            .unwrap()
+            .views_by(BrowseAxis::ArtistAlbumTrack);
+        assert_eq!(views.len(), 5);
+
+        // One track per album, so the view order IS the album order. The dated
+        // albums sort by original year (1972 < 1977 < 1980); the two undated-original
+        // albums trail (sort_key u32::MAX), tiebroken by album name (ReleaseOnly < Untagged).
+        let order: Vec<&str> = views.iter().map(|t| t.album.as_deref().unwrap()).collect();
+        assert_eq!(
+            order,
+            vec!["Early Works", "Peak", "Later", "ReleaseOnly", "Untagged"],
+            "artist's albums come out chronological by ORIGINAL date, undated last by title"
+        );
+
+        // Per-album packed dates survived the scan->bake->project chain.
+        let dates = |album: &str| -> (u32, u32) {
+            let t = views
+                .iter()
+                .find(|t| t.album.as_deref() == Some(album))
+                .unwrap();
+            (t.original_date, t.release_date)
+        };
+        assert_eq!(dates("Early Works"), (1972u32 << 9, 2010u32 << 9));
+        // Full YYYY-MM-DD precision is preserved on the original date.
+        assert_eq!(
+            dates("Peak"),
+            ((1977u32 << 9) | (9u32 << 5) | 23, 2011u32 << 9)
+        );
+        assert_eq!(dates("Later"), (1980u32 << 9, 1980u32 << 9));
+        assert_eq!(dates("ReleaseOnly"), (0, 1995u32 << 9)); // no ORIGINALDATE -> original unknown
+        assert_eq!(dates("Untagged"), (0, 0)); // no date tags -> both unknown
+    }
+
     #[test]
     fn embedded_cover_resolves_via_cover_bytes() {
         let root = tmpdir("art");
