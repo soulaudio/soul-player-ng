@@ -11,6 +11,16 @@ use crate::ui::space;
 /// ~144 pt at a desktop width (its `lg` tier).
 pub(crate) const MIN_CARD: f32 = 130.0;
 
+/// How far past the computed `card_w` a card may grow to fill a row. The cards are
+/// flex items (min [`MIN_CARD`], grow to fill), not a fixed fractional width: an
+/// exact-fill `card_w` is a float that cannot tile an integer container, so a
+/// fixed width rounds a hair too wide and wraps the last column (a full empty
+/// gap), or a hair too narrow and leaves a thin one. Letting the layout engine
+/// distribute the few-point remainder fills every width exactly. The cap keeps a
+/// partial last row from stretching its cards across the whole pane — they grow at
+/// most this much past `card_w`, staying aligned with the rows above.
+pub(crate) const FILL_SLOP: f32 = 2.0;
+
 /// Columns and per-card width for an already-available inner width (no padding
 /// subtraction): the column count is the most that fit at `min_card`, and each
 /// card takes the exact remaining fraction so the cards stretch to fill. Pure.
