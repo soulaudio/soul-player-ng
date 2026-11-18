@@ -426,13 +426,11 @@ pub fn save_remote(url: &str) {
 }
 
 /// Drop `url` from the persisted remote sources (load-modify-write); a no-op
-/// if it wasn't there. Pair with
+/// if it wasn't there. Paired with
 /// [`PlayerHandle::remove_remote_source`](soul_player_host::PlayerHandle::remove_remote_source)
 /// and deleting its OS keychain refresh token so a removed remote leaves
-/// nothing behind. No UI "disconnect" action calls this yet (none exists in
-/// the Settings → Sources list for a remote) — kept ready for one, like
-/// [`save_sources`]'s back-compat counterpart below.
-#[allow(dead_code)]
+/// nothing behind — see the Settings → Sources Disconnect control
+/// (`disconnect_remote_source`, Inc 6).
 pub fn remove_remote(url: &str) {
     let mut cfg = load();
     cfg.remotes.retain(|u| u != url);
