@@ -472,10 +472,15 @@ where
                 Ok(())
             }
             Err(e) => {
-                // The new device wouldn't open: re-acquire the ORIGINAL device so
-                // playback continues rather than sitting on the silent placeholder.
-                // `applied` stays put; the caller latches `desired` (no device thrash).
-                if let Ok(old_sink) = build(applied) {
+                // The new device wouldn't open. Under STRICT (exclusive-or-stop) we must
+                // NOT fall back to the OS mixer or the old device — leave the deck on the
+                // silent placeholder (already parked above) so the stop is real, the UI is
+                // truthful, and the pump can recover it. Otherwise re-acquire the ORIGINAL
+                // device so playback continues rather than sitting silent. `applied` stays
+                // put either way; the caller latches `desired` (no device thrash).
+                if !(desired.exclusive && desired.strict)
+                    && let Ok(old_sink) = build(applied)
+                {
                     let _ = player.deck_mut().swap_sink(old_sink);
                 }
                 Err(e)
@@ -488,9 +493,24 @@ where
         // new open never contends; and crucially this does NOT drop a working shared
         // stream only to immediately re-open on the same device, which some devices
         // reject with "device no longer available" (the release-then-acquire park path
-        // triggered exactly that). On a build failure the old sink is untouched, so
-        // playback simply continues and the caller latches `desired`.
-        let new_sink = build(desired)?;
+        // triggered exactly that).
+        let new_sink = match build(desired) {
+            Ok(s) => s,
+            Err(e) => {
+                // STRICT (exclusive-or-stop): don't keep the OS-mixer (shared) stream
+                // playing when the user asked for bit-perfect-or-nothing — go SILENT
+                // (park) so the stop is real and the UI status is truthful. A non-strict
+                // failure keeps the current shared stream, so playback simply continues.
+                // Either way the caller latches `desired`.
+                if desired.exclusive && desired.strict {
+                    player
+                        .deck_mut()
+                        .swap_sink(park())
+                        .map_err(|pe| anyhow::anyhow!("park sink on strict stop: {pe:?}"))?;
+                }
+                return Err(e);
+            }
+        };
         player
             .deck_mut()
             .swap_sink(new_sink)
@@ -498,6 +518,38 @@ where
         *applied = desired.clone();
         Ok(())
     }
+}
+
+/// Rebuild the output sink from scratch for `desired` and swap it onto the deck,
+/// **unconditionally** — used to recover from a parked (silent) sink after an earlier
+/// build failed (e.g. a strict exclusive open that couldn't acquire the device, or no
+/// device at all at startup). Unlike [`maybe_apply_output_change`] it does not compare
+/// against `applied` (the live sink is the device-free placeholder, which holds no
+/// device — so a plain build-then-swap is safe, nothing to release first) and it does
+/// not restore an old device on failure (there is none; the deck stays on the silent
+/// placeholder for the caller to retry).
+///
+/// # Errors
+/// Propagates `build` failures (e.g. strict exclusive still can't open) so the caller
+/// keeps the deck parked and may retry later or when the config changes.
+pub fn rebuild_output_sink<K, D, FBuild>(
+    player: &mut ServicePlayer<K, D>,
+    desired: &OutputConfig,
+    applied: &mut OutputConfig,
+    build: FBuild,
+) -> anyhow::Result<()>
+where
+    K: Sink,
+    D: SeekableDecoder,
+    FBuild: Fn(&OutputConfig) -> anyhow::Result<K>,
+{
+    let new_sink = build(desired)?;
+    player
+        .deck_mut()
+        .swap_sink(new_sink)
+        .map_err(|e| anyhow::anyhow!("swap_sink for output recovery: {e:?}"))?;
+    *applied = desired.clone();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1268,6 +1320,245 @@ mod tests {
         assert!(
             frames.load(Ordering::Relaxed) > written_before,
             "playback continues on the restored original device"
+        );
+    }
+
+    /// STRICT (exclusive-or-stop): when a live change to strict exclusive can't open the
+    /// device, it must NOT keep the OS-mixer (shared) stream playing — it goes SILENT
+    /// (parks on the device-free placeholder) so the stop is real and the Settings card's
+    /// "Stopped" status is truthful. The non-strict case is the opposite (keeps playing),
+    /// covered by `a_failed_output_change_restores_the_old_device_and_keeps_playing`.
+    #[test]
+    fn a_strict_exclusive_change_that_fails_goes_silent_not_shared() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        // Exclusive never opens; the park placeholder is tagged so we can see the deck
+        // land on it (vs. keeping the old shared None-device sink).
+        let build = {
+            let frames = Arc::clone(&frames);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                if cfg.exclusive {
+                    anyhow::bail!("device has no exclusive format (test)");
+                }
+                Ok(ConfigSink::new(
+                    cfg.device.clone(),
+                    false,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                ))
+            }
+        };
+        let park = {
+            let frames = Arc::clone(&frames);
+            move || {
+                ConfigSink::new(
+                    Some("__silent__".into()),
+                    false,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                )
+            }
+        };
+
+        let mut applied = OutputConfig {
+            device: None,
+            exclusive: false,
+            strict: false,
+        };
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq); // starts shared
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+
+        // Flip to STRICT exclusive — which can't open.
+        let desired = OutputConfig {
+            device: None,
+            exclusive: true,
+            strict: true,
+        };
+        let res = maybe_apply_output_change(&mut p, &desired, &mut applied, &build, park);
+        assert!(
+            res.is_err(),
+            "strict exclusive that can't open reports an error"
+        );
+        assert_eq!(
+            p.deck().sink().device,
+            Some("__silent__".into()),
+            "strict stop goes SILENT (parks), rather than keeping the OS-mixer shared stream"
+        );
+        assert!(
+            !p.deck().sink().exclusive,
+            "the silent placeholder is not an exclusive device"
+        );
+    }
+
+    /// Recovery: a deck parked on the silent placeholder (a build failed) rebuilds to a
+    /// real device sink via `rebuild_output_sink` and keeps the playback position —
+    /// unlike `maybe_apply_output_change`, it force-builds even when `applied == desired`
+    /// (the live sink is the placeholder, not `applied`'s device).
+    #[test]
+    fn rebuild_output_sink_recovers_a_parked_deck() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let build = {
+            let frames = Arc::clone(&frames);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                Ok(ConfigSink::new(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                ))
+            }
+        };
+
+        // Deck starts PARKED on the silent placeholder (as the pump does after an initial
+        // build failure).
+        let deck = Deck::new(
+            ConfigSink::new(
+                Some("__silent__".into()),
+                false,
+                48_000,
+                2,
+                Arc::clone(&frames),
+            ),
+            Quality::Hq,
+        );
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        let pos_before = project_tick(&p, 1.0, false).position_secs;
+        assert_eq!(
+            p.deck().sink().device,
+            Some("__silent__".into()),
+            "starts parked on the placeholder"
+        );
+
+        // Recover to the real default device.
+        let desired = OutputConfig {
+            device: Some("Speakers".into()),
+            exclusive: false,
+            strict: false,
+        };
+        let mut applied = OutputConfig::default();
+        rebuild_output_sink(&mut p, &desired, &mut applied, &build).unwrap();
+
+        assert_eq!(
+            p.deck().sink().device,
+            Some("Speakers".into()),
+            "recovered onto the real device"
+        );
+        assert_eq!(applied, desired, "applied tracks the recovered config");
+        assert!(
+            project_tick(&p, 1.0, false).position_secs >= pos_before,
+            "recovery preserves the playback position (no restart)"
+        );
+    }
+
+    /// `rebuild_output_sink` stays parked (and errors) until the build can succeed — the
+    /// transient-failure retry contract the pump leans on (device momentarily in use).
+    #[test]
+    fn rebuild_output_sink_stays_parked_until_the_build_succeeds() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(true));
+        let build = {
+            let frames = Arc::clone(&frames);
+            let fail = Arc::clone(&fail);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                if fail.load(Ordering::Relaxed) {
+                    anyhow::bail!("device in use (test)");
+                }
+                Ok(ConfigSink::new(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                ))
+            }
+        };
+
+        let deck = Deck::new(
+            ConfigSink::new(
+                Some("__silent__".into()),
+                false,
+                48_000,
+                2,
+                Arc::clone(&frames),
+            ),
+            Quality::Hq,
+        );
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        let desired = OutputConfig {
+            device: Some("DAC".into()),
+            exclusive: true,
+            strict: true,
+        };
+        let mut applied = OutputConfig::default();
+
+        // While the device is "in use", recovery fails and the deck stays silent.
+        assert!(rebuild_output_sink(&mut p, &desired, &mut applied, &build).is_err());
+        assert_eq!(
+            p.deck().sink().device,
+            Some("__silent__".into()),
+            "still parked while the build fails"
+        );
+
+        // The blocker clears → the next retry recovers.
+        fail.store(false, Ordering::Relaxed);
+        rebuild_output_sink(&mut p, &desired, &mut applied, &build).unwrap();
+        assert_eq!(
+            p.deck().sink().device,
+            Some("DAC".into()),
+            "recovered once the device freed"
+        );
+        assert!(
+            p.deck().sink().exclusive,
+            "recovered as the requested exclusive device"
         );
     }
 
