@@ -99,9 +99,15 @@ pub(crate) fn fmt_total_dur(total_secs: f64) -> String {
 }
 
 /// The albums of a single artist: filter the library to that artist (matching
-/// `group_artists`' empty→"Unknown" bucketing), then fold by album in first-seen
-/// order — the artist page's Discography. Pure, reusing the album fold.
-pub(crate) fn albums_of_artist(library: &[TrackView], artist: &str) -> Vec<Album> {
+/// `group_artists`' empty→"Unknown" bucketing), fold by album in first-seen
+/// order, then re-sort chronologically by the selected date source — the
+/// artist page's Discography. Unknown dates (`0`) sort last; the sort is
+/// stable, so equal/unknown years keep their first-seen order.
+pub(crate) fn albums_of_artist(
+    library: &[TrackView],
+    artist: &str,
+    src: crate::config::AlbumYearSource,
+) -> Vec<Album> {
     let subset: Vec<TrackView> = library
         .iter()
         .filter(|t| {
@@ -114,7 +120,20 @@ pub(crate) fn albums_of_artist(library: &[TrackView], artist: &str) -> Vec<Album
         })
         .cloned()
         .collect();
-    group_albums(&subset)
+    let mut albums = group_albums(&subset);
+    // Chronological by the SELECTED date; unknown (0) sorts last. Stable
+    // keeps the first-seen order among equal/unknown years.
+    let key = |a: &Album| -> u32 {
+        let (first, second) = if src == crate::config::AlbumYearSource::Original {
+            (a.original_date, a.release_date)
+        } else {
+            (a.release_date, a.original_date)
+        };
+        let d = if first != 0 { first } else { second };
+        if d == 0 { u32::MAX } else { d }
+    };
+    albums.sort_by_key(key);
+    albums
 }
 
 /// One album card: a square cover with a hover play-overlay, the title, and the
@@ -451,7 +470,7 @@ mod tests {
             atv(3, "Bach", "Cello Suites"),
             atv(4, "Bach", "Goldberg"),
         ];
-        let albums = albums_of_artist(&lib, "Bach");
+        let albums = albums_of_artist(&lib, "Bach", crate::config::AlbumYearSource::Original);
         assert_eq!(albums.len(), 2, "only Bach's two albums");
         assert_eq!(albums[0].name, "Cello Suites");
         assert_eq!(
@@ -461,6 +480,42 @@ mod tests {
         );
         assert_eq!(albums[1].name, "Goldberg");
         assert_eq!(albums[1].ids, vec![4]);
+    }
+
+    /// The Discography must re-sort by whichever date is currently selected:
+    /// A is earlier by original date, B is earlier by release date, so the two
+    /// toggle positions must disagree on the order.
+    #[test]
+    fn discography_sorts_by_the_selected_date() {
+        use crate::config::AlbumYearSource::*;
+        rust_i18n::set_locale("en");
+        let mut a = atv(1, "Artist", "A");
+        a.original_date = 1990u32 << 9;
+        a.release_date = 2010u32 << 9;
+        let mut b = atv(2, "Artist", "B");
+        b.original_date = 1980u32 << 9;
+        b.release_date = 2020u32 << 9;
+        let lib = vec![a, b];
+
+        let by_original = albums_of_artist(&lib, "Artist", Original);
+        assert_eq!(
+            by_original
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["B", "A"],
+            "1980 < 1990"
+        );
+
+        let by_release = albums_of_artist(&lib, "Artist", Release);
+        assert_eq!(
+            by_release
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["A", "B"],
+            "2010 < 2020"
+        );
     }
 
     /// End-to-end through the real Albums grid: a seeded 1973 album's card

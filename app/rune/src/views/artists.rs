@@ -147,7 +147,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             .child(back_button(p));
     };
 
-    let discography = albums_of_artist(&s.library, &artist.name);
+    let discography = albums_of_artist(&s.library, &artist.name, s.album_year);
     let meta = t!(
         "detail.albumsAndTracks",
         albums => discography.len(),
