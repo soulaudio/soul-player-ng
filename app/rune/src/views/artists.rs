@@ -97,12 +97,19 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         grid = grid.child(artist_card(s, p, slot, a, card_w, scale));
     }
     col().key("artists").grow(1.0).min_h(0.0).child(
-        grid.scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .scroll_edge_fade(24.0)
-        .grow(1.0)
-        .min_h(0.0),
+        // Scroll on the growing wrapper, not the grid — see `albums_page`: a flex-wrap
+        // grid that is itself the growing scroll element stretches its wrapped rows
+        // down the viewport when they don't fill it. Natural-height grid, growing
+        // scroll viewport around it.
+        col()
+            .key("artists-scroll")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0)
+            .child(grid),
     )
 }
 
