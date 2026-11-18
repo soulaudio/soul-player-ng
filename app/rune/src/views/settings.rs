@@ -3052,10 +3052,10 @@ mod tests {
             exclusive_display(false, None, ExclusiveStatus::Shared),
             Shared
         );
-        // Active: the live signal path says exclusive → show its device format.
+        // Active: the live signal path says exclusive → show the backend + device format.
         assert_eq!(
             exclusive_display(true, Some(sp(true)), ExclusiveStatus::Active),
-            Active("96 kHz · 24-bit".to_string())
+            Active("WASAPI · 96 kHz · 24-bit".to_string())
         );
         // Requested, fell back to shared → surface the DEVICE'S reason verbatim.
         assert_eq!(

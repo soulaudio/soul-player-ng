@@ -89,11 +89,18 @@ fn output_value(sp: &SignalPath) -> String {
     format!("{} kHz · {}-bit", khz(sp.device_rate), sp.output_bits)
 }
 
-/// Exclusive stage: when the stream is exclusive, the bit-perfect device format
-/// (the DAC receives exactly this — no OS mixer); otherwise "shared".
+/// Exclusive stage: when the stream is exclusive, name the backend + the bit-perfect
+/// device format (the DAC receives exactly this — no OS mixer); otherwise "shared".
+/// Exclusive output is WASAPI-only today (the host opens a WASAPI exclusive sink;
+/// CoreAudio/ALSA exclusive aren't implemented), so naming "WASAPI" here is accurate and
+/// tells the user *which* bit-perfect path is active.
 pub(crate) fn exclusive_value(sp: &SignalPath) -> String {
     if sp.exclusive {
-        format!("{} kHz · {}-bit", khz(sp.device_rate), sp.output_bits)
+        format!(
+            "WASAPI · {} kHz · {}-bit",
+            khz(sp.device_rate),
+            sp.output_bits
+        )
     } else {
         t!("player.signalPath.shared").to_string()
     }
@@ -546,7 +553,7 @@ mod tests {
             exclusive: true,
             ..base
         };
-        assert_eq!(exclusive_value(&excl), "96 kHz · 24-bit");
+        assert_eq!(exclusive_value(&excl), "WASAPI · 96 kHz · 24-bit");
     }
 
     /// An EQ unit that actually shapes the signal (a boosted preamp is enough —

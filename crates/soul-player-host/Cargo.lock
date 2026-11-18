@@ -591,7 +591,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1929,7 +1929,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2146,7 +2146,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-artbake"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "embedded-io",
  "image",
@@ -2157,7 +2157,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-catalog"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "embedded-io",
  "soul-audio-core",
@@ -2166,7 +2166,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-control"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "soul-audio-core",
  "soul-audio-engine",
@@ -2176,7 +2176,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-core"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "embedded-io",
 ]
@@ -2184,7 +2184,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-desktop"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "anyhow",
  "cpal",
@@ -2198,7 +2198,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-dsp"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "serde",
  "soul-audio-eq",
@@ -2207,7 +2207,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-engine"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "soul-audio-core",
 ]
@@ -2215,7 +2215,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-eq"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "libm",
  "soul-audio-core",
@@ -2224,7 +2224,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-import"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "embedded-io-adapters",
  "serde",
@@ -2237,7 +2237,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-index"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "embedded-io",
  "soul-audio-artbake",
@@ -2248,12 +2248,12 @@ dependencies = [
 [[package]]
 name = "soul-audio-loudness"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 
 [[package]]
 name = "soul-audio-multicatalog"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "soul-audio-catalog",
  "soul-audio-index",
@@ -2262,7 +2262,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-organize"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "embedded-io-adapters",
  "soul-audio-tags",
@@ -2271,7 +2271,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-queue"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "heapless",
  "soul-audio-engine",
@@ -2280,7 +2280,7 @@ dependencies = [
 [[package]]
 name = "soul-audio-tags"
 version = "0.1.0"
-source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#bbfdc04a7051739203443f2a1903f456ecbf5412"
+source = "git+https://github.com/soulaudio/soul-audio-core?branch=main#8af68cf270abb5ff09d715059beb5f9dec6d1f52"
 dependencies = [
  "embedded-io",
  "soul-audio-core",
@@ -2462,7 +2462,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2934,7 +2934,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
