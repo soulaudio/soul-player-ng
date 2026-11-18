@@ -8434,6 +8434,71 @@ mod tests {
         );
     }
 
+    /// The artist detail's Top-Songs rows share `albums::detail_track_row`
+    /// with the main track list and the album detail page, so a remote
+    /// track there shows the same cloud badge + hover tooltip too.
+    #[test]
+    fn the_artist_detail_page_shows_the_remote_badge_for_a_remote_track() {
+        rust_i18n::set_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Streamed".into()),
+                artist: Some("Bach".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote_source: Some("listen.home.lan".into()),
+                original_date: 0,
+                release_date: 0,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("OnDisk".into()),
+                artist: Some("Bach".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote_source: None,
+                original_date: 0,
+                release_date: 0,
+            },
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "track-remote-1"),
+            "a remote track's artist-detail row should show the remote badge"
+        );
+        assert!(
+            !badge_visible(&rt, "track-remote-2"),
+            "a local track's artist-detail row should not show a remote badge"
+        );
+        let help = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("track-remote-1"))
+            .and_then(|e| e.help);
+        assert_eq!(
+            help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the artist-detail remote badge's tooltip should name the source host"
+        );
+    }
+
     /// The artist detail shows both a Top-Songs section and a Discography grid.
     #[test]
     fn the_artist_detail_has_top_songs_and_discography() {
@@ -9118,6 +9183,74 @@ mod tests {
         assert!(
             matches!(rt.state.route, Route::Albums),
             "back returns to the albums grid"
+        );
+    }
+
+    /// The album detail page's track rows share `albums::detail_track_row`
+    /// with the main track list, so a track carrying a remote source
+    /// (`TrackView::remote_source == Some(host)`) must show the SAME subtle
+    /// cloud badge and hover tooltip ([`El::help`]) there too, not just in
+    /// the flat library view and the now-playing line; a local track in the
+    /// same album shows none.
+    #[test]
+    fn the_album_detail_page_shows_the_remote_badge_for_a_remote_track() {
+        rust_i18n::set_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Streamed".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote_source: Some("listen.home.lan".into()),
+                original_date: 0,
+                release_date: 0,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("OnDisk".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote_source: None,
+                original_date: 0,
+                release_date: 0,
+            },
+        ];
+        s.route = Route::Album;
+        s.open_album = Some("Alb".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "track-remote-1"),
+            "a remote track's album-detail row should show the remote badge"
+        );
+        assert!(
+            !badge_visible(&rt, "track-remote-2"),
+            "a local track's album-detail row should not show a remote badge"
+        );
+        let help = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("track-remote-1"))
+            .and_then(|e| e.help);
+        assert_eq!(
+            help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the album-detail remote badge's tooltip should name the source host"
         );
     }
 
