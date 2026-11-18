@@ -24,9 +24,10 @@ use parley_engine as _;
 use soul_player_host::{
     Band, BandKind, BrowseAxis, Command, DspUnit, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
     IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
-    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus,
+    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceKind, SourceStatus,
     TrackLoudness, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
+    remote::{KeyringStore, TokenStore},
 };
 
 mod config;
@@ -295,7 +296,14 @@ struct State {
     /// The configured sources with their per-source status (from the host),
     /// rendered by Settings → Sources: each carries its path, enabled flag,
     /// current availability (an unreachable root shows "offline"), and track count.
+    /// A `Remote` source's entry also carries its last-probed [`RemoteHealth`]
+    /// (latency/version/online/last-checked), kept fresh by the periodic poller
+    /// spawned in `main` plus an on-demand refresh (see [`refresh_remote_health`]).
     sources: Vec<SourceStatus>,
+    /// Whether a remote-health refresh (the periodic poller or an on-demand one
+    /// from opening Settings → Music Data) is in flight on a background thread.
+    /// Guards against two overlapping probes — see [`refresh_remote_health`].
+    remote_health_refreshing: bool,
     /// A transient "N tracks removed from <folder>" warning for the Sources page,
     /// set from the host's [`Event::TracksRemoved`] when a rescan finds deletions
     /// (`(root, count)`). Cleared on the next Sources refresh ([`apply_watch`]) so
@@ -321,6 +329,30 @@ struct State {
     /// your browser" status line while `true`. Cleared when the thread's
     /// result lands back on the UI thread via `AppHandle::update`.
     remote_connecting: bool,
+    /// Every remote URL persisted via `config::save_remote` (seeded from
+    /// `config::load_remotes()` by [`reconnect_remotes_on_startup`], kept in
+    /// step by a successful connect/[`disconnect_remote_source`]). Used by
+    /// `views::settings::merged_source_rows` (Inc 6) to render an offline row
+    /// for a configured remote that has no live entry in `sources` — one
+    /// that failed to reconnect at launch, or is still mid-reconnect — so it
+    /// never silently vanishes from the Sources list.
+    remote_urls: Vec<String>,
+    /// URLs currently mid a manual reconnect/re-sync attempt, started by
+    /// [`reconnect_remote_now`] (an offline row's Reconnect action, or a
+    /// connected row's "update available" Sync-now action). Drives that
+    /// row's transient "reconnecting…" state; cleared whichever way the
+    /// attempt ends. A url present here is guarded against a second
+    /// concurrent attempt.
+    remote_reconnecting: Vec<String>,
+    /// The `index_version` each remote was last actually synced at — the
+    /// Inc 6 "update available" cue's baseline. A health probe only fills a
+    /// MISSING entry (the first reading after a connect establishes the
+    /// baseline); only a real sync — a connect, or [`reconnect_remote_now`]
+    /// succeeding — overwrites it (see `record_synced_index` /
+    /// `seed_synced_baseline`). `views::settings::remote_update_available`
+    /// compares this against the live health's `index_version` to decide
+    /// whether a re-sync would pick up fresh tracks.
+    remote_synced_index: std::collections::HashMap<String, u64>,
     /// The library indexing-speed mode (persisted), rendered by Settings → Sources.
     /// Drives how much parallelism the scanner uses; `Automatic` follows CPU load.
     indexing_mode: IndexingMode,
@@ -589,11 +621,19 @@ impl State {
                 .unwrap_or(ThemePref::System),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
+            remote_health_refreshing: false,
             removal_notice: None,
             remote_form_open: false,
             remote_url_buf: rune::TextEdit::new(""),
             remote_error: None,
             remote_connecting: false,
+            // Seeded by `reconnect_remotes_on_startup` at real launch (which
+            // reads `config::load_remotes()` there, not here, so an ordinary
+            // `State::new()` in a unit test never touches the shared config
+            // file unless the test calls that function itself).
+            remote_urls: Vec::new(),
+            remote_reconnecting: Vec::new(),
+            remote_synced_index: std::collections::HashMap::new(),
             scan_progress: None,
             scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
@@ -808,9 +848,156 @@ pub(crate) fn set_indexing_mode(s: &mut State, mode: IndexingMode) {
 }
 
 /// Switch the active Settings category (ephemeral — not persisted). Used by the
-/// settings page's category rail.
+/// settings page's category rail. Switching TO Music Data (where the Sources
+/// card — and its remote health/telemetry — lives) also kicks an on-demand
+/// [`refresh_remote_health`], so health isn't stale the first time this
+/// session's Sources panel is seen; the periodic poller alone could be up to
+/// its whole interval late.
 pub(crate) fn set_settings_tab(s: &mut State, tab: SettingsTab) {
     s.settings_tab = tab;
+    if tab == SettingsTab::MusicData {
+        refresh_remote_health(s);
+    }
+}
+
+/// How often the periodic poller (spawned in `main`) re-probes every remote
+/// source's health. A tradeoff between freshness and not hammering a remote
+/// with pings — the program spec calls for "~30 s".
+const REMOTE_HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Refresh every remote source's health off the UI thread. Mirrors
+/// [`scan_in_background`]'s shape (and the `connect_remote_source` thread): the
+/// network probe — [`PlayerHandle::refresh_remote_health`], one blocking `GET
+/// /v0/ping` per remote — runs on a spawned background thread; its fresh
+/// [`PlayerHandle::sources`] folds back onto `State::sources` via
+/// `AppHandle::update`. Guarded by `remote_health_refreshing` so the periodic
+/// poller (spawned in `main`) and an on-demand refresh (opening Settings →
+/// Music Data, see [`set_settings_tab`]) can never have two probes in flight
+/// at once, racing which result lands last. A no-op while one is already
+/// running. Falls back to an inline call with no `app_handle` (headless tests).
+pub(crate) fn refresh_remote_health(s: &mut State) {
+    if s.remote_health_refreshing {
+        return;
+    }
+    s.remote_health_refreshing = true;
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                let sources = host.refresh_remote_health();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    seed_synced_baseline(s, &sources);
+                    s.sources = sources;
+                    s.remote_health_refreshing = false;
+                });
+            });
+        }
+        None => {
+            let sources = s.host.refresh_remote_health();
+            seed_synced_baseline(s, &sources);
+            s.sources = sources;
+            s.remote_health_refreshing = false;
+        }
+    }
+}
+
+/// Seed `State::remote_synced_index` for any remote whose health has never
+/// been read before (the Inc 6 "update available" cue's baseline): the
+/// first time a remote's `index_version` is seen, it's recorded as
+/// "synced" so the cue only fires on a REAL change afterward. Never
+/// overwrites an existing entry — only an explicit sync
+/// ([`record_synced_index`], after a connect/reconnect) does that; a bare
+/// health probe (this function's only caller, [`refresh_remote_health`])
+/// must never reset — let alone hide — a real pending update.
+fn seed_synced_baseline(s: &mut State, sources: &[SourceStatus]) {
+    for st in sources {
+        if let SourceKind::Remote { url } = &st.kind
+            && let Some(v) = st.remote.as_ref().and_then(|h| h.index_version)
+        {
+            s.remote_synced_index.entry(url.clone()).or_insert(v);
+        }
+    }
+}
+
+/// Record that remote `url` was just synced at its freshest known index
+/// version, read from `sources` (the just-refreshed snapshot the caller's
+/// sync produced) — the Inc 6 "update available" cue's baseline. A no-op if
+/// `url` isn't in `sources` (it didn't come back online) or its health
+/// hasn't reported a version yet. Unlike [`seed_synced_baseline`]'s
+/// `or_insert`, this OVERWRITES any previous entry unconditionally: a sync
+/// action, unlike a bare health probe, really did just catch this remote up.
+fn record_synced_index(s: &mut State, url: &str, sources: &[SourceStatus]) {
+    let version = sources.iter().find_map(|st| match &st.kind {
+        SourceKind::Remote { url: u } if u == url => {
+            st.remote.as_ref().and_then(|h| h.index_version)
+        }
+        _ => None,
+    });
+    if let Some(v) = version {
+        s.remote_synced_index.insert(url.to_string(), v);
+    }
+}
+
+/// Reconnect every persisted remote source at launch (Inc 5): off the UI
+/// thread, for each url `config::load_remotes()` returns, silently
+/// re-authenticate with the OS-keychain-stored refresh token and re-sync its
+/// catalog via [`PlayerHandle::reconnect_remote_source`], then fold the
+/// refreshed library + source list back onto the UI thread — mirroring
+/// [`scan_in_background`]'s / [`refresh_remote_health`]'s shape (a spawned
+/// thread, `AppHandle::update` back). Never blocks app launch on the network:
+/// this is called once the window is already up, exactly where the local
+/// startup scan is kicked off.
+///
+/// A remote that fails to reconnect (offline, expired/revoked token, server
+/// down) is simply skipped — never surfaced as an error, and never dropped
+/// from the persisted config or the keychain, so it keeps retrying on the
+/// next launch, and the Inc 2 health poller picks it back up once it
+/// actually returns. A failed reconnect must NOT crash startup.
+///
+/// Also seeds `State::remote_urls` from the same `config::load_remotes()`
+/// call (Inc 6) — so `views::settings::merged_source_rows` can render an
+/// offline row, with a Reconnect action, for a persisted remote that just
+/// failed above, instead of it silently vanishing from the Sources list.
+/// This is the ONLY place `State::remote_urls` is seeded from disk —
+/// `State::new()` itself never touches `config::load_remotes()`, so an
+/// ordinary unit test that builds a `State` directly is never affected by
+/// another test's leftover persisted remote.
+pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
+    let urls = config::load_remotes();
+    s.remote_urls = urls.clone();
+    if urls.is_empty() {
+        return;
+    }
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                for url in &urls {
+                    if let Err(err) = host.reconnect_remote_source(url, &KeyringStore) {
+                        tracing::warn!(url = %url, error = %err, "remote source reconnect failed");
+                    }
+                }
+                let sources = host.refresh_remote_health();
+                let library = host.views();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    seed_synced_baseline(s, &sources);
+                    s.library = library;
+                    s.sources = sources;
+                });
+            });
+        }
+        None => {
+            for url in &urls {
+                if let Err(err) = s.host.reconnect_remote_source(url, &KeyringStore) {
+                    tracing::warn!(url, error = %err, "remote source reconnect failed");
+                }
+            }
+            let sources = s.host.refresh_remote_health();
+            seed_synced_baseline(s, &sources);
+            s.sources = sources;
+            s.library = s.host.views();
+        }
+    }
 }
 
 /// Open the dropdown with this key, or close it if it is already open (clicking
@@ -878,33 +1065,155 @@ pub(crate) fn connect_remote_source(s: &mut State) {
     match s.app_handle.clone() {
         Some(handle) => {
             let host = s.host.clone();
+            let url_for_result = url.clone();
             std::thread::spawn(move || {
                 let result = host.add_remote_source(&url);
-                handle.update(move |s: &mut State, _tx: &mut Tx| apply_remote_connect(s, result));
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    apply_remote_connect(s, &url_for_result, result)
+                });
             });
         }
         None => {
             let result = s.host.add_remote_source(&url);
-            apply_remote_connect(s, result);
+            apply_remote_connect(s, &url, result);
         }
     }
 }
 
 /// Fold a finished connect attempt's result back onto the UI thread (see
-/// `connect_remote_source`). On success, the library is refreshed from the
-/// host (the remote-aware aggregate is already swapped in) and the form
-/// closes. On failure, the message is kept in `remote_error` and the form (if
-/// still open) stays open with its field intact so the user can fix a typo
-/// and retry.
-fn apply_remote_connect(s: &mut State, result: anyhow::Result<()>) {
+/// `connect_remote_source`). On success, the library AND the Sources list are
+/// refreshed from the host (the remote-aware aggregate is already swapped
+/// in — refreshing `sources` too, not just `library`, means the new remote's
+/// row shows up immediately instead of waiting for the next health-poller
+/// tick or a Settings tab switch), the url is persisted (`config::save_remote`,
+/// mirrored into `State::remote_urls`) so it reconnects on the next launch —
+/// the OAuth refresh token itself is already durable, written to the OS
+/// keychain by `PlayerHandle::add_remote_source` — and the form closes. On
+/// failure, the message is kept in `remote_error` and the form (if still
+/// open) stays open with its field intact so the user can fix a typo and
+/// retry; nothing is persisted for a failed attempt.
+fn apply_remote_connect(s: &mut State, url: &str, result: anyhow::Result<()>) {
     s.remote_connecting = false;
     match result {
         Ok(()) => {
             s.library = s.host.views();
+            s.sources = s.host.sources();
+            if !s.remote_urls.iter().any(|u| u == url) {
+                s.remote_urls.push(url.to_string());
+            }
+            config::save_remote(url);
             close_remote_form(s);
         }
         Err(err) => {
             s.remote_error = Some(err.to_string());
+        }
+    }
+}
+
+/// Disconnect a remote source — the Disconnect control on a Sources row,
+/// connected or offline (Inc 6): drops it from the host's aggregate
+/// ([`PlayerHandle::remove_remote_source`]), the persisted config
+/// (`config::remove_remote`), and the OS keychain's stored refresh token
+/// ([`TokenStore::delete_refresh`]) — the remote counterpart of a local
+/// row's ✕ ([`PlayerHandle::remove_folder`]), just spread across the three
+/// places a remote's state lives instead of one `set_folders` call. Also
+/// drops `url` from the in-memory `remote_urls`/`remote_reconnecting`/
+/// `remote_synced_index` bookkeeping so a removed remote doesn't linger as
+/// a phantom offline row or a stale update-available cue.
+///
+/// Off the UI thread, like every other remote op: none of the three calls
+/// is scan-sized, but the keychain hit still touches the OS. Falls back to
+/// an inline call with no `app_handle` (headless tests).
+pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
+    s.remote_urls.retain(|u| u != &url);
+    s.remote_reconnecting.retain(|u| u != &url);
+    s.remote_synced_index.remove(&url);
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                host.remove_remote_source(&url);
+                config::remove_remote(&url);
+                if let Err(err) = KeyringStore.delete_refresh(&url) {
+                    tracing::warn!(url = %url, error = %err, "failed to delete keychain entry for a disconnected remote");
+                }
+                let sources = host.sources();
+                let library = host.views();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.sources = sources;
+                    s.library = library;
+                });
+            });
+        }
+        None => {
+            s.host.remove_remote_source(&url);
+            config::remove_remote(&url);
+            if let Err(err) = KeyringStore.delete_refresh(&url) {
+                tracing::warn!(url = %url, error = %err, "failed to delete keychain entry for a disconnected remote");
+            }
+            s.sources = s.host.sources();
+            s.library = s.host.views();
+        }
+    }
+}
+
+/// Manually reconnect (or re-sync) one remote source — an offline row's
+/// Reconnect action, and a connected row's "update available" Sync-now
+/// action (Inc 6; both drive the exact same path: silently re-authenticate
+/// with the stored refresh token and re-fetch the catalog index via
+/// [`PlayerHandle::reconnect_remote_source`], which for an already-online
+/// remote is exactly a resync). Off the UI thread, mirroring
+/// [`reconnect_remotes_on_startup`]'s shape for one url on demand. Guarded
+/// by `remote_reconnecting` so a double press (or the periodic poller
+/// probing mid-attempt) can't race two reconnects for the same url; the row
+/// shows a transient "reconnecting…" state meanwhile, cleared whichever way
+/// the attempt ends.
+///
+/// On success the row flips online, `library`/`sources` refresh, and
+/// [`record_synced_index`] updates the "last synced" index version so the
+/// update-available cue clears. On failure — offline, expired/revoked
+/// token, server down — it's logged and the row silently stays
+/// offline/stale, mirroring the startup reconnect's "never surfaced as an
+/// error" policy; the next press or the periodic poller can retry.
+pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
+    if s.remote_reconnecting.iter().any(|u| u == &url) {
+        return;
+    }
+    s.remote_reconnecting.push(url.clone());
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                let result = host.reconnect_remote_source(&url, &KeyringStore);
+                if let Err(err) = &result {
+                    tracing::warn!(url = %url, error = %err, "manual remote reconnect failed");
+                }
+                let ok = result.is_ok();
+                let sources = host.sources();
+                let library = host.views();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.remote_reconnecting.retain(|u| u != &url);
+                    if ok {
+                        record_synced_index(s, &url, &sources);
+                    }
+                    s.sources = sources;
+                    s.library = library;
+                });
+            });
+        }
+        None => {
+            let result = s.host.reconnect_remote_source(&url, &KeyringStore);
+            if let Err(err) = &result {
+                tracing::warn!(url = %url, error = %err, "manual remote reconnect failed");
+            }
+            let ok = result.is_ok();
+            let sources = s.host.sources();
+            s.library = s.host.views();
+            s.remote_reconnecting.retain(|u| u != &url);
+            if ok {
+                record_synced_index(s, &url, &sources);
+            }
+            s.sources = sources;
         }
     }
 }
@@ -2482,6 +2791,7 @@ fn seed_demo_library(s: &mut State) {
                 album: Some(album.clone()),
                 genre: Some(genre.to_string()),
                 duration_secs: f64::from(120 + id % 180),
+                remote: false,
             });
             id += 1;
         }
@@ -2891,6 +3201,27 @@ fn main() -> anyhow::Result<()> {
             if needs_startup_scan {
                 scan_in_background(s, |host| host.rescan_sources(), apply_and_save);
             }
+            // Reconnect every persisted remote source (Inc 5), also off the main
+            // thread — same "don't block the first paint" reasoning as the local
+            // startup scan just above, since each reconnect does a blocking
+            // refresh-token round-trip (plus a catalog re-fetch) over the network.
+            reconnect_remotes_on_startup(s);
+        });
+    }
+    // Periodic remote-health poller (Inc 2): its own dedicated sleep-loop
+    // thread — never the UI thread — wakes every ~30 s and asks the UI thread
+    // to refresh. It posts through the SAME guarded `refresh_remote_health`
+    // the on-demand refresh (opening Settings → Music Data) uses, so the two
+    // can never have overlapping probes in flight. Runs for the app's whole
+    // lifetime (no retained `JoinHandle` to stop it — it simply stops mattering
+    // once the process exits).
+    {
+        let ph = ah.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(REMOTE_HEALTH_POLL_INTERVAL);
+                ph.update(|s: &mut State, _tx: &mut Tx| refresh_remote_health(s));
+            }
         });
     }
     // Launch-time update check (release builds only): off-thread so it never
@@ -2966,6 +3297,7 @@ mod tests {
     use std::time::Duration;
 
     use rune::{Cursor, Env, FileDialogKind, Mods, Runtime, WheelEvent};
+    use soul_player_host::{RemoteHealth, SourceKind};
 
     use super::*;
     // The profile model types are only used by the profile tests (production code
@@ -5933,6 +6265,99 @@ mod tests {
         );
     }
 
+    /// Drain `config`'s persisted remote urls to empty: `save_remote` appends
+    /// and never overwrites, so — unlike most other settings, which fully
+    /// replace their field on save — a sibling test sharing this process-wide
+    /// config file could otherwise leave a stray url behind that breaks an
+    /// exact-equality (or "nothing persisted") assertion below.
+    fn drain_remotes() {
+        for url in config::load_remotes() {
+            config::remove_remote(&url);
+        }
+    }
+
+    /// Inc 5 persistence: a successful connect (`apply_remote_connect`'s `Ok`
+    /// branch) persists the server url via `config::save_remote`, so it
+    /// reconnects on the next launch, and closes the form.
+    #[test]
+    fn apply_remote_connect_success_persists_the_url() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_form_open = true;
+
+        apply_remote_connect(&mut s, "http://example.test", Ok(()));
+
+        assert_eq!(
+            config::load_remotes(),
+            vec!["http://example.test".to_string()],
+            "a successful connect should persist the server url"
+        );
+        assert!(!s.remote_form_open, "a successful connect closes the form");
+    }
+
+    /// The failure counterpart: nothing is persisted, and the form stays open
+    /// with the error message so the user can fix a typo and retry.
+    #[test]
+    fn apply_remote_connect_failure_does_not_persist_the_url() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_form_open = true;
+
+        apply_remote_connect(
+            &mut s,
+            "http://example.test",
+            Err(anyhow::anyhow!("connection refused")),
+        );
+
+        assert!(
+            config::load_remotes().is_empty(),
+            "a failed connect must not persist anything"
+        );
+        assert!(s.remote_form_open, "the form stays open on failure");
+        assert_eq!(s.remote_error, Some("connection refused".to_string()));
+    }
+
+    /// Inc 5 startup reconnect: with no persisted remotes, `reconnect_remotes_on_startup`
+    /// is a no-op (early return) rather than touching the keychain or the network.
+    #[test]
+    fn reconnect_remotes_on_startup_with_nothing_persisted_is_a_noop() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        let sources_before = s.sources.clone();
+
+        reconnect_remotes_on_startup(&mut s);
+
+        assert_eq!(
+            s.sources, sources_before,
+            "nothing persisted means nothing to reconnect, so state is untouched"
+        );
+    }
+
+    /// A persisted remote with no stored keychain credential (the common case
+    /// in a fresh test config dir) fails to reconnect — gracefully: no panic,
+    /// and the headless (no `app_handle`) path still refreshes `sources`/
+    /// `library` from the host's (unchanged) state afterward, same as a real
+    /// offline-remote launch would.
+    #[test]
+    fn reconnect_remotes_on_startup_with_an_unreachable_remote_does_not_crash() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        config::save_remote("http://unreachable-remote.invalid");
+        let mut s = State::new(PlayerHandle::offline());
+
+        reconnect_remotes_on_startup(&mut s);
+
+        assert!(
+            s.sources
+                .iter()
+                .all(|src| !matches!(&src.kind, SourceKind::Remote { url } if url == "http://unreachable-remote.invalid")),
+            "a remote that never reconnected (no stored credential) is not added to Inner::remotes"
+        );
+    }
+
     /// The Managed Library card renders on the Music Data tab with its destination
     /// Browse button, template picker, example line, and Copy/Move strategy buttons.
     #[test]
@@ -6701,6 +7126,340 @@ mod tests {
         assert!(rt.find("count-0").is_some(), "a track-count label is shown");
     }
 
+    /// Unix seconds right now — for building a fresh [`RemoteHealth`] probe
+    /// timestamp directly in a test, with no real server needed (the Inc-2
+    /// program spec: `SourceStatus`/`RemoteHealth` values are built by hand).
+    fn test_now_unix() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before the Unix epoch")
+            .as_secs()
+    }
+
+    /// An online, fully-populated remote `SourceStatus`, built directly (no
+    /// server) — the Inc-2 Sources panel's job is to render exactly these
+    /// fields: a Remote badge, an online dot, latency, server version, track
+    /// count, and a relative last-checked time.
+    fn online_remote_status(url: &str) -> SourceStatus {
+        SourceStatus {
+            path: PathBuf::from(url),
+            enabled: true,
+            available: true,
+            track_count: 7,
+            kind: SourceKind::Remote {
+                url: url.to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: true,
+                latency_ms: Some(42),
+                server_version: Some("0.9.0".to_string()),
+                index_version: Some(3),
+                last_checked_unix: Some(test_now_unix()),
+            }),
+        }
+    }
+
+    /// Inc 2: a Remote source's row renders a Remote badge plus its health
+    /// telemetry (an online dot + a "42ms" latency reading), while a sibling
+    /// Local source's row renders a Local badge and NEITHER of those
+    /// remote-only elements — the "clear local/remote distinction" the
+    /// program spec asks for. Every new element is keyed.
+    #[test]
+    fn remote_source_row_shows_badge_latency_and_online_indicator() {
+        let dir = testdata_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources
+            .push(online_remote_status("http://example.test:8080"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        // Local row (index 0): a Local badge, no remote-only telemetry.
+        assert!(
+            rt.find("source-badge-0").is_some(),
+            "the local row shows a kind badge"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "a local row has no latency element"
+        );
+        assert!(
+            rt.find("source-online-0").is_none(),
+            "a local row has no online indicator"
+        );
+
+        // Remote row (index 1): a Remote badge + its health telemetry.
+        assert!(
+            rt.find("source-badge-1").is_some(),
+            "the remote row shows a kind badge"
+        );
+        assert!(
+            rt.find("source-online-1").is_some(),
+            "the remote row shows an online indicator"
+        );
+        assert_eq!(
+            el_info(&rt, "source-latency-1").text.as_deref(),
+            Some("42ms"),
+            "latency renders as \"42ms\""
+        );
+    }
+
+    /// An offline remote reads differently from an online one: the latency
+    /// reads as the "—" placeholder (never a stale/misleading number) and the
+    /// online indicator still renders (dim, not green — this test only
+    /// checks it's present; the color is a rendering detail, not textual).
+    #[test]
+    fn offline_remote_source_row_shows_dash_latency_and_offline_dot() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("http://example.test:8080"),
+            enabled: true,
+            available: false,
+            track_count: 0,
+            kind: SourceKind::Remote {
+                url: "http://example.test:8080".to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: false,
+                latency_ms: None,
+                server_version: None,
+                index_version: None,
+                last_checked_unix: Some(test_now_unix()),
+            }),
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("source-online-0").is_some(),
+            "an offline remote still shows its online/offline dot"
+        );
+        assert_eq!(
+            el_info(&rt, "source-latency-0").text.as_deref(),
+            Some("—"),
+            "no latency reading renders as the dash placeholder"
+        );
+    }
+
+    /// Inc 6 item 1: a persisted remote with NO live entry at all in
+    /// `s.sources` (it failed to reconnect at launch, or hasn't tried yet) —
+    /// the gap this increment closes, where the remote used to simply be
+    /// absent from the Sources list — still renders: its URL, the offline
+    /// dot (item (c): the SAME `health_dot` a live-but-unreachable remote
+    /// uses), no latency element at all (there has been no probe to read one
+    /// from), and a keyed Reconnect control.
+    #[test]
+    fn offline_remote_with_no_live_entry_renders_url_and_reconnect_control() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        // No `s.sources` entry at all for this url — only the persisted url
+        // is known, simulating a remote that never (re)connected this session.
+        s.remote_urls = vec!["http://offline-remote.test".to_string()];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some("http://offline-remote.test")),
+            "the persisted remote's URL renders even with no live entry"
+        );
+        assert!(
+            rt.find("source-online-0").is_some(),
+            "the offline row shows the offline dot"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "an offline row with no live entry renders no latency element at all"
+        );
+        assert!(
+            rt.find("remote-reconnect-0").is_some(),
+            "a keyed Reconnect control renders for the offline remote"
+        );
+    }
+
+    /// Inc 6 item 2: a connected remote's row offers a keyed Disconnect
+    /// (remove) control — the remote counterpart of a local row's ✕, under
+    /// its own `remote-remove-{index}` key, wired to `disconnect_remote_source`
+    /// rather than `remove_folder`.
+    #[test]
+    fn connected_remote_row_shows_a_keyed_disconnect_control() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources
+            .push(online_remote_status("http://example.test:8080"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("remote-remove-0").is_some(),
+            "a connected remote row shows a keyed Disconnect control"
+        );
+    }
+
+    /// Inc 6 item 3: while a manual reconnect is in flight for an offline
+    /// remote (`State::remote_reconnecting`), its row still renders a status
+    /// line, and the Reconnect control switches to its disabled/inert shape
+    /// (not focusable) so a double press — or the periodic poller probing
+    /// mid-attempt — can't start a second reconnect for the same url.
+    #[test]
+    fn offline_remote_row_shows_an_inert_reconnect_control_while_in_flight() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.remote_urls = vec!["http://offline-remote.test".to_string()];
+        s.remote_reconnecting = vec!["http://offline-remote.test".to_string()];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("remote-status-0").is_some(),
+            "the offline row still renders a status line while reconnecting"
+        );
+        assert!(
+            !el_info(&rt, "remote-reconnect-0").focusable,
+            "the Reconnect control is inert while already reconnecting"
+        );
+    }
+
+    /// Inc 6 item 2 (behavior): disconnecting drops the url from the
+    /// in-memory bookkeeping (`remote_urls`) AND the persisted config
+    /// (`config::remove_remote`), so a disconnected remote neither lingers
+    /// as a phantom offline row nor comes back on the next launch.
+    #[test]
+    fn disconnect_remote_source_drops_url_from_state_and_config() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let url = "http://disconnect-me.test";
+        config::save_remote(url);
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_urls = vec![url.to_string()];
+
+        disconnect_remote_source(&mut s, url.to_string());
+
+        assert!(
+            s.remote_urls.is_empty(),
+            "the url drops out of the in-memory bookkeeping"
+        );
+        assert!(
+            config::load_remotes().is_empty(),
+            "the url drops out of the persisted config"
+        );
+    }
+
+    /// Inc 6 item 3 (behavior): a reconnect already in flight for a url
+    /// guards against a second concurrent attempt for the SAME url —
+    /// pressing Reconnect twice (or the periodic poller firing mid-attempt)
+    /// can't start two reconnects racing each other.
+    #[test]
+    fn reconnect_remote_now_guards_against_a_second_concurrent_attempt() {
+        let mut s = State::new(PlayerHandle::offline());
+        let url = "http://already-reconnecting.test".to_string();
+        s.remote_reconnecting = vec![url.clone()];
+
+        reconnect_remote_now(&mut s, url.clone());
+
+        assert_eq!(
+            s.remote_reconnecting,
+            vec![url],
+            "a second attempt for the same url already in flight is a no-op"
+        );
+    }
+
+    /// Inc 6 item 3 (behavior): a failed manual reconnect (no stored
+    /// credential — the common case in a fresh test config dir) still
+    /// clears the transient "reconnecting" state — the row must not get
+    /// stuck reading "reconnecting…" forever just because the attempt
+    /// didn't succeed, mirroring the startup reconnect's "never surfaced as
+    /// an error, never stuck" policy.
+    #[test]
+    fn reconnect_remote_now_clears_the_transient_state_on_failure() {
+        let mut s = State::new(PlayerHandle::offline());
+        let url = "http://unreachable-remote.invalid".to_string();
+
+        reconnect_remote_now(&mut s, url.clone());
+
+        assert!(
+            s.remote_reconnecting.is_empty(),
+            "the transient reconnecting state clears whichever way the attempt ends"
+        );
+    }
+
+    /// Inc 6 item 4: a connected remote's live `index_version` reading above
+    /// the version recorded at its last actual sync (`remote_synced_index`)
+    /// shows the "update available" cue with a keyed Sync-now action (reusing
+    /// the same reconnect/re-sync control).
+    #[test]
+    fn update_available_cue_shows_when_live_version_exceeds_the_synced_one() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let url = "http://example.test:8080";
+        let mut status = online_remote_status(url);
+        if let Some(health) = &mut status.remote {
+            health.index_version = Some(4);
+        }
+        s.sources.push(status);
+        s.remote_synced_index.insert(url.to_string(), 3);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("remote-update-0").is_some(),
+            "a newer live index version than the last synced one shows the update cue"
+        );
+        assert!(
+            rt.find("remote-reconnect-0").is_some(),
+            "the cue offers a keyed Sync-now action"
+        );
+    }
+
+    /// Inc 6 item 4 (negative case): a remote already caught up to its last
+    /// synced index version shows no update cue — `online_remote_status`
+    /// reports `index_version: Some(3)`, matching what we record as synced.
+    #[test]
+    fn update_available_cue_is_absent_when_already_caught_up() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let url = "http://example.test:8080";
+        s.sources.push(online_remote_status(url));
+        s.remote_synced_index.insert(url.to_string(), 3);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("remote-update-0").is_none(),
+            "no cue when the live version matches the last synced one"
+        );
+    }
+
     /// The leading enable toggle is a focusable control that disables its source:
     /// clicking it flips `enabled` off and the (now-disabled) source stops
     /// contributing tracks, emptying the aggregated library.
@@ -6931,6 +7690,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -6942,6 +7702,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -6953,6 +7714,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some(genre.to_string()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -7252,6 +8014,7 @@ mod tests {
             album: Some(album.to_string()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -7368,6 +8131,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
+                remote: false,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -7376,6 +8140,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
+                remote: false,
             },
         ];
         s.route = Route::Genre;
@@ -7906,6 +8671,38 @@ mod tests {
         assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
     }
 
+    /// The now-playing title line shows the remote badge when the current track
+    /// streams from a remote source (`TrackView::remote`) — the one spot outside
+    /// the track lists where the badge cleanly fits, since `now_playing_row`
+    /// already carries the real `TrackView` the Inc-3 marker lives on.
+    #[test]
+    fn now_playing_shows_the_remote_badge_for_a_remote_track() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![soul_player_host::TrackView {
+            id: 1,
+            title: Some("Streamed".into()),
+            artist: Some("A".into()),
+            album: None,
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote: true,
+        }];
+        s.now_playing_id = Some(1);
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some("track-remote-1") && e.opacity > 0.01),
+            "the now-playing line should show the remote badge for a remote track"
+        );
+    }
+
     #[test]
     fn settings_shows_updates_section_without_install_by_default() {
         let env = Env {
@@ -8153,6 +8950,54 @@ mod tests {
         assert!(
             (w - 32.0).abs() <= 0.5 && (h - 32.0).abs() <= 0.5,
             "the cover is 32x32 pt (old app's w-8 h-8), got {w}x{h}"
+        );
+    }
+
+    /// A track row for a remote-flagged track (`TrackView::remote == true`, the
+    /// per-track Local/Remote marker) shows the subtle cloud badge; a local one
+    /// (`remote == false`, the unremarked default) shows none.
+    #[test]
+    fn a_remote_track_row_shows_the_remote_badge_a_local_one_does_not() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Streamed".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: true,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("OnDisk".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: false,
+            },
+        ];
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "track-remote-1"),
+            "a remote track's row should show the remote badge"
+        );
+        assert!(
+            !badge_visible(&rt, "track-remote-2"),
+            "a local track's row should not show a remote badge"
         );
     }
 
@@ -8582,6 +9427,7 @@ mod tests {
                 album: Some(format!("Album {a:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
+                remote: false,
             })
             .collect();
         let env = Env {
@@ -8659,6 +9505,7 @@ mod tests {
                 album: Some(format!("Album {a:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
+                remote: false,
             })
             .collect();
         let env = Env {
@@ -8764,6 +9611,7 @@ mod tests {
                 album: Some(format!("Album {id:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
+                remote: false,
             }
         }
         let mut s = State::new(PlayerHandle::offline());
@@ -8814,6 +9662,7 @@ mod tests {
             album: Some(format!("Album {id:02}")),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 

@@ -13,7 +13,7 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
-use crate::views::player::cover;
+use crate::views::player::{cover, remote_badge};
 use crate::views::scrollbar;
 
 thread_local! {
@@ -142,6 +142,11 @@ fn track_row(
             .w(28.0),
         )
         .child(title_col);
+    // A subtle cloud badge for a track streaming from a remote source;
+    // nothing renders for a local track, the unremarked default.
+    if t.remote {
+        r = r.child(remote_badge(t.id, p));
+    }
     // The standard layout keeps the artist and album as their own columns; the
     // compact layout dropped them above (artist moved under the title).
     if !compact {
