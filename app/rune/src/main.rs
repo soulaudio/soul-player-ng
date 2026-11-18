@@ -7843,6 +7843,85 @@ mod tests {
         );
     }
 
+    /// Robustness: a failed manual reconnect must leave the url LISTED in
+    /// `remote_urls` — the persisted-remote bookkeeping `merged_source_rows`
+    /// renders an offline row from (see `offline_remote_with_no_live_entry_
+    /// renders_url_and_reconnect_control`). `reconnect_remote_now` never
+    /// touches `remote_urls` on any path, but a future refactor easily could
+    /// (e.g. folding it into the same cleanup as `remote_reconnecting`) — this
+    /// pins the "never drop a configured remote on a transient failure" rule
+    /// the module doc already states.
+    #[test]
+    fn reconnect_remote_now_failure_keeps_the_url_in_remote_urls() {
+        let mut s = State::new(PlayerHandle::offline());
+        let url = "http://unreachable-remote.invalid".to_string();
+        s.remote_urls = vec![url.clone()];
+
+        reconnect_remote_now(&mut s, url.clone());
+
+        assert_eq!(
+            s.remote_urls,
+            vec![url],
+            "a failed reconnect must not drop the url from the persisted-remote list"
+        );
+    }
+
+    /// Robustness: `remote_health_refreshing` guards `refresh_remote_health`
+    /// against a second overlapping probe (the periodic poller and an
+    /// on-demand refresh racing each other) — documented on the function but,
+    /// until now, never actually exercised. With the flag already set, a call
+    /// must be a complete no-op: it returns before touching the host OR
+    /// `s.sources`, so a stale-but-in-flight refresh can never stomp a fresher
+    /// one that's about to land.
+    #[test]
+    fn refresh_remote_health_guards_against_a_second_concurrent_probe() {
+        let mut s = State::new(PlayerHandle::offline());
+        let marker = vec![online_remote_status("http://marker.test")];
+        s.sources = marker.clone();
+        s.remote_health_refreshing = true;
+
+        refresh_remote_health(&mut s);
+
+        assert_eq!(
+            s.sources, marker,
+            "a refresh already in flight must not overwrite sources()"
+        );
+        assert!(
+            s.remote_health_refreshing,
+            "the guard flag is untouched by the no-op call"
+        );
+    }
+
+    /// Robustness: re-enabling a remote through `toggle_remote_enabled`
+    /// clears its persisted disabled flag — the restore half of "toggling a
+    /// remote off then on restores it". The disable direction is already
+    /// covered end-to-end via a UI click
+    /// (`toggling_a_remote_row_persists_the_disabled_flag_for_its_url`); that
+    /// test can't also exercise re-enabling in the same `Runtime` session
+    /// because disabling repopulates `s.sources` from the (unconfigured,
+    /// offline) host, which drops the row the click target lived on. Calling
+    /// the function directly sidesteps that and proves the other direction of
+    /// the SAME persistence seam `config::set_remote_enabled` round-trips.
+    #[test]
+    fn toggle_remote_enabled_true_clears_a_previously_disabled_urls_persisted_flag() {
+        let _config_guard = config::use_test_config_dir();
+        let url = "http://re-enable-me.test";
+        config::set_remote_enabled(url, false);
+        assert_eq!(
+            config::load_remotes_disabled(),
+            vec![url.to_string()],
+            "sanity: the url starts disabled"
+        );
+        let mut s = State::new(PlayerHandle::offline());
+
+        toggle_remote_enabled(&mut s, url.to_string(), true);
+
+        assert!(
+            config::load_remotes_disabled().is_empty(),
+            "re-enabling clears the url's persisted disabled flag"
+        );
+    }
+
     /// Inc 6 item 4: a connected remote's live `index_version` reading above
     /// the version recorded at its last actual sync (`remote_synced_index`)
     /// shows the "update available" cue with a keyed Sync-now action (reusing
