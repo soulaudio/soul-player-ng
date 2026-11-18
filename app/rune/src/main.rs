@@ -10424,6 +10424,65 @@ mod tests {
         );
     }
 
+    /// End-to-end through the real render: flipping the Album-year toggle relabels
+    /// the displayed year on the Albums grid. A reissue album (original 1973,
+    /// release 2015) shows the 1973 original year under Original and the 2015
+    /// release year under Release, with no leftover from the other source. Drives
+    /// the live `State.album_year` -> `view` -> `album_subtitle` path, the
+    /// user-facing effect of the setting.
+    #[test]
+    fn album_year_toggle_relabels_the_displayed_year_on_the_albums_grid() {
+        rust_i18n::set_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.album_year = config::AlbumYearSource::Original;
+        s.library = vec![soul_player_host::TrackView {
+            id: 1,
+            title: Some("T".into()),
+            artist: Some("Pink Floyd".into()),
+            album: Some("Dark Side".into()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote: false,
+            original_date: 1973u32 << 9,
+            release_date: 2015u32 << 9,
+        }];
+        let env = Env {
+            system_dark: true,
+            scale: 1.0,
+        };
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        // The only years rendered are the album-card subtitle, so a bare-year
+        // substring is an unambiguous probe for "which year is shown".
+        let shows = |rt: &Runtime<State>, year: &str| {
+            rt.elements()
+                .into_iter()
+                .any(|e| e.text.as_deref().is_some_and(|t| t.contains(year)))
+        };
+        assert!(
+            shows(&rt, "1973"),
+            "Original source shows the 1973 original year"
+        );
+        assert!(
+            !shows(&rt, "2015"),
+            "the release year is not shown under Original"
+        );
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.album_year = config::AlbumYearSource::Release);
+        rt.frame(0.0);
+        assert!(
+            shows(&rt, "2015"),
+            "flipping to Release relabels to the 2015 release year"
+        );
+        assert!(
+            !shows(&rt, "1973"),
+            "no leftover of the original year under Release"
+        );
+    }
+
     /// Tab forward until the element keyed `key` is focused, up to `max` presses.
     fn tab_to(rt: &mut Runtime<State>, target: &str, max: usize) -> bool {
         for _ in 0..max {
