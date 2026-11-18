@@ -862,6 +862,27 @@ settings.themeDark:
   zh: '深色'
   cs: 'Tmavý'
   ja: 'ダーク'
+settings.albumYear:
+  en: 'Album year'
+  de: 'Albumjahr'
+  es: 'Año del álbum'
+  zh: '专辑年份'
+  cs: 'Rok alba'
+  ja: 'アルバムの年'
+settings.albumYearOriginal:
+  en: 'Original'
+  de: 'Original'
+  es: 'Original'
+  zh: '原始'
+  cs: 'Originál'
+  ja: 'オリジナル'
+settings.albumYearRelease:
+  en: 'Release'
+  de: 'Veröffentlichung'
+  es: 'Lanzamiento'
+  zh: '发行'
+  cs: 'Vydání'
+  ja: 'リリース'
 settings.language:
   en: 'Language'
   de: 'Sprache'

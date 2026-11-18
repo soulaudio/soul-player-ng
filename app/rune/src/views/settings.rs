@@ -20,6 +20,7 @@ use soul_player_host::{
     BandKind, DspUnit, GAIN_LIMIT_DB, RemoteHealth, ReplayGainMode, SourceKind, SourceStatus,
 };
 
+use crate::config::AlbumYearSource;
 use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
@@ -36,9 +37,9 @@ use crate::{
     eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, export_profile, import_eq,
     import_profile, new_profile, open_remote_form, organize_begin, organize_confirm,
     organize_dismiss, organize_ready, reconnect_remote_now, remove_dsp_unit, remove_eq_band,
-    reorder_dsp_units, scan_in_background, set_dsp_unit_enabled, set_eq_band_enabled,
-    set_eq_preamp, set_exclusive, set_exclusive_strict, set_indexing_mode, set_locale_pref,
-    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    reorder_dsp_units, scan_in_background, set_album_year, set_dsp_unit_enabled,
+    set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict, set_indexing_mode,
+    set_locale_pref, set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
     set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
     set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
     toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
@@ -1098,6 +1099,27 @@ fn theme_button(label: String, key: &str, pref: ThemePref, active: bool, p: &Pal
         .on_press(move |s: &mut State| set_theme_pref(s, pref))
 }
 
+/// One album-year source choice; the active source is filled with the primary
+/// color (mirrors `theme_button`).
+fn album_year_button(
+    label: String,
+    key: &str,
+    src: AlbumYearSource,
+    active: bool,
+    p: &Palette,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_album_year(s, src))
+}
+
 /// The key identifying the language dropdown (its open state + panel anchor).
 const LANG_PICKER: &str = "lang-picker";
 
@@ -1326,6 +1348,37 @@ fn appearance_card(s: &State, p: &Palette) -> El {
                     s.theme_pref == ThemePref::Dark,
                     p,
                 )),
+        )
+        .child(
+            row()
+                .key("album-year-row")
+                .center_y()
+                .gap(space::SM)
+                .flex_wrap()
+                .child(
+                    text(t!("settings.albumYear").to_string())
+                        .font(type_::ITEM)
+                        .color(p.fg)
+                        .grow(1.0),
+                )
+                .child(
+                    row()
+                        .gap(space::XS)
+                        .child(album_year_button(
+                            t!("settings.albumYearOriginal").to_string(),
+                            "album-year-original",
+                            AlbumYearSource::Original,
+                            s.album_year == AlbumYearSource::Original,
+                            p,
+                        ))
+                        .child(album_year_button(
+                            t!("settings.albumYearRelease").to_string(),
+                            "album-year-release",
+                            AlbumYearSource::Release,
+                            s.album_year == AlbumYearSource::Release,
+                            p,
+                        )),
+                ),
         )
 }
 
