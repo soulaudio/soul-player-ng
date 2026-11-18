@@ -7670,6 +7670,90 @@ mod tests {
         );
     }
 
+    /// `merged_source_rows` must never duplicate a source: a persisted
+    /// `remote_urls` entry that differs from its LIVE `s.sources` entry only
+    /// by a trailing slash (a real-world mismatch — the host normalizes on
+    /// add, but a config file written by an older build, or a URL typed
+    /// with a slash, could still carry one) must collapse onto the SAME row
+    /// as the live one, not render a second "offline" row alongside it.
+    #[test]
+    fn persisted_url_with_trailing_slash_collapses_onto_the_live_row() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources
+            .push(online_remote_status("http://127.0.0.1:8080"));
+        s.remote_urls = vec!["http://127.0.0.1:8080/".to_string()];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let badge_count = rt
+            .elements()
+            .iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("source-badge-"))
+            })
+            .count();
+        assert_eq!(
+            badge_count, 1,
+            "a trailing-slash variant of an already-live url must render ONE row, not two"
+        );
+        assert!(
+            rt.find("source-badge-0").is_some(),
+            "the single row is the live one at index 0"
+        );
+        assert!(
+            rt.find("remote-reconnect-0").is_none(),
+            "the row is the LIVE (connected) one, so it offers Disconnect, not Reconnect"
+        );
+    }
+
+    /// `merged_source_rows` must also dedupe within `s.remote_urls` itself:
+    /// the same url listed twice (even differing by a trailing slash) must
+    /// still render only ONE offline row, not one per occurrence.
+    #[test]
+    fn duplicate_entries_within_remote_urls_render_only_one_offline_row() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.remote_urls = vec![
+            "http://dup-remote.test".to_string(),
+            "http://dup-remote.test/".to_string(),
+        ];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let badge_count = rt
+            .elements()
+            .iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("source-badge-"))
+            })
+            .count();
+        assert_eq!(
+            badge_count, 1,
+            "two remote_urls entries for the same url (trailing slash aside) must render ONE row"
+        );
+        assert!(
+            rt.find("remote-reconnect-0").is_some(),
+            "the single surviving row is still the offline one, with its Reconnect control"
+        );
+        assert!(
+            rt.find("remote-reconnect-1").is_none(),
+            "no second offline row for the duplicate entry"
+        );
+    }
+
     /// Inc 6 item 2: a connected remote's row offers a keyed Disconnect
     /// (remove) control — the remote counterpart of a local row's ✕, under
     /// its own `remote-remove-{index}` key, wired to `disconnect_remote_source`
