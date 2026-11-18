@@ -84,25 +84,50 @@ pub(crate) fn resample_value(sp: &SignalPath) -> String {
     }
 }
 
-/// Output stage: device rate + bit depth the device receives.
-fn output_value(sp: &SignalPath) -> String {
-    format!("{} kHz · {}-bit", khz(sp.device_rate), sp.output_bits)
+/// The OS audio API the output goes through. Exclusive and shared both use this API;
+/// only the mode differs. Per-platform and `const` (resolved for the build target). The
+/// exclusive path is implemented only on Windows (WASAPI) today, but the shared path
+/// names its API on every platform, so the output stage always states the backend. It's
+/// a technical identifier (like the codec names), not translated.
+pub(crate) const fn output_api() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "WASAPI"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "CoreAudio"
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        "ALSA"
+    }
 }
 
-/// Exclusive stage: when the stream is exclusive, name the backend + the bit-perfect
-/// device format (the DAC receives exactly this — no OS mixer); otherwise "shared".
-/// Exclusive output is WASAPI-only today (the host opens a WASAPI exclusive sink;
-/// CoreAudio/ALSA exclusive aren't implemented), so naming "WASAPI" here is accurate and
-/// tells the user *which* bit-perfect path is active.
+/// Output stage: the backend API plus the device rate and bit depth it receives.
+fn output_value(sp: &SignalPath) -> String {
+    format!(
+        "{} · {} kHz · {}-bit",
+        output_api(),
+        khz(sp.device_rate),
+        sp.output_bits
+    )
+}
+
+/// Exclusive stage: name the backend API and the mode. When exclusive, the bit-perfect
+/// device format the DAC receives (no OS mixer); otherwise the shared path through the OS
+/// mixer. So the user can always see WHICH backend drives the output and whether it is
+/// bit-perfect ("WASAPI exclusive, 96 kHz, 24-bit") or shared ("WASAPI shared").
 pub(crate) fn exclusive_value(sp: &SignalPath) -> String {
     if sp.exclusive {
         format!(
-            "WASAPI · {} kHz · {}-bit",
+            "{} exclusive · {} kHz · {}-bit",
+            output_api(),
             khz(sp.device_rate),
             sp.output_bits
         )
     } else {
-        t!("player.signalPath.shared").to_string()
+        format!("{} shared", output_api())
     }
 }
 
@@ -517,7 +542,10 @@ mod tests {
         assert_eq!(source_value(&dsd), "DSD64 · 2.82 MHz");
         assert_eq!(decode_value(&dsd), "44.1 kHz · 24-bit · 2 ch");
         assert_eq!(resample_value(&dsd), "44.1 → 48 kHz");
-        assert_eq!(output_value(&dsd), "48 kHz · 24-bit");
+        assert_eq!(
+            output_value(&dsd),
+            format!("{} · 48 kHz · 24-bit", output_api())
+        );
 
         let flac = sp(
             SourceFormat::Pcm { bits: 16 },
@@ -543,17 +571,19 @@ mod tests {
             96_000,
             false,
         );
-        // Shared (the default): the OS-mixer path reads as "Shared", not a format.
-        assert_eq!(
-            exclusive_value(&base),
-            t!("player.signalPath.shared").to_string()
-        );
-        // Exclusive: the device receives exactly this bit-perfect format.
+        // Shared (the default): names the backend + mode, e.g. "WASAPI shared". The API is
+        // platform-specific, so assert the shape, not the hardcoded name (CI runs on
+        // Linux/macOS too).
+        assert_eq!(exclusive_value(&base), format!("{} shared", output_api()));
+        // Exclusive: names the backend + the bit-perfect format the device receives.
         let excl = SignalPath {
             exclusive: true,
             ..base
         };
-        assert_eq!(exclusive_value(&excl), "WASAPI · 96 kHz · 24-bit");
+        assert_eq!(
+            exclusive_value(&excl),
+            format!("{} exclusive · 96 kHz · 24-bit", output_api())
+        );
     }
 
     /// An EQ unit that actually shapes the signal (a boosted preamp is enough —
