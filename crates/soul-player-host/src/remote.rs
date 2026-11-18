@@ -1421,6 +1421,101 @@ mod tests {
         );
     }
 
+    /// The Inc-5 reconnect seam, end to end: a [`MemStore`] pre-seeded with a
+    /// valid refresh token (obtained via the same [`login_as_test_user`] flow
+    /// [`add_remote_source_with_tokens_lists_views`] uses) lets
+    /// [`crate::PlayerHandle::reconnect_remote_source`] silently re-authenticate
+    /// against a REAL in-process AS — no browser, no OS keychain — fetch the
+    /// catalog index, and fold it into the library, exactly like
+    /// `add_remote_source_with_tokens` does. Also proves the server's refresh-
+    /// token ROTATION is persisted back into the store, not just the access
+    /// token — a caller that kept the old refresh token would be unable to
+    /// reconnect a second time.
+    #[test]
+    fn reconnect_remote_source_rotates_token_and_rebuilds_library() {
+        let server = start_server();
+        let tokens = login_as_test_user(&server);
+
+        let store = MemStore::new();
+        store
+            .save_refresh(&server.url, &tokens.refresh)
+            .expect("seed the store with a valid refresh token");
+
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .reconnect_remote_source(&server.url, &store)
+            .expect("reconnect should succeed with a valid stored refresh token");
+
+        assert!(
+            !handle.views().is_empty(),
+            "a successful reconnect should populate the aggregate library"
+        );
+        let rotated = store
+            .load_refresh(&server.url)
+            .expect("the store should hold a refresh token after a successful reconnect");
+        assert_ne!(
+            rotated, tokens.refresh,
+            "the refresh token must have rotated — the seeded one is now spent"
+        );
+    }
+
+    /// A remote with no stored credential (never logged in, or the entry was
+    /// deleted) fails clearly rather than reaching the network at all — the
+    /// "no stored credential" `anyhow::bail!` path, which lets a caller tell
+    /// this apart from a transient network failure if it ever wants to.
+    #[test]
+    fn reconnect_remote_source_without_a_stored_credential_errors() {
+        let handle = crate::PlayerHandle::offline();
+        let store = MemStore::new();
+
+        let err = handle
+            .reconnect_remote_source("http://example.invalid", &store)
+            .expect_err("reconnecting with no stored refresh token must fail");
+        assert!(
+            err.to_string().contains("no stored credential"),
+            "unexpected error message: {err}"
+        );
+    }
+
+    /// [`crate::PlayerHandle::remove_remote_source`]: a remote added via
+    /// `add_remote_source_with_tokens` shows up in [`crate::PlayerHandle::sources`]
+    /// with `kind == Remote { url }`; removing it drops that entry (and the
+    /// aggregate rebuilds without its tracks) while leaving everything else —
+    /// here, nothing else configured — unaffected.
+    #[test]
+    fn remove_remote_source_drops_it_from_sources_and_rebuilds() {
+        let server = start_server();
+        let tokens = login_as_test_user(&server);
+
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .add_remote_source_with_tokens(&server.url, tokens)
+            .expect("add remote source with tokens");
+        assert!(
+            handle.sources().iter().any(
+                |s| matches!(&s.kind, crate::SourceKind::Remote { url } if url == &server.url)
+            ),
+            "the added remote should be listed before removal"
+        );
+        assert!(
+            !handle.views().is_empty(),
+            "the remote's tracks should be live"
+        );
+
+        handle.remove_remote_source(&server.url);
+
+        assert!(
+            !handle.sources().iter().any(
+                |s| matches!(&s.kind, crate::SourceKind::Remote { url } if url == &server.url)
+            ),
+            "the removed remote must no longer be listed"
+        );
+        assert!(
+            handle.views().is_empty(),
+            "with no other source configured, removing the only remote should empty the library"
+        );
+    }
+
     #[test]
     fn remote_library_resolves_local_and_remote_tracks_with_a_nonzero_base() {
         // A local source with exactly ONE track, so its single id is

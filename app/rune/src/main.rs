@@ -27,6 +27,7 @@ use soul_player_host::{
     SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus,
     TrackLoudness, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
+    remote::KeyringStore,
 };
 
 mod config;
@@ -866,6 +867,55 @@ pub(crate) fn refresh_remote_health(s: &mut State) {
     }
 }
 
+/// Reconnect every persisted remote source at launch (Inc 5): off the UI
+/// thread, for each url `config::load_remotes()` returns, silently
+/// re-authenticate with the OS-keychain-stored refresh token and re-sync its
+/// catalog via [`PlayerHandle::reconnect_remote_source`], then fold the
+/// refreshed library + source list back onto the UI thread — mirroring
+/// [`scan_in_background`]'s / [`refresh_remote_health`]'s shape (a spawned
+/// thread, `AppHandle::update` back). Never blocks app launch on the network:
+/// this is called once the window is already up, exactly where the local
+/// startup scan is kicked off.
+///
+/// A remote that fails to reconnect (offline, expired/revoked token, server
+/// down) is simply skipped — never surfaced as an error, and never dropped
+/// from the persisted config or the keychain, so it keeps retrying on the
+/// next launch, and the Inc 2 health poller picks it back up once it
+/// actually returns. A failed reconnect must NOT crash startup.
+pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
+    let urls = config::load_remotes();
+    if urls.is_empty() {
+        return;
+    }
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                for url in &urls {
+                    if let Err(err) = host.reconnect_remote_source(url, &KeyringStore) {
+                        tracing::warn!(url = %url, error = %err, "remote source reconnect failed");
+                    }
+                }
+                let sources = host.refresh_remote_health();
+                let library = host.views();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.library = library;
+                    s.sources = sources;
+                });
+            });
+        }
+        None => {
+            for url in &urls {
+                if let Err(err) = s.host.reconnect_remote_source(url, &KeyringStore) {
+                    tracing::warn!(url, error = %err, "remote source reconnect failed");
+                }
+            }
+            s.sources = s.host.refresh_remote_health();
+            s.library = s.host.views();
+        }
+    }
+}
+
 /// Open the dropdown with this key, or close it if it is already open (clicking
 /// the trigger again). Only one dropdown is open at a time.
 pub(crate) fn toggle_dropdown(s: &mut State, key: &str) {
@@ -931,29 +981,36 @@ pub(crate) fn connect_remote_source(s: &mut State) {
     match s.app_handle.clone() {
         Some(handle) => {
             let host = s.host.clone();
+            let url_for_result = url.clone();
             std::thread::spawn(move || {
                 let result = host.add_remote_source(&url);
-                handle.update(move |s: &mut State, _tx: &mut Tx| apply_remote_connect(s, result));
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    apply_remote_connect(s, &url_for_result, result)
+                });
             });
         }
         None => {
             let result = s.host.add_remote_source(&url);
-            apply_remote_connect(s, result);
+            apply_remote_connect(s, &url, result);
         }
     }
 }
 
 /// Fold a finished connect attempt's result back onto the UI thread (see
 /// `connect_remote_source`). On success, the library is refreshed from the
-/// host (the remote-aware aggregate is already swapped in) and the form
-/// closes. On failure, the message is kept in `remote_error` and the form (if
-/// still open) stays open with its field intact so the user can fix a typo
-/// and retry.
-fn apply_remote_connect(s: &mut State, result: anyhow::Result<()>) {
+/// host (the remote-aware aggregate is already swapped in), the url is
+/// persisted (`config::save_remote`) so it reconnects on the next launch —
+/// the OAuth refresh token itself is already durable, written to the OS
+/// keychain by `PlayerHandle::add_remote_source` — and the form closes. On
+/// failure, the message is kept in `remote_error` and the form (if still
+/// open) stays open with its field intact so the user can fix a typo and
+/// retry; nothing is persisted for a failed attempt.
+fn apply_remote_connect(s: &mut State, url: &str, result: anyhow::Result<()>) {
     s.remote_connecting = false;
     match result {
         Ok(()) => {
             s.library = s.host.views();
+            config::save_remote(url);
             close_remote_form(s);
         }
         Err(err) => {
@@ -2945,6 +3002,11 @@ fn main() -> anyhow::Result<()> {
             if needs_startup_scan {
                 scan_in_background(s, |host| host.rescan_sources(), apply_and_save);
             }
+            // Reconnect every persisted remote source (Inc 5), also off the main
+            // thread — same "don't block the first paint" reasoning as the local
+            // startup scan just above, since each reconnect does a blocking
+            // refresh-token round-trip (plus a catalog re-fetch) over the network.
+            reconnect_remotes_on_startup(s);
         });
     }
     // Periodic remote-health poller (Inc 2): its own dedicated sleep-loop
@@ -6001,6 +6063,99 @@ mod tests {
         assert!(
             rt.find("remote-connecting-status").is_some(),
             "a waiting-for-browser status line renders while connecting"
+        );
+    }
+
+    /// Drain `config`'s persisted remote urls to empty: `save_remote` appends
+    /// and never overwrites, so — unlike most other settings, which fully
+    /// replace their field on save — a sibling test sharing this process-wide
+    /// config file could otherwise leave a stray url behind that breaks an
+    /// exact-equality (or "nothing persisted") assertion below.
+    fn drain_remotes() {
+        for url in config::load_remotes() {
+            config::remove_remote(&url);
+        }
+    }
+
+    /// Inc 5 persistence: a successful connect (`apply_remote_connect`'s `Ok`
+    /// branch) persists the server url via `config::save_remote`, so it
+    /// reconnects on the next launch, and closes the form.
+    #[test]
+    fn apply_remote_connect_success_persists_the_url() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_form_open = true;
+
+        apply_remote_connect(&mut s, "http://example.test", Ok(()));
+
+        assert_eq!(
+            config::load_remotes(),
+            vec!["http://example.test".to_string()],
+            "a successful connect should persist the server url"
+        );
+        assert!(!s.remote_form_open, "a successful connect closes the form");
+    }
+
+    /// The failure counterpart: nothing is persisted, and the form stays open
+    /// with the error message so the user can fix a typo and retry.
+    #[test]
+    fn apply_remote_connect_failure_does_not_persist_the_url() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_form_open = true;
+
+        apply_remote_connect(
+            &mut s,
+            "http://example.test",
+            Err(anyhow::anyhow!("connection refused")),
+        );
+
+        assert!(
+            config::load_remotes().is_empty(),
+            "a failed connect must not persist anything"
+        );
+        assert!(s.remote_form_open, "the form stays open on failure");
+        assert_eq!(s.remote_error, Some("connection refused".to_string()));
+    }
+
+    /// Inc 5 startup reconnect: with no persisted remotes, `reconnect_remotes_on_startup`
+    /// is a no-op (early return) rather than touching the keychain or the network.
+    #[test]
+    fn reconnect_remotes_on_startup_with_nothing_persisted_is_a_noop() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        let sources_before = s.sources.clone();
+
+        reconnect_remotes_on_startup(&mut s);
+
+        assert_eq!(
+            s.sources, sources_before,
+            "nothing persisted means nothing to reconnect, so state is untouched"
+        );
+    }
+
+    /// A persisted remote with no stored keychain credential (the common case
+    /// in a fresh test config dir) fails to reconnect — gracefully: no panic,
+    /// and the headless (no `app_handle`) path still refreshes `sources`/
+    /// `library` from the host's (unchanged) state afterward, same as a real
+    /// offline-remote launch would.
+    #[test]
+    fn reconnect_remotes_on_startup_with_an_unreachable_remote_does_not_crash() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        config::save_remote("http://unreachable-remote.invalid");
+        let mut s = State::new(PlayerHandle::offline());
+
+        reconnect_remotes_on_startup(&mut s);
+
+        assert!(
+            s.sources
+                .iter()
+                .all(|src| !matches!(&src.kind, SourceKind::Remote { url } if url == "http://unreachable-remote.invalid")),
+            "a remote that never reconnected (no stored credential) is not added to Inner::remotes"
         );
     }
 

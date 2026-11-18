@@ -1701,12 +1701,73 @@ impl PlayerHandle {
         Ok(())
     }
 
+    /// Drop a remote source added via [`add_remote_source`](Self::add_remote_source)
+    /// / [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens) (or
+    /// reconnected via [`reconnect_remote_source`](Self::reconnect_remote_source)):
+    /// removes it from `Inner::remotes` (and its cached health), then rebuilds the
+    /// aggregate so it immediately drops out of [`views`](Self::views)/[`sources`](Self::sources).
+    /// `url` is matched the same way [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)
+    /// normalizes it (trailing slash trimmed), so passing either form removes the
+    /// same entry. A no-op if `url` isn't a currently-added remote.
+    pub fn remove_remote_source(&self, url: &str) {
+        let url = url.trim_end_matches('/');
+        self.inner
+            .remotes
+            .lock()
+            .expect("remotes mutex")
+            .retain(|(server, _blobs)| server.url != url);
+        self.inner
+            .remote_health
+            .lock()
+            .expect("remote_health mutex")
+            .remove(url);
+        self.rebuild_remote_library();
+    }
+
+    /// Silently re-authenticate a previously-added remote using its stored
+    /// refresh token, so a restarted app can reconnect without the interactive
+    /// browser login: looks up `store.load_refresh(url)` (erroring with "no
+    /// stored credential" if there is none), redeems it via
+    /// [`remote::refresh`] for a fresh access/refresh pair, persists the
+    /// ROTATED refresh token back to `store` (the server rotates it on every
+    /// use — the caller must never keep the old one), then reuses
+    /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)'s
+    /// tail to fetch the catalog index and rebuild the aggregate.
+    ///
+    /// `store` is an injected [`remote::TokenStore`] (the app passes
+    /// [`remote::KeyringStore`] in production; tests pass a
+    /// [`remote::MemStore`]) rather than a hardcoded keychain lookup, so this
+    /// is testable without touching the real OS keychain.
+    ///
+    /// A failure here (offline, expired/revoked refresh token, server down)
+    /// is returned as an `Err` and otherwise has NO side effect: nothing is
+    /// added to `Inner::remotes`, and the caller's persisted config entry is
+    /// untouched — a transient failure must never drop a remote the user
+    /// configured, only leave it unreconnected until the next retry.
+    pub fn reconnect_remote_source(
+        &self,
+        url: &str,
+        store: &dyn remote::TokenStore,
+    ) -> anyhow::Result<()> {
+        let Some(stored_refresh) = store.load_refresh(url) else {
+            anyhow::bail!("no stored credential for {url}");
+        };
+        let tokens = remote::refresh(url, &stored_refresh)?;
+        // Rotation: the server issued a NEW refresh token with this call, so the
+        // old one (just used) is no longer valid — persist the fresh one before
+        // doing anything else, so a crash between here and the index fetch below
+        // still leaves a usable credential for the next attempt.
+        store.save_refresh(url, &tokens.refresh)?;
+        self.add_remote_source_with_tokens(url, tokens)
+    }
+
     /// Rebuild the remote-aware aggregate from the current local
     /// `source_bytes` cache (in configured-source order) plus every remote
     /// in `self.inner.remotes`, and swap it in via
     /// [`set_remote_library`](Self::set_remote_library) — the shared tail of
-    /// [`add_remote_source`](Self::add_remote_source) today, and a future
-    /// remove/refresh entry point's too.
+    /// [`add_remote_source`](Self::add_remote_source),
+    /// [`remove_remote_source`](Self::remove_remote_source), and
+    /// [`reconnect_remote_source`](Self::reconnect_remote_source).
     fn rebuild_remote_library(&self) {
         let folders = self.inner.folders.lock().expect("folders mutex").clone();
         let bytes = self.inner.source_bytes.lock().expect("source_bytes mutex");
