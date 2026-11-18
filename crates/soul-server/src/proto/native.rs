@@ -484,12 +484,34 @@ fn render_login_form(valid: &ValidAuthorize, error: Option<&str>) -> Response {
 
     Html(format!(
         r#"<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>Sign in</title></head>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in</title>
+<style>
+:root {{ color-scheme: light dark; }}
+body {{ font-family: system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; background:#f4f4f6; }}
+.card {{ width:min(360px,90vw); box-sizing:border-box; padding:26px 28px 24px; border-radius:14px; background:#fff; box-shadow:0 8px 30px rgba(0,0,0,.12); }}
+h1 {{ font-size:1.15rem; margin:0 0 2px; }}
+.sub {{ margin:0 0 6px; opacity:.6; font-size:.82rem; }}
+label {{ display:block; font-size:.78rem; opacity:.75; margin:14px 0 5px; }}
+input {{ display:block; width:100%; box-sizing:border-box; padding:10px 12px; border-radius:9px; border:1px solid rgba(128,128,128,.4); background:transparent; color:inherit; font-size:.95rem; }}
+input:focus {{ outline:2px solid #8b7ff0; outline-offset:1px; border-color:transparent; }}
+button {{ margin-top:20px; width:100%; padding:11px; border:0; border-radius:9px; background:#8b7ff0; color:#fff; font-size:.95rem; font-weight:600; cursor:pointer; }}
+button:hover {{ background:#796ced; }}
+.error {{ color:#d9534f; font-size:.85rem; margin:8px 0 0; }}
+@media (prefers-color-scheme: dark) {{
+  body {{ background:#17171c; color:#e8e8ee; }}
+  .card {{ background:#22222a; box-shadow:0 8px 30px rgba(0,0,0,.45); }}
+}}
+</style>
+</head>
 <body>
+<form class="card" method="post" action="/authorize">
 <h1>Sign in to soul-player</h1>
+<p class="sub">Connecting a remote source</p>
 {error_html}
-<form method="post" action="/authorize">
 <input type="hidden" name="response_type" value="code">
 <input type="hidden" name="client_id" value="soul-player">
 <input type="hidden" name="redirect_uri" value="{redirect_uri}">
@@ -497,8 +519,10 @@ fn render_login_form(valid: &ValidAuthorize, error: Option<&str>) -> Response {
 <input type="hidden" name="code_challenge_method" value="S256">
 <input type="hidden" name="state" value="{state}">
 {scope_field}
-<label>Username <input type="text" name="username" autocomplete="username" required></label>
-<label>Password <input type="password" name="password" autocomplete="current-password" required></label>
+<label for="u">Username</label>
+<input id="u" type="text" name="username" autocomplete="username" autofocus required>
+<label for="p">Password</label>
+<input id="p" type="password" name="password" autocomplete="current-password" required>
 <button type="submit">Sign in</button>
 </form>
 </body>

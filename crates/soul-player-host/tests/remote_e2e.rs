@@ -363,3 +363,143 @@ fn remote_add_sync_browse_play() {
          to the download cache"
     );
 }
+
+/// `set_remote_enabled` toggles a connected remote off and back on, mirroring
+/// the local-folder enable/disable toggle: the remote stays retained (it's
+/// still in `sources()`, never disconnected, no network/keychain touched) but
+/// while disabled its tracks drop out of `views()` and its `SourceStatus`
+/// reports `enabled: false` with `track_count: 0`; re-enabling restores both
+/// from the already-fetched blobs, with no re-fetch needed.
+#[test]
+fn remote_disable_drops_its_tracks_and_reenable_restores_them() {
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    let server = start_server(FIXTURES);
+
+    let handle = PlayerHandle::offline();
+    let tokens = oauth_login(&server.url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&server.url, tokens)
+        .expect("add remote source: fetch the index, fold it into the library");
+
+    assert_eq!(
+        handle.views().len(),
+        FIXTURES.len(),
+        "sanity: the remote's tracks are in the library before any toggle"
+    );
+    let status = handle
+        .sources()
+        .into_iter()
+        .find(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .expect("the connected remote has a SourceStatus row");
+    assert!(status.enabled, "a freshly-added remote starts enabled");
+    assert_eq!(status.track_count, FIXTURES.len());
+
+    // Disable: the remote stays configured, but its tracks leave the library.
+    handle
+        .set_remote_enabled(&server.url, false)
+        .expect("set_remote_enabled(false) should succeed");
+    assert!(
+        handle.views().is_empty(),
+        "a disabled remote's tracks must leave views()"
+    );
+    let disabled = handle
+        .sources()
+        .into_iter()
+        .find(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .expect("the remote still lists in sources() while disabled");
+    assert!(
+        !disabled.enabled,
+        "sources() should reflect the disabled flag"
+    );
+    assert_eq!(
+        disabled.track_count, 0,
+        "a disabled remote reports 0 tracks, like a disabled local folder"
+    );
+
+    // Re-enable: the already-fetched blobs restore the tracks, no re-fetch.
+    handle
+        .set_remote_enabled(&server.url, true)
+        .expect("set_remote_enabled(true) should succeed");
+    assert_eq!(
+        handle.views().len(),
+        FIXTURES.len(),
+        "re-enabling restores the remote's tracks to views()"
+    );
+    let reenabled = handle
+        .sources()
+        .into_iter()
+        .find(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .expect("the remote still lists in sources() once re-enabled");
+    assert!(reenabled.enabled);
+    assert_eq!(reenabled.track_count, FIXTURES.len());
+}
+
+/// Robustness: a remote that was online when connected can go OFFLINE later
+/// (the server itself goes away) without being dropped from `sources()` or
+/// losing its already-synced track count — only the health probe's `online`
+/// flag (and the `available` mirror) changes. Proven against a REAL server
+/// across two real `PlayerHandle::refresh_remote_health` probes, the second
+/// one taken after the server's listener has actually closed — the UI-facing
+/// counterpart of the title-bar health indicator flipping from healthy to
+/// down as a remote drops out from under a live session, and the "never wipe
+/// the library over a transient outage" rule `SourceStatus`'s own docs state
+/// for a local root, now proven for a remote too.
+#[test]
+fn remote_health_flips_offline_after_the_server_goes_away_but_track_count_survives() {
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    let server = start_server(FIXTURES);
+    let url = server.url.clone();
+
+    let handle = PlayerHandle::offline();
+    let tokens = oauth_login(&url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&url, tokens)
+        .expect("add remote source: fetch the index, fold it into the library");
+
+    let online_status = handle
+        .refresh_remote_health()
+        .into_iter()
+        .find(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url: u } if u == &url))
+        .expect("the remote has a status row while its server is up");
+    assert!(
+        online_status
+            .remote
+            .as_ref()
+            .expect("a remote's health is always Some")
+            .online,
+        "sanity: the probe reads online while the server is reachable"
+    );
+    assert_eq!(online_status.track_count, FIXTURES.len());
+
+    // The server goes away entirely: dropping it tears down its tokio runtime
+    // and closes its listener, so the next probe's connection attempt fails
+    // outright rather than timing out.
+    drop(server);
+
+    let offline_status = handle
+        .refresh_remote_health()
+        .into_iter()
+        .find(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url: u } if u == &url))
+        .expect("the remote STAYS listed once its server is gone");
+    let health = offline_status
+        .remote
+        .as_ref()
+        .expect("a remote's health is always Some, even offline");
+    assert!(
+        !health.online,
+        "the probe reports offline once the server is actually gone"
+    );
+    assert!(
+        !offline_status.available,
+        "available mirrors the health probe for a remote"
+    );
+    assert_eq!(
+        offline_status.track_count,
+        FIXTURES.len(),
+        "the already-synced track count must survive a health-only outage"
+    );
+    assert!(
+        offline_status.enabled,
+        "going offline must not touch the enabled flag"
+    );
+}
