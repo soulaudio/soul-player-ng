@@ -8804,12 +8804,13 @@ mod tests {
         );
     }
 
-    /// A distinct album track for grid-layout tests.
+    /// A distinct album track for grid-layout tests — distinct artist AND album so
+    /// the same library fills either the Albums or the Artists grid with N cards.
     fn grid_album(id: u32) -> soul_player_host::TrackView {
         soul_player_host::TrackView {
             id,
             title: Some(format!("T{id}")),
-            artist: Some("A".into()),
+            artist: Some(format!("Artist {id:02}")),
             album: Some(format!("Album {id:02}")),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
@@ -8906,13 +8907,13 @@ mod tests {
         );
     }
 
-    /// The gap between the album grid's right inner edge and the furthest-right
-    /// card on the TOP row — how many points of empty column the grid leaves on the
-    /// right at this window size. ~0 means the cards fill the width. Anchors to the
-    /// true top row (min y over the cards), not `album-0`, so it is robust to draw
-    /// order.
-    fn album_grid_right_slack(rt: &Runtime<State>) -> f32 {
-        let grid = el_info(rt, "albums-grid").rect; // [x, y, w, h]
+    /// The gap between a browse grid's right inner edge and the furthest-right card
+    /// on its TOP row — how many points of empty column the grid leaves on the right
+    /// at this window size. ~0 means the cards fill the width. Anchors to the true
+    /// top row (min y over the cards), not a specific card, so it is robust to draw
+    /// order. `grid_key` is e.g. `"albums-grid"`, `card_prefix` e.g. `"album-"`.
+    fn grid_right_slack(rt: &Runtime<State>, grid_key: &str, card_prefix: &str) -> f32 {
+        let grid = el_info(rt, grid_key).rect; // [x, y, w, h]
         let inner_right = grid[0] + grid[2] - crate::ui::space::PANE;
         let cards: Vec<[f32; 4]> = rt
             .elements()
@@ -8920,7 +8921,7 @@ mod tests {
             .filter(|e| {
                 e.key
                     .as_deref()
-                    .and_then(|k| k.strip_prefix("album-"))
+                    .and_then(|k| k.strip_prefix(card_prefix))
                     .is_some_and(|rest| rest.parse::<u32>().is_ok())
             })
             .map(|e| e.rect)
@@ -8934,47 +8935,73 @@ mod tests {
         inner_right - max_right
     }
 
-    /// The album grid must fill its width at EVERY window size, not only the lucky
-    /// ones. The exact-fill card width is fractional; the renderer rounds each card
-    /// to physical pixels, so at unlucky widths the rounded cards sum a few points
-    /// short of the pane — a thin empty column on the right the user sees "rarely".
-    /// Sweeping many widths catches it; the fix lets the layout engine distribute
-    /// the rounding remainder (flex-grow with a cap) so every width fills.
-    #[test]
-    fn the_album_grid_fills_the_width_at_every_window_size() {
-        rust_i18n::set_locale("en");
-        let env = Env {
-            system_dark: true,
-            scale: 1.0,
-        };
+    /// Sweep a browse grid over many window widths AND the common desktop DPI scales,
+    /// returning the worst (largest) right-edge empty column found and where. The
+    /// exact-fill card width is fractional, so at unlucky width/scale combinations a
+    /// fixed-width card rounds a hair too wide and wraps the last column (a full empty
+    /// gap) or too narrow (a thin one); the flex cards must fill at every combination.
+    fn worst_grid_fill(
+        route: Route,
+        grid_key: &str,
+        card_prefix: &str,
+        scales: &[f32],
+    ) -> (f32, f32, f32) {
         let mut worst = f32::MIN;
-        let mut worst_w = 0.0f32;
-        // Irrational-ish step so the fractional part of the card width varies.
-        for step in 0..56u32 {
-            let win_w = 980.0 + step as f32 * 7.3;
-            let mut s = State::new(PlayerHandle::offline());
-            s.sidebar_collapsed = false;
-            s.route = Route::Albums;
-            s.ui_zoom = 1.0;
-            s.library = (1..=40).map(grid_album).collect();
-            let mut rt = Runtime::new(s, view, (win_w, 900.0), env);
-            // Settle: the first frame sizes the grid from the fallback width (no prior
-            // layout), so give the readback-driven column width a few frames to reach
-            // the committed pane width — the steady state the user actually sees.
-            for _ in 0..5 {
-                rt.frame(0.0);
-            }
-            let slack = album_grid_right_slack(&rt);
-            if slack > worst {
-                worst = slack;
-                worst_w = win_w;
+        let (mut worst_w, mut worst_scale) = (0.0f32, 0.0f32);
+        for &scale in scales {
+            // Irrational-ish step so the card width's fractional part varies across a
+            // 1-to-8-column span (the 7-column 1316 case is where the bug first bit).
+            for step in 0..12u32 {
+                let win_w = 900.0 + step as f32 * 66.9;
+                let mut s = State::new(PlayerHandle::offline());
+                s.sidebar_collapsed = false;
+                s.route = route;
+                s.ui_zoom = 1.0;
+                s.library = (1..=24).map(grid_album).collect();
+                let mut rt = Runtime::new(s, view, (win_w, 900.0), Env { system_dark: true, scale });
+                // Settle: the first frame sizes the grid from the fallback width (no
+                // prior layout), so give the readback-driven width two more frames to
+                // reach the committed pane width — the steady state the user sees.
+                for _ in 0..3 {
+                    rt.frame(0.0);
+                }
+                let slack = grid_right_slack(&rt, grid_key, card_prefix);
+                if slack > worst {
+                    worst = slack;
+                    worst_w = win_w;
+                    worst_scale = scale;
+                }
             }
         }
-        // One physical pixel of residual rounding is unavoidable and invisible; a
-        // multi-point empty column is the bug.
+        (worst, worst_w, worst_scale)
+    }
+
+    /// The Albums grid must fill its width at EVERY window size and DPI scale, not
+    /// only the lucky ones. One physical pixel of residual rounding is unavoidable
+    /// and invisible; a multi-point empty column (worst case a whole wrapped column)
+    /// is the bug the flex cards fix.
+    #[test]
+    fn the_album_grid_fills_the_width_at_every_size_and_scale() {
+        rust_i18n::set_locale("en");
+        // Scale 1.0 is the coarsest rounding (most exposure); 2.0 the finest — the
+        // two extremes of the physical-pixel grid the cards must tile.
+        let (worst, w, scale) =
+            worst_grid_fill(Route::Albums, "albums-grid", "album-", &[1.0, 2.0]);
         assert!(
             worst <= 1.0,
-            "the grid fills within 1 pt at every width; worst empty column {worst:.1} pt at window {worst_w:.0}"
+            "albums grid fills within 1 pt everywhere; worst empty column {worst:.1} pt at window {w:.0}, scale {scale}"
+        );
+    }
+
+    /// The Artists grid shares the same flex card (`media_card`), so one representative
+    /// scale confirms its grid path fills identically.
+    #[test]
+    fn the_artists_grid_fills_the_width() {
+        rust_i18n::set_locale("en");
+        let (worst, w, scale) = worst_grid_fill(Route::Artists, "artists-grid", "artist-", &[1.25]);
+        assert!(
+            worst <= 1.0,
+            "artists grid fills within 1 pt; worst empty column {worst:.1} pt at window {w:.0}, scale {scale}"
         );
     }
 
