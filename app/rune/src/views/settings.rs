@@ -627,7 +627,7 @@ const HEALTH_DOT_PX: f32 = 10.0;
 /// bare `https://` isn't informative, but the whole URL (shown in full below,
 /// as the "path" line) is more than a title needs. Falls back to the whole
 /// `url` if it carries no recognizable scheme.
-fn display_host(url: &str) -> String {
+pub(crate) fn display_host(url: &str) -> String {
     let without_scheme = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
@@ -677,7 +677,7 @@ fn health_dot(index: usize, online: bool, p: &Palette) -> El {
 /// remote has never answered a probe (offline, or not yet checked) — mirrors
 /// the band-table's own "—" convention for an unset numeric value. Plain text,
 /// not localized: a unit abbreviation and a glyph, not prose.
-fn latency_text(latency_ms: Option<u64>) -> String {
+pub(crate) fn latency_text(latency_ms: Option<u64>) -> String {
     match latency_ms {
         Some(ms) => format!("{ms}ms"),
         None => "—".to_string(),
@@ -686,7 +686,7 @@ fn latency_text(latency_ms: Option<u64>) -> String {
 
 /// Seconds since the Unix epoch, for [`relative_time`]. Falls back to 0 on a
 /// clock set before the epoch rather than panicking — this is display-only.
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -697,7 +697,7 @@ fn now_unix() -> u64 {
 /// relative time against `now` — "just now" / "%{count}m ago" / "%{count}h
 /// ago" / "%{count}d ago". `None` (never probed) reads as the same em-dash
 /// placeholder [`latency_text`] uses for "no value yet".
-fn relative_time(now: u64, then: Option<u64>) -> String {
+pub(crate) fn relative_time(now: u64, then: Option<u64>) -> String {
     let Some(then) = then else {
         return "—".to_string();
     };

@@ -304,6 +304,11 @@ struct State {
     /// from opening Settings → Music Data) is in flight on a background thread.
     /// Guards against two overlapping probes — see [`refresh_remote_health`].
     remote_health_refreshing: bool,
+    /// Whether the title-bar remote-health popover is open — toggled by
+    /// pressing the title-bar indicator (`views::titlebar::remote_health_indicator`),
+    /// closed by an outside press/Escape (`El::modal`) or the popover's own
+    /// "Open sources settings" action. Ephemeral; mirrors `signal_path_open`.
+    remote_health_open: bool,
     /// A transient "N tracks removed from <folder>" warning for the Sources page,
     /// set from the host's [`Event::TracksRemoved`] when a rescan finds deletions
     /// (`(root, count)`). Cleared on the next Sources refresh ([`apply_watch`]) so
@@ -622,6 +627,7 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
             remote_health_refreshing: false,
+            remote_health_open: false,
             removal_notice: None,
             remote_form_open: false,
             remote_url_buf: rune::TextEdit::new(""),
@@ -1256,6 +1262,17 @@ pub(crate) fn toggle_signal_path(s: &mut State) {
 /// Close the signal-path panel (an outside press / Escape via `El::modal`).
 pub(crate) fn close_signal_path(s: &mut State) {
     s.signal_path_open = false;
+}
+
+/// Open/close the title-bar remote-health popover (pressing the indicator).
+pub(crate) fn toggle_remote_health_popover(s: &mut State) {
+    s.remote_health_open = !s.remote_health_open;
+}
+
+/// Close the remote-health popover (an outside press / Escape via `El::modal`,
+/// or its own "Open sources settings" action).
+pub(crate) fn close_remote_health_popover(s: &mut State) {
+    s.remote_health_open = false;
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
@@ -2262,6 +2279,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // identity — and thus its offset — stable whether or not an overlay is open.
     let mut overlays = views::settings::settings_overlays(s, &p, cx);
     overlays.extend(views::signal_path::overlay(s, &p));
+    overlays.extend(views::titlebar::overlay(s, &p));
     // The crash-report modal draws over everything, on any route — last, so it
     // stacks above any panel still mounted beneath it.
     if let Some(dialog) = crash_overlay(s, &p) {
@@ -3557,6 +3575,220 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Two enabled remotes, both online: the title-bar indicator shows and its
+    /// status dot reads the healthy/green color (`remote_health_summary`'s
+    /// `Healthy` case, see `views/titlebar.rs`'s own pure unit tests for the
+    /// aggregation logic itself — this proves the RENDERED indicator reflects it).
+    #[test]
+    fn remote_health_indicator_is_green_when_every_enabled_remote_is_online() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sources.push(online_remote_status("http://a.test"));
+        s.sources.push(online_remote_status("http://b.test"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("remote-health-indicator").is_some(),
+            "the indicator shows with enabled remotes present"
+        );
+        let p = theme::palette(true);
+        assert_eq!(
+            el_info(&rt, "remote-health-dot").fill,
+            p.online,
+            "every enabled remote online reads as the healthy/green color"
+        );
+    }
+
+    /// One online, one offline (both enabled): the indicator reads the
+    /// partial/amber color.
+    #[test]
+    fn remote_health_indicator_is_amber_when_some_enabled_remotes_are_offline() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sources.push(online_remote_status("http://a.test"));
+        s.sources.push(offline_remote_status("http://b.test"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let p = theme::palette(true);
+        assert_eq!(
+            el_info(&rt, "remote-health-dot").fill,
+            p.warning,
+            "a mix of online and offline enabled remotes reads as the partial/amber color"
+        );
+    }
+
+    /// Every enabled remote offline: the indicator reads the down/red color.
+    #[test]
+    fn remote_health_indicator_is_red_when_every_enabled_remote_is_offline() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sources.push(offline_remote_status("http://a.test"));
+        s.sources.push(offline_remote_status("http://b.test"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let p = theme::palette(true);
+        assert_eq!(
+            el_info(&rt, "remote-health-dot").fill,
+            p.danger,
+            "every enabled remote offline reads as the down/red color"
+        );
+    }
+
+    /// No remote sources at all — neither none configured, nor local-only —
+    /// shows no indicator: there's nothing remote to report health on.
+    #[test]
+    fn remote_health_indicator_is_absent_with_no_remote_sources() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = State::new(PlayerHandle::offline());
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("remote-health-indicator").is_none(),
+            "no sources at all → no indicator"
+        );
+
+        let dir = testdata_dir();
+        let mut s2 = State::new(PlayerHandle::offline());
+        let up = s2.host.add_folder(&dir).expect("add_folder");
+        apply_watch(&mut s2, up);
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("remote-health-indicator").is_none(),
+            "local-only sources → still no indicator (locals have no health concept)"
+        );
+    }
+
+    /// The scan widget and the remote-health indicator are independent and must
+    /// coexist in the same title-bar dock (the shared `content` row's grow-spacer
+    /// + gap) rather than one hiding the other.
+    #[test]
+    fn scan_widget_and_remote_health_indicator_coexist_in_the_titlebar() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sources.push(online_remote_status("http://a.test"));
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 10,
+            total: 100,
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("titlebar-scan").is_some(),
+            "the scan widget still renders"
+        );
+        assert!(
+            rt.find("remote-health-indicator").is_some(),
+            "the remote-health indicator renders alongside it"
+        );
+    }
+
+    /// Pressing the indicator opens the popover, which lists EVERY remote (not
+    /// just the unhealthy ones) with its own status: the online remote's row
+    /// reads a real latency, the offline one reads the "—" placeholder — and the
+    /// popover offers a way to jump to Settings → Music Data.
+    #[test]
+    fn remote_health_popover_lists_every_remote_with_its_status() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sources.push(online_remote_status("http://a.test"));
+        s.sources.push(offline_remote_status("http://b.test"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("remote-health-popover").is_none(),
+            "the popover is closed initially"
+        );
+
+        click_key(&mut rt, "remote-health-indicator");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.state.remote_health_open,
+            "pressing the indicator opens the popover"
+        );
+        assert!(
+            rt.find("remote-health-popover").is_some(),
+            "the popover renders"
+        );
+        assert!(rt.find("remote-health-row-0").is_some(), "row 0 renders");
+        assert!(rt.find("remote-health-row-1").is_some(), "row 1 renders");
+        assert_eq!(
+            el_info(&rt, "remote-health-row-latency-0").text.as_deref(),
+            Some("42ms"),
+            "the online remote's row shows a real latency"
+        );
+        assert_eq!(
+            el_info(&rt, "remote-health-row-latency-1").text.as_deref(),
+            Some("—"),
+            "the offline remote's row shows the dash placeholder"
+        );
+        assert!(
+            rt.find("remote-health-open-settings").is_some(),
+            "the popover offers a way to jump to Settings"
+        );
+
+        // Jumping to settings closes the popover and routes there.
+        click_key(&mut rt, "remote-health-open-settings");
+        assert!(matches!(rt.state.route, Route::Settings));
+        assert_eq!(rt.state.settings_tab, SettingsTab::MusicData);
+        assert!(
+            !rt.state.remote_health_open,
+            "jumping to settings closes the popover"
+        );
+    }
+
+    /// A DISABLED remote still lists in the popover (it's configured, just
+    /// turned off) — it must never silently vanish the way it does from the
+    /// aggregate indicator's color calculation.
+    #[test]
+    fn remote_health_popover_still_lists_a_disabled_remote() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = State::new(PlayerHandle::offline());
+        s.sources.push(online_remote_status("http://a.test"));
+        let mut disabled = offline_remote_status("http://b.test");
+        disabled.enabled = false;
+        s.sources.push(disabled);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+
+        click_key(&mut rt, "remote-health-indicator");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.find("remote-health-row-1").is_some(),
+            "the disabled remote still gets a row"
+        );
     }
 
     #[test]
@@ -7265,6 +7497,29 @@ mod tests {
                 latency_ms: Some(42),
                 server_version: Some("0.9.0".to_string()),
                 index_version: Some(3),
+                last_checked_unix: Some(test_now_unix()),
+            }),
+        }
+    }
+
+    /// An offline remote `SourceStatus` — the [`online_remote_status`] counterpart
+    /// for the title-bar health indicator's partial/down cases and the health
+    /// popover's offline row (no latency/version reading, since there was no
+    /// successful probe to read one from).
+    fn offline_remote_status(url: &str) -> SourceStatus {
+        SourceStatus {
+            path: PathBuf::from(url),
+            enabled: true,
+            available: false,
+            track_count: 0,
+            kind: SourceKind::Remote {
+                url: url.to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: false,
+                latency_ms: None,
+                server_version: None,
+                index_version: None,
                 last_checked_unix: Some(test_now_unix()),
             }),
         }

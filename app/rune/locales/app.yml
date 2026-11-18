@@ -18,6 +18,48 @@ titlebar.indexing:
   zh: '建立索引'
   cs: 'Indexování'
   ja: 'インデックス作成'
+titlebar.remoteHealthy:
+  en: 'Remote sources: all online'
+  de: 'Remote-Quellen: alle online'
+  es: 'Fuentes remotas: todas en línea'
+  zh: '远程来源：全部在线'
+  cs: 'Vzdálené zdroje: všechny online'
+  ja: 'リモートソース: すべてオンライン'
+titlebar.remotePartial:
+  en: 'Remote sources: some offline'
+  de: 'Remote-Quellen: einige offline'
+  es: 'Fuentes remotas: algunas sin conexión'
+  zh: '远程来源：部分离线'
+  cs: 'Vzdálené zdroje: některé offline'
+  ja: 'リモートソース: 一部オフライン'
+titlebar.remoteDown:
+  en: 'Remote sources: all offline'
+  de: 'Remote-Quellen: alle offline'
+  es: 'Fuentes remotas: todas sin conexión'
+  zh: '远程来源：全部离线'
+  cs: 'Vzdálené zdroje: všechny offline'
+  ja: 'リモートソース: すべてオフライン'
+titlebar.remoteDisabled:
+  en: 'Disabled'
+  de: 'Deaktiviert'
+  es: 'Desactivada'
+  zh: '已禁用'
+  cs: 'Zakázáno'
+  ja: '無効'
+titlebar.remoteSources:
+  en: 'Remote sources'
+  de: 'Remote-Quellen'
+  es: 'Fuentes remotas'
+  zh: '远程来源'
+  cs: 'Vzdálené zdroje'
+  ja: 'リモートソース'
+titlebar.openSourcesSettings:
+  en: 'Open sources settings'
+  de: 'Quelleneinstellungen öffnen'
+  es: 'Abrir ajustes de fuentes'
+  zh: '打开来源设置'
+  cs: 'Otevřít nastavení zdrojů'
+  ja: 'ソース設定を開く'
 
 nav.tracks:
   en: 'Tracks'
