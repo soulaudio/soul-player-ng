@@ -6238,6 +6238,87 @@ mod tests {
         );
     }
 
+    /// First open of the Remote connect form must render as one fully formed
+    /// card, not with its content trailing far behind the card's own fade-in.
+    /// Before the fix, the card (`remote-form`) and everything it holds each
+    /// played their OWN entrance fade on mount — nested independently, so the
+    /// opacities multiplied with depth. A few real frames into the real
+    /// `+ Add Source → Remote` click flow, the card's own border/fill was
+    /// already ~28% visible while the Connect button — nested two levels
+    /// deeper inside it (card → button row → button) — was still under 8%,
+    /// i.e. effectively invisible: the card read as rendering "cut", missing
+    /// its content, on the very first open (then settled fine moments later,
+    /// matching the user report). `instant_changes` on the scrim lands the
+    /// whole held subtree at once, so the card and its fields/buttons now
+    /// share a single fade instead of compounding. This checks a frame BEFORE
+    /// the fade settles (no `settle_all`) — the only window where the old
+    /// desync, and thus the clip, was visible — and FAILS without the fix.
+    #[test]
+    fn remote_form_first_open_renders_fully_formed_before_it_settles() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source");
+        rt.settle_all();
+        rt.frame(0.0);
+        // The real first-open click, then a few real-time frames into the
+        // mount fade — deliberately NOT settled, so this is the frame the
+        // user actually saw.
+        click_key(&mut rt, "add-source-opt-remote");
+        for _ in 0..4 {
+            rt.frame(1.0 / 60.0);
+        }
+
+        let card = el_info(&rt, "remote-form");
+        let url = el_info(&rt, "remote-url");
+        let connect = el_info(&rt, "remote-connect");
+        assert!(
+            card.opacity > 0.05,
+            "the card should already be visibly fading in by now (opacity={:.3})",
+            card.opacity
+        );
+        assert!(
+            (connect.opacity - card.opacity).abs() < 0.05,
+            "the Connect button should fade in together with the card, not trail \
+             far behind it (card={:.3} connect={:.3})",
+            card.opacity,
+            connect.opacity
+        );
+        assert!(
+            (url.opacity - card.opacity).abs() < 0.05,
+            "the url field should fade in together with the card (card={:.3} url={:.3})",
+            card.opacity,
+            url.opacity
+        );
+
+        // Geometric half of "first open clips": present, real-sized, and not
+        // clipped by an ancestor's visible rect (the same signature
+        // `horizontal_overflows` checks for elsewhere in this module).
+        for key in ["remote-url", "remote-connect"] {
+            let e = el_info(&rt, key);
+            let [x, y, w, h] = e.rect;
+            assert!(w > 0.0 && h > 0.0, "{key} has a real size");
+            let [vx, vy, vw, vh] = e.visible;
+            assert!(
+                (vx - x).abs() < 1.0 && (vw - w).abs() < 1.0,
+                "{key} clipped horizontally: rect={:?} visible={:?}",
+                e.rect,
+                e.visible
+            );
+            assert!(
+                (vy - y).abs() < 1.0 && (vh - h).abs() < 1.0,
+                "{key} clipped vertically: rect={:?} visible={:?}",
+                e.rect,
+                e.visible
+            );
+        }
+    }
+
     /// While a connect attempt is in flight (`State::remote_connecting`), the
     /// Connect button goes inert (nothing to press until the browser
     /// round-trip returns) and a "waiting for your browser" status line

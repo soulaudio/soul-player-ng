@@ -489,6 +489,18 @@ pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
             .h_full()
             .center()
             .fill(Color::BLACK.alpha(0.45))
+            // The scrim's own dim-in keeps its fade (a backdrop easing in reads fine),
+            // but `instant_changes` lands everything it HOLDS — the card and every
+            // field/button inside it — at once. Without this, each nested level (card,
+            // field group, button row, button) plays its OWN independent entrance fade
+            // on top of its ancestors', so the opacities multiply: by the first real
+            // frame the Connect button was measured at ~0.2% opacity (0.05 at the card,
+            // squared again by the button row and the button itself) while the card's
+            // own border/fill was already visible — reading as the card rendering
+            // "cut", with its content missing, on the very first open. Landing the held
+            // subtree at once makes the whole card (not just its outline) appear fully
+            // formed the instant it mounts.
+            .instant_changes()
             .child(dialog),
     )
 }
