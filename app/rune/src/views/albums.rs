@@ -276,8 +276,8 @@ pub(crate) fn detail_track_row(
         );
     // A subtle cloud badge for a track streaming from a remote source;
     // nothing renders for a local track, the unremarked default.
-    if t.remote {
-        r = r.child(remote_badge(t.id, p));
+    if let Some(host) = &t.remote_source {
+        r = r.child(remote_badge(t.id, host, p));
     }
     r.child(
         text(fmt_dur(t.duration_secs))
@@ -416,7 +416,7 @@ mod tests {
             album: Some(album.to_string()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }

@@ -216,20 +216,28 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, corner: f32, p: &Palette, sc
 }
 
 /// Side of the inline "remote" badge icon marking a track whose source is a
-/// remote server (`TrackView::remote`) — small enough to read as a marker
-/// next to a title, not a second glyph competing for attention.
+/// remote server (`TrackView::remote_source`) — small enough to read as a
+/// marker next to a title, not a second glyph competing for attention.
 const REMOTE_BADGE_PX: f32 = 12.0;
 
 /// A subtle cloud glyph marking a track that streams from a remote source
-/// rather than sitting on local disk (`TrackView::remote`). Shared by the
-/// main track list (`views::library::track_row`), the album/artist/genre
+/// rather than sitting on local disk (`TrackView::remote_source`). Shared by
+/// the main track list (`views::library::track_row`), the album/artist/genre
 /// detail rows (`views::albums::detail_track_row`), and the now-playing
 /// title line below — nothing renders for a local track, since local is the
 /// unremarked default.
-pub(crate) fn remote_badge(track_id: u32, p: &Palette) -> El {
+///
+/// `host` names WHICH remote server the track streams from (`remote_source`'s
+/// `Some` payload) — it drives the hover tooltip ([`El::help`], shown after
+/// the system's hover delay) so the badge is more than a bare flag: resting
+/// the pointer on the cloud answers "remote from where". The accessible
+/// label stays the generic "Remote track" (assistive tech reads it
+/// immediately, with no hover); the host-naming tooltip is additive.
+pub(crate) fn remote_badge(track_id: u32, host: &str, p: &Palette) -> El {
     el().key(format!("track-remote-{track_id}"))
         .role("img")
         .label(t!("library.remoteTrack").to_string())
+        .help(t!("library.streamsFrom", host => host).to_string())
         .child(icon(&icons::CLOUD, REMOTE_BADGE_PX).color(p.text_secondary))
 }
 
@@ -258,14 +266,14 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
     // A local track (the overwhelming default) keeps the plain title text
     // unchanged; only a remote one gains the badge row, so the common case
     // never pays for an extra wrapper.
-    let title_row: El = if track.remote {
+    let title_row: El = if let Some(host) = &track.remote_source {
         row()
             .key("now-playing-title")
             .gap(space::XXS)
             .center_y()
             .min_w(0.0)
             .child(title_el.grow(1.0))
-            .child(remote_badge(track.id, p))
+            .child(remote_badge(track.id, host, p))
     } else {
         title_el
     };

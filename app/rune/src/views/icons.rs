@@ -155,9 +155,9 @@ pub static SERVER: Icon = stroke_icon!(
 );
 
 /// lucide `cloud` — the per-track "streams from a remote source" badge in a
-/// track row / the now-playing line (`TrackView::remote`). A simple, rounded
-/// glyph reads clearly at the small size a dense track list needs, unlike
-/// `SERVER`'s finer detail. Source: lucide.dev/icons/cloud.
+/// track row / the now-playing line (`TrackView::remote_source`). A simple,
+/// rounded glyph reads clearly at the small size a dense track list needs,
+/// unlike `SERVER`'s finer detail. Source: lucide.dev/icons/cloud.
 pub static CLOUD: Icon = stroke_icon!(
     "cloud",
     r#"<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>"#

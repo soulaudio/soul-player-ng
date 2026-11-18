@@ -476,6 +476,13 @@ library.remoteTrack:
   zh: '远程曲目'
   cs: 'Vzdálená skladba'
   ja: 'リモート曲'
+library.streamsFrom:
+  en: 'Streams from %{host}'
+  de: 'Streamt von %{host}'
+  es: 'Transmite desde %{host}'
+  zh: '来自 %{host} 的流媒体'
+  cs: 'Streamuje z %{host}'
+  ja: '%{host} からストリーミング'
 common.back:
   en: 'Back'
   de: 'Zurück'

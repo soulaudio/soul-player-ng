@@ -260,7 +260,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: genre.map(|g| g.to_string()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
