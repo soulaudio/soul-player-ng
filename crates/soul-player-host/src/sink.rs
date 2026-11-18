@@ -350,3 +350,49 @@ impl Sink for NullSink {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    /// REAL-DEVICE guard for the shared-sink live switch: the create-then-drop order
+    /// [`crate`]'s `maybe_apply_output_change` uses for a SHARED sink must not glitch the
+    /// device. We open a second shared device sink WHILE the first is still alive (shared
+    /// mode allows multiple clients per device), then drop the first — the new sink must
+    /// keep accepting audio. This is the exact sequence that failed with cpal
+    /// "the requested device is no longer available" when the old release-first code
+    /// dropped the shared stream before re-opening it on the same device. Writes SILENCE
+    /// only (inaudible). Ignored — needs a real output device:
+    ///   `cargo test -p soul-player-host shared_device -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs a real output device; run with --ignored"]
+    fn shared_device_create_then_drop_keeps_the_new_sink_working() {
+        let status = Arc::new(Mutex::new(ExclusiveStatus::Shared));
+        let mut old = match open_device_sink(None, false, false, &status) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("no usable output device ({e:#}) — skipping");
+                return;
+            }
+        };
+        let si = old.stream_info();
+        let silence = vec![0i32; si.channels as usize * 2048];
+        old.write(&silence).expect("old shared sink plays silence");
+
+        // Build the NEW sink FIRST, while the old is still alive (the fix's order).
+        let mut new = open_device_sink(None, false, false, &status)
+            .expect("open a second shared sink while the first is still alive");
+        new.write(&silence)
+            .expect("new sink plays while the old is alive");
+
+        // Drop the old sink; the new one must keep working — no device-unavailable gap.
+        drop(old);
+        for i in 0..16 {
+            new.write(&silence).unwrap_or_else(|e| {
+                panic!("new sink failed after the old was dropped (block {i}): {e:?}")
+            });
+        }
+        new.flush().expect("new sink flush");
+        println!("OK: shared create-then-drop on the real device kept the new sink working");
+    }
+}

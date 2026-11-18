@@ -4859,6 +4859,7 @@ dependencies = [
  "soul-audio-multicatalog",
  "soul-audio-queue",
  "soul-audio-tags",
+ "tracing",
 ]
 
 [[package]]
@@ -4879,6 +4880,7 @@ dependencies = [
  "soul-audio-organize",
  "soul-player-backend",
  "sysinfo",
+ "tracing",
 ]
 
 [[package]]
