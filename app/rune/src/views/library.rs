@@ -13,7 +13,7 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
-use crate::views::player::cover;
+use crate::views::player::{cover, remote_badge};
 use crate::views::scrollbar;
 
 thread_local! {
@@ -28,7 +28,7 @@ pub(crate) fn fmt_dur(secs: f64) -> String {
 
 /// Case-insensitive substring match over the fields a user would search by.
 /// `q` is already lowercased by the caller.
-fn track_matches(t: &TrackView, q: &str) -> bool {
+pub(crate) fn track_matches(t: &TrackView, q: &str) -> bool {
     let hit = |o: &Option<String>| o.as_deref().is_some_and(|v| v.to_lowercase().contains(q));
     hit(&t.title) || hit(&t.artist) || hit(&t.album)
 }
@@ -142,6 +142,11 @@ fn track_row(
             .w(28.0),
         )
         .child(title_col);
+    // A subtle cloud badge for a track streaming from a remote source;
+    // nothing renders for a local track, the unremarked default.
+    if t.remote {
+        r = r.child(remote_badge(t.id, p));
+    }
     // The standard layout keeps the artist and album as their own columns; the
     // compact layout dropped them above (artist moved under the title).
     if !compact {

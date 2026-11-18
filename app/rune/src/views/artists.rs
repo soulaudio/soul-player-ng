@@ -8,16 +8,18 @@
 
 use std::collections::HashMap;
 
-use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
+use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text};
 use soul_player_host::TrackView;
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::albums::{albums_of_artist, detail_track_row};
+use crate::views::albums::{Album, albums_of_artist, detail_track_row};
 use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::grid;
+use crate::views::icons;
 use crate::views::media_card::{CardSpec, media_card};
+use crate::views::player::cover;
 
 /// One grouped artist: display name, a track id to draw a cover from, and every
 /// track id (in library order) for Play All / the detail list.
@@ -71,10 +73,8 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
         card_w,
         scale,
         move |st: &mut State| {
-            st.route = crate::Route::Artist;
-            st.open_artist = Some(name.clone());
+            crate::navigate_to(st, crate::Route::Artist, None, Some(name.clone()), None);
             st.artist_top_expanded = false;
-            st.mobile_show_content = true;
         },
     )
 }
@@ -91,18 +91,25 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .key("artists-grid")
         .role("grid")
         .flex_wrap()
-        .gap(space::GUTTER)
+        .gaps(space::MD, space::GUTTER)
         .padding(space::PANE);
     for (slot, a) in artists.iter().enumerate() {
         grid = grid.child(artist_card(s, p, slot, a, card_w, scale));
     }
     col().key("artists").grow(1.0).min_h(0.0).child(
-        grid.scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .scroll_edge_fade(24.0)
-        .grow(1.0)
-        .min_h(0.0),
+        // Scroll on the growing wrapper, not the grid — see `albums_page`: a flex-wrap
+        // grid that is itself the growing scroll element stretches its wrapped rows
+        // down the viewport when they don't fill it. Natural-height grid, growing
+        // scroll viewport around it.
+        col()
+            .key("artists-scroll")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0)
+            .child(grid),
     )
 }
 
@@ -119,7 +126,7 @@ fn back_button(p: &Palette) -> El {
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(|st: &mut State| st.route = crate::Route::Artists)
+        .on_press(crate::go_back)
 }
 
 /// An artist's detail page (the original's ArtistPage): a back link, a circular
@@ -212,48 +219,90 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         );
     }
 
-    // Discography: the artist's albums as a responsive card grid; a card opens the
-    // album. Read this section's own committed width for the column count.
+    // Discography: a grid/list toggle in the header, then either the responsive
+    // card grid (default) or a compact row list.
     let pane = cx
         .layout_size("artist-discography")
         .map(|[w, _]| w)
         .unwrap_or(820.0);
-    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
-    let mut disc = col().key("artist-discography").gap(space::SM).child(
-        text(t!("artist.discography").to_string())
-            .font(type_::HEADING)
-            .color(p.fg),
-    );
+    let card_w = grid::columns(pane, grid::MIN_CARD, space::GUTTER).1;
+    let toggle = |key: &str, glyph: &'static rune::Icon, label: String, active: bool| {
+        let want_list = key == "disc-toggle-list";
+        el().key(key.to_string())
+            .role("button")
+            .label(label)
+            .focusable(true)
+            .px(space::SNUG)
+            .py(space::XS)
+            .radius(radius::SM)
+            .cursor(Cursor::Pointer)
+            .fill(if active {
+                p.fg.alpha(fx::SELECTED)
+            } else {
+                Color::TRANSPARENT
+            })
+            .hover(p.fg.alpha(fx::HOVER))
+            .child(icon(glyph, 18.0).color(if active { p.fg } else { p.text_secondary }))
+            .on_press(move |st: &mut State| st.discography_list = want_list)
+    };
+    let header = row()
+        .key("artist-disc-header")
+        .center_y()
+        .child(
+            text(t!("artist.discography").to_string())
+                .font(type_::HEADING)
+                .color(p.fg)
+                .grow(1.0),
+        )
+        .child(toggle(
+            "disc-toggle-grid",
+            &icons::GRID,
+            t!("artist.viewGrid").to_string(),
+            !s.discography_list,
+        ))
+        .child(toggle(
+            "disc-toggle-list",
+            &icons::LIST,
+            t!("artist.viewList").to_string(),
+            s.discography_list,
+        ));
+    let mut disc = col().key("artist-discography").gap(space::SM).child(header);
     if !discography.is_empty() {
-        let mut grid_el = row()
-            .key("artist-disc-grid")
-            .role("grid")
-            .flex_wrap()
-            .gap(space::GUTTER);
-        for (slot, alb) in discography.iter().enumerate() {
-            let name = alb.name.clone();
-            grid_el = grid_el.child(media_card(
-                s,
-                p,
-                CardSpec {
-                    key: format!("artist-disc-{slot}"),
-                    label: alb.name.clone(),
-                    title: alb.name.clone(),
-                    subtitle: None,
-                    cover_id: alb.cover_id,
-                    circular: false,
-                    play_ids: alb.ids.clone(),
-                },
-                card_w,
-                scale,
-                move |st: &mut State| {
-                    st.route = crate::Route::Album;
-                    st.open_album = Some(name.clone());
-                    st.mobile_show_content = true;
-                },
-            ));
+        if s.discography_list {
+            let mut list = col().key("artist-disc-list").role("list").gap(space::XXS);
+            for (i, alb) in discography.iter().enumerate() {
+                list = list.child(album_row(s, p, i, alb, scale));
+            }
+            disc = disc.child(list);
+        } else {
+            let mut grid_el = row()
+                .key("artist-disc-grid")
+                .role("grid")
+                .flex_wrap()
+                .gaps(space::MD, space::GUTTER);
+            for (slot, alb) in discography.iter().enumerate() {
+                let name = alb.name.clone();
+                grid_el = grid_el.child(media_card(
+                    s,
+                    p,
+                    CardSpec {
+                        key: format!("artist-disc-{slot}"),
+                        label: alb.name.clone(),
+                        title: alb.name.clone(),
+                        subtitle: None,
+                        cover_id: alb.cover_id,
+                        circular: false,
+                        play_ids: alb.ids.clone(),
+                    },
+                    card_w,
+                    scale,
+                    move |st: &mut State| {
+                        crate::navigate_to(st, crate::Route::Album, Some(name.clone()), None, None);
+                    },
+                ));
+            }
+            disc = disc.child(grid_el);
         }
-        disc = disc.child(grid_el);
     }
 
     col()
@@ -283,6 +332,60 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         )
 }
 
+/// One Discography row (list mode): a small square cover, the album name, and
+/// "{n} tracks · {duration}". Opens the album via the back-stack.
+fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
+    let total: f64 = alb
+        .ids
+        .iter()
+        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .map(|t| t.duration_secs)
+        .sum();
+    let meta = t!(
+        "detail.tracksAndDuration",
+        count => alb.ids.len(),
+        dur => crate::views::albums::fmt_total_dur(total)
+    )
+    .to_string();
+    let name = alb.name.clone();
+    row()
+        .key(format!("artist-disc-row-{i}"))
+        .role("button")
+        .label(alb.name.clone())
+        .focusable(true)
+        .w_full()
+        .gap(space::MD)
+        .center_y()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(cover(s, Some(alb.cover_id), 48.0, radius::SM, p, scale))
+        .child(
+            col()
+                .gap(space::XXS)
+                .min_w(0.0)
+                .grow(1.0)
+                .child(
+                    text(alb.name.clone())
+                        .font(type_::ITEM)
+                        .color(p.fg)
+                        .truncate(),
+                )
+                .child(
+                    text(meta)
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary)
+                        .truncate(),
+                ),
+        )
+        .on_press(move |st: &mut State| {
+            crate::navigate_to(st, crate::Route::Album, Some(name.clone()), None, None);
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,6 +398,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 

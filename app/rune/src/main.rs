@@ -24,9 +24,10 @@ use parley_engine as _;
 use soul_player_host::{
     Band, BandKind, BrowseAxis, Command, DspUnit, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
     IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
-    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceStatus,
+    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceKind, SourceStatus,
     TrackLoudness, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
+    remote::{KeyringStore, TokenStore},
 };
 
 mod config;
@@ -95,6 +96,74 @@ pub(crate) enum Route {
     /// A genre's detail page; which genre is in [`State::open_genre`].
     Genre,
     Settings,
+}
+
+/// One entry in the navigation back-stack: a full location (route + which
+/// album/artist/genre is open). Pushed by `navigate_to`, restored by `go_back`.
+#[derive(Clone, PartialEq)]
+pub(crate) struct NavEntry {
+    pub route: Route,
+    pub open_album: Option<String>,
+    pub open_artist: Option<String>,
+    pub open_genre: Option<String>,
+}
+
+/// The current location as a `NavEntry`.
+fn here(s: &State) -> NavEntry {
+    NavEntry {
+        route: s.route,
+        open_album: s.open_album.clone(),
+        open_artist: s.open_artist.clone(),
+        open_genre: s.open_genre.clone(),
+    }
+}
+
+/// Open a detail location, remembering where we were so `go_back` can return. The
+/// five "open a detail" interactions (album/artist/genre cards, the Discography
+/// card, and the now-playing → album link) route through this.
+pub(crate) fn navigate_to(
+    s: &mut State,
+    route: Route,
+    open_album: Option<String>,
+    open_artist: Option<String>,
+    open_genre: Option<String>,
+) {
+    let target = NavEntry {
+        route,
+        open_album: open_album.clone(),
+        open_artist: open_artist.clone(),
+        open_genre: open_genre.clone(),
+    };
+    let current = here(s);
+    if current != target {
+        s.nav_history.push(current);
+    }
+    s.route = route;
+    s.open_album = open_album;
+    s.open_artist = open_artist;
+    s.open_genre = open_genre;
+    s.mobile_show_content = true;
+    s.genre_search = rune::TextEdit::new("");
+}
+
+/// The detail back button: pop to the previous location, or — if the stack is
+/// empty — fall back to the current page's browse parent so back is never a dead
+/// end.
+pub(crate) fn go_back(s: &mut State) {
+    s.genre_search = rune::TextEdit::new("");
+    if let Some(prev) = s.nav_history.pop() {
+        s.route = prev.route;
+        s.open_album = prev.open_album;
+        s.open_artist = prev.open_artist;
+        s.open_genre = prev.open_genre;
+    } else {
+        s.route = match s.route {
+            Route::Album | Route::Albums => Route::Albums,
+            Route::Artist | Route::Artists => Route::Artists,
+            Route::Genre | Route::Genres => Route::Genres,
+            _ => Route::Home,
+        };
+    }
 }
 
 /// Which Settings category the content pane shows — a sub-navigation inside the
@@ -202,6 +271,18 @@ struct State {
     /// Which genre's detail page is showing, when `route == Route::Genre`.
     /// Set from a genre row's click.
     open_genre: Option<String>,
+    /// The navigation back-stack (ephemeral): locations behind the current one, so
+    /// a detail's back button returns to where you came from rather than a
+    /// hardcoded parent. Pushed by [`navigate_to`], popped by [`go_back`]; cleared
+    /// by a top-level sidebar nav.
+    nav_history: Vec<NavEntry>,
+    /// Artist-page Discography view mode (ephemeral): `false` = album-card grid
+    /// (default), `true` = compact row list. Toggled by the grid/list buttons.
+    discography_list: bool,
+    /// The Genre-detail in-page search box (ephemeral): filters the open genre's
+    /// track list. Separate from the library search so the two never cross over;
+    /// reset whenever we navigate (see [`navigate_to`]/[`go_back`]).
+    genre_search: rune::TextEdit,
     /// Whether the artist detail's "Top Songs" section is expanded past the first
     /// five (toggled by its Show more/less link). Reset when a new artist opens.
     artist_top_expanded: bool,
@@ -215,7 +296,14 @@ struct State {
     /// The configured sources with their per-source status (from the host),
     /// rendered by Settings → Sources: each carries its path, enabled flag,
     /// current availability (an unreachable root shows "offline"), and track count.
+    /// A `Remote` source's entry also carries its last-probed [`RemoteHealth`]
+    /// (latency/version/online/last-checked), kept fresh by the periodic poller
+    /// spawned in `main` plus an on-demand refresh (see [`refresh_remote_health`]).
     sources: Vec<SourceStatus>,
+    /// Whether a remote-health refresh (the periodic poller or an on-demand one
+    /// from opening Settings → Music Data) is in flight on a background thread.
+    /// Guards against two overlapping probes — see [`refresh_remote_health`].
+    remote_health_refreshing: bool,
     /// A transient "N tracks removed from <folder>" warning for the Sources page,
     /// set from the host's [`Event::TracksRemoved`] when a rescan finds deletions
     /// (`(root, count)`). Cleared on the next Sources refresh ([`apply_watch`]) so
@@ -225,18 +313,46 @@ struct State {
     /// Remote server). Opened by `open_remote_form` (which also closes the
     /// add-source menu), closed by Cancel/Escape/a successful connect.
     remote_form_open: bool,
-    /// The connect form's three text buffers (server URL, username, password).
-    /// Each follows the `dsp_rename_buf` lifecycle: a fresh, empty, focused
-    /// buffer when the form opens; read (trimmed) on Connect; ignored while the
-    /// form is closed. The password buffer is always created `.secure()` so it
-    /// masks its display and redacts its accessibility text.
+    /// The connect form's server-URL buffer. Follows the `dsp_rename_buf`
+    /// lifecycle: a fresh, empty, focused buffer when the form opens; read
+    /// (trimmed) on Connect; ignored while the form is closed. There is no
+    /// username/password buffer — the login itself happens in the system
+    /// browser (OAuth), so the app never holds a password.
     remote_url_buf: rune::TextEdit,
-    remote_user_buf: rune::TextEdit,
-    remote_pass_buf: rune::TextEdit,
     /// The most recent connect attempt's failure message (the host's
     /// `anyhow::Error`, rendered), shown inline in the form. `None` when the
     /// form is closed, just opened, or the last attempt succeeded.
     remote_error: Option<String>,
+    /// Whether a connect attempt is in flight on the background thread
+    /// `connect_remote_source` spawns (waiting on the browser round-trip).
+    /// Disables the Connect button and switches the form to a "waiting for
+    /// your browser" status line while `true`. Cleared when the thread's
+    /// result lands back on the UI thread via `AppHandle::update`.
+    remote_connecting: bool,
+    /// Every remote URL persisted via `config::save_remote` (seeded from
+    /// `config::load_remotes()` by [`reconnect_remotes_on_startup`], kept in
+    /// step by a successful connect/[`disconnect_remote_source`]). Used by
+    /// `views::settings::merged_source_rows` (Inc 6) to render an offline row
+    /// for a configured remote that has no live entry in `sources` — one
+    /// that failed to reconnect at launch, or is still mid-reconnect — so it
+    /// never silently vanishes from the Sources list.
+    remote_urls: Vec<String>,
+    /// URLs currently mid a manual reconnect/re-sync attempt, started by
+    /// [`reconnect_remote_now`] (an offline row's Reconnect action, or a
+    /// connected row's "update available" Sync-now action). Drives that
+    /// row's transient "reconnecting…" state; cleared whichever way the
+    /// attempt ends. A url present here is guarded against a second
+    /// concurrent attempt.
+    remote_reconnecting: Vec<String>,
+    /// The `index_version` each remote was last actually synced at — the
+    /// Inc 6 "update available" cue's baseline. A health probe only fills a
+    /// MISSING entry (the first reading after a connect establishes the
+    /// baseline); only a real sync — a connect, or [`reconnect_remote_now`]
+    /// succeeding — overwrites it (see `record_synced_index` /
+    /// `seed_synced_baseline`). `views::settings::remote_update_available`
+    /// compares this against the live health's `index_version` to decide
+    /// whether a re-sync would pick up fresh tracks.
+    remote_synced_index: std::collections::HashMap<String, u64>,
     /// The library indexing-speed mode (persisted), rendered by Settings → Sources.
     /// Drives how much parallelism the scanner uses; `Automatic` follows CPU load.
     indexing_mode: IndexingMode,
@@ -400,6 +516,10 @@ struct State {
     /// and driven by the drag handle in `views::sidebar`.
     sidebar_width: f32,
     sidebar_collapsed: bool,
+    /// Content-pane zoom factor (Ctrl +/-/0), 1.0 = 100%. Persisted via
+    /// [`config::load_ui_zoom`]/[`config::save_ui_zoom`], adjusted by the Ctrl chords
+    /// in [`handle_key`], and applied to the content pane in [`content_pane`].
+    ui_zoom: f32,
     /// Mobile (narrow window) single-pane state: `false` shows the sidebar
     /// (nav + queue + player), `true` shows the content page with a back bar —
     /// the old app's `mobileShowContent`. Ignored on desktop (both panes show).
@@ -491,6 +611,9 @@ impl State {
             open_album: None,
             open_artist: None,
             open_genre: None,
+            nav_history: Vec::new(),
+            discography_list: false,
+            genre_search: rune::TextEdit::new(""),
             artist_top_expanded: false,
             settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
@@ -498,12 +621,19 @@ impl State {
                 .unwrap_or(ThemePref::System),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
+            remote_health_refreshing: false,
             removal_notice: None,
             remote_form_open: false,
             remote_url_buf: rune::TextEdit::new(""),
-            remote_user_buf: rune::TextEdit::new(""),
-            remote_pass_buf: rune::TextEdit::new("").secure(),
             remote_error: None,
+            remote_connecting: false,
+            // Seeded by `reconnect_remotes_on_startup` at real launch (which
+            // reads `config::load_remotes()` there, not here, so an ordinary
+            // `State::new()` in a unit test never touches the shared config
+            // file unless the test calls that function itself).
+            remote_urls: Vec::new(),
+            remote_reconnecting: Vec::new(),
+            remote_synced_index: std::collections::HashMap::new(),
             scan_progress: None,
             scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
@@ -553,6 +683,7 @@ impl State {
             searching: false,
             sidebar_width,
             sidebar_collapsed,
+            ui_zoom: sane_zoom(config::load_ui_zoom()),
             // The menu is the mobile home view; a nav tap flips this true.
             mobile_show_content: false,
             nav_hidden: config::load_nav_hidden(),
@@ -717,9 +848,156 @@ pub(crate) fn set_indexing_mode(s: &mut State, mode: IndexingMode) {
 }
 
 /// Switch the active Settings category (ephemeral — not persisted). Used by the
-/// settings page's category rail.
+/// settings page's category rail. Switching TO Music Data (where the Sources
+/// card — and its remote health/telemetry — lives) also kicks an on-demand
+/// [`refresh_remote_health`], so health isn't stale the first time this
+/// session's Sources panel is seen; the periodic poller alone could be up to
+/// its whole interval late.
 pub(crate) fn set_settings_tab(s: &mut State, tab: SettingsTab) {
     s.settings_tab = tab;
+    if tab == SettingsTab::MusicData {
+        refresh_remote_health(s);
+    }
+}
+
+/// How often the periodic poller (spawned in `main`) re-probes every remote
+/// source's health. A tradeoff between freshness and not hammering a remote
+/// with pings — the program spec calls for "~30 s".
+const REMOTE_HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Refresh every remote source's health off the UI thread. Mirrors
+/// [`scan_in_background`]'s shape (and the `connect_remote_source` thread): the
+/// network probe — [`PlayerHandle::refresh_remote_health`], one blocking `GET
+/// /v0/ping` per remote — runs on a spawned background thread; its fresh
+/// [`PlayerHandle::sources`] folds back onto `State::sources` via
+/// `AppHandle::update`. Guarded by `remote_health_refreshing` so the periodic
+/// poller (spawned in `main`) and an on-demand refresh (opening Settings →
+/// Music Data, see [`set_settings_tab`]) can never have two probes in flight
+/// at once, racing which result lands last. A no-op while one is already
+/// running. Falls back to an inline call with no `app_handle` (headless tests).
+pub(crate) fn refresh_remote_health(s: &mut State) {
+    if s.remote_health_refreshing {
+        return;
+    }
+    s.remote_health_refreshing = true;
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                let sources = host.refresh_remote_health();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    seed_synced_baseline(s, &sources);
+                    s.sources = sources;
+                    s.remote_health_refreshing = false;
+                });
+            });
+        }
+        None => {
+            let sources = s.host.refresh_remote_health();
+            seed_synced_baseline(s, &sources);
+            s.sources = sources;
+            s.remote_health_refreshing = false;
+        }
+    }
+}
+
+/// Seed `State::remote_synced_index` for any remote whose health has never
+/// been read before (the Inc 6 "update available" cue's baseline): the
+/// first time a remote's `index_version` is seen, it's recorded as
+/// "synced" so the cue only fires on a REAL change afterward. Never
+/// overwrites an existing entry — only an explicit sync
+/// ([`record_synced_index`], after a connect/reconnect) does that; a bare
+/// health probe (this function's only caller, [`refresh_remote_health`])
+/// must never reset — let alone hide — a real pending update.
+fn seed_synced_baseline(s: &mut State, sources: &[SourceStatus]) {
+    for st in sources {
+        if let SourceKind::Remote { url } = &st.kind
+            && let Some(v) = st.remote.as_ref().and_then(|h| h.index_version)
+        {
+            s.remote_synced_index.entry(url.clone()).or_insert(v);
+        }
+    }
+}
+
+/// Record that remote `url` was just synced at its freshest known index
+/// version, read from `sources` (the just-refreshed snapshot the caller's
+/// sync produced) — the Inc 6 "update available" cue's baseline. A no-op if
+/// `url` isn't in `sources` (it didn't come back online) or its health
+/// hasn't reported a version yet. Unlike [`seed_synced_baseline`]'s
+/// `or_insert`, this OVERWRITES any previous entry unconditionally: a sync
+/// action, unlike a bare health probe, really did just catch this remote up.
+fn record_synced_index(s: &mut State, url: &str, sources: &[SourceStatus]) {
+    let version = sources.iter().find_map(|st| match &st.kind {
+        SourceKind::Remote { url: u } if u == url => {
+            st.remote.as_ref().and_then(|h| h.index_version)
+        }
+        _ => None,
+    });
+    if let Some(v) = version {
+        s.remote_synced_index.insert(url.to_string(), v);
+    }
+}
+
+/// Reconnect every persisted remote source at launch (Inc 5): off the UI
+/// thread, for each url `config::load_remotes()` returns, silently
+/// re-authenticate with the OS-keychain-stored refresh token and re-sync its
+/// catalog via [`PlayerHandle::reconnect_remote_source`], then fold the
+/// refreshed library + source list back onto the UI thread — mirroring
+/// [`scan_in_background`]'s / [`refresh_remote_health`]'s shape (a spawned
+/// thread, `AppHandle::update` back). Never blocks app launch on the network:
+/// this is called once the window is already up, exactly where the local
+/// startup scan is kicked off.
+///
+/// A remote that fails to reconnect (offline, expired/revoked token, server
+/// down) is simply skipped — never surfaced as an error, and never dropped
+/// from the persisted config or the keychain, so it keeps retrying on the
+/// next launch, and the Inc 2 health poller picks it back up once it
+/// actually returns. A failed reconnect must NOT crash startup.
+///
+/// Also seeds `State::remote_urls` from the same `config::load_remotes()`
+/// call (Inc 6) — so `views::settings::merged_source_rows` can render an
+/// offline row, with a Reconnect action, for a persisted remote that just
+/// failed above, instead of it silently vanishing from the Sources list.
+/// This is the ONLY place `State::remote_urls` is seeded from disk —
+/// `State::new()` itself never touches `config::load_remotes()`, so an
+/// ordinary unit test that builds a `State` directly is never affected by
+/// another test's leftover persisted remote.
+pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
+    let urls = config::load_remotes();
+    s.remote_urls = urls.clone();
+    if urls.is_empty() {
+        return;
+    }
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                for url in &urls {
+                    if let Err(err) = host.reconnect_remote_source(url, &KeyringStore) {
+                        tracing::warn!(url = %url, error = %err, "remote source reconnect failed");
+                    }
+                }
+                let sources = host.refresh_remote_health();
+                let library = host.views();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    seed_synced_baseline(s, &sources);
+                    s.library = library;
+                    s.sources = sources;
+                });
+            });
+        }
+        None => {
+            for url in &urls {
+                if let Err(err) = s.host.reconnect_remote_source(url, &KeyringStore) {
+                    tracing::warn!(url, error = %err, "remote source reconnect failed");
+                }
+            }
+            let sources = s.host.refresh_remote_health();
+            seed_synced_baseline(s, &sources);
+            s.sources = sources;
+            s.library = s.host.views();
+        }
+    }
 }
 
 /// Open the dropdown with this key, or close it if it is already open (clicking
@@ -739,61 +1017,203 @@ pub(crate) fn close_dropdown(s: &mut State) {
 
 // ---- Remote source connect form (Settings → Add Source → Remote server) ----
 
-/// Fresh, empty, `.secure()`d password buffer — shared by `open_remote_form`
-/// and `close_remote_form` so the "secure" flag is never forgotten when the
-/// buffer is reset.
-fn empty_remote_pass_buf() -> rune::TextEdit {
-    rune::TextEdit::new("").secure()
-}
-
 /// Open the Remote server connect form: close the add-source menu first (so
-/// it isn't left open behind the form), then reset the three buffers to
-/// empty, focus the URL field, and clear any stale error. Mirrors
+/// it isn't left open behind the form), then reset the URL buffer to empty,
+/// focus it, and clear any stale error/connecting state. Mirrors
 /// `start_dsp_rename`'s "always start from a clean buffer" shape.
 pub(crate) fn open_remote_form(s: &mut State) {
     close_dropdown(s);
     s.remote_url_buf = rune::TextEdit::new("");
     s.remote_url_buf.focused = true;
-    s.remote_user_buf = rune::TextEdit::new("");
-    s.remote_pass_buf = empty_remote_pass_buf();
     s.remote_error = None;
+    s.remote_connecting = false;
     s.remote_form_open = true;
 }
 
 /// Close the connect form (Cancel, Escape, an outside press, or a successful
-/// connect) and clear its buffers + error so the next open starts fresh.
+/// connect) and clear its buffer + error so the next open starts fresh. A
+/// connect thread already spawned by `connect_remote_source` keeps running —
+/// there is no cancelling the browser round-trip — its result still lands via
+/// `apply_remote_connect` once it finishes, just onto a form that (if
+/// reopened) has moved on.
 pub(crate) fn close_remote_form(s: &mut State) {
     s.remote_form_open = false;
     s.remote_url_buf = rune::TextEdit::new("");
-    s.remote_user_buf = rune::TextEdit::new("");
-    s.remote_pass_buf = empty_remote_pass_buf();
     s.remote_error = None;
 }
 
-/// Read the connect form's fields and try to add the remote source.
+/// Read the connect form's URL and start a login against it **off the UI
+/// thread**: `add_remote_source` opens the system browser and blocks on the
+/// OAuth round-trip (the user signing in there, then the redirect back), so
+/// running it inline would freeze the window for as long as that takes. This
+/// spawns a background thread and folds the result back onto the UI thread
+/// via `AppHandle::update` — the same shape `scan_in_background` uses for the
+/// Sources scans — falling back to an inline call when there's no
+/// `app_handle` (headless tests), so behaviour there is unchanged.
 ///
-/// v0 calls the host **inline**: `add_remote_source` authenticates against
-/// the server and fetches its whole catalog index over the network, so this
-/// briefly blocks the UI thread. Moving it off-thread — the same
-/// `scan_in_background`/`AppHandle::update` shape the Sources scans use — is
-/// a follow-up once this path needs to stay responsive on a slow link.
-///
-/// On success the library is refreshed from the host (the remote-aware
-/// aggregate is already swapped in) and the form closes. On failure the
-/// message is kept in `remote_error` and the form stays open with its
-/// fields intact so the user can fix a typo and retry.
+/// While the thread is in flight, `remote_connecting` is `true`: the form
+/// disables the Connect button and shows a "waiting for your browser" status
+/// line instead. A press while already connecting is a no-op, so double
+/// presses (or a stray Enter in the URL field) can't start a second attempt.
 pub(crate) fn connect_remote_source(s: &mut State) {
+    if s.remote_connecting {
+        return;
+    }
     let url = s.remote_url_buf.text.trim().to_string();
-    let user = s.remote_user_buf.text.trim().to_string();
-    // Not trimmed: a password may legitimately start or end with a space.
-    let pass = s.remote_pass_buf.text.clone();
-    match s.host.add_remote_source(&url, &user, &pass) {
+    s.remote_connecting = true;
+    s.remote_error = None;
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            let url_for_result = url.clone();
+            std::thread::spawn(move || {
+                let result = host.add_remote_source(&url);
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    apply_remote_connect(s, &url_for_result, result)
+                });
+            });
+        }
+        None => {
+            let result = s.host.add_remote_source(&url);
+            apply_remote_connect(s, &url, result);
+        }
+    }
+}
+
+/// Fold a finished connect attempt's result back onto the UI thread (see
+/// `connect_remote_source`). On success, the library AND the Sources list are
+/// refreshed from the host (the remote-aware aggregate is already swapped
+/// in — refreshing `sources` too, not just `library`, means the new remote's
+/// row shows up immediately instead of waiting for the next health-poller
+/// tick or a Settings tab switch), the url is persisted (`config::save_remote`,
+/// mirrored into `State::remote_urls`) so it reconnects on the next launch —
+/// the OAuth refresh token itself is already durable, written to the OS
+/// keychain by `PlayerHandle::add_remote_source` — and the form closes. On
+/// failure, the message is kept in `remote_error` and the form (if still
+/// open) stays open with its field intact so the user can fix a typo and
+/// retry; nothing is persisted for a failed attempt.
+fn apply_remote_connect(s: &mut State, url: &str, result: anyhow::Result<()>) {
+    s.remote_connecting = false;
+    match result {
         Ok(()) => {
             s.library = s.host.views();
+            s.sources = s.host.sources();
+            if !s.remote_urls.iter().any(|u| u == url) {
+                s.remote_urls.push(url.to_string());
+            }
+            config::save_remote(url);
             close_remote_form(s);
         }
         Err(err) => {
             s.remote_error = Some(err.to_string());
+        }
+    }
+}
+
+/// Disconnect a remote source — the Disconnect control on a Sources row,
+/// connected or offline (Inc 6): drops it from the host's aggregate
+/// ([`PlayerHandle::remove_remote_source`]), the persisted config
+/// (`config::remove_remote`), and the OS keychain's stored refresh token
+/// ([`TokenStore::delete_refresh`]) — the remote counterpart of a local
+/// row's ✕ ([`PlayerHandle::remove_folder`]), just spread across the three
+/// places a remote's state lives instead of one `set_folders` call. Also
+/// drops `url` from the in-memory `remote_urls`/`remote_reconnecting`/
+/// `remote_synced_index` bookkeeping so a removed remote doesn't linger as
+/// a phantom offline row or a stale update-available cue.
+///
+/// Off the UI thread, like every other remote op: none of the three calls
+/// is scan-sized, but the keychain hit still touches the OS. Falls back to
+/// an inline call with no `app_handle` (headless tests).
+pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
+    s.remote_urls.retain(|u| u != &url);
+    s.remote_reconnecting.retain(|u| u != &url);
+    s.remote_synced_index.remove(&url);
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                host.remove_remote_source(&url);
+                config::remove_remote(&url);
+                if let Err(err) = KeyringStore.delete_refresh(&url) {
+                    tracing::warn!(url = %url, error = %err, "failed to delete keychain entry for a disconnected remote");
+                }
+                let sources = host.sources();
+                let library = host.views();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.sources = sources;
+                    s.library = library;
+                });
+            });
+        }
+        None => {
+            s.host.remove_remote_source(&url);
+            config::remove_remote(&url);
+            if let Err(err) = KeyringStore.delete_refresh(&url) {
+                tracing::warn!(url = %url, error = %err, "failed to delete keychain entry for a disconnected remote");
+            }
+            s.sources = s.host.sources();
+            s.library = s.host.views();
+        }
+    }
+}
+
+/// Manually reconnect (or re-sync) one remote source — an offline row's
+/// Reconnect action, and a connected row's "update available" Sync-now
+/// action (Inc 6; both drive the exact same path: silently re-authenticate
+/// with the stored refresh token and re-fetch the catalog index via
+/// [`PlayerHandle::reconnect_remote_source`], which for an already-online
+/// remote is exactly a resync). Off the UI thread, mirroring
+/// [`reconnect_remotes_on_startup`]'s shape for one url on demand. Guarded
+/// by `remote_reconnecting` so a double press (or the periodic poller
+/// probing mid-attempt) can't race two reconnects for the same url; the row
+/// shows a transient "reconnecting…" state meanwhile, cleared whichever way
+/// the attempt ends.
+///
+/// On success the row flips online, `library`/`sources` refresh, and
+/// [`record_synced_index`] updates the "last synced" index version so the
+/// update-available cue clears. On failure — offline, expired/revoked
+/// token, server down — it's logged and the row silently stays
+/// offline/stale, mirroring the startup reconnect's "never surfaced as an
+/// error" policy; the next press or the periodic poller can retry.
+pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
+    if s.remote_reconnecting.iter().any(|u| u == &url) {
+        return;
+    }
+    s.remote_reconnecting.push(url.clone());
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                let result = host.reconnect_remote_source(&url, &KeyringStore);
+                if let Err(err) = &result {
+                    tracing::warn!(url = %url, error = %err, "manual remote reconnect failed");
+                }
+                let ok = result.is_ok();
+                let sources = host.sources();
+                let library = host.views();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.remote_reconnecting.retain(|u| u != &url);
+                    if ok {
+                        record_synced_index(s, &url, &sources);
+                    }
+                    s.sources = sources;
+                    s.library = library;
+                });
+            });
+        }
+        None => {
+            let result = s.host.reconnect_remote_source(&url, &KeyringStore);
+            if let Err(err) = &result {
+                tracing::warn!(url = %url, error = %err, "manual remote reconnect failed");
+            }
+            let ok = result.is_ok();
+            let sources = s.host.sources();
+            s.library = s.host.views();
+            s.remote_reconnecting.retain(|u| u != &url);
+            if ok {
+                record_synced_index(s, &url, &sources);
+            }
+            s.sources = sources;
         }
     }
 }
@@ -1827,21 +2247,36 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 /// The routed main content area, keyed `"content"`. On desktop it fills the
 /// space beside the sidebar; on mobile it is the whole window.
 fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -> El {
-    col()
-        .key("content")
-        .grow(1.0)
-        .min_h(0.0)
-        .child(match s.route {
-            Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
-            Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
-            Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
-            Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
-            Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
-            Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
-            Route::Genres => views::genres::genres_page(s, p).grow(1.0),
-            Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
-            Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
-        })
+    let page = match s.route {
+        Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
+        Route::Library => views::library::track_list(s, p, cx, scale).grow(1.0),
+        Route::Albums => views::albums::albums_page(s, p, cx, scale).grow(1.0),
+        Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
+        Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
+        Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
+        Route::Genres => views::genres::genres_page(s, p).grow(1.0),
+        Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
+        Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
+    };
+    // Content zoom (Ctrl +/-/0): lay the page out in a `pane / zoom` logical box and
+    // scale it back up to fill the pane. Because the page — and its responsive grid —
+    // lays out in that smaller logical width, the grid re-columns: a true reflow zoom,
+    // not a paint-only magnify. At 100 % we skip the wrapper so the common path's
+    // layout is untouched. `content`'s own size is parent-driven (grow), so reading it
+    // back here is stable (no feedback with the wrapper we size from it).
+    let inner = if (s.ui_zoom - 1.0).abs() < 0.001 {
+        page
+    } else {
+        let [pane_w, pane_h] = cx.layout_size("content").unwrap_or([900.0, 700.0]);
+        col()
+            .key("content-zoom")
+            .w(pane_w / s.ui_zoom)
+            .h(pane_h / s.ui_zoom)
+            .scale(s.ui_zoom)
+            .origin(0.0, 0.0)
+            .child(page)
+    };
+    col().key("content").grow(1.0).min_h(0.0).child(inner)
 }
 
 /// Hide the crash prompt for this session — also the modal's Escape / outside-press
@@ -2088,6 +2523,42 @@ fn setup_art(s: &mut State, waker: Waker) {
     s.art.wire(waker);
 }
 
+/// Content-pane zoom bounds and step (Ctrl +/-/0). 1.0 = 100 %. **Zoom-IN only**:
+/// the reflow lays the pane out at `size / zoom`, so below 100 % that box is
+/// *larger* than the window and Rune's paint-scale (which doesn't shrink the
+/// layout box) clips it. The floor is therefore 100 %; a sub-100 % "fit more"
+/// zoom is a follow-up that needs logical size-scaling, not a paint transform.
+const MIN_ZOOM: f32 = 1.0;
+const MAX_ZOOM: f32 = 2.0;
+const ZOOM_STEP: f32 = 0.1;
+
+/// A loaded/requested zoom coerced to a sane value: non-finite → 1.0, else clamped
+/// to `[MIN_ZOOM, MAX_ZOOM]`. Guards a hand-edited config and keeps `set_zoom` total.
+fn sane_zoom(z: f32) -> f32 {
+    if z.is_finite() {
+        z.clamp(MIN_ZOOM, MAX_ZOOM)
+    } else {
+        1.0
+    }
+}
+
+/// The zoom one step `dir` (+1 in / −1 out) from `current`, snapped to the
+/// `ZOOM_STEP` grid and clamped to the legal range. Pure, so view and test agree.
+fn stepped_zoom(current: f32, dir: i32) -> f32 {
+    let steps = (current / ZOOM_STEP).round() + dir as f32;
+    let next = (steps * ZOOM_STEP * 100.0).round() / 100.0;
+    next.clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
+/// Set the content-pane zoom and persist it (a no-op when unchanged).
+fn set_zoom(s: &mut State, zoom: f32) {
+    let zoom = sane_zoom(zoom);
+    if (s.ui_zoom - zoom).abs() > f32::EPSILON {
+        s.ui_zoom = zoom;
+        config::save_ui_zoom(zoom);
+    }
+}
+
 /// `AppSpec::on_key`: transport and volume shortcuts, so the head is
 /// drivable from the keyboard alone (Space, arrows, `s`/`r`). Only
 /// key-*down* events ever reach `on_key` in the first place — Rune's
@@ -2149,6 +2620,11 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
             };
             s.host.send(Command::SetRepeat(next));
         }
+        // Content zoom (Ctrl +/-/0, ⌘ on macOS): "=" / "+" zoom in, "-" / "_" out,
+        // "0" resets to 100 %. Ctrl/⌘ chords arrive as `Key::Command(char)`.
+        Key::Command('=') | Key::Command('+') => set_zoom(s, stepped_zoom(s.ui_zoom, 1)),
+        Key::Command('-') | Key::Command('_') => set_zoom(s, stepped_zoom(s.ui_zoom, -1)),
+        Key::Command('0') => set_zoom(s, 1.0),
         _ => return false,
     }
     true
@@ -2277,6 +2753,110 @@ fn scene_artists(s: &mut State) {
 }
 fn scene_genres(s: &mut State) {
     s.route = Route::Genres;
+}
+/// Seed a synthetic library for `--snap` grid/zoom validation: 20 distinct albums
+/// across 8 artists and 6 genres — enough to fill and scroll the grid. Covers
+/// resolve to the music-note placeholder (no real files in a headless snapshot).
+fn seed_demo_library(s: &mut State) {
+    const ARTISTS: &[&str] = &[
+        "Aurora Fields",
+        "Beacon",
+        "Cobalt Trio",
+        "Dust & Echo",
+        "Elian Vos",
+        "Fenwick",
+        "Glass Harbor",
+        "Halcyon",
+    ];
+    const GENRES: &[&str] = &[
+        "Ambient",
+        "Classical",
+        "Electronic",
+        "Folk",
+        "Jazz",
+        "Hip-Hop",
+    ];
+    const TITLES: &[&str] = &["Nightfall", "Open Skies", "Reverie", "Lantern", "Meridian"];
+    let mut lib = Vec::new();
+    let mut id = 1u32;
+    for a in 0..20u32 {
+        let artist = ARTISTS[a as usize % ARTISTS.len()];
+        let genre = GENRES[a as usize % GENRES.len()];
+        let album = format!("{} {:02}", TITLES[a as usize % TITLES.len()], a + 1);
+        for t in 1..=4u32 {
+            lib.push(soul_player_host::TrackView {
+                id,
+                title: Some(format!("Track {t}")),
+                artist: Some(artist.to_string()),
+                album: Some(album.clone()),
+                genre: Some(genre.to_string()),
+                duration_secs: f64::from(120 + id % 180),
+                remote: false,
+            });
+            id += 1;
+        }
+    }
+    s.library = lib;
+}
+/// The Albums grid, seeded + at 100 % zoom (for `--snap` size/zoom validation).
+fn scene_grid(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Albums;
+}
+fn scene_grid_z150(s: &mut State) {
+    scene_grid(s);
+    s.ui_zoom = 1.5;
+}
+fn scene_grid_z200(s: &mut State) {
+    scene_grid(s);
+    s.ui_zoom = 2.0;
+}
+/// Albums at 150 %/200 % zoom over the *loaded* library (no seed): pair with
+/// `SOUL_PLAYER_FOLDER=<dir>` to snapshot real covers under zoom.
+fn scene_albums_z150(s: &mut State) {
+    s.route = Route::Albums;
+    s.ui_zoom = 1.5;
+}
+fn scene_albums_z200(s: &mut State) {
+    s.route = Route::Albums;
+    s.ui_zoom = 2.0;
+}
+/// Seeded Artists browse (circular cards), for `--snap` validation.
+fn scene_demo_artists(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Artists;
+}
+/// Seeded Artist detail (circular hero + Top Songs + Discography) — the first
+/// seeded artist has three albums, so the Discography grid is populated.
+fn scene_demo_artist(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Artist;
+    s.open_artist = s.library.first().and_then(|t| t.artist.clone());
+}
+/// Same, at 150 % zoom — checks the content-pane zoom on a non-grid detail page.
+fn scene_demo_artist_z150(s: &mut State) {
+    scene_demo_artist(s);
+    s.ui_zoom = 1.5;
+}
+/// Seeded Genre detail (icon-tile hero + track list), for `--snap` validation.
+fn scene_demo_genre(s: &mut State) {
+    seed_demo_library(s);
+    s.route = Route::Genre;
+    s.open_genre = s.library.first().and_then(|t| t.genre.clone());
+}
+/// Seeded Artist detail with the Discography in LIST mode (the row view), so
+/// `--snap` can validate the grid/list toggle's compact-row layout — the lit
+/// list icon and each album as a cover thumb + "{n} tracks · {duration}".
+fn scene_demo_artist_list(s: &mut State) {
+    scene_demo_artist(s);
+    s.discography_list = true;
+}
+/// Seeded Genre detail with an active in-page search ("lantern" matches only the
+/// "Lantern 19" album's tracks within the Ambient genre), so `--snap` can
+/// validate the filter narrowing the list while the header counts stay unfiltered.
+fn scene_demo_genre_search(s: &mut State) {
+    scene_demo_genre(s);
+    s.genre_search = rune::TextEdit::new("lantern");
 }
 fn scene_artist_detail(s: &mut State) {
     s.route = Route::Artist;
@@ -2493,6 +3073,17 @@ fn main() -> anyhow::Result<()> {
             ("artists", scene_artists),
             ("artist-detail", scene_artist_detail),
             ("genres", scene_genres),
+            ("grid", scene_grid),
+            ("grid-z150", scene_grid_z150),
+            ("grid-z200", scene_grid_z200),
+            ("albums-z150", scene_albums_z150),
+            ("albums-z200", scene_albums_z200),
+            ("demo-artists", scene_demo_artists),
+            ("demo-artist", scene_demo_artist),
+            ("demo-artist-z150", scene_demo_artist_z150),
+            ("demo-artist-list", scene_demo_artist_list),
+            ("demo-genre", scene_demo_genre),
+            ("demo-genre-search", scene_demo_genre_search),
             ("search", scene_search),
             ("no-match", scene_no_match),
             ("collapsed", scene_collapsed),
@@ -2610,6 +3201,27 @@ fn main() -> anyhow::Result<()> {
             if needs_startup_scan {
                 scan_in_background(s, |host| host.rescan_sources(), apply_and_save);
             }
+            // Reconnect every persisted remote source (Inc 5), also off the main
+            // thread — same "don't block the first paint" reasoning as the local
+            // startup scan just above, since each reconnect does a blocking
+            // refresh-token round-trip (plus a catalog re-fetch) over the network.
+            reconnect_remotes_on_startup(s);
+        });
+    }
+    // Periodic remote-health poller (Inc 2): its own dedicated sleep-loop
+    // thread — never the UI thread — wakes every ~30 s and asks the UI thread
+    // to refresh. It posts through the SAME guarded `refresh_remote_health`
+    // the on-demand refresh (opening Settings → Music Data) uses, so the two
+    // can never have overlapping probes in flight. Runs for the app's whole
+    // lifetime (no retained `JoinHandle` to stop it — it simply stops mattering
+    // once the process exits).
+    {
+        let ph = ah.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(REMOTE_HEALTH_POLL_INTERVAL);
+                ph.update(|s: &mut State, _tx: &mut Tx| refresh_remote_health(s));
+            }
         });
     }
     // Launch-time update check (release builds only): off-thread so it never
@@ -2685,6 +3297,7 @@ mod tests {
     use std::time::Duration;
 
     use rune::{Cursor, Env, FileDialogKind, Mods, Runtime, WheelEvent};
+    use soul_player_host::{RemoteHealth, SourceKind};
 
     use super::*;
     // The profile model types are only used by the profile tests (production code
@@ -5575,12 +6188,14 @@ mod tests {
     }
 
     /// Activating "Remote server" in the add-source menu closes the menu and
-    /// opens the connect form: labelled, focusable `remote-url`/`remote-user`/
-    /// `remote-pass` fields and a `remote-connect` button, each reachable by
-    /// key with a non-empty accessible label and an interactive role. The
-    /// actual network connect (`PlayerHandle::add_remote_source`) is covered
-    /// by the host's `remote_e2e` integration test — this only proves the UI
-    /// is reachable, so it never touches the network.
+    /// opens the connect form: a labelled, focusable `remote-url` field and a
+    /// `remote-connect` button, each reachable by key with a non-empty
+    /// accessible label and an interactive role. There is no username/password
+    /// field — the password is entered in the system browser (OAuth), not the
+    /// app — so `remote-user`/`remote-pass` must not render at all. The actual
+    /// network connect (`PlayerHandle::add_remote_source`) is covered by the
+    /// host's `remote_e2e` integration test — this only proves the UI is
+    /// reachable, so it never touches the network.
     #[test]
     fn remote_add_source_opens_the_connect_form() {
         let env = Env {
@@ -5602,12 +6217,7 @@ mod tests {
             rt.state.open_dropdown.is_none(),
             "opening the connect form closes the add-source menu"
         );
-        for (key, role) in [
-            ("remote-url", "textbox"),
-            ("remote-user", "textbox"),
-            ("remote-pass", "textbox"),
-            ("remote-connect", "button"),
-        ] {
+        for (key, role) in [("remote-url", "textbox"), ("remote-connect", "button")] {
             let info = el_info(&rt, key);
             assert!(info.focusable, "{key} is focusable");
             assert!(
@@ -5616,6 +6226,136 @@ mod tests {
             );
             assert_eq!(info.role, role, "{key} has an interactive role");
         }
+        // The username/password fields are gone: this is a browser-login form
+        // now, not a password form.
+        assert!(
+            rt.find("remote-user").is_none(),
+            "remote-user no longer renders (login happens in the browser)"
+        );
+        assert!(
+            rt.find("remote-pass").is_none(),
+            "remote-pass no longer renders (login happens in the browser)"
+        );
+    }
+
+    /// While a connect attempt is in flight (`State::remote_connecting`), the
+    /// Connect button goes inert (nothing to press until the browser
+    /// round-trip returns) and a "waiting for your browser" status line
+    /// renders in the form, in place of where an error would show.
+    #[test]
+    fn remote_connect_form_shows_a_waiting_state_while_connecting() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.remote_form_open = true;
+        s.remote_connecting = true;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let connect = el_info(&rt, "remote-connect");
+        assert!(
+            !connect.focusable,
+            "the Connect button is inert while a connect attempt is in flight"
+        );
+        assert!(
+            rt.find("remote-connecting-status").is_some(),
+            "a waiting-for-browser status line renders while connecting"
+        );
+    }
+
+    /// Drain `config`'s persisted remote urls to empty: `save_remote` appends
+    /// and never overwrites, so — unlike most other settings, which fully
+    /// replace their field on save — a sibling test sharing this process-wide
+    /// config file could otherwise leave a stray url behind that breaks an
+    /// exact-equality (or "nothing persisted") assertion below.
+    fn drain_remotes() {
+        for url in config::load_remotes() {
+            config::remove_remote(&url);
+        }
+    }
+
+    /// Inc 5 persistence: a successful connect (`apply_remote_connect`'s `Ok`
+    /// branch) persists the server url via `config::save_remote`, so it
+    /// reconnects on the next launch, and closes the form.
+    #[test]
+    fn apply_remote_connect_success_persists_the_url() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_form_open = true;
+
+        apply_remote_connect(&mut s, "http://example.test", Ok(()));
+
+        assert_eq!(
+            config::load_remotes(),
+            vec!["http://example.test".to_string()],
+            "a successful connect should persist the server url"
+        );
+        assert!(!s.remote_form_open, "a successful connect closes the form");
+    }
+
+    /// The failure counterpart: nothing is persisted, and the form stays open
+    /// with the error message so the user can fix a typo and retry.
+    #[test]
+    fn apply_remote_connect_failure_does_not_persist_the_url() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_form_open = true;
+
+        apply_remote_connect(
+            &mut s,
+            "http://example.test",
+            Err(anyhow::anyhow!("connection refused")),
+        );
+
+        assert!(
+            config::load_remotes().is_empty(),
+            "a failed connect must not persist anything"
+        );
+        assert!(s.remote_form_open, "the form stays open on failure");
+        assert_eq!(s.remote_error, Some("connection refused".to_string()));
+    }
+
+    /// Inc 5 startup reconnect: with no persisted remotes, `reconnect_remotes_on_startup`
+    /// is a no-op (early return) rather than touching the keychain or the network.
+    #[test]
+    fn reconnect_remotes_on_startup_with_nothing_persisted_is_a_noop() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let mut s = State::new(PlayerHandle::offline());
+        let sources_before = s.sources.clone();
+
+        reconnect_remotes_on_startup(&mut s);
+
+        assert_eq!(
+            s.sources, sources_before,
+            "nothing persisted means nothing to reconnect, so state is untouched"
+        );
+    }
+
+    /// A persisted remote with no stored keychain credential (the common case
+    /// in a fresh test config dir) fails to reconnect — gracefully: no panic,
+    /// and the headless (no `app_handle`) path still refreshes `sources`/
+    /// `library` from the host's (unchanged) state afterward, same as a real
+    /// offline-remote launch would.
+    #[test]
+    fn reconnect_remotes_on_startup_with_an_unreachable_remote_does_not_crash() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        config::save_remote("http://unreachable-remote.invalid");
+        let mut s = State::new(PlayerHandle::offline());
+
+        reconnect_remotes_on_startup(&mut s);
+
+        assert!(
+            s.sources
+                .iter()
+                .all(|src| !matches!(&src.kind, SourceKind::Remote { url } if url == "http://unreachable-remote.invalid")),
+            "a remote that never reconnected (no stored credential) is not added to Inner::remotes"
+        );
     }
 
     /// The Managed Library card renders on the Music Data tab with its destination
@@ -6386,6 +7126,340 @@ mod tests {
         assert!(rt.find("count-0").is_some(), "a track-count label is shown");
     }
 
+    /// Unix seconds right now — for building a fresh [`RemoteHealth`] probe
+    /// timestamp directly in a test, with no real server needed (the Inc-2
+    /// program spec: `SourceStatus`/`RemoteHealth` values are built by hand).
+    fn test_now_unix() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before the Unix epoch")
+            .as_secs()
+    }
+
+    /// An online, fully-populated remote `SourceStatus`, built directly (no
+    /// server) — the Inc-2 Sources panel's job is to render exactly these
+    /// fields: a Remote badge, an online dot, latency, server version, track
+    /// count, and a relative last-checked time.
+    fn online_remote_status(url: &str) -> SourceStatus {
+        SourceStatus {
+            path: PathBuf::from(url),
+            enabled: true,
+            available: true,
+            track_count: 7,
+            kind: SourceKind::Remote {
+                url: url.to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: true,
+                latency_ms: Some(42),
+                server_version: Some("0.9.0".to_string()),
+                index_version: Some(3),
+                last_checked_unix: Some(test_now_unix()),
+            }),
+        }
+    }
+
+    /// Inc 2: a Remote source's row renders a Remote badge plus its health
+    /// telemetry (an online dot + a "42ms" latency reading), while a sibling
+    /// Local source's row renders a Local badge and NEITHER of those
+    /// remote-only elements — the "clear local/remote distinction" the
+    /// program spec asks for. Every new element is keyed.
+    #[test]
+    fn remote_source_row_shows_badge_latency_and_online_indicator() {
+        let dir = testdata_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources
+            .push(online_remote_status("http://example.test:8080"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        // Local row (index 0): a Local badge, no remote-only telemetry.
+        assert!(
+            rt.find("source-badge-0").is_some(),
+            "the local row shows a kind badge"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "a local row has no latency element"
+        );
+        assert!(
+            rt.find("source-online-0").is_none(),
+            "a local row has no online indicator"
+        );
+
+        // Remote row (index 1): a Remote badge + its health telemetry.
+        assert!(
+            rt.find("source-badge-1").is_some(),
+            "the remote row shows a kind badge"
+        );
+        assert!(
+            rt.find("source-online-1").is_some(),
+            "the remote row shows an online indicator"
+        );
+        assert_eq!(
+            el_info(&rt, "source-latency-1").text.as_deref(),
+            Some("42ms"),
+            "latency renders as \"42ms\""
+        );
+    }
+
+    /// An offline remote reads differently from an online one: the latency
+    /// reads as the "—" placeholder (never a stale/misleading number) and the
+    /// online indicator still renders (dim, not green — this test only
+    /// checks it's present; the color is a rendering detail, not textual).
+    #[test]
+    fn offline_remote_source_row_shows_dash_latency_and_offline_dot() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("http://example.test:8080"),
+            enabled: true,
+            available: false,
+            track_count: 0,
+            kind: SourceKind::Remote {
+                url: "http://example.test:8080".to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: false,
+                latency_ms: None,
+                server_version: None,
+                index_version: None,
+                last_checked_unix: Some(test_now_unix()),
+            }),
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("source-online-0").is_some(),
+            "an offline remote still shows its online/offline dot"
+        );
+        assert_eq!(
+            el_info(&rt, "source-latency-0").text.as_deref(),
+            Some("—"),
+            "no latency reading renders as the dash placeholder"
+        );
+    }
+
+    /// Inc 6 item 1: a persisted remote with NO live entry at all in
+    /// `s.sources` (it failed to reconnect at launch, or hasn't tried yet) —
+    /// the gap this increment closes, where the remote used to simply be
+    /// absent from the Sources list — still renders: its URL, the offline
+    /// dot (item (c): the SAME `health_dot` a live-but-unreachable remote
+    /// uses), no latency element at all (there has been no probe to read one
+    /// from), and a keyed Reconnect control.
+    #[test]
+    fn offline_remote_with_no_live_entry_renders_url_and_reconnect_control() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        // No `s.sources` entry at all for this url — only the persisted url
+        // is known, simulating a remote that never (re)connected this session.
+        s.remote_urls = vec!["http://offline-remote.test".to_string()];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.text.as_deref() == Some("http://offline-remote.test")),
+            "the persisted remote's URL renders even with no live entry"
+        );
+        assert!(
+            rt.find("source-online-0").is_some(),
+            "the offline row shows the offline dot"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "an offline row with no live entry renders no latency element at all"
+        );
+        assert!(
+            rt.find("remote-reconnect-0").is_some(),
+            "a keyed Reconnect control renders for the offline remote"
+        );
+    }
+
+    /// Inc 6 item 2: a connected remote's row offers a keyed Disconnect
+    /// (remove) control — the remote counterpart of a local row's ✕, under
+    /// its own `remote-remove-{index}` key, wired to `disconnect_remote_source`
+    /// rather than `remove_folder`.
+    #[test]
+    fn connected_remote_row_shows_a_keyed_disconnect_control() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources
+            .push(online_remote_status("http://example.test:8080"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("remote-remove-0").is_some(),
+            "a connected remote row shows a keyed Disconnect control"
+        );
+    }
+
+    /// Inc 6 item 3: while a manual reconnect is in flight for an offline
+    /// remote (`State::remote_reconnecting`), its row still renders a status
+    /// line, and the Reconnect control switches to its disabled/inert shape
+    /// (not focusable) so a double press — or the periodic poller probing
+    /// mid-attempt — can't start a second reconnect for the same url.
+    #[test]
+    fn offline_remote_row_shows_an_inert_reconnect_control_while_in_flight() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.remote_urls = vec!["http://offline-remote.test".to_string()];
+        s.remote_reconnecting = vec!["http://offline-remote.test".to_string()];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("remote-status-0").is_some(),
+            "the offline row still renders a status line while reconnecting"
+        );
+        assert!(
+            !el_info(&rt, "remote-reconnect-0").focusable,
+            "the Reconnect control is inert while already reconnecting"
+        );
+    }
+
+    /// Inc 6 item 2 (behavior): disconnecting drops the url from the
+    /// in-memory bookkeeping (`remote_urls`) AND the persisted config
+    /// (`config::remove_remote`), so a disconnected remote neither lingers
+    /// as a phantom offline row nor comes back on the next launch.
+    #[test]
+    fn disconnect_remote_source_drops_url_from_state_and_config() {
+        let _config_guard = config::use_test_config_dir();
+        drain_remotes();
+        let url = "http://disconnect-me.test";
+        config::save_remote(url);
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_urls = vec![url.to_string()];
+
+        disconnect_remote_source(&mut s, url.to_string());
+
+        assert!(
+            s.remote_urls.is_empty(),
+            "the url drops out of the in-memory bookkeeping"
+        );
+        assert!(
+            config::load_remotes().is_empty(),
+            "the url drops out of the persisted config"
+        );
+    }
+
+    /// Inc 6 item 3 (behavior): a reconnect already in flight for a url
+    /// guards against a second concurrent attempt for the SAME url —
+    /// pressing Reconnect twice (or the periodic poller firing mid-attempt)
+    /// can't start two reconnects racing each other.
+    #[test]
+    fn reconnect_remote_now_guards_against_a_second_concurrent_attempt() {
+        let mut s = State::new(PlayerHandle::offline());
+        let url = "http://already-reconnecting.test".to_string();
+        s.remote_reconnecting = vec![url.clone()];
+
+        reconnect_remote_now(&mut s, url.clone());
+
+        assert_eq!(
+            s.remote_reconnecting,
+            vec![url],
+            "a second attempt for the same url already in flight is a no-op"
+        );
+    }
+
+    /// Inc 6 item 3 (behavior): a failed manual reconnect (no stored
+    /// credential — the common case in a fresh test config dir) still
+    /// clears the transient "reconnecting" state — the row must not get
+    /// stuck reading "reconnecting…" forever just because the attempt
+    /// didn't succeed, mirroring the startup reconnect's "never surfaced as
+    /// an error, never stuck" policy.
+    #[test]
+    fn reconnect_remote_now_clears_the_transient_state_on_failure() {
+        let mut s = State::new(PlayerHandle::offline());
+        let url = "http://unreachable-remote.invalid".to_string();
+
+        reconnect_remote_now(&mut s, url.clone());
+
+        assert!(
+            s.remote_reconnecting.is_empty(),
+            "the transient reconnecting state clears whichever way the attempt ends"
+        );
+    }
+
+    /// Inc 6 item 4: a connected remote's live `index_version` reading above
+    /// the version recorded at its last actual sync (`remote_synced_index`)
+    /// shows the "update available" cue with a keyed Sync-now action (reusing
+    /// the same reconnect/re-sync control).
+    #[test]
+    fn update_available_cue_shows_when_live_version_exceeds_the_synced_one() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let url = "http://example.test:8080";
+        let mut status = online_remote_status(url);
+        if let Some(health) = &mut status.remote {
+            health.index_version = Some(4);
+        }
+        s.sources.push(status);
+        s.remote_synced_index.insert(url.to_string(), 3);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("remote-update-0").is_some(),
+            "a newer live index version than the last synced one shows the update cue"
+        );
+        assert!(
+            rt.find("remote-reconnect-0").is_some(),
+            "the cue offers a keyed Sync-now action"
+        );
+    }
+
+    /// Inc 6 item 4 (negative case): a remote already caught up to its last
+    /// synced index version shows no update cue — `online_remote_status`
+    /// reports `index_version: Some(3)`, matching what we record as synced.
+    #[test]
+    fn update_available_cue_is_absent_when_already_caught_up() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let url = "http://example.test:8080";
+        s.sources.push(online_remote_status(url));
+        s.remote_synced_index.insert(url.to_string(), 3);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("remote-update-0").is_none(),
+            "no cue when the live version matches the last synced one"
+        );
+    }
+
     /// The leading enable toggle is a focusable control that disables its source:
     /// clicking it flips `enabled` off and the (now-disabled) source stops
     /// contributing tracks, emptying the aggregated library.
@@ -6616,6 +7690,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -6627,6 +7702,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -6638,6 +7714,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some(genre.to_string()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -6773,6 +7850,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn discography_grid_list_toggle_switches_and_lists_navigate() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        // Default is grid: cards present, no rows.
+        assert!(rt.find("artist-disc-0").is_some(), "grid cards by default");
+        assert!(rt.find("artist-disc-row-0").is_none());
+        // Switch to list.
+        click(&mut rt, "disc-toggle-list");
+        assert!(rt.state.discography_list, "toggle flips to list");
+        // The list is a brand-new subtree (replacing the grid), so it enter-animates
+        // from opacity 0; settle instantly so its rows are pickable (matches the
+        // settle_all pattern used elsewhere in this module).
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find("artist-disc-row-0").is_some(), "list rows render");
+        assert!(rt.find("artist-disc-0").is_none(), "grid cards gone");
+        // A list row opens the album (through the back-stack).
+        click(&mut rt, "artist-disc-row-0");
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "a list row opens the album"
+        );
+        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+    }
+
     /// A discography album card opens that album's detail page.
     #[test]
     fn a_discography_card_opens_the_album() {
@@ -6797,6 +7913,66 @@ mod tests {
             "a disc card opens the album"
         );
         assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+    }
+
+    #[test]
+    fn back_returns_to_where_you_came_from() {
+        // Artist → (Discography) → Album → Back must return to the ARTIST, not the
+        // hardcoded Albums parent.
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            artist_album_track(1, "Bach", "Cello Suites"),
+            artist_album_track(2, "Bach", "Goldberg"),
+        ];
+        s.route = Route::Artists;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "card-text"); // open the artist (Bach) — pushes Artists
+        assert!(matches!(rt.state.route, Route::Artist));
+        // The artist detail page is a brand-new subtree this frame, so its cards
+        // enter-animate from opacity 0; settle instantly so the disc card below is
+        // pickable (matches the settle_all pattern used elsewhere in this module).
+        rt.settle_all();
+        rt.frame(0.0);
+        rt.frame(0.0);
+        click(&mut rt, "card-text"); // first Discography album — pushes the artist
+        assert!(
+            matches!(rt.state.route, Route::Album),
+            "a disc card opens the album"
+        );
+        // Same reason: the album detail page just mounted this frame.
+        rt.settle_all();
+        rt.frame(0.0);
+        click(&mut rt, "album-back"); // Back
+        assert!(
+            matches!(rt.state.route, Route::Artist),
+            "back returns to the artist"
+        );
+        assert_eq!(rt.state.open_artist.as_deref(), Some("Bach"));
+        // The artist detail page is remounted on the way back too.
+        rt.settle_all();
+        rt.frame(0.0);
+        click(&mut rt, "artist-back"); // Back again
+        assert!(
+            matches!(rt.state.route, Route::Artists),
+            "and then to the Artists list"
+        );
+    }
+
+    #[test]
+    fn back_falls_back_to_the_parent_with_an_empty_stack() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.route = Route::Album; // reached without history (e.g. deep link)
+        go_back(&mut s);
+        assert!(matches!(s.route, Route::Albums), "album → albums");
+        s.route = Route::Genre;
+        go_back(&mut s);
+        assert!(matches!(s.route, Route::Genres), "genre → genres");
     }
 
     /// With more than five tracks, Show more expands the Top-Songs list.
@@ -6838,6 +8014,7 @@ mod tests {
             album: Some(album.to_string()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -6938,6 +8115,54 @@ mod tests {
                 start: 0
             }],
             "Play All plays only this genre's tracks, from the top"
+        );
+    }
+
+    #[test]
+    fn genre_in_page_search_filters_the_track_list() {
+        let mut s = State::new(PlayerHandle::recording());
+        s.sidebar_collapsed = false;
+        // Two tracks with distinct titles in the one genre.
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Blue".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Jazz".into()),
+                duration_secs: 1.0,
+                remote: false,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("Green".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Jazz".into()),
+                duration_secs: 1.0,
+                remote: false,
+            },
+        ];
+        s.route = Route::Genre;
+        s.open_genre = Some("Jazz".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("genre-search").is_some(), "the search box renders");
+        assert!(
+            rt.find("album-track-0").is_some() && rt.find("album-track-1").is_some(),
+            "both tracks show"
+        );
+        // Type a query that matches only "Blue".
+        rt.update(|st: &mut State, _tx: &mut Tx| st.genre_search = rune::TextEdit::new("blue"));
+        rt.frame(0.0);
+        assert!(rt.find("album-track-0").is_some(), "the match stays");
+        assert!(
+            rt.find("album-track-1").is_none(),
+            "the non-match is filtered out"
         );
     }
 
@@ -7446,6 +8671,38 @@ mod tests {
         assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
     }
 
+    /// The now-playing title line shows the remote badge when the current track
+    /// streams from a remote source (`TrackView::remote`) — the one spot outside
+    /// the track lists where the badge cleanly fits, since `now_playing_row`
+    /// already carries the real `TrackView` the Inc-3 marker lives on.
+    #[test]
+    fn now_playing_shows_the_remote_badge_for_a_remote_track() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![soul_player_host::TrackView {
+            id: 1,
+            title: Some("Streamed".into()),
+            artist: Some("A".into()),
+            album: None,
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote: true,
+        }];
+        s.now_playing_id = Some(1);
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some("track-remote-1") && e.opacity > 0.01),
+            "the now-playing line should show the remote badge for a remote track"
+        );
+    }
+
     #[test]
     fn settings_shows_updates_section_without_install_by_default() {
         let env = Env {
@@ -7693,6 +8950,54 @@ mod tests {
         assert!(
             (w - 32.0).abs() <= 0.5 && (h - 32.0).abs() <= 0.5,
             "the cover is 32x32 pt (old app's w-8 h-8), got {w}x{h}"
+        );
+    }
+
+    /// A track row for a remote-flagged track (`TrackView::remote == true`, the
+    /// per-track Local/Remote marker) shows the subtle cloud badge; a local one
+    /// (`remote == false`, the unremarked default) shows none.
+    #[test]
+    fn a_remote_track_row_shows_the_remote_badge_a_local_one_does_not() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Streamed".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: true,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("OnDisk".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: false,
+            },
+        ];
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "track-remote-1"),
+            "a remote track's row should show the remote badge"
+        );
+        assert!(
+            !badge_visible(&rt, "track-remote-2"),
+            "a local track's row should not show a remote badge"
         );
     }
 
@@ -8089,6 +9394,468 @@ mod tests {
             mods: Mods::default(),
         });
         rt.frame(0.0);
+    }
+
+    /// How many album cards sit in the top row (same y as the highest card) — the
+    /// grid's current column count, read from the drawn card centres.
+    fn first_row_count(rt: &Runtime<State>, n: u32) -> usize {
+        let pts: Vec<(f32, f32)> = (0..n)
+            .filter_map(|i| rt.find(&format!("album-{i}")))
+            .collect();
+        let Some(top) = pts.iter().map(|p| p.1).reduce(f32::min) else {
+            return 0;
+        };
+        pts.iter().filter(|p| (p.1 - top).abs() < 5.0).count()
+    }
+
+    /// End-to-end: a Ctrl/⌘ chord driven through the real `Runtime::key` dispatch
+    /// (not a direct `handle_key` call) reaches the zoom handler and zooms. This is
+    /// the live key path; the unit test above can only prove the handler's logic.
+    #[test]
+    fn e2e_ctrl_chord_zooms_reflows_and_resets_via_the_runtime_key_path() {
+        let _g = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.ui_zoom = 1.0;
+        s.route = Route::Albums;
+        s.sidebar_collapsed = false;
+        // 18 distinct albums so the grid is multi-column and can reflow.
+        s.library = (1..=18u32)
+            .map(|a| soul_player_host::TrackView {
+                id: a,
+                title: Some(format!("T{a}")),
+                artist: Some("A".into()),
+                album: Some(format!("Album {a:02}")),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: false,
+            })
+            .collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        // `Runtime::new` doesn't wire `AppSpec::on_key`; the live app does. Set it so
+        // the chord routes exactly as it does in production.
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let base_cols = first_row_count(&rt, 18);
+        assert!(
+            base_cols >= 3,
+            "a wide window starts multi-column, got {base_cols}"
+        );
+
+        // Drive the REAL key path (Ctrl/⌘ chords): five `=` steps → 150 %.
+        let chord = |rt: &mut Runtime<State>, c: char| {
+            rt.key(KeyEvent {
+                key: Key::Command(c),
+                mods: Mods {
+                    cmd: true,
+                    ctrl: !cfg!(target_os = "macos"),
+                    ..Mods::default()
+                },
+            });
+            rt.frame(0.0);
+        };
+        for _ in 0..5 {
+            chord(&mut rt, '=');
+        }
+        rt.frame(0.0);
+        assert!(
+            (rt.state.ui_zoom - 1.5).abs() < 1e-4,
+            "five Ctrl+= steps zoom to 150 %, got {}",
+            rt.state.ui_zoom
+        );
+        assert!(
+            rt.find("content-zoom").is_some(),
+            "the zoom wrapper is active"
+        );
+        let zoomed_cols = first_row_count(&rt, 18);
+        assert!(
+            zoomed_cols < base_cols,
+            "zooming reflows to fewer columns: {zoomed_cols} vs {base_cols}"
+        );
+
+        // Ctrl+0 resets the zoom and restores the original column count.
+        chord(&mut rt, '0');
+        rt.frame(0.0);
+        assert_eq!(rt.state.ui_zoom, 1.0, "Ctrl+0 resets");
+        assert!(rt.find("content-zoom").is_none(), "no wrapper at 100 %");
+        assert_eq!(
+            first_row_count(&rt, 18),
+            base_cols,
+            "the column count is restored"
+        );
+    }
+
+    #[test]
+    fn album_grid_rows_are_not_looser_than_columns() {
+        // Regression: the card used to carry bottom padding that stacked on the
+        // grid's row gap, so the space between rows read as larger than between
+        // columns. The row gap must now be ≤ the column gap.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.library = (1..=18u32)
+            .map(|a| soul_player_host::TrackView {
+                id: a,
+                title: Some(format!("T{a}")),
+                artist: Some("A".into()),
+                album: Some(format!("Album {a:02}")),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: false,
+            })
+            .collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let rect = |k: &str| rt.presented(k).map(|r| r.0);
+        let cols = first_row_count(&rt, 18);
+        assert!(
+            cols >= 2,
+            "need multiple columns to compare gaps, got {cols}"
+        );
+        let a = rect("album-0").expect("first card present");
+        let b = rect("album-1").expect("second card present");
+        let below = rect(&format!("album-{cols}")).expect("first card of row 2 present");
+        // [x, y, w, h]: column gap between cards 0 and 1; row gap between card 0 and
+        // the card directly beneath it (the first of the next row).
+        let col_gap = b[0] - (a[0] + a[2]);
+        let row_gap = below[1] - (a[1] + a[3]);
+        assert!(row_gap > 0.0, "rows are separated (got {row_gap})");
+        assert!(
+            row_gap <= col_gap + 1.0,
+            "row gap ({row_gap:.1}) must not exceed column gap ({col_gap:.1})"
+        );
+    }
+
+    #[test]
+    fn zoom_step_snaps_to_the_grid_and_clamps() {
+        assert!((stepped_zoom(1.0, 1) - 1.1).abs() < 1e-4, "one step in");
+        assert!(
+            (stepped_zoom(1.5, -1) - 1.4).abs() < 1e-4,
+            "one step out, above the floor"
+        );
+        assert_eq!(
+            stepped_zoom(1.0, -1),
+            MIN_ZOOM,
+            "Ctrl- at 100 % holds at the floor (zoom-in only)"
+        );
+        assert_eq!(stepped_zoom(2.0, 1), MAX_ZOOM, "clamps at the ceiling");
+        assert_eq!(
+            stepped_zoom(0.5, -1),
+            MIN_ZOOM,
+            "a below-floor value clamps up"
+        );
+        assert_eq!(stepped_zoom(1.95, 1), MAX_ZOOM, "a near-max step clamps");
+        assert_eq!(sane_zoom(f32::NAN), 1.0, "non-finite → 100 %");
+        assert_eq!(sane_zoom(5.0), MAX_ZOOM, "out-of-range clamps up");
+        assert_eq!(sane_zoom(0.1), MIN_ZOOM, "out-of-range clamps down");
+    }
+
+    /// A primary-modifier chord (Ctrl elsewhere, ⌘ on macOS) — the form a real
+    /// `Key::Command(c)` carries, which `handle_key`'s zoom arms match.
+    fn cmd_chord(c: char) -> KeyEvent {
+        KeyEvent {
+            key: Key::Command(c),
+            mods: Mods {
+                cmd: true,
+                ctrl: !cfg!(target_os = "macos"),
+                ..Mods::default()
+            },
+        }
+    }
+
+    #[test]
+    fn ctrl_chords_zoom_the_content_and_reset() {
+        // `set_zoom` persists, so isolate the config file from the real one.
+        let _g = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.ui_zoom = 1.0;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // `Runtime::new` doesn't wire `AppSpec::on_key`; wire it so the chord routes
+        // through `Runtime::key` exactly as it does in the live app.
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        let hit = |rt: &mut Runtime<State>, c: char| {
+            rt.key(cmd_chord(c));
+            rt.frame(0.0);
+        };
+        hit(&mut rt, '='); // Ctrl/⌘ +
+        assert!((rt.state.ui_zoom - 1.1).abs() < 1e-4, "Ctrl+= zooms in");
+        hit(&mut rt, '=');
+        assert!((rt.state.ui_zoom - 1.2).abs() < 1e-4, "again → 120 %");
+        hit(&mut rt, '-'); // Ctrl/⌘ -
+        assert!((rt.state.ui_zoom - 1.1).abs() < 1e-4, "Ctrl+- zooms out");
+        hit(&mut rt, '0'); // Ctrl/⌘ 0
+        assert_eq!(rt.state.ui_zoom, 1.0, "Ctrl+0 resets to 100 %");
+    }
+
+    #[test]
+    fn ctrl_zoom_reflows_the_album_grid_into_fewer_columns() {
+        fn distinct_album(id: u32) -> soul_player_host::TrackView {
+            soul_player_host::TrackView {
+                id,
+                title: Some(format!("T{id}")),
+                artist: Some("A".into()),
+                album: Some(format!("Album {id:02}")),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: false,
+            }
+        }
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.ui_zoom = 1.0; // don't depend on any persisted zoom
+        s.library = (1..=24).map(distinct_album).collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        // Two frames so the grid reads its committed (post-zoom) width, not the fallback.
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("content-zoom").is_none(),
+            "no zoom wrapper at 100 %"
+        );
+        let base_cols = first_row_count(&rt, 24);
+        assert!(
+            base_cols >= 3,
+            "a wide window has several columns, got {base_cols}"
+        );
+
+        // Zoom to 150 %: the page lays out in pane/1.5 → the grid re-columns to fewer.
+        rt.update(|st: &mut State, _tx: &mut Tx| st.ui_zoom = 1.5);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("content-zoom").is_some(),
+            "the zoom wrapper wraps the pane at 150 %"
+        );
+        let zoomed_cols = first_row_count(&rt, 24);
+        assert!(
+            zoomed_cols < base_cols,
+            "zooming in reflows into fewer columns: {zoomed_cols} vs {base_cols}"
+        );
+    }
+
+    /// A distinct album track for grid-layout tests — distinct artist AND album so
+    /// the same library fills either the Albums or the Artists grid with N cards.
+    fn grid_album(id: u32) -> soul_player_host::TrackView {
+        soul_player_host::TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some(format!("Artist {id:02}")),
+            album: Some(format!("Album {id:02}")),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote: false,
+        }
+    }
+
+    /// A few albums in a very tall window must sit at the top at natural height —
+    /// each wrapped row a row-gap below the last — not be spread down the viewport.
+    /// Regression: the browse grid used to BE the growing scroll element, so flexbox
+    /// stretched its wrapped lines (and the cards on them) to fill the height,
+    /// opening big empty bands between rows whenever the library didn't fill the
+    /// window. The scroll now wraps a natural-height grid.
+    #[test]
+    fn the_album_grid_packs_rows_to_the_top_of_a_tall_window() {
+        rust_i18n::set_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.ui_zoom = 1.0;
+        s.library = (1..=8).map(grid_album).collect(); // ~2 rows, far shorter than the window
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1200.0, 1600.0), env); // very tall
+        rt.frame(0.0);
+        rt.frame(0.0);
+        // Positions via `rt.find` (one consistent anchor); width via the element rect.
+        let (_x0, row1_y) = rt.find("album-0").expect("album-0 is laid out");
+        // The second row: the highest card that sits clearly below row 1.
+        let row2_y = (1..8u32)
+            .filter_map(|i| rt.find(&format!("album-{i}")))
+            .map(|(_x, y)| y)
+            .filter(|&y| y > row1_y + 10.0)
+            .fold(f32::MAX, f32::min);
+        assert!(row2_y < f32::MAX, "eight albums wrap to a second row");
+        let card_w = el_info(&rt, "album-0").rect[2];
+        // Row-to-row pitch = one natural card (square cover `w` + a two-line caption)
+        // plus the row gap. A stretched line (or stretched card) balloons this far
+        // past the card's own width.
+        let pitch = row2_y - row1_y;
+        assert!(
+            pitch <= card_w + 120.0,
+            "rows a natural pitch apart, not spread: pitch={pitch:.0}, card_w={card_w:.0}"
+        );
+    }
+
+    /// After a zoom change the live app renders a SINGLE frame (it is event-driven,
+    /// not continuously repainting), so the grid must fill the pane on that one
+    /// frame. It used to read its width back from the laid-out page, which lagged a
+    /// frame under the zoom wrapper — leaving the cards sized for the previous zoom
+    /// and the grid short of the right edge until the next relayout (a window
+    /// resize). The width is now threaded from the stable content size ÷ zoom.
+    #[test]
+    fn zooming_out_fills_the_album_grid_width_on_one_frame() {
+        rust_i18n::set_locale("en");
+        let _g = config::use_test_config_dir(); // set_zoom would persist
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.ui_zoom = 2.0; // start zoomed in: a small logical box → small cards
+        s.library = (1..=24).map(grid_album).collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0); // settle at 200 %
+        // Reset to 100 % and render ONE frame, exactly as a Ctrl+0 keypress does.
+        rt.update(|st: &mut State, _tx: &mut Tx| st.ui_zoom = 1.0);
+        rt.frame(0.0);
+        let grid = el_info(&rt, "albums-grid").rect; // [x, y, w, h]
+        let inner_right = grid[0] + grid[2] - crate::ui::space::PANE;
+        // First-row cards, measured from element rects (top-left + width) so the row
+        // test and the right-edge span share one coordinate space.
+        let r0_top = el_info(&rt, "album-0").rect[1];
+        let mut max_right = f32::MIN;
+        for e in rt.elements() {
+            let is_card = e
+                .key
+                .as_deref()
+                .and_then(|k| k.strip_prefix("album-"))
+                .is_some_and(|rest| rest.parse::<u32>().is_ok());
+            if is_card && (e.rect[1] - r0_top).abs() < 5.0 {
+                max_right = max_right.max(e.rect[0] + e.rect[2]);
+            }
+        }
+        let slack = inner_right - max_right;
+        assert!(
+            slack.abs() <= 3.0,
+            "the grid fills to its right inner edge on one frame: slack={slack:.1} \
+             (inner right {inner_right:.0}, cards reach {max_right:.0})"
+        );
+    }
+
+    /// The gap between a browse grid's right inner edge and the furthest-right card
+    /// on its TOP row — how many points of empty column the grid leaves on the right
+    /// at this window size. ~0 means the cards fill the width. Anchors to the true
+    /// top row (min y over the cards), not a specific card, so it is robust to draw
+    /// order. `grid_key` is e.g. `"albums-grid"`, `card_prefix` e.g. `"album-"`.
+    fn grid_right_slack(rt: &Runtime<State>, grid_key: &str, card_prefix: &str) -> f32 {
+        let grid = el_info(rt, grid_key).rect; // [x, y, w, h]
+        let inner_right = grid[0] + grid[2] - crate::ui::space::PANE;
+        let cards: Vec<[f32; 4]> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .and_then(|k| k.strip_prefix(card_prefix))
+                    .is_some_and(|rest| rest.parse::<u32>().is_ok())
+            })
+            .map(|e| e.rect)
+            .collect();
+        let top = cards.iter().map(|r| r[1]).fold(f32::MAX, f32::min);
+        let max_right = cards
+            .iter()
+            .filter(|r| (r[1] - top).abs() < 5.0)
+            .map(|r| r[0] + r[2])
+            .fold(f32::MIN, f32::max);
+        inner_right - max_right
+    }
+
+    /// Sweep a browse grid over many window widths AND the common desktop DPI scales,
+    /// returning the worst (largest) right-edge empty column found and where. The
+    /// exact-fill card width is fractional, so at unlucky width/scale combinations a
+    /// fixed-width card rounds a hair too wide and wraps the last column (a full empty
+    /// gap) or too narrow (a thin one); the flex cards must fill at every combination.
+    fn worst_grid_fill(
+        route: Route,
+        grid_key: &str,
+        card_prefix: &str,
+        scales: &[f32],
+    ) -> (f32, f32, f32) {
+        let mut worst = f32::MIN;
+        let (mut worst_w, mut worst_scale) = (0.0f32, 0.0f32);
+        for &scale in scales {
+            // Irrational-ish step so the card width's fractional part varies across a
+            // 1-to-8-column span (the 7-column 1316 case is where the bug first bit).
+            for step in 0..12u32 {
+                let win_w = 900.0 + step as f32 * 66.9;
+                let mut s = State::new(PlayerHandle::offline());
+                s.sidebar_collapsed = false;
+                s.route = route;
+                s.ui_zoom = 1.0;
+                s.library = (1..=24).map(grid_album).collect();
+                let env = Env {
+                    system_dark: true,
+                    scale,
+                };
+                let mut rt = Runtime::new(s, view, (win_w, 900.0), env);
+                // Settle: the first frame sizes the grid from the fallback width (no
+                // prior layout), so give the readback-driven width two more frames to
+                // reach the committed pane width — the steady state the user sees.
+                for _ in 0..3 {
+                    rt.frame(0.0);
+                }
+                let slack = grid_right_slack(&rt, grid_key, card_prefix);
+                if slack > worst {
+                    worst = slack;
+                    worst_w = win_w;
+                    worst_scale = scale;
+                }
+            }
+        }
+        (worst, worst_w, worst_scale)
+    }
+
+    /// The Albums grid must fill its width at EVERY window size and DPI scale, not
+    /// only the lucky ones. One physical pixel of residual rounding is unavoidable
+    /// and invisible; a multi-point empty column (worst case a whole wrapped column)
+    /// is the bug the flex cards fix.
+    #[test]
+    fn the_album_grid_fills_the_width_at_every_size_and_scale() {
+        rust_i18n::set_locale("en");
+        // Scale 1.0 is the coarsest rounding (most exposure); 2.0 the finest — the
+        // two extremes of the physical-pixel grid the cards must tile.
+        let (worst, w, scale) =
+            worst_grid_fill(Route::Albums, "albums-grid", "album-", &[1.0, 2.0]);
+        assert!(
+            worst <= 1.0,
+            "albums grid fills within 1 pt everywhere; worst empty column {worst:.1} pt at window {w:.0}, scale {scale}"
+        );
+    }
+
+    /// The Artists grid shares the same flex card (`media_card`), so one representative
+    /// scale confirms its grid path fills identically.
+    #[test]
+    fn the_artists_grid_fills_the_width() {
+        rust_i18n::set_locale("en");
+        let (worst, w, scale) = worst_grid_fill(Route::Artists, "artists-grid", "artist-", &[1.25]);
+        assert!(
+            worst <= 1.0,
+            "artists grid fills within 1 pt; worst empty column {worst:.1} pt at window {w:.0}, scale {scale}"
+        );
     }
 
     /// Tab forward until the element keyed `key` is focused, up to `max` presses.

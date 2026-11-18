@@ -17,6 +17,7 @@ use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::grid;
 use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
+use crate::views::player::remote_badge;
 
 /// One grouped album: display name, its artist, a track id to draw the cover
 /// from, and every track id (in library order) to play on click.
@@ -101,9 +102,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
         card_w,
         scale,
         move |st: &mut State| {
-            st.route = crate::Route::Album;
-            st.open_album = Some(name.clone());
-            st.mobile_show_content = true;
+            crate::navigate_to(st, crate::Route::Album, Some(name.clone()), None, None);
         },
     )
 }
@@ -122,23 +121,34 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .key("albums-grid")
         .role("grid")
         .flex_wrap()
-        .gap(space::GUTTER)
+        // Rows a touch tighter than columns: each card's caption adds visual
+        // whitespace below the tile, so an even gap reads as too much between rows.
+        .gaps(space::MD, space::GUTTER)
         .padding(space::PANE);
     for (slot, a) in albums.iter().enumerate() {
         grid = grid.child(album_card(s, p, slot, a, card_w, scale));
     }
     col().key("albums").grow(1.0).min_h(0.0).child(
-        grid.scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .scroll_edge_fade(24.0)
-        .grow(1.0)
-        .min_h(0.0),
+        // Scroll on the growing wrapper, NOT the grid itself. A flex-wrap grid that is
+        // the growing scroll element has flexbox stretch its wrapped lines to fill the
+        // height, spreading the rows apart whenever the library doesn't fill the window
+        // (worse the more you zoom — fewer rows fit). A natural-height grid inside a
+        // growing scroll viewport packs rows to the top (extra space falls below the
+        // last row) and still scrolls once the content is taller than the viewport.
+        col()
+            .key("albums-scroll")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0)
+            .child(grid),
     )
 }
 
-/// A back link to the Albums grid — a `←` glyph. Our focused shell keeps no page
-/// history, so it simply returns to the grid.
+/// A back link — a `←` glyph. Returns to wherever this album was opened from
+/// (the back-stack), falling back to the Albums grid if reached without one.
 fn back_button(p: &Palette) -> El {
     el().key("album-back")
         .role("button")
@@ -151,7 +161,7 @@ fn back_button(p: &Palette) -> El {
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(|st: &mut State| st.route = crate::Route::Albums)
+        .on_press(crate::go_back)
 }
 
 /// One row on the album detail page: the track number (or a ⏸/▶ state glyph when
@@ -189,28 +199,34 @@ pub(crate) fn detail_track_row(
         // The now-playing row keeps an accent wash (old app's `bg-accent/20`).
         r = r.fill(p.accent.alpha(0.2));
     }
-    r.child(
-        text(if playing {
-            (if is_playing { "⏸" } else { "▶" }).to_string()
-        } else {
-            format!("{}", i + 1)
-        })
-        .font(type_::ITEM)
-        .color(if playing { p.accent } else { p.text_secondary })
-        .w(28.0),
-    )
-    .child(
-        text(
-            t.title
-                .clone()
-                .unwrap_or_else(|| t!("library.unknown").to_string()),
+    r = r
+        .child(
+            text(if playing {
+                (if is_playing { "⏸" } else { "▶" }).to_string()
+            } else {
+                format!("{}", i + 1)
+            })
+            .font(type_::ITEM)
+            .color(if playing { p.accent } else { p.text_secondary })
+            .w(28.0),
         )
-        .font(type_::ITEM)
-        .color(if playing { p.accent } else { p.fg })
-        .truncate()
-        .grow(1.0),
-    )
-    .child(
+        .child(
+            text(
+                t.title
+                    .clone()
+                    .unwrap_or_else(|| t!("library.unknown").to_string()),
+            )
+            .font(type_::ITEM)
+            .color(if playing { p.accent } else { p.fg })
+            .truncate()
+            .grow(1.0),
+        );
+    // A subtle cloud badge for a track streaming from a remote source;
+    // nothing renders for a local track, the unremarked default.
+    if t.remote {
+        r = r.child(remote_badge(t.id, p));
+    }
+    r.child(
         text(fmt_dur(t.duration_secs))
             .font(type_::ITEM)
             .color(p.text_secondary)
@@ -330,6 +346,7 @@ mod tests {
             album: Some(album.to_string()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 

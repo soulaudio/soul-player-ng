@@ -15,7 +15,5 @@ impl<T: std::io::Read + std::io::Seek + Send> ReadSeek for T {}
 
 pub trait UserStore: Send + Sync {
     fn verify(&self, user: &str, pass: &str) -> Option<super::UserId>;
-    fn issue_token(&self, user: super::UserId) -> anyhow::Result<super::Token>;
-    fn check(&self, token: &str) -> Option<super::UserId>;
     fn add_user(&self, user: &str, pass: &str) -> anyhow::Result<super::UserId>;
 }

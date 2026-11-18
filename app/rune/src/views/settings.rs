@@ -16,7 +16,9 @@ use rune::{
     Tx, WheelEvent, col, el, icon, row, text, text_input,
 };
 use soul_player_host::organize;
-use soul_player_host::{BandKind, DspUnit, GAIN_LIMIT_DB, ReplayGainMode};
+use soul_player_host::{
+    BandKind, DspUnit, GAIN_LIMIT_DB, RemoteHealth, ReplayGainMode, SourceKind, SourceStatus,
+};
 
 use crate::organize_job::{scan_audio, template_for};
 use crate::theme::Palette;
@@ -30,16 +32,16 @@ use crate::{
     NumField, OrganizePhase, SettingsTab, State, ThemePref, add_dsp_unit, add_eq_band,
     apply_and_save, apply_watch, close_dropdown, close_remote_form, commit_dsp_rename,
     commit_eq_edit, commit_profile_rename, connect_remote_source, cycle_eq_band_kind,
-    delete_profile, duplicate_profile, eq_edit_start, eq_num_drag_end, eq_num_drag_move,
-    eq_num_drag_start, eq_num_scroll, export_eq, export_profile, import_eq, import_profile,
-    new_profile, open_remote_form, organize_begin, organize_confirm, organize_dismiss,
-    organize_ready, remove_dsp_unit, remove_eq_band, reorder_dsp_units, scan_in_background,
-    set_dsp_unit_enabled, set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict,
-    set_indexing_mode, set_locale_pref, set_managed_dest, set_managed_strategy,
-    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_theme_pref, start_dsp_rename,
-    start_profile_rename, switch_profile, toggle_dsp_expanded, toggle_eq_bands_expanded,
-    unit_bands, unit_enabled, unit_preamp,
+    delete_profile, disconnect_remote_source, duplicate_profile, eq_edit_start, eq_num_drag_end,
+    eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, export_profile, import_eq,
+    import_profile, new_profile, open_remote_form, organize_begin, organize_confirm,
+    organize_dismiss, organize_ready, reconnect_remote_now, remove_dsp_unit, remove_eq_band,
+    reorder_dsp_units, scan_in_background, set_dsp_unit_enabled, set_eq_band_enabled,
+    set_eq_preamp, set_exclusive, set_exclusive_strict, set_indexing_mode, set_locale_pref,
+    set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
+    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
+    set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
+    toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
@@ -339,9 +341,7 @@ const REMOTE_FORM_MAX_W: f32 = 440.0;
 /// `key` becomes both the input's a11y key and (with a `-group` suffix) its
 /// wrapping column's key; `label` is both the caption text and the input's
 /// `.label(...)` (its accessible name — a `textbox` isn't named from its
-/// content). The password field's masking comes from `buf` itself having
-/// been created with [`rune::TextEdit::secure`] (see `empty_remote_pass_buf`
-/// in `main.rs`), not from anything here.
+/// content).
 fn remote_field(
     key: &'static str,
     label: String,
@@ -375,14 +375,45 @@ fn remote_field(
         )
 }
 
+/// The Connect button: like `organize_button` while idle, but while
+/// `connecting` it switches to the "waiting for your browser" label and
+/// drops `focusable`/`on_press`/`cursor` in favour of a dimmed, inert state —
+/// the same enabled/disabled shape `player.rs`'s `transport_button` uses for
+/// a control with nothing to invoke right now.
+fn remote_connect_button(connecting: bool, p: &Palette) -> El {
+    let label = if connecting {
+        t!("settings.remoteConnecting").to_string()
+    } else {
+        t!("settings.remoteConnect").to_string()
+    };
+    let base = el()
+        .key("remote-connect")
+        .role("button")
+        .label(label.clone())
+        .focusable(!connecting)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .fill(if connecting { p.muted } else { p.primary })
+        .child(text(label).color(if connecting { p.text_secondary } else { p.bg }));
+    if connecting {
+        base.opacity(fx::DISABLED)
+    } else {
+        base.cursor(Cursor::Pointer).on_press(connect_remote_source)
+    }
+}
+
 /// The Remote server connect form: a small centered card over a dim scrim,
 /// mounted on the root overlay layer (via [`settings_overlays`]) once
-/// [`open_remote_form`] sets `State::remote_form_open`. Three labelled fields
-/// (server URL, username, password) over a Cancel / Connect button row;
-/// Connect reads the buffers and calls the host (`connect_remote_source`). A
-/// failed attempt's message shows inline above the buttons without closing
-/// the form. `modal` traps focus, dims the background, and dismisses on
-/// Escape or an outside (scrim) press — same as the add-source dialog.
+/// [`open_remote_form`] sets `State::remote_form_open`. A single labelled
+/// field (server URL) over a Cancel / Connect button row — there is no
+/// username/password field, since signing in happens in the system browser
+/// (OAuth), not the app. Connect reads the URL and calls the host off-thread
+/// (`connect_remote_source`); while that's in flight `remote_connecting`
+/// swaps the Connect button for a disabled "waiting for your browser" state
+/// and a status line replaces where an error would show. A failed attempt's
+/// message shows inline above the buttons without closing the form. `modal`
+/// traps focus, dims the background, and dismisses on Escape or an outside
+/// (scrim) press — same as the add-source dialog.
 pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
     if !s.remote_form_open {
         return None;
@@ -405,28 +436,28 @@ pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
                 .color(p.fg)
                 .wrap(),
         )
+        .child(
+            text(t!("settings.remoteConnectHint").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .wrap(),
+        )
         .child(remote_field(
             "remote-url",
             t!("settings.remoteUrlLabel").to_string(),
             &s.remote_url_buf,
             |s: &mut State| &mut s.remote_url_buf,
             p,
-        ))
-        .child(remote_field(
-            "remote-user",
-            t!("settings.remoteUserLabel").to_string(),
-            &s.remote_user_buf,
-            |s: &mut State| &mut s.remote_user_buf,
-            p,
-        ))
-        .child(remote_field(
-            "remote-pass",
-            t!("settings.remotePassLabel").to_string(),
-            &s.remote_pass_buf,
-            |s: &mut State| &mut s.remote_pass_buf,
-            p,
         ));
-    if let Some(msg) = &s.remote_error {
+    if s.remote_connecting {
+        dialog = dialog.child(
+            text(t!("settings.remoteConnecting").to_string())
+                .key("remote-connecting-status")
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .wrap(),
+        );
+    } else if let Some(msg) = &s.remote_error {
         dialog = dialog.child(
             text(t!("settings.remoteConnectError", error => msg).to_string())
                 .key("remote-error")
@@ -447,13 +478,7 @@ pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
                     p,
                     close_remote_form,
                 ))
-                .child(organize_button(
-                    "remote-connect",
-                    t!("settings.remoteConnect").to_string(),
-                    true,
-                    p,
-                    connect_remote_source,
-                )),
+                .child(remote_connect_button(s.remote_connecting, p)),
         )
         .modal(true, close_remote_form);
     Some(
@@ -579,60 +604,259 @@ const TOGGLE_PX: f32 = 20.0;
 /// The check glyph inside the enable toggle.
 const TOGGLE_ICON_PX: f32 = 14.0;
 
-/// One watched source, richly: a leading enable/disable toggle, the source name
-/// over its full path, a per-source track count, an "offline" badge if currently
-/// unavailable, and a remove (✕) that drops it from the set and re-aggregates.
-fn source_row(s: &State, p: &Palette, index: usize) -> El {
-    let status = &s.sources[index];
-    let folder = status.path.clone();
-    let name = basename(&folder);
-    let full_path = folder.to_string_lossy().into_owned();
+/// Side of the remote online/offline status dot — small, like the toggle it
+/// stands in for on a remote row (there is no enable/disable concept for a
+/// remote source; see `SourceStatus::enabled`'s doc). Diameter, not a radius
+/// token: a circular control uses `size * 0.5` for its corner radius.
+const HEALTH_DOT_PX: f32 = 10.0;
+
+/// `url`'s host (and port, if non-default), for a remote row's title line — a
+/// bare `https://` isn't informative, but the whole URL (shown in full below,
+/// as the "path" line) is more than a title needs. Falls back to the whole
+/// `url` if it carries no recognizable scheme.
+fn display_host(url: &str) -> String {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    without_scheme
+        .split('/')
+        .next()
+        .unwrap_or(without_scheme)
+        .to_string()
+}
+
+/// A small Local/Remote pill identifying a source row's [`SourceKind`] — the
+/// "clear local/remote distinction" the Inc-2 program spec asks for. Styled
+/// like the row's other chips (`enable`/`remove`): a filled, rounded box
+/// around a short label. Remote reads in the accent color so it stands out
+/// as the kind with telemetry attached.
+fn source_kind_badge(index: usize, kind: &SourceKind, p: &Palette) -> El {
+    let (label, color) = match kind {
+        SourceKind::Local { .. } => (t!("settings.sourceLocal").to_string(), p.text_secondary),
+        SourceKind::Remote { .. } => (t!("settings.sourceRemote").to_string(), p.accent),
+    };
+    el().key(format!("source-badge-{index}"))
+        .px(space::XS)
+        .py(space::XXS)
+        .radius(radius::FULL)
+        .fill(p.muted)
+        .child(text(label).font(type_::LABEL).color(color))
+}
+
+/// A remote row's online/offline status dot — green while the last probe
+/// succeeded, dim otherwise. Not rendered for a local source (locality has no
+/// "online" concept); carries an accessible label since color alone isn't.
+fn health_dot(index: usize, online: bool, p: &Palette) -> El {
+    el().key(format!("source-online-{index}"))
+        .role("status")
+        .label(if online {
+            t!("settings.remoteOnline").to_string()
+        } else {
+            t!("settings.offline").to_string()
+        })
+        .size(HEALTH_DOT_PX, HEALTH_DOT_PX)
+        .radius(HEALTH_DOT_PX * 0.5)
+        .fill(if online { p.online } else { p.text_secondary })
+}
+
+/// Round-trip latency as `"{ms}ms"`, or an em-dash placeholder when the
+/// remote has never answered a probe (offline, or not yet checked) — mirrors
+/// the band-table's own "—" convention for an unset numeric value. Plain text,
+/// not localized: a unit abbreviation and a glyph, not prose.
+fn latency_text(latency_ms: Option<u64>) -> String {
+    match latency_ms {
+        Some(ms) => format!("{ms}ms"),
+        None => "—".to_string(),
+    }
+}
+
+/// Seconds since the Unix epoch, for [`relative_time`]. Falls back to 0 on a
+/// clock set before the epoch rather than panicking — this is display-only.
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// `then` (a [`RemoteHealth::last_checked_unix`]) as a short, localized
+/// relative time against `now` — "just now" / "%{count}m ago" / "%{count}h
+/// ago" / "%{count}d ago". `None` (never probed) reads as the same em-dash
+/// placeholder [`latency_text`] uses for "no value yet".
+fn relative_time(now: u64, then: Option<u64>) -> String {
+    let Some(then) = then else {
+        return "—".to_string();
+    };
+    let secs = now.saturating_sub(then);
+    if secs < 60 {
+        t!("settings.justNow").to_string()
+    } else if secs < 3600 {
+        t!("settings.minutesAgo", count => secs / 60).to_string()
+    } else if secs < 86_400 {
+        t!("settings.hoursAgo", count => secs / 3600).to_string()
+    } else {
+        t!("settings.daysAgo", count => secs / 86_400).to_string()
+    }
+}
+
+/// The compact data line under a remote source's identity — the telemetry the
+/// Inc-2 program spec asks for: round-trip latency, the server's own crate
+/// version, and a relative "last checked" time, read straight off
+/// [`RemoteHealth`]. One row, wrapping (`flex_wrap`) so a narrow pane drops
+/// items to a second line instead of overflowing, not a wall of text.
+fn remote_health_line(index: usize, health: &RemoteHealth, p: &Palette) -> El {
+    let version = health
+        .server_version
+        .clone()
+        .unwrap_or_else(|| "—".to_string());
+    row()
+        .key(format!("source-health-{index}"))
+        .gap(space::SM)
+        .flex_wrap()
+        .child(
+            text(latency_text(health.latency_ms))
+                .key(format!("source-latency-{index}"))
+                .font(type_::LABEL.mono())
+                .color(p.text_secondary),
+        )
+        .child(
+            text(version)
+                .key(format!("source-version-{index}"))
+                .font(type_::LABEL.mono())
+                .color(p.text_secondary),
+        )
+        .child(
+            text(relative_time(now_unix(), health.last_checked_unix))
+                .key(format!("source-last-checked-{index}"))
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+}
+
+/// One row to render in the Sources card: a live source from `s.sources`
+/// (local, or a currently-connected remote) — [`SourceRow::Live`] — or a
+/// persisted remote URL with no live entry — [`SourceRow::Offline`] (Inc 6).
+/// See [`merged_source_rows`].
+enum SourceRow<'a> {
+    Live(&'a SourceStatus),
+    Offline(&'a str),
+}
+
+/// `s.sources` (live: local roots + currently-connected remotes) followed by
+/// every persisted remote URL (`s.remote_urls`, seeded from
+/// `config::load_remotes()` by `reconnect_remotes_on_startup`) that has no
+/// live entry — so a remote that failed to reconnect at launch, or is still
+/// mid-reconnect, keeps showing up with an offline row and a Reconnect
+/// action instead of silently vanishing from the Sources list (Inc 6). Live
+/// rows keep the host's own order; offline rows are appended in the order
+/// they were added, so the ordering never reshuffles as health changes.
+fn merged_source_rows(s: &State) -> Vec<SourceRow<'_>> {
+    let mut rows: Vec<SourceRow> = s.sources.iter().map(SourceRow::Live).collect();
+    for url in &s.remote_urls {
+        let connected = s
+            .sources
+            .iter()
+            .any(|st| matches!(&st.kind, SourceKind::Remote { url: live } if live == url));
+        if !connected {
+            rows.push(SourceRow::Offline(url));
+        }
+    }
+    rows
+}
+
+/// One source row, dispatching to [`live_source_row`] or
+/// [`offline_remote_row`] depending on which [`SourceRow`] variant
+/// [`merged_source_rows`] produced for this position. `index` is this row's
+/// position in the MERGED list, not necessarily `s.sources`' — used only to
+/// key its controls uniquely within the card.
+fn source_row(s: &State, p: &Palette, row: &SourceRow<'_>, index: usize) -> El {
+    match row {
+        SourceRow::Live(status) => live_source_row(s, p, status, index),
+        SourceRow::Offline(url) => offline_remote_row(s, p, url, index),
+    }
+}
+
+/// A live source row (local, or a currently-connected remote): a Local/Remote
+/// badge, a leading control (the enable/disable toggle for a local root; the
+/// online/offline dot for a remote server), the source's name over its full
+/// path/URL, a per-source track count, a remote's health/telemetry line (plus
+/// an "update available" cue — see [`remote_update_available`] — when its
+/// live index version has moved past the one last synced), an "offline"
+/// badge if a LOCAL root is currently unreachable, and a trailing remove/
+/// disconnect control that drops the source and re-aggregates.
+fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) -> El {
     let enabled = status.enabled;
     let unavailable = !status.available;
-    let toggle_for = folder.clone();
-    let remove_for = folder.clone();
+    let is_remote = matches!(status.kind, SourceKind::Remote { .. });
 
-    // Leading enable/disable toggle: a small square, filled `primary` (with a
-    // check) when enabled, `muted` when disabled. Its accessible label states the
-    // action it performs (enable when off, disable when on).
-    let mut toggle = el()
-        .key(format!("enable-{index}"))
-        .role("button")
-        .label(if enabled {
-            t!("settings.disableSource").to_string()
-        } else {
-            t!("settings.enableSource").to_string()
-        })
-        .focusable(true)
-        .size(TOGGLE_PX, TOGGLE_PX)
-        .radius(radius::XS)
-        .center()
-        .cursor(Cursor::Pointer)
-        .fill(if enabled { p.primary } else { p.muted })
-        .on_press(move |st: &mut State| {
-            let toggle_for = toggle_for.clone();
-            scan_in_background(
-                st,
-                move |h| h.set_folder_enabled(&toggle_for, !enabled),
-                apply_and_save,
-            );
-        });
-    if enabled {
-        toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
-    }
+    // A local source's title/subtitle is its basename over its full path (as
+    // before); a remote has no filesystem path, so its title is the host and
+    // the subtitle is the full base URL.
+    let (name, full_path) = match &status.kind {
+        SourceKind::Local { path } => (basename(path), path.to_string_lossy().into_owned()),
+        SourceKind::Remote { url } => (display_host(url), url.clone()),
+    };
 
-    // Name over full path. A disabled source reads inactive, so its name dims to
-    // the secondary colour. Both lines truncate and the column grows + shrinks to
-    // zero so a long path can't shove the count / badge / ✕ off the card.
+    // Leading control: a local source gets the enable/disable toggle (unique
+    // per-source state); a remote has no enable concept (v0 has no remote
+    // toggle — `SourceStatus::enabled` is always `true` for one), so its
+    // leading slot is the health dot instead.
+    let leading = match &status.kind {
+        SourceKind::Local { path } => {
+            let toggle_for = path.clone();
+            let mut toggle = el()
+                .key(format!("enable-{index}"))
+                .role("button")
+                .label(if enabled {
+                    t!("settings.disableSource").to_string()
+                } else {
+                    t!("settings.enableSource").to_string()
+                })
+                .focusable(true)
+                .size(TOGGLE_PX, TOGGLE_PX)
+                .radius(radius::XS)
+                .center()
+                .cursor(Cursor::Pointer)
+                .fill(if enabled { p.primary } else { p.muted })
+                .on_press(move |st: &mut State| {
+                    let toggle_for = toggle_for.clone();
+                    scan_in_background(
+                        st,
+                        move |h| h.set_folder_enabled(&toggle_for, !enabled),
+                        apply_and_save,
+                    );
+                });
+            if enabled {
+                toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
+            }
+            toggle
+        }
+        SourceKind::Remote { .. } => {
+            let online = status.remote.as_ref().is_some_and(|h| h.online);
+            health_dot(index, online, p)
+        }
+    };
+
+    // Name + kind badge over full path/URL. A disabled source reads inactive,
+    // so its name dims to the secondary colour. Both lines truncate and the
+    // column grows + shrinks to zero so a long path/URL can't shove the
+    // count / ✕ off the card.
     let name_color = if enabled { p.fg } else { p.text_secondary };
-    let identity = col()
+    let mut identity = col()
         .grow(1.0)
         .min_w(space::NONE)
         .child(
-            text(name.clone())
-                .font(type_::ITEM)
-                .color(name_color)
-                .truncate(),
+            row()
+                .gap(space::XS)
+                .center_y()
+                .child(
+                    text(name.clone())
+                        .font(type_::ITEM)
+                        .color(name_color)
+                        .truncate(),
+                )
+                .child(source_kind_badge(index, &status.kind, p)),
         )
         .child(
             text(full_path)
@@ -640,6 +864,33 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
                 .color(p.text_secondary)
                 .truncate(),
         );
+    if let Some(health) = &status.remote {
+        identity = identity.child(remote_health_line(index, health, p));
+        if let SourceKind::Remote { url } = &status.kind
+            && health.online
+            && remote_update_available(s, url, health)
+        {
+            let reconnecting = s.remote_reconnecting.iter().any(|u| u == url);
+            identity = identity.child(
+                row()
+                    .key(format!("remote-update-{index}"))
+                    .gap(space::SM)
+                    .center_y()
+                    .child(
+                        text(t!("settings.updateAvailable").to_string())
+                            .font(type_::CAPTION)
+                            .color(p.accent),
+                    )
+                    .child(remote_reconnect_button(
+                        index,
+                        url,
+                        t!("settings.syncNow").to_string(),
+                        reconnecting,
+                        p,
+                    )),
+            );
+        }
+    }
 
     let mut r = row()
         // Key by POSITION, not basename: two sources can share a final path
@@ -649,7 +900,7 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
         .gap(space::MD)
         .center_y()
         .padding(space::SM)
-        .child(toggle)
+        .child(leading)
         .child(identity)
         .child(
             // Keyed so tests can assert the count renders without depending on the
@@ -660,27 +911,177 @@ fn source_row(s: &State, p: &Palette, index: usize) -> El {
                     .color(p.text_secondary),
             ),
         );
-    if unavailable {
+    // The health line + dot already surface a remote's offline state; this
+    // generic badge stays for an unreachable LOCAL root (an unplugged drive)
+    // only, so a remote doesn't show the same signal twice.
+    if unavailable && !is_remote {
         r = r.child(
             el().key(format!("offline-{index}"))
                 .child(text(t!("settings.offline").to_string()).color(p.text_secondary)),
         );
     }
-    r.child(
-        el().key(format!("remove-{index}"))
-            .role("button")
-            .label(t!("queue.remove").to_string())
-            .focusable(true)
-            .padding(space::SNUG)
-            .radius(radius::SM)
-            .fill(p.muted)
-            .cursor(Cursor::Pointer)
-            .child(text("✕").color(p.text_secondary))
-            .on_press(move |st: &mut State| {
-                let remove_for = remove_for.clone();
-                scan_in_background(st, move |h| h.remove_folder(&remove_for), apply_and_save);
-            }),
-    )
+    match &status.kind {
+        SourceKind::Local { path } => {
+            let remove_for = path.clone();
+            r.child(
+                el().key(format!("remove-{index}"))
+                    .role("button")
+                    .label(t!("queue.remove").to_string())
+                    .focusable(true)
+                    .padding(space::SNUG)
+                    .radius(radius::SM)
+                    .fill(p.muted)
+                    .cursor(Cursor::Pointer)
+                    .child(text("✕").color(p.text_secondary))
+                    .on_press(move |st: &mut State| {
+                        let remove_for = remove_for.clone();
+                        scan_in_background(
+                            st,
+                            move |h| h.remove_folder(&remove_for),
+                            apply_and_save,
+                        );
+                    }),
+            )
+        }
+        SourceKind::Remote { url } => r.child(remote_remove_button(index, url, p)),
+    }
+}
+
+/// A persisted remote with no live entry — it failed to reconnect at
+/// launch, or a manual reconnect attempt is still in flight (Inc 6): the
+/// row that keeps a configured remote from silently disappearing. Shows the
+/// same Remote badge and offline dot a reachable-but-currently-down remote
+/// would (no latency — there has been no successful probe yet to read one
+/// from), the full URL, an "offline"/"reconnecting…" status line, and
+/// Reconnect + Disconnect actions. `index` is this row's position in
+/// [`merged_source_rows`]' merged list (not `s.sources`'), used only to key
+/// its controls uniquely.
+fn offline_remote_row(s: &State, p: &Palette, url: &str, index: usize) -> El {
+    let reconnecting = s.remote_reconnecting.iter().any(|u| u == url);
+    let status_text = if reconnecting {
+        t!("settings.reconnecting").to_string()
+    } else {
+        t!("settings.offline").to_string()
+    };
+    let kind = SourceKind::Remote {
+        url: url.to_string(),
+    };
+    let identity = col()
+        .grow(1.0)
+        .min_w(space::NONE)
+        .child(
+            row()
+                .gap(space::XS)
+                .center_y()
+                .child(
+                    text(display_host(url))
+                        .font(type_::ITEM)
+                        .color(p.text_secondary)
+                        .truncate(),
+                )
+                .child(source_kind_badge(index, &kind, p)),
+        )
+        .child(
+            text(url.to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .truncate(),
+        )
+        .child(
+            text(status_text)
+                .key(format!("remote-status-{index}"))
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        );
+
+    row()
+        .key(format!("source-offline-{index}"))
+        .gap(space::MD)
+        .center_y()
+        .padding(space::SM)
+        .child(health_dot(index, false, p))
+        .child(identity)
+        .child(remote_reconnect_button(
+            index,
+            url,
+            t!("settings.reconnect").to_string(),
+            reconnecting,
+            p,
+        ))
+        .child(remote_remove_button(index, url, p))
+}
+
+/// Whether a connected remote's row should show the "update available" cue:
+/// its live health just reported a higher `index_version` than the one
+/// recorded the last time this remote's catalog was actually synced
+/// (`s.remote_synced_index`, written by `record_synced_index` after a
+/// connect/reconnect — never by the health poller, which only pings
+/// `/v0/ping` and never re-syncs, so it must never feed this). No recorded
+/// sync yet reads as "no update" rather than a false positive.
+fn remote_update_available(s: &State, url: &str, health: &RemoteHealth) -> bool {
+    let Some(live) = health.index_version else {
+        return false;
+    };
+    s.remote_synced_index
+        .get(url)
+        .is_some_and(|&synced| live > synced)
+}
+
+/// A remote row's reconnect/sync action — fires `reconnect_remote_now`, the
+/// shared silent-refresh + re-sync path an offline row's Reconnect button
+/// and a connected row's "update available" Sync-now button both drive
+/// (only `label` differs). While `reconnecting`, it switches to the
+/// disabled/inert shape `remote_connect_button` uses, so a double press (or
+/// the periodic poller bringing the remote back mid-attempt) can't start a
+/// second reconnect for the same url.
+fn remote_reconnect_button(
+    index: usize,
+    url: &str,
+    label: String,
+    reconnecting: bool,
+    p: &Palette,
+) -> El {
+    let base = el()
+        .key(format!("remote-reconnect-{index}"))
+        .role("button")
+        .label(label.clone())
+        .focusable(!reconnecting)
+        .padding(space::SNUG)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .child(text(label).font(type_::LABEL).color(if reconnecting {
+            p.text_secondary
+        } else {
+            p.accent
+        }));
+    if reconnecting {
+        base.opacity(fx::DISABLED)
+    } else {
+        let url = url.to_string();
+        base.cursor(Cursor::Pointer)
+            .on_press(move |st: &mut State| reconnect_remote_now(st, url.clone()))
+    }
+}
+
+/// A remote row's Disconnect (remove) control — the remote counterpart of a
+/// local row's ✕: same glyph, same keyed/focusable/labelled shape and
+/// placement, but it fires `disconnect_remote_source` (which also drops the
+/// config entry and the keychain refresh token — a local root has neither)
+/// instead of `remove_folder`. Shared by a connected row and an offline row
+/// alike: giving up on a remote should work regardless of its current
+/// health.
+fn remote_remove_button(index: usize, url: &str, p: &Palette) -> El {
+    let url = url.to_string();
+    el().key(format!("remote-remove-{index}"))
+        .role("button")
+        .label(t!("settings.disconnectSource").to_string())
+        .focusable(true)
+        .padding(space::SNUG)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .cursor(Cursor::Pointer)
+        .child(text("✕").color(p.text_secondary))
+        .on_press(move |st: &mut State| disconnect_remote_source(st, url.clone()))
 }
 
 /// One theme choice; the active preference is filled with the primary color.
@@ -988,11 +1389,12 @@ fn music_data_card(s: &State, p: &Palette) -> El {
                 .wrap(),
         );
     }
-    if s.sources.is_empty() {
+    let rows = merged_source_rows(s);
+    if rows.is_empty() {
         c = c.child(text(t!("settings.noSources").to_string()).color(p.text_secondary));
     } else {
-        for i in 0..s.sources.len() {
-            c = c.child(source_row(s, p, i));
+        for (i, row_data) in rows.iter().enumerate() {
+            c = c.child(source_row(s, p, row_data, i));
         }
     }
     // How hard the scanner may work when indexing these sources.

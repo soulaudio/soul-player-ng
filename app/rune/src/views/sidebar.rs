@@ -165,6 +165,8 @@ fn nav_item(
             // Switch pages and, on mobile, flip to the content pane (the old app's
             // NavBar: `navigate(path); if (isMobile) setMobileShowContent(true)`).
             .on_press(move |s: &mut State| {
+                s.nav_history.clear();
+                s.genre_search = rune::TextEdit::new("");
                 s.route = route;
                 s.mobile_show_content = true;
             });

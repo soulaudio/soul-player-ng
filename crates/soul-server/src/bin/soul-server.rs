@@ -5,13 +5,17 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 
+use soul_server::auth::signer::Signer;
 use soul_server::config;
 use soul_server::domain::ports::UserStore;
 use soul_server::domain::service::Services;
 use soul_server::index::CoreIndex;
 use soul_server::media::FsMedia;
-use soul_server::proto::native;
+use soul_server::proto::native::{self, AppState};
 use soul_server::store::FileUsers;
+
+/// Default access-token lifetime, in seconds (one hour).
+const ACCESS_TTL_SECS: u64 = 3600;
 
 #[derive(Parser)]
 #[command(name = "soul-server", about = "Soul Audio remote source server")]
@@ -65,7 +69,19 @@ async fn run_serve(config_path: &std::path::Path) -> anyhow::Result<()> {
         media,
         users,
     });
-    native::serve(&cfg.bind, services).await
+
+    let issuer = format!("http://{}", cfg.bind);
+    // The signing key lives next to the user db — both are the server's
+    // persisted identity, and neither needs its own config knob yet.
+    let signer_dir = cfg
+        .db
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let signer = Arc::new(Signer::load_or_create(&signer_dir, issuer.clone())?);
+
+    let state = AppState::new(services, signer, issuer, ACCESS_TTL_SECS);
+    native::serve(&cfg.bind, state).await
 }
 
 fn run_user_command(config_path: &std::path::Path, command: UserCommand) -> anyhow::Result<()> {

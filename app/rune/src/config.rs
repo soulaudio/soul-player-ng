@@ -84,12 +84,21 @@ fn config_path() -> Option<PathBuf> {
 struct Config {
     /// Watched music folders (stored as strings — `PathBuf` isn't TOML-native).
     sources: Vec<String>,
+    /// Persisted remote-source server base URLs (no trailing slash), so a
+    /// restart can reconnect them. The OAuth refresh token itself is never
+    /// stored here — it lives in the OS keychain, keyed by the same URL (see
+    /// `soul_player_host::remote::KeyringStore`). A config written before
+    /// remote sources existed loads this as empty (struct-level
+    /// `#[serde(default)]`).
+    remotes: Vec<String>,
     /// Theme preference: `system` | `light` | `dark`.
     theme: String,
     /// Resizable sidebar width (clamped to the legal range on load).
     sidebar_width: f32,
     /// Whether the sidebar is collapsed to its rail.
     sidebar_collapsed: bool,
+    /// Content-pane zoom factor (Ctrl +/-/0), 1.0 = 100%. Clamped on load.
+    ui_zoom: f32,
     /// UI language preference: `system` | `en` | `de` | `es` | `zh` | `cs`.
     locale: String,
     /// Primary nav items the user has hidden (by id: `home`/`albums`/`artists`/
@@ -258,9 +267,11 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             sources: Vec::new(),
+            remotes: Vec::new(),
             theme: "system".into(),
             sidebar_width: DEFAULT_WIDTH,
             sidebar_collapsed: false,
+            ui_zoom: 1.0,
             locale: "system".into(),
             nav_hidden: Vec::new(),
             sources_disabled: Vec::new(),
@@ -394,6 +405,38 @@ pub fn save_sources_enabled(entries: &[(PathBuf, bool)]) {
     save(&cfg);
 }
 
+/// The saved remote-source server URLs (empty if none), in the order they
+/// were added. Reload these at startup and reconnect each one (silently,
+/// via the stored keychain refresh token) so remote sources survive a
+/// restart — see `soul_player_host::PlayerHandle::reconnect_remote_source`.
+pub fn load_remotes() -> Vec<String> {
+    load().remotes
+}
+
+/// Persist `url` as an added remote source (load-modify-write): appended
+/// only if not already present, so re-adding (or a startup reconnect that
+/// re-saves) dedupes rather than growing the list. The refresh token itself
+/// is never written here — only the OS keychain holds it.
+pub fn save_remote(url: &str) {
+    let mut cfg = load();
+    if !cfg.remotes.iter().any(|u| u == url) {
+        cfg.remotes.push(url.to_string());
+    }
+    save(&cfg);
+}
+
+/// Drop `url` from the persisted remote sources (load-modify-write); a no-op
+/// if it wasn't there. Paired with
+/// [`PlayerHandle::remove_remote_source`](soul_player_host::PlayerHandle::remove_remote_source)
+/// and deleting its OS keychain refresh token so a removed remote leaves
+/// nothing behind — see the Settings → Sources Disconnect control
+/// (`disconnect_remote_source`, Inc 6).
+pub fn remove_remote(url: &str) {
+    let mut cfg = load();
+    cfg.remotes.retain(|u| u != url);
+    save(&cfg);
+}
+
 /// The saved theme preference ("system"/"light"/"dark").
 pub fn load_theme_pref() -> Option<String> {
     Some(load().theme)
@@ -483,6 +526,18 @@ pub fn save_sidebar(width: f32, collapsed: bool) {
     let mut cfg = load();
     cfg.sidebar_width = width;
     cfg.sidebar_collapsed = collapsed;
+    save(&cfg);
+}
+
+/// The persisted content-pane zoom (1.0 if unset). The caller sanitizes/clamps it.
+pub fn load_ui_zoom() -> f32 {
+    load().ui_zoom
+}
+
+/// Persist the content-pane zoom factor.
+pub fn save_ui_zoom(zoom: f32) {
+    let mut cfg = load();
+    cfg.ui_zoom = zoom;
     save(&cfg);
 }
 
@@ -1064,9 +1119,11 @@ mod tests {
     fn config_toml_roundtrips() {
         let cfg = Config {
             sources: vec!["/music/a".into(), "/music/b".into()],
+            remotes: vec!["http://server-a".into(), "http://server-b".into()],
             theme: "dark".into(),
             sidebar_width: 300.0,
             sidebar_collapsed: true,
+            ui_zoom: 1.3,
             locale: "de".into(),
             nav_hidden: vec!["home".into()],
             sources_disabled: Vec::new(),
@@ -1118,10 +1175,12 @@ mod tests {
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
         assert_eq!(back.sources, cfg.sources);
+        assert_eq!(back.remotes, cfg.remotes);
         assert_eq!(back.theme, "dark");
         assert_eq!(back.window, cfg.window);
         assert_eq!(back.sidebar_width, 300.0);
         assert!(back.sidebar_collapsed);
+        assert_eq!(back.ui_zoom, 1.3);
         assert_eq!(back.locale, "de");
         assert!(back.eq_enabled);
         assert_eq!(back.eq_preamp, -3.0);
@@ -1313,6 +1372,45 @@ mod tests {
             load_sources_with_enabled(),
             vec![(PathBuf::from("/a"), true), (PathBuf::from("/b"), true)]
         );
+    }
+
+    #[test]
+    fn remotes_roundtrip_dedupe_and_remove() {
+        let _config_guard = use_test_config_dir();
+        // Drain to a known-empty starting point: `remotes` is additive
+        // (save_remote appends, never overwrites), so — unlike the other
+        // settings here, which fully replace their field — a sibling test
+        // sharing this process-wide config file could otherwise leave a
+        // stray url behind that would break the exact-equality assertions
+        // below.
+        for url in load_remotes() {
+            remove_remote(&url);
+        }
+        save_remote("http://a");
+        save_remote("http://b");
+        assert_eq!(
+            load_remotes(),
+            vec!["http://a".to_string(), "http://b".to_string()]
+        );
+
+        // Re-saving an already-present url dedupes rather than duplicating.
+        save_remote("http://a");
+        assert_eq!(
+            load_remotes(),
+            vec!["http://a".to_string(), "http://b".to_string()],
+            "re-adding the same url must not duplicate it"
+        );
+
+        remove_remote("http://a");
+        assert_eq!(
+            load_remotes(),
+            vec!["http://b".to_string()],
+            "removing a url drops only that one"
+        );
+
+        // Removing something never added is a no-op, not an error.
+        remove_remote("http://never-added");
+        assert_eq!(load_remotes(), vec!["http://b".to_string()]);
     }
 
     #[test]
