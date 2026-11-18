@@ -311,14 +311,22 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         dur => fmt_total_dur(total)
     )
     .to_string();
-    // A reissue note when the release actually differs from the original
-    // (both known) — e.g. a 2015 remaster of a 1973 album.
-    if album.original_date != 0
-        && album.release_date != 0
-        && album.release_date != album.original_date
+    // A reissue note, but only when it genuinely supplements the year already
+    // shown in the subtitle above — e.g. a 2015 remaster of a 1973 album.
+    // Compare YEARS (not full packed dates): mixed-precision tags are common
+    // (a MusicBrainz original date with only a year, alongside a locally
+    // tagged release date with a full day) and must not trigger a redundant
+    // "reissued 1973" next to a subtitle that already reads "1973". The note
+    // only fires when the subtitle is currently showing the original year —
+    // in Release mode, or when the original is unknown and the subtitle falls
+    // back to the release year, the release year is already on screen.
+    let orig_year = (album.original_date != 0).then_some((album.original_date >> 9) as u16);
+    let rel_year = (album.release_date != 0).then_some((album.release_date >> 9) as u16);
+    if let (Some(oy), Some(ry)) = (orig_year, rel_year)
+        && oy != ry
+        && album_year(&album, s.album_year) == Some(oy)
     {
-        let release_year = album.release_date >> 9;
-        meta = format!("{meta} · {}", t!("detail.reissued", year => release_year));
+        meta = format!("{meta} · {}", t!("detail.reissued", year => ry));
     }
 
     let hero = detail_hero(
@@ -498,6 +506,81 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.contains("· 0")),
             "never render a bare zero year; got {texts:?}"
+        );
+    }
+
+    /// The album detail's "reissued" note must compare YEARS, not full packed
+    /// dates, and must only fire when it adds information beyond the subtitle
+    /// already shown. Renders the real detail page through a local test-only
+    /// view fn (same pattern as the albums-grid render test above).
+    #[test]
+    fn reissue_note_only_fires_when_it_adds_a_year_beyond_the_subtitle() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        fn detail_texts(s: State) -> Vec<String> {
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            rt.elements().into_iter().filter_map(|e| e.text).collect()
+        }
+
+        fn seeded(
+            album_name: &str,
+            original_date: u32,
+            release_date: u32,
+            src: crate::config::AlbumYearSource,
+        ) -> State {
+            let mut t = atv(1, "Can", album_name);
+            t.original_date = original_date;
+            t.release_date = release_date;
+            let mut s = State::new(soul_player_host::PlayerHandle::offline());
+            s.library = vec![t];
+            s.route = crate::Route::Album;
+            s.open_album = Some(album_name.to_string());
+            s.album_year = src;
+            s
+        }
+
+        rust_i18n::set_locale("en");
+        use crate::config::AlbumYearSource::{Original, Release};
+
+        // The bug case: same year, different precision (a year-only
+        // MusicBrainz original alongside a fully-dated local release). Must
+        // NOT show a redundant "reissued 1973" next to a "1973" subtitle.
+        let texts = detail_texts(seeded(
+            "Future Days",
+            1973u32 << 9,
+            (1973u32 << 9) | (6 << 5) | 15,
+            Original,
+        ));
+        assert!(
+            !texts.iter().any(|t| t.contains("reissued")),
+            "same-year mixed precision must not show a redundant reissue note; got {texts:?}"
+        );
+
+        // A genuine reissue: different years, Original selected (subtitle
+        // shows 1973) → the release year is new information.
+        let texts = detail_texts(seeded("Tago Mago", 1973u32 << 9, 2015u32 << 9, Original));
+        assert!(
+            texts.iter().any(|t| t.contains("reissued 2015")),
+            "a genuine reissue year must be noted; got {texts:?}"
+        );
+
+        // Same dates, but Release selected: the subtitle already shows 2015,
+        // so a "reissued 2015" note would be redundant.
+        let texts = detail_texts(seeded("Tago Mago", 1973u32 << 9, 2015u32 << 9, Release));
+        assert!(
+            !texts.iter().any(|t| t.contains("reissued")),
+            "release-year subtitle already shows the year; the note would be redundant; got {texts:?}"
         );
     }
 }
