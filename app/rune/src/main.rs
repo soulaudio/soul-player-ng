@@ -2535,6 +2535,7 @@ fn seed_demo_library(s: &mut State) {
                 album: Some(album.clone()),
                 genre: Some(genre.to_string()),
                 duration_secs: f64::from(120 + id % 180),
+                remote: false,
             });
             id += 1;
         }
@@ -7125,6 +7126,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -7136,6 +7138,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -7147,6 +7150,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some(genre.to_string()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -7446,6 +7450,7 @@ mod tests {
             album: Some(album.to_string()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
@@ -7562,6 +7567,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
+                remote: false,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -7570,6 +7576,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
+                remote: false,
             },
         ];
         s.route = Route::Genre;
@@ -8100,6 +8107,38 @@ mod tests {
         assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
     }
 
+    /// The now-playing title line shows the remote badge when the current track
+    /// streams from a remote source (`TrackView::remote`) — the one spot outside
+    /// the track lists where the badge cleanly fits, since `now_playing_row`
+    /// already carries the real `TrackView` the Inc-3 marker lives on.
+    #[test]
+    fn now_playing_shows_the_remote_badge_for_a_remote_track() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![soul_player_host::TrackView {
+            id: 1,
+            title: Some("Streamed".into()),
+            artist: Some("A".into()),
+            album: None,
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote: true,
+        }];
+        s.now_playing_id = Some(1);
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some("track-remote-1") && e.opacity > 0.01),
+            "the now-playing line should show the remote badge for a remote track"
+        );
+    }
+
     #[test]
     fn settings_shows_updates_section_without_install_by_default() {
         let env = Env {
@@ -8347,6 +8386,54 @@ mod tests {
         assert!(
             (w - 32.0).abs() <= 0.5 && (h - 32.0).abs() <= 0.5,
             "the cover is 32x32 pt (old app's w-8 h-8), got {w}x{h}"
+        );
+    }
+
+    /// A track row for a remote-flagged track (`TrackView::remote == true`, the
+    /// per-track Local/Remote marker) shows the subtle cloud badge; a local one
+    /// (`remote == false`, the unremarked default) shows none.
+    #[test]
+    fn a_remote_track_row_shows_the_remote_badge_a_local_one_does_not() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Streamed".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: true,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("OnDisk".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote: false,
+            },
+        ];
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "track-remote-1"),
+            "a remote track's row should show the remote badge"
+        );
+        assert!(
+            !badge_visible(&rt, "track-remote-2"),
+            "a local track's row should not show a remote badge"
         );
     }
 
@@ -8776,6 +8863,7 @@ mod tests {
                 album: Some(format!("Album {a:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
+                remote: false,
             })
             .collect();
         let env = Env {
@@ -8853,6 +8941,7 @@ mod tests {
                 album: Some(format!("Album {a:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
+                remote: false,
             })
             .collect();
         let env = Env {
@@ -8958,6 +9047,7 @@ mod tests {
                 album: Some(format!("Album {id:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
+                remote: false,
             }
         }
         let mut s = State::new(PlayerHandle::offline());

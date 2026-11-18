@@ -420,6 +420,13 @@ library.unknown:
   zh: '未知'
   cs: 'Neznámý'
   ja: '不明'
+library.remoteTrack:
+  en: 'Remote track'
+  de: 'Remote-Track'
+  es: 'Pista remota'
+  zh: '远程曲目'
+  cs: 'Vzdálená skladba'
+  ja: 'リモート曲'
 common.back:
   en: 'Back'
   de: 'Zurück'

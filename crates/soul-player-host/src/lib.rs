@@ -1493,27 +1493,73 @@ impl PlayerHandle {
         }
     }
 
-    /// Current library views (empty until a folder is opened).
+    /// Current library views (empty until a folder is opened). Stamps
+    /// [`TrackView::remote`] for every track belonging to a retained remote
+    /// source (see [`is_remote_source`](Self::is_remote_source)) — the
+    /// backend projection itself always returns `remote: false`.
     pub fn views(&self) -> Vec<TrackView> {
-        self.inner
+        let mut views = self
+            .inner
             .library
             .lock()
             .expect("library mutex")
             .as_ref()
             .map(|l| l.views())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.mark_remote(&mut views);
+        views
     }
 
     /// Current library views in a chosen browse order (Title / ArtistAlbumTrack /
-    /// Album / Folder) — the baked axis tables, no re-sort.
+    /// Album / Folder) — the baked axis tables, no re-sort. Stamps
+    /// [`TrackView::remote`] the same way [`views`](Self::views) does.
     pub fn views_by(&self, axis: BrowseAxis) -> Vec<TrackView> {
-        self.inner
+        let mut views = self
+            .inner
             .library
             .lock()
             .expect("library mutex")
             .as_ref()
             .map(|l| l.views_by(axis))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.mark_remote(&mut views);
+        views
+    }
+
+    /// Sets [`TrackView::remote`] on every view whose compound id belongs to
+    /// a retained remote source, using [`is_remote_source`](Self::is_remote_source)
+    /// for each — the shared tail of [`views`](Self::views)/
+    /// [`views_by`](Self::views_by).
+    fn mark_remote(&self, views: &mut [TrackView]) {
+        for view in views {
+            view.remote = self.is_remote_source(view.id);
+        }
+    }
+
+    /// Whether aggregate track `track_id` belongs to one of the retained
+    /// remote servers in [`Inner::remotes`] — the SAME sentinel-root
+    /// convention [`remote_statuses`](Self::remote_statuses)' `track_count`
+    /// sum relies on (`remote:{url}#i`, set by [`RemoteLibrary::build`]):
+    /// locate the id's aggregate source, then check whether that source's
+    /// root falls in any remote server's namespace. `false` for a local id,
+    /// an id with no current library, or an id that doesn't resolve.
+    fn is_remote_source(&self, track_id: u32) -> bool {
+        let Some(lib) = self.inner.library.lock().expect("library mutex").clone() else {
+            return false;
+        };
+        let Some(located) = lib.locate(track_id) else {
+            return false;
+        };
+        let Some((root, _)) = lib.source_counts().into_iter().nth(located.source) else {
+            return false;
+        };
+        let root = root.to_string_lossy();
+        self.inner
+            .remotes
+            .lock()
+            .expect("remotes mutex")
+            .iter()
+            .any(|(server, _blobs)| root.starts_with(&format!("remote:{}#", server.url)))
     }
 
     /// Raw cover art for a track id (bytes + mime), or `None`.
