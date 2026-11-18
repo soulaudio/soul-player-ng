@@ -294,6 +294,7 @@ impl Library {
             .filter_map(|i| {
                 let id = cat.order(axis, i).ok()?;
                 let t = cat.track(id).ok()?;
+                let (original_date, release_date) = album_dates(&cat, t.album);
                 Some(TrackView {
                     id,
                     title: resolve(&cat, t.title),
@@ -306,6 +307,8 @@ impl Library {
                     // The backend/local catalog is always local — the host
                     // aggregate stamps `true` for a remote source's tracks.
                     remote: false,
+                    original_date,
+                    release_date,
                 })
             })
             .collect()
@@ -379,6 +382,14 @@ fn genre_name(cat: &MultiCatalog, id: u32) -> Option<String> {
 fn album_title(cat: &MultiCatalog, id: u32) -> Option<String> {
     let album = cat.album(id).ok()?;
     resolve(cat, album.title)
+}
+
+/// The album's two packed dates (`soul_audio_catalog::PackedDate` as raw `u32`):
+/// `(original_date, release_date)`, `0` when the album id is out of range.
+fn album_dates(cat: &MultiCatalog, album: u32) -> (u32, u32) {
+    cat.album(album)
+        .map(|a| (a.original_date.0, a.release_date.0))
+        .unwrap_or((0, 0))
 }
 
 /// Map the importer's `"Unknown Artist"` / `"Unknown Album"` placeholders back to
@@ -726,6 +737,35 @@ mod tests {
         // contiguous: Ambient, then both Rock tracks, then Unknown Genre.
         let genres: Vec<&str> = v.iter().map(|t| t.genre.as_deref().unwrap()).collect();
         assert_eq!(genres, vec!["Ambient", "Rock", "Rock", "Unknown Genre"]);
+    }
+
+    /// `views_by` projects the owning album's packed original/release dates onto
+    /// each `TrackView` — the audiophile original-release year plus the tagged
+    /// edition's release year, both year-only (month/day unknown).
+    #[test]
+    fn track_view_carries_album_original_and_release_dates() {
+        let root = tmpdir("dates");
+        std::fs::write(
+            root.join("a.flac"),
+            flac_with_comments(&[
+                "TITLE=A",
+                "ALBUM=Test Album",
+                "ARTIST=Test Artist",
+                "ORIGINALDATE=1973",
+                "DATE=2015",
+            ]),
+        )
+        .unwrap();
+
+        let lib = Library::scan(&root).unwrap();
+        let views = lib.views_by(BrowseAxis::ArtistAlbumTrack);
+        let t = views
+            .iter()
+            .find(|t| t.album.as_deref() == Some("Test Album"))
+            .unwrap();
+        // 1973 packed as a year-only date = 1973 << 9.
+        assert_eq!(t.original_date, (1973u32) << 9);
+        assert_eq!(t.release_date, (2015u32) << 9);
     }
 
     #[test]

@@ -2792,6 +2792,8 @@ fn seed_demo_library(s: &mut State) {
                 genre: Some(genre.to_string()),
                 duration_secs: f64::from(120 + id % 180),
                 remote: false,
+                original_date: 0,
+                release_date: 0,
             });
             id += 1;
         }
@@ -7691,6 +7693,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -7703,6 +7707,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -7715,6 +7721,8 @@ mod tests {
             genre: Some(genre.to_string()),
             duration_secs: 1.0,
             remote: false,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -8015,6 +8023,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -8132,6 +8142,8 @@ mod tests {
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
                 remote: false,
+                original_date: 0,
+                release_date: 0,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -8141,6 +8153,8 @@ mod tests {
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
                 remote: false,
+                original_date: 0,
+                release_date: 0,
             },
         ];
         s.route = Route::Genre;
@@ -8687,6 +8701,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: true,
+            original_date: 0,
+            release_date: 0,
         }];
         s.now_playing_id = Some(1);
         let env = Env {
@@ -8969,6 +8985,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: true,
+                original_date: 0,
+                release_date: 0,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -8978,6 +8996,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: false,
+                original_date: 0,
+                release_date: 0,
             },
         ];
         let env = Env {
@@ -9428,6 +9448,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: false,
+                original_date: 0,
+                release_date: 0,
             })
             .collect();
         let env = Env {
@@ -9506,6 +9528,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: false,
+                original_date: 0,
+                release_date: 0,
             })
             .collect();
         let env = Env {
@@ -9612,6 +9636,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: false,
+                original_date: 0,
+                release_date: 0,
             }
         }
         let mut s = State::new(PlayerHandle::offline());
@@ -9663,6 +9689,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
+            original_date: 0,
+            release_date: 0,
         }
     }
 

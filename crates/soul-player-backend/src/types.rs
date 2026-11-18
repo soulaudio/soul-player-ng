@@ -240,6 +240,12 @@ pub struct TrackView {
     /// it `true` for a track whose compound id falls in a remote server's
     /// block — see `soul_player_host::PlayerHandle::views`.
     pub remote: bool,
+    /// The album's ORIGINAL-release date, packed `(year<<9)|(month<<5)|day`
+    /// (`0` = unknown) — mirrors `soul_audio_catalog::PackedDate`. The audiophile
+    /// canonical year; the UI prefers it, falling back to `release_date`.
+    pub original_date: u32,
+    /// The album's main release/reissue date, same packing. Unknown = `0`.
+    pub release_date: u32,
 }
 
 /// The current track's ORIGINAL source format, for the signal-path display.

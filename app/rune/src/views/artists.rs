@@ -399,6 +399,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
