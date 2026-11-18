@@ -144,6 +144,18 @@ fn remote_cache_dir() -> PathBuf {
         .join("remote-cache")
 }
 
+/// Seconds since the Unix epoch, for timestamping a [`RemoteHealth`] probe
+/// (see [`PlayerHandle::refresh_remote_health`]). Falls back to 0 on a clock
+/// set before the epoch rather than panicking — a timestamp this method
+/// produces is only ever used for display/ordering, never safety-critical.
+fn now_unix() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// The configured roots that contain at least one of `paths` — the set a watcher
 /// burst actually touched, so only these need re-reading (the rest are reused). An
 /// empty result means no root was affected.
@@ -159,7 +171,52 @@ fn affected_roots(paths: &[PathBuf], roots: &[PathBuf]) -> std::collections::Has
     set
 }
 
-/// The per-source status of one configured folder, as of the last scan.
+/// What kind of source a [`SourceStatus`] describes — a local folder root, or
+/// a remote `soul-server` identified by its base URL. Lets a UI head render
+/// the two kinds distinctly (a Local/Remote badge) without inferring it from
+/// `path` (a remote's `path` is a synthetic stand-in, not a real filesystem
+/// location — see [`SourceStatus::path`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceKind {
+    /// A watched local folder, by its root path.
+    Local {
+        /// The configured root path.
+        path: PathBuf,
+    },
+    /// A remote `soul-server`, by its base URL (no trailing slash).
+    Remote {
+        /// The server's base URL, as given to
+        /// [`PlayerHandle::add_remote_source_with_tokens`].
+        url: String,
+    },
+}
+
+/// Point-in-time health of a remote source, as last measured by
+/// [`remote::probe_health`] (via [`PlayerHandle::refresh_remote_health`]).
+/// Never an error value — an unreachable server is `online: false` with the
+/// rest `None`, not a missing [`RemoteHealth`] — so a UI can always render
+/// *something* (an offline row) rather than a gap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteHealth {
+    /// Whether the most recent `/v0/ping` succeeded.
+    pub online: bool,
+    /// Round-trip latency of that ping, in milliseconds — `None` when
+    /// offline (there is nothing to time).
+    pub latency_ms: Option<u64>,
+    /// The server's own crate version, as echoed by `/v0/ping` — `None`
+    /// when offline.
+    pub server_version: Option<String>,
+    /// The server's current catalog index version, as echoed by
+    /// `/v0/ping` — `None` when offline. A change since the last sync is a
+    /// cheap signal that a re-sync would pick up fresh tracks.
+    pub index_version: Option<u64>,
+    /// Unix timestamp of this probe, whether it succeeded or not — `None`
+    /// only for a remote that has never been probed.
+    pub last_checked_unix: Option<u64>,
+}
+
+/// The per-source status of one configured folder or remote server, as of
+/// the last scan / health probe.
 ///
 /// A source is kept in the configured set regardless of its state — disabling it
 /// or losing its root to a transient outage never drops it (the "don't wipe the
@@ -170,16 +227,28 @@ fn affected_roots(paths: &[PathBuf], roots: &[PathBuf]) -> std::collections::Has
 /// it is re-enabled or its root returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceStatus {
-    /// The configured root path (as given by the caller, deduped in order).
+    /// The configured root path, for a local source (as given by the
+    /// caller, deduped in order). For a remote source this is a synthetic
+    /// stand-in (the server's URL) kept only for callers that haven't moved
+    /// to matching on [`kind`](Self::kind) yet — never a real filesystem
+    /// path to read.
     pub path: PathBuf,
     /// Whether the user has this source enabled (disabled sources are skipped).
+    /// Always `true` for a remote source (v0 has no remote enable/disable toggle).
     pub enabled: bool,
     /// Whether the root was a readable directory on the last scan (missing /
-    /// unmounted / unreadable roots are `false`, but stay in the set).
+    /// unmounted / unreadable roots are `false`, but stay in the set). For a
+    /// remote source this mirrors [`RemoteHealth::online`].
     pub available: bool,
     /// Tracks this source contributed to the aggregated library — 0 when the
     /// source is disabled or unavailable.
     pub track_count: usize,
+    /// Whether this is a local folder or a remote server, and its identity.
+    pub kind: SourceKind,
+    /// The remote's last-probed health — `Some` for every [`SourceKind::Remote`]
+    /// (never probed yet is still `Some`, with every field but the timestamp
+    /// `None`), always `None` for a [`SourceKind::Local`].
+    pub remote: Option<RemoteHealth>,
 }
 
 /// The result of changing the configured-source set: the aggregated track views
@@ -400,6 +469,14 @@ struct Inner {
     /// layout this aggregate's compound ids no longer match — see
     /// `set_library`.
     remote_library: Mutex<Option<Arc<RemoteLibrary>>>,
+    /// The last [`RemoteHealth`] probed for each retained remote, keyed by
+    /// server base URL. Written only by
+    /// [`refresh_remote_health`](PlayerHandle::refresh_remote_health) (the
+    /// one place that does the blocking network probe); read by
+    /// [`sources`](PlayerHandle::sources), which must stay non-blocking — a
+    /// remote with no entry yet (never probed) reports as offline/unknown
+    /// rather than panicking or blocking.
+    remote_health: Mutex<HashMap<String, RemoteHealth>>,
     /// Subscribers for a background (watcher-triggered) rescan's [`WatchUpdate`], so
     /// the UI refreshes its library/sources when files change on disk while the app
     /// is open. Registered via [`on_watch_update`](PlayerHandle::on_watch_update);
@@ -532,6 +609,7 @@ impl PlayerHandle {
                 source_bytes: Mutex::new(HashMap::new()),
                 remotes: Mutex::new(Vec::new()),
                 remote_library: Mutex::new(None),
+                remote_health: Mutex::new(HashMap::new()),
                 watch_subscribers: Mutex::new(Vec::new()),
                 scan_progress_subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
@@ -790,6 +868,10 @@ impl PlayerHandle {
                     enabled: f.enabled,
                     available,
                     track_count,
+                    kind: SourceKind::Local {
+                        path: f.path.clone(),
+                    },
+                    remote: None,
                 }
             })
             .collect();
@@ -959,6 +1041,11 @@ impl PlayerHandle {
     /// seeding UI state at startup). Falls back to a count-0 listing of the
     /// configured set (with live `is_dir` availability) only before the first scan
     /// — e.g. if the most recent scan errored.
+    ///
+    /// Also appends a [`SourceStatus`] for every retained remote (see
+    /// [`remote_statuses`](Self::remote_statuses)) — remotes aren't part of
+    /// the cached local listing above, so they're folded in on every call
+    /// regardless of which branch produced the local half.
     pub fn sources(&self) -> Vec<SourceStatus> {
         let cached = self
             .inner
@@ -966,21 +1053,133 @@ impl PlayerHandle {
             .lock()
             .expect("last_sources mutex")
             .clone();
-        if !cached.is_empty() {
-            return cached;
-        }
-        self.inner
-            .folders
+        let mut out = if !cached.is_empty() {
+            cached
+        } else {
+            self.inner
+                .folders
+                .lock()
+                .expect("folders mutex")
+                .iter()
+                .map(|f| SourceStatus {
+                    path: f.path.clone(),
+                    enabled: f.enabled,
+                    available: f.path.is_dir(),
+                    track_count: 0,
+                    kind: SourceKind::Local {
+                        path: f.path.clone(),
+                    },
+                    remote: None,
+                })
+                .collect()
+        };
+        out.extend(self.remote_statuses());
+        out
+    }
+
+    /// A [`SourceStatus`] for every remote retained in `Inner::remotes`,
+    /// using only the CACHED
+    /// [`RemoteHealth`] from the last [`refresh_remote_health`](Self::refresh_remote_health)
+    /// call (never probes the network itself, so [`sources`](Self::sources)
+    /// stays non-blocking). A remote that hasn't been probed yet reports an
+    /// "unknown" health (offline, no latency/version, no timestamp) rather
+    /// than panicking or blocking on a probe. `track_count` is summed from
+    /// the live remote-aggregate's per-source counts for that server's
+    /// sentinel roots (`remote:{url}#i`, see [`RemoteLibrary::build`]) — 0
+    /// if no remote aggregate has been built yet.
+    fn remote_statuses(&self) -> Vec<SourceStatus> {
+        let servers: Vec<Arc<RemoteServer>> = self
+            .inner
+            .remotes
             .lock()
-            .expect("folders mutex")
+            .expect("remotes mutex")
             .iter()
-            .map(|f| SourceStatus {
-                path: f.path.clone(),
-                enabled: f.enabled,
-                available: f.path.is_dir(),
-                track_count: 0,
+            .map(|(server, _blobs)| Arc::clone(server))
+            .collect();
+        if servers.is_empty() {
+            return Vec::new();
+        }
+        let source_counts = self
+            .inner
+            .remote_library
+            .lock()
+            .expect("remote_library mutex")
+            .as_ref()
+            .map(|lib| lib.library().source_counts());
+        let health_cache = self
+            .inner
+            .remote_health
+            .lock()
+            .expect("remote_health mutex");
+        servers
+            .into_iter()
+            .map(|server| {
+                // Each of this server's blobs was given a sentinel root
+                // `remote:{url}#i` by `RemoteLibrary::build` — sum every
+                // source whose root falls in that server's namespace.
+                let prefix = format!("remote:{}#", server.url);
+                let track_count = source_counts
+                    .as_ref()
+                    .map(|counts| {
+                        counts
+                            .iter()
+                            .filter(|(root, _)| root.to_string_lossy().starts_with(&prefix))
+                            .map(|(_, n)| *n)
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                let health = health_cache
+                    .get(&server.url)
+                    .cloned()
+                    .unwrap_or(RemoteHealth {
+                        online: false,
+                        latency_ms: None,
+                        server_version: None,
+                        index_version: None,
+                        last_checked_unix: None,
+                    });
+                SourceStatus {
+                    path: PathBuf::from(&server.url),
+                    enabled: true,
+                    available: health.online,
+                    track_count,
+                    kind: SourceKind::Remote {
+                        url: server.url.clone(),
+                    },
+                    remote: Some(health),
+                }
             })
             .collect()
+    }
+
+    /// Probe every retained remote's health over the network (one blocking
+    /// `GET /v0/ping` per remote via [`remote::probe_health`]), cache the
+    /// result, and return the refreshed [`sources`](Self::sources). THIS is
+    /// the one entry point that does network I/O for remote health —
+    /// `sources()` itself never blocks. Callers (the Inc-2 periodic poller,
+    /// a manual "refresh" action) are expected to run this off the UI
+    /// thread, the same way a library rescan is.
+    pub fn refresh_remote_health(&self) -> Vec<SourceStatus> {
+        let servers: Vec<Arc<RemoteServer>> = self
+            .inner
+            .remotes
+            .lock()
+            .expect("remotes mutex")
+            .iter()
+            .map(|(server, _blobs)| Arc::clone(server))
+            .collect();
+        let now = now_unix();
+        {
+            let mut cache = self
+                .inner
+                .remote_health
+                .lock()
+                .expect("remote_health mutex");
+            for server in &servers {
+                cache.insert(server.url.clone(), remote::probe_health(server, now));
+            }
+        }
+        self.sources()
     }
 
     /// The configured source paths, in order, including any currently disabled or

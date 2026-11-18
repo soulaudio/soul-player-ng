@@ -30,6 +30,8 @@ use sha2::{Digest, Sha256};
 use soul_audio_multicatalog::{pack, unpack};
 use soul_player_backend::library::{Library, TrackSource};
 
+use crate::RemoteHealth;
+
 /// A soul-server the player has logged into via OAuth: its base URL (no
 /// trailing slash) and the short-lived JWT access token obtained via
 /// [`login`] (or [`exchange_code`]/[`refresh`]) and carried OPAQUELY — this
@@ -404,6 +406,56 @@ fn deframe(bytes: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
         blobs.push(blob);
     }
     Ok(blobs)
+}
+
+/// Probe `server`'s health with one unauthenticated `GET /v0/ping`, timing
+/// the round-trip. Offline is a VALUE, not an error: this never panics and
+/// never returns `Err` — any failure (connect refused, timeout, a non-2xx
+/// status, an unparsable body) reports `online: false` with every other
+/// field `None` except `last_checked_unix` (always set, to `now_unix`), so a
+/// caller can always render a row instead of handling a `Result`. Bounded to
+/// a short (5 s) timeout so one unreachable remote can't stall a caller that
+/// probes several.
+pub fn probe_health(server: &RemoteServer, now_unix: u64) -> RemoteHealth {
+    let offline = || RemoteHealth {
+        online: false,
+        latency_ms: None,
+        server_version: None,
+        index_version: None,
+        last_checked_unix: Some(now_unix),
+    };
+
+    let Ok(client) = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+    else {
+        return offline();
+    };
+
+    let endpoint = format!("{}/v0/ping", server.url);
+    let started = std::time::Instant::now();
+    let response = match client.get(&endpoint).send() {
+        Ok(r) => r,
+        Err(_) => return offline(),
+    };
+    // Measured right after the response headers arrive — the round-trip —
+    // not including the (negligible, local) JSON-parse below.
+    let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+
+    if !response.status().is_success() {
+        return offline();
+    }
+    let Ok(body) = response.json::<serde_json::Value>() else {
+        return offline();
+    };
+
+    RemoteHealth {
+        online: true,
+        latency_ms: Some(latency_ms),
+        server_version: body["server"].as_str().map(str::to_string),
+        index_version: body["index_version"].as_u64(),
+        last_checked_unix: Some(now_unix),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1216,6 +1268,125 @@ mod tests {
         assert!(
             !handle.views().is_empty(),
             "the authed fetch_index should have populated the aggregate library"
+        );
+    }
+
+    /// [`probe_health`] against a REAL live server: online, a measured
+    /// latency, the server's own crate version (echoed by `/v0/ping`), and
+    /// its current index version.
+    #[test]
+    fn probe_health_reports_online_latency_and_version() {
+        let server = start_server();
+        let remote = RemoteServer {
+            url: server.url.clone(),
+            access_token: server.token(),
+        };
+
+        let health = probe_health(&remote, now_unix());
+
+        assert!(health.online, "a live server should report online");
+        assert!(
+            health.latency_ms.is_some(),
+            "an online probe should report a measured latency"
+        );
+        assert_eq!(
+            health.server_version,
+            Some(soul_server::version().to_string()),
+            "/v0/ping echoes the server crate's own version"
+        );
+        assert!(
+            health.index_version.is_some(),
+            "an online probe should report the server's index version"
+        );
+        assert!(
+            health.last_checked_unix.is_some(),
+            "the probe timestamp is always recorded, online or not"
+        );
+    }
+
+    /// [`probe_health`] against a URL nothing is listening on: offline, with
+    /// no latency or version — never an `Err`/panic, offline is a value.
+    #[test]
+    fn probe_health_reports_offline_for_dead_url() {
+        // Bind an ephemeral port, then drop the listener immediately: the
+        // port is very likely still free (nothing else grabs it in the
+        // instant between bind and drop), but nothing answers on it anymore.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
+        let port = listener.local_addr().expect("bound addr").port();
+        drop(listener);
+
+        let remote = RemoteServer {
+            url: format!("http://127.0.0.1:{port}"),
+            access_token: "irrelevant".to_string(),
+        };
+
+        let health = probe_health(&remote, now_unix());
+
+        assert!(!health.online, "nothing is listening — must report offline");
+        assert!(health.latency_ms.is_none(), "no latency without a response");
+        assert!(
+            health.server_version.is_none(),
+            "no version without a response"
+        );
+        assert!(
+            health.index_version.is_none(),
+            "no index version without a response"
+        );
+        assert!(
+            health.last_checked_unix.is_some(),
+            "the probe timestamp is always recorded, online or not"
+        );
+    }
+
+    /// The Inc-1 surfacing contract, end to end: a remote added via
+    /// [`crate::PlayerHandle::add_remote_source_with_tokens`] shows up in
+    /// [`crate::PlayerHandle::sources`] (after a
+    /// [`crate::PlayerHandle::refresh_remote_health`] probe) with
+    /// `kind == Remote { url }` and online health, alongside any configured
+    /// local folder which must keep `kind == Local` and `remote == None`.
+    #[test]
+    fn sources_lists_remote_with_kind_and_health() {
+        let server = start_server();
+        let tokens = login_as_test_user(&server);
+
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .set_sources(&[(testdata_dir(), true)])
+            .expect("seed a local source");
+        handle
+            .add_remote_source_with_tokens(&server.url, tokens)
+            .expect("add remote source with tokens");
+
+        // `refresh_remote_health` does the network probe (off the UI thread
+        // in a real caller) and hands back the fresh `sources()`.
+        let sources = handle.refresh_remote_health();
+
+        let remote_status = sources
+            .iter()
+            .find(|s| matches!(&s.kind, crate::SourceKind::Remote { url } if url == &server.url))
+            .expect("sources() should list the added remote");
+        let health = remote_status
+            .remote
+            .clone()
+            .expect("a Remote source always carries Some(health)");
+        assert!(health.online, "a live server should report online");
+        assert!(
+            remote_status.track_count > 0,
+            "the synced remote catalog should contribute tracks"
+        );
+
+        let local_status = sources
+            .iter()
+            .find(|s| {
+                s.kind
+                    == crate::SourceKind::Local {
+                        path: testdata_dir(),
+                    }
+            })
+            .expect("sources() should still list the configured local folder");
+        assert!(
+            local_status.remote.is_none(),
+            "a Local source must carry remote == None"
         );
     }
 
