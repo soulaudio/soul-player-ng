@@ -234,6 +234,12 @@ pub struct TrackView {
     /// is a real, browse-able "Unknown Genre" group that keys the Genre axis.
     pub genre: Option<String>,
     pub duration_secs: f64,
+    /// Whether this track streams from a remote source rather than sitting on
+    /// local disk. The backend/local catalog projection always sets this
+    /// `false`; the host's remote-aware aggregate (`soul-player-host`) stamps
+    /// it `true` for a track whose compound id falls in a remote server's
+    /// block — see `soul_player_host::PlayerHandle::views`.
+    pub remote: bool,
 }
 
 /// The current track's ORIGINAL source format, for the signal-path display.

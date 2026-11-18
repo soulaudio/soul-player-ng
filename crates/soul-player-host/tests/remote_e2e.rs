@@ -304,9 +304,12 @@ fn remote_add_sync_browse_play() {
 
     // --- 4. Play: resolve a remote track id through the SAME client-side
     //        resolution `add_remote_source_with_tokens` uses (fetch_index ->
-    //        RemoteLibrary), then decode real audio from the downloaded
-    //        original bytes. A separate `DownloadCache` (own temp dir) so this
-    //        doesn't share the host's real on-disk cache.
+    //        RemoteLibrary), then decode real audio via `open_decoder` — the
+    //        STREAMING path (HTTP Range + `open_seekable_src`), not a
+    //        download-then-play. A separate `DownloadCache` (own temp dir) so
+    //        this doesn't share the host's real on-disk cache; it's only
+    //        there as `open_decoder`'s fallback, and the assertion below
+    //        proves the happy streaming path never touches it.
     let remote_server = Arc::new(RemoteServer {
         url: server.url.clone(),
         access_token,
@@ -319,17 +322,13 @@ fn remote_add_sync_browse_play() {
     // No local sources (the handle was never pointed at a local folder), so
     // this rebuilds the exact aggregate `add_remote_source` swapped in: one
     // remote block at source 0 — the same ids `views()` above returned.
-    let remote_lib = RemoteLibrary::build(Vec::new(), vec![(remote_server, blobs)], fetch);
+    let remote_lib = Arc::new(RemoteLibrary::build(
+        Vec::new(),
+        vec![(remote_server, blobs)],
+        fetch,
+    ));
 
     let id = views[0].id;
-    let path = remote_lib
-        .path_of(id)
-        .expect("remote track id should resolve to a downloaded local path");
-    assert!(
-        fs::metadata(&path).is_ok_and(|m| m.len() > 0),
-        "downloaded original should be a non-empty file at {}",
-        path.display()
-    );
 
     // `OwnedDecoder` is large by value (the boxed `AnyDecoder`/Vorbis
     // variants) — a big-stack thread, same precaution
@@ -337,8 +336,9 @@ fn remote_add_sync_browse_play() {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
         .spawn(move || {
-            let mut decoder = soul_audio_desktop::open_track(&path)
-                .expect("the downloaded original should be a valid, decodable file");
+            let mut decoder = remote_lib
+                .open_decoder(id)
+                .expect("the remote track should open a STREAMING decoder");
             let mut buf = [0i32; 4096];
             let samples = decoder
                 .decode_into(&mut buf)
@@ -351,4 +351,15 @@ fn remote_add_sync_browse_play() {
         .expect("spawn decode thread")
         .join()
         .expect("decode thread panicked");
+
+    // The happy streaming path never falls back to downloading the whole
+    // file first — the cache directory should still be completely empty.
+    let cache_is_empty = fs::read_dir(cache_dir.path())
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(true);
+    assert!(
+        cache_is_empty,
+        "playing the remote track via open_decoder must not have fallen back \
+         to the download cache"
+    );
 }

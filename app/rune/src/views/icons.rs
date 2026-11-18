@@ -154,6 +154,15 @@ pub static SERVER: Icon = stroke_icon!(
     r#"<rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/>"#
 );
 
+/// lucide `cloud` — the per-track "streams from a remote source" badge in a
+/// track row / the now-playing line (`TrackView::remote`). A simple, rounded
+/// glyph reads clearly at the small size a dense track list needs, unlike
+/// `SERVER`'s finer detail. Source: lucide.dev/icons/cloud.
+pub static CLOUD: Icon = stroke_icon!(
+    "cloud",
+    r#"<path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/>"#
+);
+
 /// lucide `github` — on the About page's "Report a problem" button (it files a
 /// GitHub issue). Source: lucide.dev/icons/github.
 pub static GITHUB: Icon = stroke_icon!(

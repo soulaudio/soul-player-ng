@@ -215,6 +215,24 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, corner: f32, p: &Palette, sc
     }
 }
 
+/// Side of the inline "remote" badge icon marking a track whose source is a
+/// remote server (`TrackView::remote`) — small enough to read as a marker
+/// next to a title, not a second glyph competing for attention.
+const REMOTE_BADGE_PX: f32 = 12.0;
+
+/// A subtle cloud glyph marking a track that streams from a remote source
+/// rather than sitting on local disk (`TrackView::remote`). Shared by the
+/// main track list (`views::library::track_row`), the album/artist/genre
+/// detail rows (`views::albums::detail_track_row`), and the now-playing
+/// title line below — nothing renders for a local track, since local is the
+/// unremarked default.
+pub(crate) fn remote_badge(track_id: u32, p: &Palette) -> El {
+    el().key(format!("track-remote-{track_id}"))
+        .role("img")
+        .label(t!("library.remoteTrack").to_string())
+        .child(icon(&icons::CLOUD, REMOTE_BADGE_PX).color(p.text_secondary))
+}
+
 fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) -> El {
     let Some(track) = now else {
         // Empty state, as the old app's NowPlayingPanel: a larger muted cover and
@@ -236,6 +254,21 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .unwrap_or_else(|| t!("library.unknown").to_string());
     let artist = track.artist.clone().unwrap_or_default();
     let album = track.album.clone();
+    let title_el = text(title).font(type_::TITLE).color(p.fg).truncate();
+    // A local track (the overwhelming default) keeps the plain title text
+    // unchanged; only a remote one gains the badge row, so the common case
+    // never pays for an extra wrapper.
+    let title_row: El = if track.remote {
+        row()
+            .key("now-playing-title")
+            .gap(space::XXS)
+            .center_y()
+            .min_w(0.0)
+            .child(title_el.grow(1.0))
+            .child(remote_badge(track.id, p))
+    } else {
+        title_el
+    };
     // Title/artist open the track's album detail page (the old app's TrackInfo
     // navigates to the album on click) — only when the track has an album.
     let mut text_col = col()
@@ -244,7 +277,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .align(Align::Start)
         .grow(1.0)
         .min_w(0.0)
-        .child(text(title).font(type_::TITLE).color(p.fg).truncate())
+        .child(title_row)
         .child(
             text(artist)
                 .font(type_::CAPTION)

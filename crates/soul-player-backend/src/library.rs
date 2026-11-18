@@ -18,6 +18,7 @@ use std::sync::atomic::AtomicUsize;
 
 use embedded_io_adapters::std::FromStd;
 use soul_audio_catalog::{BrowseAxis, Catalog, StrRef};
+use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_import::{ScanCache, ScanProgress};
 use soul_audio_index::IndexReader;
 use soul_audio_multicatalog::{MultiCatalog, unpack};
@@ -302,6 +303,9 @@ impl Library {
                     // NOT filtered through `real_name` like artist/album sentinels.
                     genre: genre_name(&cat, t.genre),
                     duration_secs: f64::from(t.duration_ms) / 1000.0,
+                    // The backend/local catalog is always local — the host
+                    // aggregate stamps `true` for a remote source's tracks.
+                    remote: false,
                 })
             })
             .collect()
@@ -318,6 +322,20 @@ pub trait TrackSource: Send + Sync {
     /// implementor only needs this when it has a cheaper-than-decoding answer.
     fn duration_of(&self, _id: u32) -> Option<f64> {
         None
+    }
+
+    /// Open the decoder for track `id` — what the loader thread calls to build
+    /// the `OwnedDecoder` it hands to the pump. The default resolves
+    /// [`path_of`](Self::path_of) and opens the local file with
+    /// [`open_track`] — all `Library` needs. A source that can decode bytes it
+    /// doesn't have sitting on local disk (a remote server, streamed over HTTP
+    /// Range) overrides this instead of materializing a path first — see
+    /// `soul_player_host::remote::RemoteLibrary::open_decoder`.
+    fn open_decoder(&self, id: u32) -> anyhow::Result<OwnedDecoder> {
+        let path = self
+            .path_of(id)
+            .ok_or_else(|| anyhow::anyhow!("no path for track id {id}"))?;
+        open_track(&path)
     }
 }
 
@@ -944,6 +962,47 @@ mod tests {
         let ts: std::sync::Arc<dyn TrackSource> = std::sync::Arc::new(lib);
         assert_eq!(ts.path_of(0), expected);
         assert_eq!(ts.path_of(9), None);
+    }
+
+    /// The default `TrackSource::open_decoder` (what `Library` relies on):
+    /// resolves `path_of` then opens the file with `open_track`, equivalent to
+    /// the loader's old direct `open_track(&path_of(id))` call before the
+    /// streaming split (`soul_player_host::remote::RemoteLibrary` overrides
+    /// this method instead, to stream a remote track over HTTP Range).
+    #[test]
+    fn open_decoder_opens_and_decodes_a_local_track() {
+        use soul_audio_core::Decoder;
+
+        let root = tmpdir("open_decoder");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap(); // 1.0 s
+        let lib = Library::scan(&root).unwrap();
+
+        // `OwnedDecoder` is large by value (the boxed `AnyDecoder`) — a
+        // big-stack thread, the same precaution the actor's loader thread and
+        // other open_track-decoding tests take for debug-build move frames.
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let mut decoder = lib
+                    .open_decoder(0)
+                    .expect("open_decoder should resolve track 0 and open it");
+                let mut buf = [0i32; 4096];
+                let n = decoder
+                    .decode_into(&mut buf)
+                    .expect("decode the first block");
+                assert!(n > 0, "expected a non-empty decoded block");
+            })
+            .expect("spawn decode thread")
+            .join()
+            .expect("decode thread panicked");
+    }
+
+    #[test]
+    fn open_decoder_of_an_unknown_id_errors() {
+        let root = tmpdir("open_decoder_missing");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        assert!(lib.open_decoder(9).is_err());
     }
 
     #[cfg(unix)]
