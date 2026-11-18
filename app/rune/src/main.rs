@@ -295,7 +295,14 @@ struct State {
     /// The configured sources with their per-source status (from the host),
     /// rendered by Settings → Sources: each carries its path, enabled flag,
     /// current availability (an unreachable root shows "offline"), and track count.
+    /// A `Remote` source's entry also carries its last-probed [`RemoteHealth`]
+    /// (latency/version/online/last-checked), kept fresh by the periodic poller
+    /// spawned in `main` plus an on-demand refresh (see [`refresh_remote_health`]).
     sources: Vec<SourceStatus>,
+    /// Whether a remote-health refresh (the periodic poller or an on-demand one
+    /// from opening Settings → Music Data) is in flight on a background thread.
+    /// Guards against two overlapping probes — see [`refresh_remote_health`].
+    remote_health_refreshing: bool,
     /// A transient "N tracks removed from <folder>" warning for the Sources page,
     /// set from the host's [`Event::TracksRemoved`] when a rescan finds deletions
     /// (`(root, count)`). Cleared on the next Sources refresh ([`apply_watch`]) so
@@ -589,6 +596,7 @@ impl State {
                 .unwrap_or(ThemePref::System),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
+            remote_health_refreshing: false,
             removal_notice: None,
             remote_form_open: false,
             remote_url_buf: rune::TextEdit::new(""),
@@ -808,9 +816,54 @@ pub(crate) fn set_indexing_mode(s: &mut State, mode: IndexingMode) {
 }
 
 /// Switch the active Settings category (ephemeral — not persisted). Used by the
-/// settings page's category rail.
+/// settings page's category rail. Switching TO Music Data (where the Sources
+/// card — and its remote health/telemetry — lives) also kicks an on-demand
+/// [`refresh_remote_health`], so health isn't stale the first time this
+/// session's Sources panel is seen; the periodic poller alone could be up to
+/// its whole interval late.
 pub(crate) fn set_settings_tab(s: &mut State, tab: SettingsTab) {
     s.settings_tab = tab;
+    if tab == SettingsTab::MusicData {
+        refresh_remote_health(s);
+    }
+}
+
+/// How often the periodic poller (spawned in `main`) re-probes every remote
+/// source's health. A tradeoff between freshness and not hammering a remote
+/// with pings — the program spec calls for "~30 s".
+const REMOTE_HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Refresh every remote source's health off the UI thread. Mirrors
+/// [`scan_in_background`]'s shape (and the `connect_remote_source` thread): the
+/// network probe — [`PlayerHandle::refresh_remote_health`], one blocking `GET
+/// /v0/ping` per remote — runs on a spawned background thread; its fresh
+/// [`PlayerHandle::sources`] folds back onto `State::sources` via
+/// `AppHandle::update`. Guarded by `remote_health_refreshing` so the periodic
+/// poller (spawned in `main`) and an on-demand refresh (opening Settings →
+/// Music Data, see [`set_settings_tab`]) can never have two probes in flight
+/// at once, racing which result lands last. A no-op while one is already
+/// running. Falls back to an inline call with no `app_handle` (headless tests).
+pub(crate) fn refresh_remote_health(s: &mut State) {
+    if s.remote_health_refreshing {
+        return;
+    }
+    s.remote_health_refreshing = true;
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                let sources = host.refresh_remote_health();
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.sources = sources;
+                    s.remote_health_refreshing = false;
+                });
+            });
+        }
+        None => {
+            s.sources = s.host.refresh_remote_health();
+            s.remote_health_refreshing = false;
+        }
+    }
 }
 
 /// Open the dropdown with this key, or close it if it is already open (clicking
@@ -2893,6 +2946,22 @@ fn main() -> anyhow::Result<()> {
             }
         });
     }
+    // Periodic remote-health poller (Inc 2): its own dedicated sleep-loop
+    // thread — never the UI thread — wakes every ~30 s and asks the UI thread
+    // to refresh. It posts through the SAME guarded `refresh_remote_health`
+    // the on-demand refresh (opening Settings → Music Data) uses, so the two
+    // can never have overlapping probes in flight. Runs for the app's whole
+    // lifetime (no retained `JoinHandle` to stop it — it simply stops mattering
+    // once the process exits).
+    {
+        let ph = ah.clone();
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(REMOTE_HEALTH_POLL_INTERVAL);
+                ph.update(|s: &mut State, _tx: &mut Tx| refresh_remote_health(s));
+            }
+        });
+    }
     // Launch-time update check (release builds only): off-thread so it never
     // blocks startup, and it only *flags* an available update — Settings offers
     // the actual "Install & Restart" so we never yank a playing track away.
@@ -2966,6 +3035,7 @@ mod tests {
     use std::time::Duration;
 
     use rune::{Cursor, Env, FileDialogKind, Mods, Runtime, WheelEvent};
+    use soul_player_host::{RemoteHealth, SourceKind};
 
     use super::*;
     // The profile model types are only used by the profile tests (production code
@@ -6699,6 +6769,130 @@ mod tests {
         // A track-count label is rendered. Assert by KEY (not the localized text),
         // so a sibling test flipping the global locale can't flake this.
         assert!(rt.find("count-0").is_some(), "a track-count label is shown");
+    }
+
+    /// Unix seconds right now — for building a fresh [`RemoteHealth`] probe
+    /// timestamp directly in a test, with no real server needed (the Inc-2
+    /// program spec: `SourceStatus`/`RemoteHealth` values are built by hand).
+    fn test_now_unix() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock before the Unix epoch")
+            .as_secs()
+    }
+
+    /// An online, fully-populated remote `SourceStatus`, built directly (no
+    /// server) — the Inc-2 Sources panel's job is to render exactly these
+    /// fields: a Remote badge, an online dot, latency, server version, track
+    /// count, and a relative last-checked time.
+    fn online_remote_status(url: &str) -> SourceStatus {
+        SourceStatus {
+            path: PathBuf::from(url),
+            enabled: true,
+            available: true,
+            track_count: 7,
+            kind: SourceKind::Remote {
+                url: url.to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: true,
+                latency_ms: Some(42),
+                server_version: Some("0.9.0".to_string()),
+                index_version: Some(3),
+                last_checked_unix: Some(test_now_unix()),
+            }),
+        }
+    }
+
+    /// Inc 2: a Remote source's row renders a Remote badge plus its health
+    /// telemetry (an online dot + a "42ms" latency reading), while a sibling
+    /// Local source's row renders a Local badge and NEITHER of those
+    /// remote-only elements — the "clear local/remote distinction" the
+    /// program spec asks for. Every new element is keyed.
+    #[test]
+    fn remote_source_row_shows_badge_latency_and_online_indicator() {
+        let dir = testdata_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(std::slice::from_ref(&dir), &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources
+            .push(online_remote_status("http://example.test:8080"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        // Local row (index 0): a Local badge, no remote-only telemetry.
+        assert!(
+            rt.find("source-badge-0").is_some(),
+            "the local row shows a kind badge"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "a local row has no latency element"
+        );
+        assert!(
+            rt.find("source-online-0").is_none(),
+            "a local row has no online indicator"
+        );
+
+        // Remote row (index 1): a Remote badge + its health telemetry.
+        assert!(
+            rt.find("source-badge-1").is_some(),
+            "the remote row shows a kind badge"
+        );
+        assert!(
+            rt.find("source-online-1").is_some(),
+            "the remote row shows an online indicator"
+        );
+        assert_eq!(
+            el_info(&rt, "source-latency-1").text.as_deref(),
+            Some("42ms"),
+            "latency renders as \"42ms\""
+        );
+    }
+
+    /// An offline remote reads differently from an online one: the latency
+    /// reads as the "—" placeholder (never a stale/misleading number) and the
+    /// online indicator still renders (dim, not green — this test only
+    /// checks it's present; the color is a rendering detail, not textual).
+    #[test]
+    fn offline_remote_source_row_shows_dash_latency_and_offline_dot() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("http://example.test:8080"),
+            enabled: true,
+            available: false,
+            track_count: 0,
+            kind: SourceKind::Remote {
+                url: "http://example.test:8080".to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: false,
+                latency_ms: None,
+                server_version: None,
+                index_version: None,
+                last_checked_unix: Some(test_now_unix()),
+            }),
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("source-online-0").is_some(),
+            "an offline remote still shows its online/offline dot"
+        );
+        assert_eq!(
+            el_info(&rt, "source-latency-0").text.as_deref(),
+            Some("—"),
+            "no latency reading renders as the dash placeholder"
+        );
     }
 
     /// The leading enable toggle is a focusable control that disables its source:
