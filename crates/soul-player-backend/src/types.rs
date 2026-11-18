@@ -240,6 +240,11 @@ pub struct TrackView {
     /// it `true` for a track whose compound id falls in a remote server's
     /// block — see `soul_player_host::PlayerHandle::views`.
     pub remote: bool,
+    /// The album's original release year from the index (`AlbumMeta.original_date`,
+    /// the first-pressing year that also sorts an artist chronologically), if tagged.
+    /// Shown as the "artist · year" subtitle on album cards and on the album detail
+    /// page. `None` when the album has no release date.
+    pub release_year: Option<u16>,
 }
 
 /// The current track's ORIGINAL source format, for the signal-path display.

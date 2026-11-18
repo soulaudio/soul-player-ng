@@ -306,6 +306,7 @@ impl Library {
                     // The backend/local catalog is always local — the host
                     // aggregate stamps `true` for a remote source's tracks.
                     remote: false,
+                    release_year: album_year(&cat, t.album),
                 })
             })
             .collect()
@@ -379,6 +380,18 @@ fn genre_name(cat: &MultiCatalog, id: u32) -> Option<String> {
 fn album_title(cat: &MultiCatalog, id: u32) -> Option<String> {
     let album = cat.album(id).ok()?;
     resolve(cat, album.title)
+}
+
+/// The album's original release year from its record, if tagged. `original_date` is the
+/// album's canonical (first-pressing) year, which is also the chronological sort key — so
+/// it is the natural "released {year}" to show. `PackedDate::UNKNOWN` (untagged) reads as
+/// `None`.
+fn album_year(cat: &MultiCatalog, id: u32) -> Option<u16> {
+    let album = cat.album(id).ok()?;
+    album
+        .original_date
+        .is_known()
+        .then(|| album.original_date.year())
 }
 
 /// Map the importer's `"Unknown Artist"` / `"Unknown Album"` placeholders back to
