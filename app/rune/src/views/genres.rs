@@ -261,6 +261,7 @@ mod tests {
             genre: genre.map(|g| g.to_string()),
             duration_secs: 1.0,
             remote: false,
+            release_year: None,
         }
     }
 
