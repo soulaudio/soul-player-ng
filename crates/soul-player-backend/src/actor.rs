@@ -20,7 +20,7 @@ use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_engine::{Engine, Provided};
 
 use crate::driver::{
-    OutputConfig, RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain,
+    OutputConfig, OutputSwap, RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain,
     maybe_apply_output_change, maybe_switch_native_rate, project_queue, project_signal_path,
     project_tick, queue_for, rebuild_output_sink,
 };
@@ -367,22 +367,23 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         &make_sink,
                         &make_park,
                     ) {
-                        Ok(()) => output_apply_failed = None,
-                        Err(e) => {
+                        OutputSwap::Applied => output_apply_failed = None,
+                        OutputSwap::KeptCurrent(e) => {
+                            // The change failed but a working sink still plays (the previous
+                            // device, or a kept non-strict shared stream). Latch it.
                             output_apply_failed = Some(desired.clone());
-                            if desired.exclusive && desired.strict {
-                                // STRICT (exclusive-or-stop) left the deck SILENT (parked):
-                                // drop to the parked state so it recovers like a failed
-                                // startup (config change / transient clear). Never keeps the
-                                // OS mixer alive.
-                                output_live = false;
-                                output_applied = desired.clone();
-                                last_output_retry = Instant::now();
-                                tracing::warn!(?desired, error = %format!("{e:#}"), "strict exclusive could not open — output STOPPED (silent); recovers on a config change or when the device frees");
-                            } else {
-                                // Non-strict: the current device was kept, audio continues.
-                                tracing::warn!(?desired, error = %format!("{e:#}"), "live output change failed; kept current device");
-                            }
+                            tracing::warn!(?desired, error = %format!("{e:#}"), "live output change failed; kept the current device");
+                        }
+                        OutputSwap::Parked(e) => {
+                            // The deck is SILENT now (a strict stop, or even the restore
+                            // could not open). Drop to the parked state so the pump holds the
+                            // position and recovers on a config change or the retry timer,
+                            // instead of racing the queue through the silent placeholder.
+                            output_apply_failed = Some(desired.clone());
+                            output_live = false;
+                            output_applied = desired.clone();
+                            last_output_retry = Instant::now();
+                            tracing::warn!(?desired, error = %format!("{e:#}"), "output could not open; stopped (silent); recovers on a config change or when the device frees");
                         }
                     }
                 }
