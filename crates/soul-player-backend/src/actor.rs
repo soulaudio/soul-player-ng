@@ -26,7 +26,7 @@ use crate::driver::{
 };
 use crate::library::TrackSource;
 use crate::loudness::LoudnessCache;
-use crate::types::{Command, Event, ReplayGainMode};
+use crate::types::{Command, Event, PlayState, ReplayGainMode};
 
 /// Golden-ratio odd constant; advanced per shuffle to vary the permutation seed
 /// without an RNG dependency (deterministic across runs).
@@ -508,6 +508,14 @@ fn pump_thread<K, Mk, Pk, Ev>(
             {
                 tick.duration_secs = Some(d);
             }
+            // Parked on the SILENT placeholder (output stopped: strict exclusive could not
+            // open, or the device vanished): the deck HOLDS its position but no audio
+            // flows, so present it as PAUSED rather than a frozen "Playing" — the Settings
+            // exclusive card carries the reason. Only an actually-playing deck is overridden
+            // (a stopped/idle one stays as is), and the real state returns on recovery.
+            if !output_live && tick.state == PlayState::Playing {
+                tick.state = PlayState::Paused;
+            }
             let cur_id = tick.now_playing_id;
             on_event(Event::Tick(tick));
             on_event(Event::Queue(project_queue(&player)));
@@ -819,18 +827,37 @@ mod tests {
             start: 0,
         });
         let mut got_tick = false;
+        // While parked (silent), a loaded track must present as PAUSED, never a frozen
+        // "Playing" (the strict-stop UX fix) — the deck holds its position but no audio
+        // flows.
+        let mut saw_playing_while_parked = false;
+        let mut saw_paused_track = false;
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Ok(Event::Tick(_)) = ev_rx.recv_timeout(Duration::from_millis(200)) {
+            if let Ok(Event::Tick(t)) = ev_rx.recv_timeout(Duration::from_millis(200)) {
                 got_tick = true;
+                if t.state == PlayState::Playing {
+                    saw_playing_while_parked = true;
+                }
+                if t.now_playing_id == Some(0) && t.state == PlayState::Paused {
+                    saw_paused_track = true;
+                }
             }
-            if got_tick && builds.load(Ordering::Relaxed) >= 2 {
+            if got_tick && builds.load(Ordering::Relaxed) >= 2 && saw_paused_track {
                 break;
             }
         }
         assert!(
             got_tick,
             "a dead pump emits no ticks — the pump must stay alive while the output is parked"
+        );
+        assert!(
+            !saw_playing_while_parked,
+            "a parked (silent) output must present as paused, never a frozen Playing"
+        );
+        assert!(
+            saw_paused_track,
+            "the loaded track reads as paused while the output is parked"
         );
         assert!(
             builds.load(Ordering::Relaxed) >= 2,
