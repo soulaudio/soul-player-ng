@@ -363,3 +363,73 @@ fn remote_add_sync_browse_play() {
          to the download cache"
     );
 }
+
+/// `set_remote_enabled` toggles a connected remote off and back on, mirroring
+/// the local-folder enable/disable toggle: the remote stays retained (it's
+/// still in `sources()`, never disconnected, no network/keychain touched) but
+/// while disabled its tracks drop out of `views()` and its `SourceStatus`
+/// reports `enabled: false` with `track_count: 0`; re-enabling restores both
+/// from the already-fetched blobs, with no re-fetch needed.
+#[test]
+fn remote_disable_drops_its_tracks_and_reenable_restores_them() {
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    let server = start_server(FIXTURES);
+
+    let handle = PlayerHandle::offline();
+    let tokens = oauth_login(&server.url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&server.url, tokens)
+        .expect("add remote source: fetch the index, fold it into the library");
+
+    assert_eq!(
+        handle.views().len(),
+        FIXTURES.len(),
+        "sanity: the remote's tracks are in the library before any toggle"
+    );
+    let status = handle
+        .sources()
+        .into_iter()
+        .find(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .expect("the connected remote has a SourceStatus row");
+    assert!(status.enabled, "a freshly-added remote starts enabled");
+    assert_eq!(status.track_count, FIXTURES.len());
+
+    // Disable: the remote stays configured, but its tracks leave the library.
+    handle
+        .set_remote_enabled(&server.url, false)
+        .expect("set_remote_enabled(false) should succeed");
+    assert!(
+        handle.views().is_empty(),
+        "a disabled remote's tracks must leave views()"
+    );
+    let disabled = handle
+        .sources()
+        .into_iter()
+        .find(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .expect("the remote still lists in sources() while disabled");
+    assert!(
+        !disabled.enabled,
+        "sources() should reflect the disabled flag"
+    );
+    assert_eq!(
+        disabled.track_count, 0,
+        "a disabled remote reports 0 tracks, like a disabled local folder"
+    );
+
+    // Re-enable: the already-fetched blobs restore the tracks, no re-fetch.
+    handle
+        .set_remote_enabled(&server.url, true)
+        .expect("set_remote_enabled(true) should succeed");
+    assert_eq!(
+        handle.views().len(),
+        FIXTURES.len(),
+        "re-enabling restores the remote's tracks to views()"
+    );
+    let reenabled = handle
+        .sources()
+        .into_iter()
+        .find(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .expect("the remote still lists in sources() once re-enabled");
+    assert!(reenabled.enabled);
+    assert_eq!(reenabled.track_count, FIXTURES.len());
+}

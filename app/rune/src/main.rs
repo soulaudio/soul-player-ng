@@ -968,6 +968,11 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
     if urls.is_empty() {
         return;
     }
+    // A fresh `PlayerHandle` starts every remote enabled until told
+    // otherwise, so a remote the user had disabled before the last quit must
+    // have that flag re-applied once it reconnects — otherwise its tracks
+    // would silently come back on every restart.
+    let disabled = config::load_remotes_disabled();
     match s.app_handle.clone() {
         Some(handle) => {
             let host = s.host.clone();
@@ -975,6 +980,8 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
                 for url in &urls {
                     if let Err(err) = host.reconnect_remote_source(url, &KeyringStore) {
                         tracing::warn!(url = %url, error = %err, "remote source reconnect failed");
+                    } else if disabled.iter().any(|u| u == url) {
+                        let _ = host.set_remote_enabled(url, false);
                     }
                 }
                 let sources = host.refresh_remote_health();
@@ -990,6 +997,8 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
             for url in &urls {
                 if let Err(err) = s.host.reconnect_remote_source(url, &KeyringStore) {
                     tracing::warn!(url, error = %err, "remote source reconnect failed");
+                } else if disabled.iter().any(|u| u == url) {
+                    let _ = s.host.set_remote_enabled(url, false);
                 }
             }
             let sources = s.host.refresh_remote_health();
@@ -1155,6 +1164,27 @@ pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
             s.library = s.host.views();
         }
     }
+}
+
+/// Toggle a remote source's enabled flag — the Sources row counterpart of a
+/// local folder's enable/disable checkbox ([`PlayerHandle::set_folder_enabled`]
+/// via `scan_in_background`/`apply_and_save`): flips
+/// [`PlayerHandle::set_remote_enabled`] (the remote stays retained, but its
+/// tracks drop out of the aggregate while disabled) and persists the flag
+/// (`config::set_remote_enabled`), then refreshes `sources`/`library` so the
+/// row's checkbox and the track list reflect it immediately.
+///
+/// Unlike every other remote op ([`disconnect_remote_source`],
+/// [`reconnect_remote_now`], [`reconnect_remotes_on_startup`]), this runs
+/// INLINE rather than on a background thread: `set_remote_enabled` touches
+/// neither the network nor the OS keychain, only an in-memory flag plus a
+/// rebuild from blobs already fetched — the same "local rebuild, no I/O"
+/// case `set_folder_enabled` itself is, just without that one's rescan.
+pub(crate) fn toggle_remote_enabled(s: &mut State, url: String, enabled: bool) {
+    let _ = s.host.set_remote_enabled(&url, enabled);
+    config::set_remote_enabled(&url, enabled);
+    s.sources = s.host.sources();
+    s.library = s.host.views();
 }
 
 /// Manually reconnect (or re-sync) one remote source — an offline row's
@@ -7392,6 +7422,78 @@ mod tests {
         assert!(
             rt.find("remote-remove-0").is_some(),
             "a connected remote row shows a keyed Disconnect control"
+        );
+    }
+
+    /// A connected remote row shows the SAME enable/disable checkbox a local
+    /// root's row has (keyed `enable-{index}`, focusable, labelled) —
+    /// ALONGSIDE the online/offline dot, not instead of it: the toggle is
+    /// user intent on/off, the dot is live reachability, and a remote row
+    /// now carries both.
+    #[test]
+    fn connected_remote_row_shows_the_enable_toggle_alongside_the_dot() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources
+            .push(online_remote_status("http://example.test:8080"));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let toggle = el_info(&rt, "enable-0");
+        assert!(
+            toggle.focusable,
+            "the remote row's enable toggle is focusable"
+        );
+        assert!(
+            toggle.label.as_deref().is_some_and(|l| !l.is_empty()),
+            "the remote row's enable toggle carries a non-empty label"
+        );
+        assert!(
+            rt.find("source-online-0").is_some(),
+            "the online dot still renders alongside the toggle"
+        );
+    }
+
+    /// Clicking a connected remote row's enable toggle drives
+    /// `toggle_remote_enabled` with that row's own url: it persists the
+    /// disabled flag via `config::set_remote_enabled`, the same way clicking
+    /// a local row's toggle persists through `apply_and_save`. The host-side
+    /// half (the remote's tracks leaving `views()`) is covered against a
+    /// REAL connected remote by the host's own
+    /// `remote_disable_drops_its_tracks_and_reenable_restores_them` (crates/
+    /// soul-player-host/tests/remote_e2e.rs) — this proves the UI wires the
+    /// press to the right url/flag, not a re-test of the host logic.
+    #[test]
+    fn toggling_a_remote_row_persists_the_disabled_flag_for_its_url() {
+        let _config_guard = config::use_test_config_dir();
+        for url in config::load_remotes() {
+            config::remove_remote(&url);
+        }
+        let url = "http://example.test:8080";
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources.push(online_remote_status(url));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            config::load_remotes_disabled().is_empty(),
+            "nothing disabled before the click"
+        );
+
+        click_key(&mut rt, "enable-0");
+
+        assert_eq!(
+            config::load_remotes_disabled(),
+            vec![url.to_string()],
+            "clicking the toggle persists this remote's url as disabled"
         );
     }
 

@@ -91,6 +91,12 @@ struct Config {
     /// remote sources existed loads this as empty (struct-level
     /// `#[serde(default)]`).
     remotes: Vec<String>,
+    /// Server URLs (a subset of `remotes`) the user has disabled. Absent in
+    /// old configs → everything enabled — the same "store the *disabled*
+    /// subset" convention `sources_disabled` uses for local folders, so a
+    /// remote added before this field existed loads enabled.
+    #[serde(default)]
+    remotes_disabled: Vec<String>,
     /// Theme preference: `system` | `light` | `dark`.
     theme: String,
     /// Resizable sidebar width (clamped to the legal range on load).
@@ -268,6 +274,7 @@ impl Default for Config {
         Self {
             sources: Vec::new(),
             remotes: Vec::new(),
+            remotes_disabled: Vec::new(),
             theme: "system".into(),
             sidebar_width: DEFAULT_WIDTH,
             sidebar_collapsed: false,
@@ -434,6 +441,37 @@ pub fn save_remote(url: &str) {
 pub fn remove_remote(url: &str) {
     let mut cfg = load();
     cfg.remotes.retain(|u| u != url);
+    // Drop any stored enabled/disabled flag too, so a later re-add of this
+    // same url starts fresh (enabled) rather than inheriting a stale toggle —
+    // mirrors `PlayerHandle::remove_remote_source` clearing its own
+    // `Inner::remote_enabled` entry on the host side.
+    cfg.remotes_disabled.retain(|u| u != url);
+    save(&cfg);
+}
+
+/// Server URLs (a subset of `remotes`) the user has disabled — the remote
+/// counterpart of [`load_sources_with_enabled`]'s disabled half, kept as its
+/// own flat list (rather than paired with `remotes`) since `remotes` is
+/// otherwise mutated one url at a time ([`save_remote`]/[`remove_remote`]).
+/// Checked once at startup (`reconnect_remotes_on_startup`) to re-apply each
+/// remote's enabled flag on the freshly reconnected host — a fresh launch's
+/// `PlayerHandle` starts every remote enabled until told otherwise.
+pub fn load_remotes_disabled() -> Vec<String> {
+    load().remotes_disabled
+}
+
+/// Persist `url`'s enabled flag (load-modify-write) — named to match
+/// [`soul_player_host::PlayerHandle::set_remote_enabled`] on the host side:
+/// added to the disabled set when `enabled` is `false`, dropped when `true`.
+/// Independent of `remotes` (applies even to a url not yet in that list), so
+/// toggling never races a concurrent add/remove of the url itself.
+pub fn set_remote_enabled(url: &str, enabled: bool) {
+    let mut cfg = load();
+    if enabled {
+        cfg.remotes_disabled.retain(|u| u != url);
+    } else if !cfg.remotes_disabled.iter().any(|u| u == url) {
+        cfg.remotes_disabled.push(url.to_string());
+    }
     save(&cfg);
 }
 
@@ -1120,6 +1158,7 @@ mod tests {
         let cfg = Config {
             sources: vec!["/music/a".into(), "/music/b".into()],
             remotes: vec!["http://server-a".into(), "http://server-b".into()],
+            remotes_disabled: vec!["http://server-b".into()],
             theme: "dark".into(),
             sidebar_width: 300.0,
             sidebar_collapsed: true,
@@ -1176,6 +1215,7 @@ mod tests {
         let back: Config = toml::from_str(&body).unwrap();
         assert_eq!(back.sources, cfg.sources);
         assert_eq!(back.remotes, cfg.remotes);
+        assert_eq!(back.remotes_disabled, cfg.remotes_disabled);
         assert_eq!(back.theme, "dark");
         assert_eq!(back.window, cfg.window);
         assert_eq!(back.sidebar_width, 300.0);
@@ -1411,6 +1451,48 @@ mod tests {
         // Removing something never added is a no-op, not an error.
         remove_remote("http://never-added");
         assert_eq!(load_remotes(), vec!["http://b".to_string()]);
+    }
+
+    #[test]
+    fn remotes_disabled_roundtrips_and_old_config_is_all_enabled() {
+        let _config_guard = use_test_config_dir();
+        for url in load_remotes() {
+            remove_remote(&url);
+        }
+        save_remote("http://a");
+        save_remote("http://b");
+
+        // Fresh config, nothing toggled yet: everything enabled.
+        assert!(load_remotes_disabled().is_empty());
+
+        set_remote_enabled("http://a", false);
+        assert_eq!(
+            load_remotes_disabled(),
+            vec!["http://a".to_string()],
+            "disabling a remote adds it to the disabled set"
+        );
+
+        // Re-disabling dedupes rather than duplicating.
+        set_remote_enabled("http://a", false);
+        assert_eq!(load_remotes_disabled(), vec!["http://a".to_string()]);
+
+        set_remote_enabled("http://a", true);
+        assert!(
+            load_remotes_disabled().is_empty(),
+            "re-enabling drops it from the disabled set"
+        );
+
+        // Removing a remote drops any stored disabled flag for it too.
+        set_remote_enabled("http://b", false);
+        remove_remote("http://b");
+        assert!(
+            load_remotes_disabled().is_empty(),
+            "removing a remote clears its disabled flag"
+        );
+
+        for url in load_remotes() {
+            remove_remote(&url);
+        }
     }
 
     #[test]

@@ -233,8 +233,11 @@ pub struct SourceStatus {
     /// to matching on [`kind`](Self::kind) yet — never a real filesystem
     /// path to read.
     pub path: PathBuf,
-    /// Whether the user has this source enabled (disabled sources are skipped).
-    /// Always `true` for a remote source (v0 has no remote enable/disable toggle).
+    /// Whether the user has this source enabled (disabled sources are skipped
+    /// in the aggregate — their tracks leave `views()` — but kept listed
+    /// here). A local root toggles via
+    /// [`set_folder_enabled`](PlayerHandle::set_folder_enabled); a remote via
+    /// [`set_remote_enabled`](PlayerHandle::set_remote_enabled).
     pub enabled: bool,
     /// Whether the root was a readable directory on the last scan (missing /
     /// unmounted / unreadable roots are `false`, but stay in the set). For a
@@ -457,6 +460,18 @@ struct Inner {
     /// `caches` / `source_bytes` (a plain rescan never touches it), just
     /// replayed in order into a fresh [`RemoteLibrary`] on every add.
     remotes: Mutex<RemoteSources>,
+    /// Per-remote enabled flag, keyed by server base URL (trailing slash
+    /// trimmed, matching `remotes`' own key). Absent ⇒ enabled — a remote
+    /// added before this flag existed, or never explicitly toggled,
+    /// defaults to on (the same "absent from the disabled set ⇒ enabled"
+    /// convention `app/rune`'s `sources_disabled` config uses). A disabled
+    /// remote stays in `remotes` (and keeps listing in
+    /// [`sources`](PlayerHandle::sources)) — only its blobs are excluded
+    /// from the aggregate [`rebuild_remote_library`](PlayerHandle::rebuild_remote_library)
+    /// builds, so its tracks leave [`views`](PlayerHandle::views) without
+    /// disconnecting it. Cleared on [`remove_remote_source`](PlayerHandle::remove_remote_source)
+    /// so a later re-add doesn't inherit a stale flag for that url.
+    remote_enabled: Mutex<HashMap<String, bool>>,
     /// The remote-aware aggregate built from `remotes` plus the local
     /// `source_bytes` snapshot at the time of the last
     /// [`add_remote_source`](PlayerHandle::add_remote_source) call, or `None`
@@ -608,6 +623,7 @@ impl PlayerHandle {
                 caches: Mutex::new(HashMap::new()),
                 source_bytes: Mutex::new(HashMap::new()),
                 remotes: Mutex::new(Vec::new()),
+                remote_enabled: Mutex::new(HashMap::new()),
                 remote_library: Mutex::new(None),
                 remote_health: Mutex::new(HashMap::new()),
                 watch_subscribers: Mutex::new(Vec::new()),
@@ -1140,7 +1156,7 @@ impl PlayerHandle {
                     });
                 SourceStatus {
                     path: PathBuf::from(&server.url),
-                    enabled: true,
+                    enabled: self.remote_is_enabled(&server.url),
                     available: health.online,
                     track_count,
                     kind: SourceKind::Remote {
@@ -1721,7 +1737,50 @@ impl PlayerHandle {
             .lock()
             .expect("remote_health mutex")
             .remove(url);
+        // Drop any stored enabled/disabled flag too, so a later re-add of this
+        // same url starts fresh (enabled) rather than inheriting a stale toggle.
+        self.inner
+            .remote_enabled
+            .lock()
+            .expect("remote_enabled mutex")
+            .remove(url);
         self.rebuild_remote_library();
+    }
+
+    /// Whether the retained remote at `url` is enabled — `true` unless it has
+    /// been explicitly disabled via [`set_remote_enabled`](Self::set_remote_enabled)
+    /// (see `Inner::remote_enabled`'s "absent ⇒ enabled" convention).
+    fn remote_is_enabled(&self, url: &str) -> bool {
+        self.inner
+            .remote_enabled
+            .lock()
+            .expect("remote_enabled mutex")
+            .get(url)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Turn a retained remote source on or off, mirroring
+    /// [`set_folder_enabled`](Self::set_folder_enabled) for a local root: the
+    /// remote stays in `Inner::remotes` (and keeps listing in
+    /// [`sources`](Self::sources), reporting the new `enabled` with
+    /// `track_count` 0 while off) but, disabled, its blobs are excluded from
+    /// the aggregate [`rebuild_remote_library`](Self::rebuild_remote_library)
+    /// builds — so its tracks leave [`views`](Self::views) without
+    /// disconnecting it (no network call, no keychain change; re-enabling
+    /// brings its tracks straight back from the already-fetched blobs). A
+    /// no-op if `url` isn't currently retained. `url` is matched the same way
+    /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)
+    /// normalizes it (trailing slash trimmed).
+    pub fn set_remote_enabled(&self, url: &str, enabled: bool) -> anyhow::Result<()> {
+        let url = url.trim_end_matches('/');
+        self.inner
+            .remote_enabled
+            .lock()
+            .expect("remote_enabled mutex")
+            .insert(url.to_string(), enabled);
+        self.rebuild_remote_library();
+        Ok(())
     }
 
     /// Silently re-authenticate a previously-added remote using its stored
@@ -1762,11 +1821,12 @@ impl PlayerHandle {
     }
 
     /// Rebuild the remote-aware aggregate from the current local
-    /// `source_bytes` cache (in configured-source order) plus every remote
-    /// in `self.inner.remotes`, and swap it in via
+    /// `source_bytes` cache (in configured-source order) plus every ENABLED
+    /// remote in `self.inner.remotes`, and swap it in via
     /// [`set_remote_library`](Self::set_remote_library) — the shared tail of
     /// [`add_remote_source`](Self::add_remote_source),
-    /// [`remove_remote_source`](Self::remove_remote_source), and
+    /// [`remove_remote_source`](Self::remove_remote_source),
+    /// [`set_remote_enabled`](Self::set_remote_enabled), and
     /// [`reconnect_remote_source`](Self::reconnect_remote_source).
     fn rebuild_remote_library(&self) {
         let folders = self.inner.folders.lock().expect("folders mutex").clone();
@@ -1785,6 +1845,15 @@ impl PlayerHandle {
         drop(bytes);
 
         let remotes = self.inner.remotes.lock().expect("remotes mutex").clone();
+        // A disabled remote stays retained (so it keeps listing in `sources()`,
+        // and reconnects on restart) but is excluded here, the same way a
+        // disabled local folder is excluded above — its blobs just don't
+        // contribute sources to the rebuilt aggregate, so its tracks drop out
+        // of `views()` until it's re-enabled.
+        let remotes: RemoteSources = remotes
+            .into_iter()
+            .filter(|(server, _blobs)| self.remote_is_enabled(&server.url))
+            .collect();
         let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
             dir: remote_cache_dir(),
         });
@@ -2846,6 +2915,20 @@ mod tests {
         assert!(!sa.enabled, "the source is now disabled");
         assert_eq!(sa.track_count, 0, "a disabled source contributes no tracks");
         assert_eq!(h.sources().len(), 1, "the source is kept in the set");
+    }
+
+    #[test]
+    fn set_remote_enabled_on_an_unconfigured_url_is_a_noop() {
+        // Mirrors `set_folder_enabled`'s no-op-on-absent shape: toggling a url
+        // that was never added via `add_remote_source*` touches nothing and
+        // never panics (the full add -> disable -> re-enable round trip, with
+        // a real connected remote, is `remote_e2e`'s
+        // `remote_disable_drops_its_tracks_and_reenable_restores_them`).
+        let h = PlayerHandle::offline();
+        h.set_remote_enabled("http://never-added.example", false)
+            .expect("toggling an unconfigured remote must not error");
+        assert!(h.sources().is_empty());
+        assert!(h.views().is_empty());
     }
 
     #[test]

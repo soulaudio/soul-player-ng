@@ -41,7 +41,7 @@ use crate::{
     set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
     set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
     set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
-    toggle_eq_bands_expanded, unit_bands, unit_enabled, unit_preamp,
+    toggle_eq_bands_expanded, toggle_remote_enabled, unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::IndexingMode;
 
@@ -616,10 +616,11 @@ const TOGGLE_PX: f32 = 20.0;
 /// The check glyph inside the enable toggle.
 const TOGGLE_ICON_PX: f32 = 14.0;
 
-/// Side of the remote online/offline status dot — small, like the toggle it
-/// stands in for on a remote row (there is no enable/disable concept for a
-/// remote source; see `SourceStatus::enabled`'s doc). Diameter, not a radius
-/// token: a circular control uses `size * 0.5` for its corner radius.
+/// Side of the remote online/offline status dot — small, since a remote row
+/// shows it ALONGSIDE the same enable/disable toggle a local row has (the
+/// dot is reachability; the toggle is user intent — see `live_source_row`'s
+/// leading slot). Diameter, not a radius token: a circular control uses
+/// `size * 0.5` for its corner radius.
 const HEALTH_DOT_PX: f32 = 10.0;
 
 /// `url`'s host (and port, if non-default), for a remote row's title line — a
@@ -789,6 +790,40 @@ fn source_row(s: &State, p: &Palette, row: &SourceRow<'_>, index: usize) -> El {
     }
 }
 
+/// The enable/disable checkbox shared by a local root's and a remote
+/// server's leading slot: a small square, filled and checked when `enabled`,
+/// outline-only (muted fill, no check) when not — labelled for a11y, keyed
+/// `enable-{index}` regardless of kind so a test (or a screen reader) finds
+/// the same control shape on either row type. `on_toggle` carries the
+/// kind-specific side effect ([`live_source_row`]'s two match arms); this
+/// only renders the box and wires the press.
+fn source_enable_toggle(
+    index: usize,
+    enabled: bool,
+    p: &Palette,
+    on_toggle: impl Fn(&mut State) + 'static,
+) -> El {
+    let mut toggle = el()
+        .key(format!("enable-{index}"))
+        .role("button")
+        .label(if enabled {
+            t!("settings.disableSource").to_string()
+        } else {
+            t!("settings.enableSource").to_string()
+        })
+        .focusable(true)
+        .size(TOGGLE_PX, TOGGLE_PX)
+        .radius(radius::XS)
+        .center()
+        .cursor(Cursor::Pointer)
+        .fill(if enabled { p.primary } else { p.muted })
+        .on_press(on_toggle);
+    if enabled {
+        toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
+    }
+    toggle
+}
+
 /// A live source row (local, or a currently-connected remote): a Local/Remote
 /// badge, a leading control (the enable/disable toggle for a local root; the
 /// online/offline dot for a remote server), the source's name over its full
@@ -810,43 +845,40 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
         SourceKind::Remote { url } => (display_host(url), url.clone()),
     };
 
-    // Leading control: a local source gets the enable/disable toggle (unique
-    // per-source state); a remote has no enable concept (v0 has no remote
-    // toggle — `SourceStatus::enabled` is always `true` for one), so its
-    // leading slot is the health dot instead.
+    // Leading control: the enable/disable toggle, for EITHER kind now (a
+    // remote keeps its health dot alongside — toggle is user intent on/off,
+    // dot is live reachability, and both read as useful at once). A local
+    // root's toggle flips `set_folder_enabled` + rescans; a remote's flips
+    // `set_remote_enabled` (sync — no network, just excludes its already-
+    // fetched blobs from the aggregate) and persists via config.
     let leading = match &status.kind {
         SourceKind::Local { path } => {
             let toggle_for = path.clone();
-            let mut toggle = el()
-                .key(format!("enable-{index}"))
-                .role("button")
-                .label(if enabled {
-                    t!("settings.disableSource").to_string()
-                } else {
-                    t!("settings.enableSource").to_string()
-                })
-                .focusable(true)
-                .size(TOGGLE_PX, TOGGLE_PX)
-                .radius(radius::XS)
-                .center()
-                .cursor(Cursor::Pointer)
-                .fill(if enabled { p.primary } else { p.muted })
-                .on_press(move |st: &mut State| {
-                    let toggle_for = toggle_for.clone();
-                    scan_in_background(
-                        st,
-                        move |h| h.set_folder_enabled(&toggle_for, !enabled),
-                        apply_and_save,
-                    );
-                });
-            if enabled {
-                toggle = toggle.child(icon(&icons::CHECK, TOGGLE_ICON_PX).color(p.bg));
-            }
-            toggle
+            source_enable_toggle(index, enabled, p, move |st: &mut State| {
+                let toggle_for = toggle_for.clone();
+                scan_in_background(
+                    st,
+                    move |h| h.set_folder_enabled(&toggle_for, !enabled),
+                    apply_and_save,
+                );
+            })
         }
-        SourceKind::Remote { .. } => {
+        SourceKind::Remote { url } => {
             let online = status.remote.as_ref().is_some_and(|h| h.online);
-            health_dot(index, online, p)
+            let url_for = url.clone();
+            row()
+                .key(format!("source-leading-{index}"))
+                .gap(space::XS)
+                .center_y()
+                .child(source_enable_toggle(
+                    index,
+                    enabled,
+                    p,
+                    move |st: &mut State| {
+                        toggle_remote_enabled(st, url_for.clone(), !enabled);
+                    },
+                ))
+                .child(health_dot(index, online, p))
         }
     };
 
