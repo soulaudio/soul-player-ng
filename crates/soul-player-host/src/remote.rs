@@ -941,48 +941,73 @@ fn accept_callback(listener: &std::net::TcpListener) -> anyhow::Result<(String, 
         .context("setting the loopback listener non-blocking")?;
     let deadline = std::time::Instant::now() + CALLBACK_TIMEOUT;
 
-    let mut stream = loop {
-        match listener.accept() {
-            Ok((stream, _addr)) => break stream,
+    // Loop over EVERY connection until one actually carries the `code` query.
+    // A real browser following the `302` to this loopback sends exactly the
+    // callback — but browsers also probe loopback redirect targets (a
+    // speculative preconnect, a `/favicon.ico`, an `OPTIONS`), and if we
+    // consumed the first such probe and returned, the ACTUAL callback would
+    // then hit a closed listener and the user would see "can't connect". So we
+    // answer-and-ignore anything without a `code` and keep waiting.
+    loop {
+        let mut stream = match listener.accept() {
+            Ok((stream, _addr)) => stream,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 if std::time::Instant::now() >= deadline {
                     bail!("timed out waiting for the browser login to complete");
                 }
                 std::thread::sleep(std::time::Duration::from_millis(100));
+                continue;
             }
             Err(e) => return Err(e).context("accepting the OAuth callback connection"),
+        };
+        stream
+            .set_nonblocking(false)
+            .context("setting the accepted OAuth callback connection blocking")?;
+
+        // Read the request line ("GET /callback?code=..&state=.. HTTP/1.1").
+        // A broken/empty probe connection is ignored, not fatal.
+        let path = {
+            let mut reader = std::io::BufReader::new(&stream);
+            let mut request_line = String::new();
+            match reader.read_line(&mut request_line) {
+                Ok(0) | Err(_) => None,
+                Ok(_) => request_line
+                    .split_whitespace()
+                    .nth(1)
+                    .map(ToString::to_string),
+            }
+        };
+
+        match path
+            .as_deref()
+            .and_then(|p| Some((query_param(p, "code")?, query_param(p, "state")?)))
+        {
+            Some((code, state)) => {
+                write_callback_response(
+                    &mut stream,
+                    "200 OK",
+                    "You can close this tab and return to soul-player.",
+                );
+                return Ok((code, state));
+            }
+            None => {
+                // Not the callback (favicon / preconnect / OPTIONS). Answer it
+                // politely and keep waiting for the real redirect.
+                write_callback_response(&mut stream, "404 Not Found", "not found");
+            }
         }
-    };
-    stream
-        .set_nonblocking(false)
-        .context("setting the accepted OAuth callback connection blocking")?;
+    }
+}
 
-    let (code, state) = {
-        let mut reader = std::io::BufReader::new(&stream);
-        let mut request_line = String::new();
-        reader
-            .read_line(&mut request_line)
-            .context("reading the OAuth callback request line")?;
-        // "GET /callback?code=..&state=.. HTTP/1.1"
-        let path = request_line
-            .split_whitespace()
-            .nth(1)
-            .context("malformed OAuth callback request line")?;
-        let code = query_param(path, "code").context("OAuth callback had no `code`")?;
-        let state = query_param(path, "state").context("OAuth callback had no `state`")?;
-        (code, state)
-    };
-
-    let body = "You can close this tab and return to soul-player.";
+/// Write a minimal plain-text HTTP response to a loopback-callback connection.
+/// Best-effort: a write failure on a throwaway probe socket must not abort the
+/// login (the caller keeps waiting for the real callback).
+fn write_callback_response(stream: &mut std::net::TcpStream, status: &str, body: &str) {
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len(),
     );
-    stream
-        .write_all(response.as_bytes())
-        .context("writing the OAuth callback response")?;
-
-    Ok((code, state))
+    let _ = stream.write_all(response.as_bytes());
 }
 
 /// The full interactive login: discover the AS, bind a LOOPBACK-only
@@ -2228,6 +2253,109 @@ mod tests {
             index_resp.status(),
             reqwest::StatusCode::OK,
             "the access token from login_with_opener should be accepted by /v0/index"
+        );
+    }
+
+    /// Regression for the "could not connect" loopback bug: a browser may probe
+    /// the loopback redirect target (a speculative preconnect, a `/favicon.ico`
+    /// fetch) BEFORE following the `302` to it. The callback catcher must
+    /// answer-and-ignore such a probe and keep waiting — if it treated the
+    /// probe as the callback and returned, the REAL redirect would land on a
+    /// closed listener and the user would see "can't connect". Here the
+    /// browser-thread fires a `/favicon.ico` probe first, then the real
+    /// callback; login must still succeed.
+    #[test]
+    fn login_tolerates_a_probe_before_the_callback() {
+        let server = start_server();
+        let server_url = server.url.clone();
+
+        let handle_slot: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> =
+            Arc::new(Mutex::new(None));
+        let slot = Arc::clone(&handle_slot);
+
+        let tokens = login_with_opener(&server_url, move |open_url| {
+            let open_url = open_url.to_string();
+            let handle = std::thread::spawn(move || {
+                let browser = reqwest::blocking::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .timeout(std::time::Duration::from_secs(5))
+                    .connect_timeout(std::time::Duration::from_secs(5))
+                    .build()
+                    .expect("build a non-redirecting blocking client");
+
+                let auth_endpoint = open_url
+                    .split_once('?')
+                    .map_or(open_url.as_str(), |(base, _)| base)
+                    .to_string();
+                let redirect_uri = query_param(&open_url, "redirect_uri")
+                    .expect("authorize URL should carry redirect_uri");
+                let challenge = query_param(&open_url, "code_challenge")
+                    .expect("authorize URL should carry code_challenge");
+                let state =
+                    query_param(&open_url, "state").expect("authorize URL should carry state");
+
+                // (1) Probe the loopback FIRST with a non-callback request (no
+                // `code`). The catcher must 404 it and keep listening.
+                let probe = redirect_uri
+                    .rsplit_once('/')
+                    .map(|(base, _)| format!("{base}/favicon.ico"))
+                    .expect("redirect_uri has a path to strip");
+                let probe_resp = browser
+                    .get(&probe)
+                    .send()
+                    .expect("probing the loopback should get a response, not hang");
+                assert_eq!(
+                    probe_resp.status(),
+                    reqwest::StatusCode::NOT_FOUND,
+                    "a non-callback probe must be answered-and-ignored (404), not consumed as the callback"
+                );
+
+                // (2) Now the real authorize → code → loopback callback.
+                let post_resp = browser
+                    .post(&auth_endpoint)
+                    .form(&[
+                        ("response_type", "code"),
+                        ("client_id", "soul-player"),
+                        ("redirect_uri", redirect_uri.as_str()),
+                        ("code_challenge", challenge.as_str()),
+                        ("code_challenge_method", "S256"),
+                        ("state", state.as_str()),
+                        ("scope", "library"),
+                        ("username", "u"),
+                        ("password", "p"),
+                    ])
+                    .send()
+                    .expect("POST /authorize should succeed");
+                assert_eq!(post_resp.status(), reqwest::StatusCode::FOUND);
+                let location = post_resp
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .expect("302 should carry a Location header")
+                    .to_str()
+                    .expect("Location header should be valid UTF-8")
+                    .to_string();
+                browser_get_loopback(&browser, &location);
+            });
+            *slot.lock().expect("lock the browser-thread handle slot") = Some(handle);
+            Ok(())
+        })
+        .expect("login must still succeed despite the pre-callback probe");
+
+        handle_slot
+            .lock()
+            .expect("lock the browser-thread handle slot")
+            .take()
+            .expect("opener should have stored a browser-thread handle")
+            .join()
+            .expect("browser thread should not panic");
+
+        assert!(
+            !tokens.access.is_empty(),
+            "login should yield an access token"
+        );
+        assert!(
+            !tokens.refresh.is_empty(),
+            "login should yield a refresh token"
         );
     }
 
