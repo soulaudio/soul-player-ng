@@ -863,22 +863,14 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                 );
             })
         }
+        // A remote's leading slot is JUST the toggle, same shape/position as a
+        // local root — its online/offline dot lives on the health line below
+        // (next to the latency/version it describes), not crammed beside the box.
         SourceKind::Remote { url } => {
-            let online = status.remote.as_ref().is_some_and(|h| h.online);
             let url_for = url.clone();
-            row()
-                .key(format!("source-leading-{index}"))
-                .gap(space::XS)
-                .center_y()
-                .child(source_enable_toggle(
-                    index,
-                    enabled,
-                    p,
-                    move |st: &mut State| {
-                        toggle_remote_enabled(st, url_for.clone(), !enabled);
-                    },
-                ))
-                .child(health_dot(index, online, p))
+            source_enable_toggle(index, enabled, p, move |st: &mut State| {
+                toggle_remote_enabled(st, url_for.clone(), !enabled);
+            })
         }
     };
 
@@ -909,7 +901,14 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                 .truncate(),
         );
     if let Some(health) = &status.remote {
-        identity = identity.child(remote_health_line(index, health, p));
+        // The online/offline dot leads the telemetry line it describes.
+        identity = identity.child(
+            row()
+                .gap(space::XS)
+                .center_y()
+                .child(health_dot(index, health.online, p))
+                .child(remote_health_line(index, health, p)),
+        );
         if let SourceKind::Remote { url } = &status.kind
             && health.online
             && remote_update_available(s, url, health)
