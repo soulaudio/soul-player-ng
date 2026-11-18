@@ -142,6 +142,24 @@ struct Config {
     /// install → the window opens at its default placement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window: Option<WindowGeometry>,
+    /// Which date the UI treats as an album's "year" (display + discography
+    /// sort): the original first-release date, or this particular release's
+    /// own date. `#[serde(default)]` so a config written before this setting
+    /// existed loads as `Original` (the field-level default below mirrors the
+    /// struct-level one for clarity).
+    #[serde(default)]
+    album_year_source: AlbumYearSource,
+}
+
+/// Which date an album's "year" is read from: the track's original
+/// first-release date, or the specific release/reissue it was sourced from.
+/// Persisted; defaults to `Original` (the long-standing, expected behaviour).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlbumYearSource {
+    #[default]
+    Original,
+    Release,
 }
 
 /// A persisted window rectangle (outer position + content size) and maximized
@@ -286,6 +304,7 @@ impl Default for Config {
             profiles: Vec::new(),
             active_profile: 0,
             window: None,
+            album_year_source: AlbumYearSource::Original,
         }
     }
 }
@@ -446,6 +465,18 @@ pub fn load_theme_pref() -> Option<String> {
 pub fn save_theme_pref(pref: &str) {
     let mut cfg = load();
     cfg.theme = pref.to_string();
+    save(&cfg);
+}
+
+/// The saved album-year source (which date the UI shows/sorts by). Default Original.
+pub fn load_album_year() -> AlbumYearSource {
+    load().album_year_source
+}
+
+/// Persist the album-year source.
+pub fn save_album_year(src: AlbumYearSource) {
+    let mut cfg = load();
+    cfg.album_year_source = src;
     save(&cfg);
 }
 
@@ -1171,6 +1202,7 @@ mod tests {
                 h: 800,
                 maximized: true,
             }),
+            album_year_source: AlbumYearSource::Release,
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -1192,6 +1224,15 @@ mod tests {
         assert_eq!(back.managed_library_strategy, "move");
         assert_eq!(back.profiles, cfg.profiles);
         assert_eq!(back.active_profile, 0);
+        assert_eq!(back.album_year_source, AlbumYearSource::Release);
+    }
+
+    #[test]
+    fn album_year_source_round_trips_and_defaults_to_original() {
+        let _g = use_test_config_dir();
+        assert_eq!(load_album_year(), AlbumYearSource::Original); // default
+        save_album_year(AlbumYearSource::Release);
+        assert_eq!(load_album_year(), AlbumYearSource::Release);
     }
 
     #[test]

@@ -291,6 +291,10 @@ struct State {
     settings_tab: SettingsTab,
     /// Light/dark preference (persisted); `System` follows the OS.
     theme_pref: ThemePref,
+    /// Which date an album's "year" is read from (persisted): the original
+    /// first-release date, or this particular release's own date. Consumed by
+    /// the library/discography display and sort.
+    album_year: config::AlbumYearSource,
     /// Which baked axis the library list is ordered by.
     sort_axis: BrowseAxis,
     /// The configured sources with their per-source status (from the host),
@@ -619,6 +623,7 @@ impl State {
             theme_pref: config::load_theme_pref()
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
+            album_year: config::load_album_year(),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             sources,
             remote_health_refreshing: false,
@@ -837,6 +842,12 @@ pub(crate) fn is_dark(pref: ThemePref, system_dark: bool) -> bool {
 pub(crate) fn set_theme_pref(s: &mut State, pref: ThemePref) {
     s.theme_pref = pref;
     config::save_theme_pref(pref.as_config());
+}
+
+/// Set + persist the album-year source (used by the Appearance settings buttons).
+pub(crate) fn set_album_year(s: &mut State, src: config::AlbumYearSource) {
+    s.album_year = src;
+    config::save_album_year(src);
 }
 
 /// Set + persist the library indexing-speed mode and apply it to the host (takes
@@ -2792,7 +2803,8 @@ fn seed_demo_library(s: &mut State) {
                 genre: Some(genre.to_string()),
                 duration_secs: f64::from(120 + id % 180),
                 remote: false,
-                release_year: Some(1970 + a as u16),
+                original_date: 0,
+                release_date: 0,
             });
             id += 1;
         }
@@ -7541,6 +7553,8 @@ mod tests {
         assert!(rt.find("theme-system").is_some());
         assert!(rt.find("theme-light").is_some());
         assert!(rt.find("theme-dark").is_some());
+        assert!(rt.find("album-year-original").is_some());
+        assert!(rt.find("album-year-release").is_some());
     }
 
     #[test]
@@ -7692,7 +7706,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
-            release_year: None,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -7705,7 +7720,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
-            release_year: None,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -7718,7 +7734,8 @@ mod tests {
             genre: Some(genre.to_string()),
             duration_secs: 1.0,
             remote: false,
-            release_year: None,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -8019,7 +8036,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
-            release_year: None,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -8137,7 +8155,8 @@ mod tests {
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
                 remote: false,
-                release_year: None,
+                original_date: 0,
+                release_date: 0,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -8147,7 +8166,8 @@ mod tests {
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
                 remote: false,
-                release_year: None,
+                original_date: 0,
+                release_date: 0,
             },
         ];
         s.route = Route::Genre;
@@ -8694,7 +8714,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: true,
-            release_year: None,
+            original_date: 0,
+            release_date: 0,
         }];
         s.now_playing_id = Some(1);
         let env = Env {
@@ -8833,6 +8854,14 @@ mod tests {
         assert_eq!(rt.state.theme_pref, ThemePref::Dark);
         click_key(&mut rt, "theme-light");
         assert_eq!(rt.state.theme_pref, ThemePref::Light);
+        // Don't assert the INITIAL loaded album_year here — it reads the shared
+        // per-process test config file, which a concurrently-running config test
+        // may have just written (see `config::use_test_config_dir`'s doc). Only
+        // assert the click-driven transition, like the theme buttons above.
+        click_key(&mut rt, "album-year-release");
+        assert_eq!(rt.state.album_year, config::AlbumYearSource::Release);
+        click_key(&mut rt, "album-year-original");
+        assert_eq!(rt.state.album_year, config::AlbumYearSource::Original);
 
         // Audio controls: start on the Audio tab so the ReplayGain buttons are
         // laid out, then clicking a mode flows through to the state.
@@ -8977,7 +9006,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: true,
-                release_year: None,
+                original_date: 0,
+                release_date: 0,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -8987,7 +9017,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: false,
-                release_year: None,
+                original_date: 0,
+                release_date: 0,
             },
         ];
         let env = Env {
@@ -9438,7 +9469,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: false,
-                release_year: None,
+                original_date: 0,
+                release_date: 0,
             })
             .collect();
         let env = Env {
@@ -9517,7 +9549,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: false,
-                release_year: None,
+                original_date: 0,
+                release_date: 0,
             })
             .collect();
         let env = Env {
@@ -9624,7 +9657,8 @@ mod tests {
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote: false,
-                release_year: None,
+                original_date: 0,
+                release_date: 0,
             }
         }
         let mut s = State::new(PlayerHandle::offline());
@@ -9676,7 +9710,8 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
-            release_year: None,
+            original_date: 0,
+            release_date: 0,
         }
     }
 

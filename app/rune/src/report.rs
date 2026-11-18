@@ -1,15 +1,22 @@
 //! "Report a problem" plumbing for Settings → About: gather diagnostics, redact
 //! the user's home-dir, assemble a Markdown issue body, and build a pre-filled
-//! GitHub new-issue URL that stays under GitHub's ~8 KB URL cap (it 414s past it)
-//! by trimming the attached log tail. Nothing is sent from here — the URL opens
-//! GitHub's web form, which is the user's review-and-submit step.
+//! GitHub new-issue URL small enough to survive GitHub's logged-out login
+//! redirect (it re-encodes the whole URL into `login?return_to=…` and, past
+//! ~8 KB, shows "Whoops, something went wrong"), by trimming the attached log
+//! tail. Nothing is sent from here: the URL opens GitHub's web form, which is the
+//! user's review-and-submit step.
 #![forbid(unsafe_code)]
 
 /// The GitHub repository (owner/name) that bug reports are filed against.
 pub(crate) const ISSUE_REPO: &str = "soulaudio/soul-player-ng";
 
-/// Stay well under GitHub's practical ~8192-byte new-issue URL limit.
-pub(crate) const MAX_URL_LEN: usize = 6500;
+/// GitHub's practical ~8192-byte request-URI cap. We budget the issue URL by its
+/// LOGGED-OUT, login-redirect-wrapped length (see [`login_wrapped_len`]) against
+/// this, because that wrapped form overflows first: a signed-out user is bounced
+/// to `login?return_to=<the whole URL re-encoded>` and, past this cap, GitHub
+/// shows "Whoops, something went wrong" instead of the form. The direct URL a
+/// signed-in user opens is always shorter and well within it.
+pub(crate) const MAX_URL_LEN: usize = 8192;
 
 /// Diagnostics for a bug report. Plain data: [`gather`] fills it from the
 /// environment and app state; the assembly/encoding functions below are pure.
@@ -83,7 +90,7 @@ pub(crate) fn report_url(repo: &str, diag: &Diagnostics, log_tail: &str, max_len
     // (the fitting tail is small), rather than rebuilding the whole log each drop.
     let all: Vec<&str> = log_tail.lines().collect();
     let mut start = all.len();
-    while start > 0 && build(&all[start - 1..].join("\n")).len() <= max_len {
+    while start > 0 && login_wrapped_len(&build(&all[start - 1..].join("\n"))) <= max_len {
         start -= 1;
     }
     if start < all.len() {
@@ -92,7 +99,7 @@ pub(crate) fn report_url(repo: &str, diag: &Diagnostics, log_tail: &str, max_len
 
     // Not even one log line fits: drop the log (with a note) and return the base.
     let no_log = build("");
-    if no_log.len() <= max_len || log_tail.is_empty() {
+    if login_wrapped_len(&no_log) <= max_len || log_tail.is_empty() {
         return no_log;
     }
     let mut b = issue_body(diag, "");
@@ -102,6 +109,18 @@ pub(crate) fn report_url(repo: &str, diag: &Diagnostics, log_tail: &str, max_len
         urlencoding::encode(title),
         urlencoding::encode(&b),
     )
+}
+
+/// The length of the URL GitHub redirects a logged-OUT user to when they open an
+/// `issues/new?...` link: `https://github.com/login?return_to=<the whole issue
+/// URL, percent-encoded AGAIN>`. That second encoding pass (every `%` becomes
+/// `%25`, every `?`/`&`/`=` is escaped) nearly doubles the issue URL, and if the
+/// result passes GitHub's ~8 KB request-URI cap GitHub serves "Whoops, something
+/// went wrong" instead of the form. We budget the issue URL by THIS length, not
+/// its own, so the prefilled report works whether or not the user is signed in.
+fn login_wrapped_len(issue_url: &str) -> usize {
+    const LOGIN: &str = "https://github.com/login?return_to=";
+    LOGIN.len() + urlencoding::encode(issue_url).len()
 }
 
 /// Build [`Diagnostics`] from the environment and the current audio-output name.
@@ -191,6 +210,30 @@ mod tests {
         // Markdown markers are encoded (`#` -> `%23`), not left raw in the URL.
         assert!(!url.contains("### Environment"), "{url}");
         assert!(url.contains("%23"), "{url}");
+    }
+
+    #[test]
+    fn report_url_survives_the_logged_out_login_redirect() {
+        // A signed-OUT user who opens an `issues/new?...` link is bounced to
+        // `login?return_to=<the whole issue URL, percent-encoded AGAIN>`, which
+        // roughly doubles the length. That wrapped URL must stay under GitHub's
+        // ~8192-byte request-URI cap, or GitHub shows "Whoops, something went
+        // wrong" instead of the form. Budgeting only the direct URL (the old bug)
+        // let the wrapped URL overflow; with a huge log it must still fit.
+        let huge = (0..3000)
+            .map(|i| format!("log line number {i} with a bit of detail"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let url = report_url(ISSUE_REPO, &sample_diag(), &huge, MAX_URL_LEN);
+        let wrapped = login_wrapped_len(&url);
+        assert!(
+            wrapped <= 8192,
+            "logged-out wrapped URL is {wrapped} bytes, over GitHub's ~8192 cap"
+        );
+        assert!(
+            url.contains("issues/new?"),
+            "still a valid issue URL: {url}"
+        );
     }
 
     #[test]
