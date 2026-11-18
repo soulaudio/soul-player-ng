@@ -8783,14 +8783,11 @@ mod tests {
         // Positions via `rt.find` (one consistent anchor); width via the element rect.
         let (_x0, row1_y) = rt.find("album-0").expect("album-0 is laid out");
         // The second row: the highest card that sits clearly below row 1.
-        let mut row2_y = f32::MAX;
-        for i in 1..8u32 {
-            if let Some((_x, y)) = rt.find(&format!("album-{i}")) {
-                if y > row1_y + 10.0 {
-                    row2_y = row2_y.min(y);
-                }
-            }
-        }
+        let row2_y = (1..8u32)
+            .filter_map(|i| rt.find(&format!("album-{i}")))
+            .map(|(_x, y)| y)
+            .filter(|&y| y > row1_y + 10.0)
+            .fold(f32::MAX, f32::min);
         assert!(row2_y < f32::MAX, "eight albums wrap to a second row");
         let card_w = el_info(&rt, "album-0").rect[2];
         // Row-to-row pitch = one natural card (square cover `w` + a two-line caption)
