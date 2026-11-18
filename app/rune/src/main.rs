@@ -9662,6 +9662,7 @@ mod tests {
             album: Some(format!("Album {id:02}")),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
+            remote: false,
         }
     }
 
