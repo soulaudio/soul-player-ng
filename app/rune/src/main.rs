@@ -8804,6 +8804,108 @@ mod tests {
         );
     }
 
+    /// A distinct album track for grid-layout tests.
+    fn grid_album(id: u32) -> soul_player_host::TrackView {
+        soul_player_host::TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some("A".into()),
+            album: Some(format!("Album {id:02}")),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+        }
+    }
+
+    /// A few albums in a very tall window must sit at the top at natural height —
+    /// each wrapped row a row-gap below the last — not be spread down the viewport.
+    /// Regression: the browse grid used to BE the growing scroll element, so flexbox
+    /// stretched its wrapped lines (and the cards on them) to fill the height,
+    /// opening big empty bands between rows whenever the library didn't fill the
+    /// window. The scroll now wraps a natural-height grid.
+    #[test]
+    fn the_album_grid_packs_rows_to_the_top_of_a_tall_window() {
+        rust_i18n::set_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.ui_zoom = 1.0;
+        s.library = (1..=8).map(grid_album).collect(); // ~2 rows, far shorter than the window
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1200.0, 1600.0), env); // very tall
+        rt.frame(0.0);
+        rt.frame(0.0);
+        // Positions via `rt.find` (one consistent anchor); width via the element rect.
+        let (_x0, row1_y) = rt.find("album-0").expect("album-0 is laid out");
+        // The second row: the highest card that sits clearly below row 1.
+        let row2_y = (1..8u32)
+            .filter_map(|i| rt.find(&format!("album-{i}")))
+            .map(|(_x, y)| y)
+            .filter(|&y| y > row1_y + 10.0)
+            .fold(f32::MAX, f32::min);
+        assert!(row2_y < f32::MAX, "eight albums wrap to a second row");
+        let card_w = el_info(&rt, "album-0").rect[2];
+        // Row-to-row pitch = one natural card (square cover `w` + a two-line caption)
+        // plus the row gap. A stretched line (or stretched card) balloons this far
+        // past the card's own width.
+        let pitch = row2_y - row1_y;
+        assert!(
+            pitch <= card_w + 120.0,
+            "rows a natural pitch apart, not spread: pitch={pitch:.0}, card_w={card_w:.0}"
+        );
+    }
+
+    /// After a zoom change the live app renders a SINGLE frame (it is event-driven,
+    /// not continuously repainting), so the grid must fill the pane on that one
+    /// frame. It used to read its width back from the laid-out page, which lagged a
+    /// frame under the zoom wrapper — leaving the cards sized for the previous zoom
+    /// and the grid short of the right edge until the next relayout (a window
+    /// resize). The width is now threaded from the stable content size ÷ zoom.
+    #[test]
+    fn zooming_out_fills_the_album_grid_width_on_one_frame() {
+        rust_i18n::set_locale("en");
+        let _g = config::use_test_config_dir(); // set_zoom would persist
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.ui_zoom = 2.0; // start zoomed in: a small logical box → small cards
+        s.library = (1..=24).map(grid_album).collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1400.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0); // settle at 200 %
+        // Reset to 100 % and render ONE frame, exactly as a Ctrl+0 keypress does.
+        rt.update(|st: &mut State, _tx: &mut Tx| st.ui_zoom = 1.0);
+        rt.frame(0.0);
+        let grid = el_info(&rt, "albums-grid").rect; // [x, y, w, h]
+        let inner_right = grid[0] + grid[2] - crate::ui::space::PANE;
+        // First-row cards, measured from element rects (top-left + width) so the row
+        // test and the right-edge span share one coordinate space.
+        let r0_top = el_info(&rt, "album-0").rect[1];
+        let mut max_right = f32::MIN;
+        for e in rt.elements() {
+            let is_card = e
+                .key
+                .as_deref()
+                .and_then(|k| k.strip_prefix("album-"))
+                .is_some_and(|rest| rest.parse::<u32>().is_ok());
+            if is_card && (e.rect[1] - r0_top).abs() < 5.0 {
+                max_right = max_right.max(e.rect[0] + e.rect[2]);
+            }
+        }
+        let slack = inner_right - max_right;
+        assert!(
+            slack.abs() <= 3.0,
+            "the grid fills to its right inner edge on one frame: slack={slack:.1} \
+             (inner right {inner_right:.0}, cards reach {max_right:.0})"
+        );
+    }
+
     /// Tab forward until the element keyed `key` is focused, up to `max` presses.
     fn tab_to(rt: &mut Runtime<State>, target: &str, max: usize) -> bool {
         for _ in 0..max {

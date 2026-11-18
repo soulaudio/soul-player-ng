@@ -128,12 +128,21 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         grid = grid.child(album_card(s, p, slot, a, card_w, scale));
     }
     col().key("albums").grow(1.0).min_h(0.0).child(
-        grid.scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .scroll_edge_fade(24.0)
-        .grow(1.0)
-        .min_h(0.0),
+        // Scroll on the growing wrapper, NOT the grid itself. A flex-wrap grid that is
+        // the growing scroll element has flexbox stretch its wrapped lines to fill the
+        // height, spreading the rows apart whenever the library doesn't fill the window
+        // (worse the more you zoom — fewer rows fit). A natural-height grid inside a
+        // growing scroll viewport packs rows to the top (extra space falls below the
+        // last row) and still scrolls once the content is taller than the viewport.
+        col()
+            .key("albums-scroll")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0)
+            .child(grid),
     )
 }
 
