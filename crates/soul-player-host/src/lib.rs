@@ -23,7 +23,7 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use soul_player_backend::library::TrackSource;
-use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
+use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, OutputConfig, cover_bytes};
 use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 use remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer, TokenStore};
@@ -499,20 +499,16 @@ struct Inner {
     /// the user's persisted choice ([`set_indexing_mode`](PlayerHandle::set_indexing_mode),
     /// whose own default is `Automatic`) — which also keeps the test suite fast.
     indexing_mode: Mutex<IndexingMode>,
-    /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
-    /// or `None` for the system default. Read when the actor is (re)spawned and
-    /// passed to the sink factory; a change applies to the NEXT spawn, not the
-    /// live stream (see [`set_output_device`](PlayerHandle::set_output_device)).
-    output_device: Mutex<Option<String>>,
-    /// Whether the user asked for bit-perfect **exclusive** output. Read when the
-    /// actor is (re)spawned and passed to the sink factory; a change applies to the
-    /// NEXT spawn, not the live stream (like the output device). The factory records
-    /// what the request actually resolved to in [`exclusive_status`](Inner::exclusive_status).
-    exclusive: Mutex<bool>,
-    /// **Strict** exclusive (exclusive-or-stop): when on with `exclusive`, the next
-    /// session does NOT fall back to shared if exclusive can't open — playback simply
-    /// doesn't start (the purist stance). Applies to the next spawn, like `exclusive`.
-    exclusive_strict: Mutex<bool>,
+    /// The desired output config — device (one of
+    /// [`output_devices`](PlayerHandle::output_devices)), exclusive mode, and strict —
+    /// shared with the running pump so a change made while playing applies to the
+    /// CURRENT track (live), not just the next session. Written by
+    /// [`set_output_device`](PlayerHandle::set_output_device),
+    /// [`set_exclusive`](PlayerHandle::set_exclusive), and
+    /// [`set_exclusive_strict`](PlayerHandle::set_exclusive_strict); the pump reads it
+    /// each block and rebuilds the sink in place when the device or exclusive mode
+    /// differs. Persists across respawns (it lives here, not in the actor).
+    output_config: Arc<Mutex<OutputConfig>>,
     /// What the last exclusive-output request resolved to (active / fell back to
     /// shared with a reason / unavailable under strict / shared by choice). Written by
     /// the sink factory on the pump thread at spawn, read by the UI to show the truth
@@ -614,9 +610,7 @@ impl PlayerHandle {
                 scan_progress_subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
                 indexing_mode: Mutex::new(IndexingMode::Maximum),
-                output_device: Mutex::new(None),
-                exclusive: Mutex::new(false),
-                exclusive_strict: Mutex::new(false),
+                output_config: Arc::new(Mutex::new(OutputConfig::default())),
                 exclusive_status: Arc::new(Mutex::new(ExclusiveStatus::Shared)),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
@@ -1194,19 +1188,23 @@ impl PlayerHandle {
             .collect()
     }
 
-    /// Choose the output device the next playback session opens, by name (one of
-    /// [`output_devices`](Self::output_devices)); `None` (or an empty string,
-    /// normalized to `None`) means the system default. If the named device is gone
-    /// when the sink is built, playback falls back to the system default.
+    /// Choose the output device, by name (one of [`output_devices`](Self::output_devices));
+    /// `None` (or an empty string, normalized to `None`) means the system default. If
+    /// the named device is gone when the sink is built, playback falls back to the
+    /// system default.
     ///
-    /// This applies to the **next** actor spawn — the next `open_folder` /
-    /// `set_folders`-then-play. A live device switch mid-playback (respawning the
-    /// running actor onto the new device) is a deliberate follow-up, not done here:
-    /// the current stream keeps playing on its original device until the next
-    /// session starts.
+    /// Applies **live**: if a track is playing, the pump rebuilds the sink onto the new
+    /// device on the current track (position + ReplayGain preserved), accepting the
+    /// brief hardware reopen — the field consensus (foobar / Roon) is to switch
+    /// immediately. If nothing is playing, the choice takes effect when playback next
+    /// starts.
     pub fn set_output_device(&self, name: Option<String>) {
         let name = name.filter(|n| !n.is_empty());
-        *self.inner.output_device.lock().expect("device mutex") = name;
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .device = name;
     }
 
     /// The available output device names on this host, for a device picker. Empty
@@ -1225,13 +1223,17 @@ impl PlayerHandle {
 
     /// Ask for bit-perfect **exclusive** output (WASAPI exclusive mode on Windows),
     /// or shared mode. Like [`set_output_device`](Self::set_output_device), this
-    /// applies to the **next** playback session — the current stream keeps its mode
-    /// until the next actor spawn. If the device can't do exclusive at its native
+    /// applies **live** — if a track is playing, the pump reopens the device in the
+    /// new mode on the current track. If the device can't do exclusive at its native
     /// format (in use, 16-bit-only, Bluetooth) or this build/platform has no
-    /// exclusive backend, the next session falls back to shared automatically; read
+    /// exclusive backend, it falls back to shared automatically (unless strict); read
     /// the outcome from [`exclusive_status`](Self::exclusive_status).
     pub fn set_exclusive(&self, on: bool) {
-        *self.inner.exclusive.lock().expect("exclusive mutex") = on;
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .exclusive = on;
     }
 
     /// Whether exclusive output is currently requested (for seeding the Settings
@@ -1240,22 +1242,36 @@ impl PlayerHandle {
     /// [`exclusive_status`](Self::exclusive_status).
     #[must_use]
     pub fn exclusive_requested(&self) -> bool {
-        *self.inner.exclusive.lock().expect("exclusive mutex")
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .exclusive
     }
 
     /// Set **strict** exclusive (exclusive-or-stop): when on together with
-    /// [`set_exclusive`](Self::set_exclusive), the next session will NOT fall back to
-    /// shared if exclusive can't open — playback simply doesn't start, and
+    /// [`set_exclusive`](Self::set_exclusive), an exclusive-open failure will NOT fall
+    /// back to shared — playback simply doesn't start, and
     /// [`exclusive_status`](Self::exclusive_status) reports
-    /// [`ExclusiveStatus::Unavailable`]. Applies to the next spawn, like the toggle.
+    /// [`ExclusiveStatus::Unavailable`]. Strict-only changes don't rebuild the live
+    /// sink (they only affect how a future exclusive-open handles a device refusal);
+    /// they take effect with the next device/exclusive change or spawn.
     pub fn set_exclusive_strict(&self, on: bool) {
-        *self.inner.exclusive_strict.lock().expect("strict mutex") = on;
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .strict = on;
     }
 
     /// Whether strict exclusive is requested (for seeding the Settings toggle).
     #[must_use]
     pub fn exclusive_strict(&self) -> bool {
-        *self.inner.exclusive_strict.lock().expect("strict mutex")
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .strict
     }
 
     /// What the most recent device spawn's exclusive request resolved to (active at
@@ -1830,19 +1846,13 @@ impl PlayerHandle {
                 sub(ev.clone());
             }
         };
-        // Snapshot the chosen device for this spawn — the `Device` arm opens it (or
-        // falls back to the system default); a later `set_output_device` only takes
-        // effect on the NEXT spawn, never this live stream.
-        let device = self
-            .inner
-            .output_device
-            .lock()
-            .expect("device mutex")
-            .clone();
-        // Snapshot the exclusive-output request the same way (applies to this spawn
-        // only); share the status cell so the factory can record what it resolved to.
-        let exclusive = *self.inner.exclusive.lock().expect("exclusive mutex");
-        let strict = *self.inner.exclusive_strict.lock().expect("strict mutex");
+        // Share the desired output config (device / exclusive / strict) with the pump.
+        // It's the SAME cell `set_output_device` / `set_exclusive` /
+        // `set_exclusive_strict` write, so a change made while this actor runs is
+        // applied to the current track live by the pump — not deferred to the next
+        // spawn. Share the status cell too, so the factory records what exclusive
+        // resolved to.
+        let output_config = Arc::clone(&self.inner.output_config);
         let exclusive_status = Arc::clone(&self.inner.exclusive_status);
         // Snapshot the ReplayGain choice the same way, then tell the fresh actor so
         // the session starts already normalized. Lock ordering: this holds `guard`
@@ -1859,9 +1869,7 @@ impl PlayerHandle {
             .clone();
         let actor = sink::build_actor(
             self.inner.mode,
-            device,
-            exclusive,
-            strict,
+            output_config,
             exclusive_status,
             self.inner.dsp.clone(),
             self.inner.spectrum.clone(),
