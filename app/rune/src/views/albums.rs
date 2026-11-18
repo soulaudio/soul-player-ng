@@ -1,8 +1,9 @@
 //! Albums grid + an album's detail page, mirroring the old app's
 //! AlbumsPage/MediaCard and AlbumPage. Each card is a square cover + title +
-//! artist; the hover play button plays/pauses the album, the card body opens its
-//! detail page. `TrackView` carries no year, so (unlike the original's "artist •
-//! year") the card shows the artist alone.
+//! an "artist · year" subtitle (the original's form); the hover play button
+//! plays/pauses the album, the card body opens its detail page. The release year
+//! comes from `TrackView::release_year` (the album's original-date from the index);
+//! when an album is untagged the subtitle falls back to the artist alone.
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
@@ -19,17 +20,21 @@ use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
 use crate::views::player::remote_badge;
 
-/// One grouped album: display name, its artist, a track id to draw the cover
-/// from, and every track id (in library order) to play on click.
+/// One grouped album: display name, its artist, the release year (if tagged), a
+/// track id to draw the cover from, and every track id (in library order) to play
+/// on click.
 pub(crate) struct Album {
     pub(crate) name: String,
     pub(crate) artist: String,
+    pub(crate) year: Option<u16>,
     pub(crate) cover_id: u32,
     pub(crate) ids: Vec<u32>,
 }
 
 /// Group the flat library into albums, preserving first-seen (library) order so
-/// the grid follows the baked sort. Tracks with no album fall under "Unknown".
+/// the grid follows the baked sort. Tracks with no album fall under "Unknown". The
+/// year is taken from the album's first-seen track (every track of an album carries
+/// the same album `release_year`).
 pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     let mut albums: Vec<Album> = Vec::new();
     let mut index: HashMap<String, usize> = HashMap::new();
@@ -42,6 +47,7 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
             albums.push(Album {
                 name,
                 artist: t.artist.clone().unwrap_or_default(),
+                year: t.release_year,
                 cover_id: t.id,
                 ids: Vec::new(),
             });
@@ -50,6 +56,18 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
         albums[i].ids.push(t.id);
     }
     albums
+}
+
+/// The album subtitle shown on cards and the detail hero: `"Artist · 1973"` when the
+/// release year is known, the artist alone when it isn't, and just the year when there
+/// is no artist. Pure, so the format is unit-tested.
+pub(crate) fn album_subtitle(artist: &str, year: Option<u16>) -> String {
+    match (artist.is_empty(), year) {
+        (false, Some(y)) => format!("{artist} · {y}"),
+        (false, None) => artist.to_string(),
+        (true, Some(y)) => y.to_string(),
+        (true, None) => String::new(),
+    }
 }
 
 /// Sum of track seconds as a coarse human total — "1 h 23 min" or "45 min"
@@ -94,7 +112,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             key: format!("album-{slot}"),
             label: a.name.clone(),
             title: a.name.clone(),
-            subtitle: Some(a.artist.clone()),
+            subtitle: Some(album_subtitle(&a.artist, a.year)),
             cover_id: a.cover_id,
             circular: false,
             play_ids: a.ids.clone(),
@@ -289,7 +307,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         },
         t!("album.eyebrow").to_uppercase(),
         album.name.clone(),
-        Some(album.artist.clone()),
+        Some(album_subtitle(&album.artist, album.year)),
         meta,
         play_all_pill("album-play-all", album.ids.clone(), p),
     );
@@ -347,6 +365,7 @@ mod tests {
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote: false,
+            release_year: None,
         }
     }
 
@@ -379,5 +398,47 @@ mod tests {
         );
         assert_eq!(albums[1].name, "Goldberg");
         assert_eq!(albums[1].ids, vec![4]);
+    }
+
+    /// `atv` with a release year, so a test can see the year flow through grouping.
+    fn atv_y(id: u32, artist: &str, album: &str, year: u16) -> TrackView {
+        TrackView {
+            release_year: Some(year),
+            ..atv(id, artist, album)
+        }
+    }
+
+    #[test]
+    fn album_subtitle_formats_artist_and_year() {
+        // The classic "Artist · year"; falls back to the artist alone when the album is
+        // untagged, the year alone when there's no artist, and empty when neither.
+        assert_eq!(
+            album_subtitle("Pink Floyd", Some(1973)),
+            "Pink Floyd · 1973"
+        );
+        assert_eq!(album_subtitle("Pink Floyd", None), "Pink Floyd");
+        assert_eq!(album_subtitle("", Some(1973)), "1973");
+        assert_eq!(album_subtitle("", None), "");
+    }
+
+    #[test]
+    fn group_albums_carries_the_release_year() {
+        rust_i18n::set_locale("en");
+        let lib = vec![
+            atv_y(1, "Bach", "Cello Suites", 1717),
+            atv_y(2, "Bach", "Cello Suites", 1717),
+            atv(3, "Satie", "Gymnopedies"), // untagged → no year
+        ];
+        let albums = group_albums(&lib);
+        assert_eq!(
+            albums[0].year,
+            Some(1717),
+            "the album's year flows from its tracks"
+        );
+        assert_eq!(albums[1].year, None, "an untagged album has no year");
+        assert_eq!(
+            album_subtitle(&albums[0].artist, albums[0].year),
+            "Bach · 1717"
+        );
     }
 }
