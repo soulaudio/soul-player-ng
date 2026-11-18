@@ -38,7 +38,7 @@ embedded-io-adapters = { workspace = true, features = ["std"] }
 # permissive — unlike chromaprint-next's LGPL resampler. See fingerprint.rs.
 rusty-chromaprint = "0.3"
 # URL-safe base64 for the AcoustID-style compressed-fingerprint wire string.
-base64 = "0.22"
+base64 = "0.23"
 
 [dev-dependencies]
 serde_json = "1"
