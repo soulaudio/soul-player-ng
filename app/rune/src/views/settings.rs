@@ -1761,9 +1761,15 @@ enum StatusKind {
 /// The one-line status text + its severity for an [`ExclusiveDisplay`]. Pure, so the
 /// applied-vs-idle-vs-pending mapping is unit-tested without a live device.
 fn exclusive_status(display: &ExclusiveDisplay) -> (String, StatusKind) {
+    use crate::views::signal_path::output_api;
     match display {
+        // Name the backend even in shared mode, so the output API is always visible.
         ExclusiveDisplay::Shared => (
-            t!("settings.exclusiveStatusShared").to_string(),
+            format!(
+                "{} · {}",
+                output_api(),
+                t!("settings.exclusiveStatusShared")
+            ),
             StatusKind::Neutral,
         ),
         ExclusiveDisplay::Active(fmt) => (
@@ -1771,11 +1777,11 @@ fn exclusive_status(display: &ExclusiveDisplay) -> (String, StatusKind) {
             StatusKind::Active,
         ),
         ExclusiveDisplay::FellBack(reason) => (
-            format!("{} — {reason}", t!("settings.exclusiveFellBackShort")),
+            format!("{}: {reason}", t!("settings.exclusiveFellBackShort")),
             StatusKind::Attention,
         ),
         ExclusiveDisplay::Stopped(reason) => (
-            format!("{} — {reason}", t!("settings.exclusiveStopped")),
+            format!("{}: {reason}", t!("settings.exclusiveStopped")),
             StatusKind::Attention,
         ),
         ExclusiveDisplay::Pending => (
@@ -3507,10 +3513,15 @@ mod tests {
             exclusive_display(false, None, ExclusiveStatus::Shared),
             Shared
         );
-        // Active: the live signal path says exclusive → show its device format.
+        // Active: the live signal path says exclusive → show the backend + device format.
+        // The API name is platform-specific (CI runs on Linux/macOS too), so assert via
+        // the same helper instead of hardcoding "WASAPI".
         assert_eq!(
             exclusive_display(true, Some(sp(true)), ExclusiveStatus::Active),
-            Active("96 kHz · 24-bit".to_string())
+            Active(format!(
+                "{} exclusive · 96 kHz · 24-bit",
+                crate::views::signal_path::output_api()
+            ))
         );
         // Requested, fell back to shared → surface the DEVICE'S reason verbatim.
         assert_eq!(

@@ -20,8 +20,9 @@ use soul_audio_desktop::OwnedDecoder;
 use soul_audio_engine::{Engine, Provided};
 
 use crate::driver::{
-    RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain, maybe_switch_native_rate,
-    project_queue, project_signal_path, project_tick, queue_for,
+    OutputConfig, OutputSwap, RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain,
+    maybe_apply_output_change, maybe_switch_native_rate, project_queue, project_signal_path,
+    project_tick, queue_for, rebuild_output_sink,
 };
 use crate::library::TrackSource;
 use crate::loudness::LoudnessCache;
@@ -39,15 +40,29 @@ pub struct AudioPlayer {
 }
 
 impl AudioPlayer {
-    /// Spawn the actor. `make_sink` runs on the pump thread (so `K` need not be
-    /// `Send`) and builds the initial sink; per-track native-rate switching reopens
-    /// that sink in place (`Sink::reopen`), so it's only called once. `on_event` is
-    /// called from the pump thread on every emitted event. `library` is the initial
-    /// `id → path` map (swap later via [`set_library`](Self::set_library)).
-    pub fn spawn<K, Mk, Ev>(make_sink: Mk, library: Arc<dyn TrackSource>, on_event: Ev) -> Self
+    /// Spawn the actor. `make_sink(&OutputConfig)` runs on the pump thread (so `K`
+    /// need not be `Send`) and builds a sink for a given output config: once at
+    /// startup from `output_desired`, and again whenever the host changes the device
+    /// or exclusive mode live (the pump rebuilds the sink in place — per-track
+    /// native-rate switching still reopens that sink via `Sink::reopen`).
+    /// `make_park` builds a device-FREE placeholder sink (same `K`): the pump parks on
+    /// it to drop the old sink (freeing its device) before `make_sink` opens the new
+    /// one — release-then-acquire, required so a same-device exclusive switch doesn't
+    /// hit device-in-use. `output_desired` is the shared, host-mutable desired output
+    /// config the pump watches. `on_event` is called from the pump thread on every
+    /// emitted event. `library` is the initial `id → path` map (swap later via
+    /// [`set_library`](Self::set_library)).
+    pub fn spawn<K, Mk, Pk, Ev>(
+        make_sink: Mk,
+        make_park: Pk,
+        output_desired: Arc<Mutex<OutputConfig>>,
+        library: Arc<dyn TrackSource>,
+        on_event: Ev,
+    ) -> Self
     where
         K: Sink + 'static,
-        Mk: FnOnce() -> anyhow::Result<K> + Send + 'static,
+        Mk: Fn(&OutputConfig) -> anyhow::Result<K> + Send + 'static,
+        Pk: Fn() -> K + Send + 'static,
         Ev: Fn(Event) + Send + 'static,
     {
         let (cmd_tx, cmd_rx) = mpsc::channel::<Command>();
@@ -64,7 +79,16 @@ impl AudioPlayer {
         let pump = thread::Builder::new()
             .name("player-pump".into())
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || pump_thread(make_sink, cmd_rx, loader_lib, on_event))
+            .spawn(move || {
+                pump_thread(
+                    make_sink,
+                    make_park,
+                    output_desired,
+                    cmd_rx,
+                    loader_lib,
+                    on_event,
+                )
+            })
             .expect("spawn pump thread");
 
         Self {
@@ -152,21 +176,38 @@ fn read_rg_tags(path: &Path) -> RgInfo {
     }
 }
 
-fn pump_thread<K, Mk, Ev>(
+fn pump_thread<K, Mk, Pk, Ev>(
     make_sink: Mk,
+    make_park: Pk,
+    output_desired: Arc<Mutex<OutputConfig>>,
     cmd_rx: Receiver<Command>,
     library: Arc<Mutex<Arc<dyn TrackSource>>>,
     on_event: Ev,
 ) where
     K: Sink + 'static,
-    Mk: FnOnce() -> anyhow::Result<K>,
+    Mk: Fn(&OutputConfig) -> anyhow::Result<K>,
+    Pk: Fn() -> K,
     Ev: Fn(Event),
 {
-    let sink = match make_sink() {
-        Ok(s) => s,
+    // The output config the current sink was built for. Starts at the host's desired
+    // config (the initial sink below), and tracks it: when the host mutates the shared
+    // `output_desired` (a different device / exclusive mode), the pump loop rebuilds
+    // the sink in place so the change applies to the current track — see below.
+    let mut output_applied = output_desired.lock().expect("output config mutex").clone();
+    // `output_live` is false when the deck is on the SILENT park placeholder because a sink
+    // build FAILED (e.g. strict exclusive couldn't open the device, or there's no audio
+    // device yet). The pump must STAY ALIVE in that case — a dead pump can't observe a
+    // later config change (the user toggling exclusive/strict off) or a transient
+    // device-in-use clearing, so a strict-exclusive failure would lock the user out until a
+    // restart. Instead we park on silence and recover in the live-output block below.
+    let (sink, mut output_live) = match make_sink(&output_applied) {
+        Ok(s) => (s, true),
         Err(e) => {
-            eprintln!("player: sink init failed: {e:#}");
-            return;
+            tracing::warn!(
+                error = %format!("{e:#}"),
+                "initial output sink unavailable (e.g. strict exclusive or no device); starting SILENT — will recover on a config change or when the device frees"
+            );
+            (make_park(), false)
         }
     };
     let rate = sink.stream_info().sample_rate;
@@ -207,6 +248,21 @@ fn pump_thread<K, Mk, Ev>(
     // we don't retry the same unsupported rate every pump (which would thrash the
     // device or loop). A different track rate, or a success, clears the suppression.
     let mut native_rate_tried: Option<u32> = None;
+
+    // --- Live output-switching state ---
+    // A desired output config whose device/sink last FAILED to open. We skip
+    // re-applying the same failing config every block (which would park + rebuild the
+    // device in a thrash loop). Cleared on a successful apply or when `desired` changes
+    // to anything else.
+    let mut output_apply_failed: Option<OutputConfig> = None;
+    // When parked on the SILENT placeholder (`output_live == false`), re-attempt the
+    // desired output on this cadence so a TRANSIENT failure (the device momentarily held
+    // by another app) recovers on its own — Roon's "give the device a few seconds to
+    // disengage from the last proprietor". A persistent failure keeps retrying cheaply;
+    // a user toggling exclusive/strict off is a config change that bypasses the timer, so
+    // recovery is instant.
+    const OUTPUT_RETRY_EVERY: Duration = Duration::from_millis(1000);
+    let mut last_output_retry = Instant::now();
 
     // --- ReplayGain state ---
     // Config, updated by `Command::SetReplayGain` (the host sends the persisted
@@ -258,7 +314,7 @@ fn pump_thread<K, Mk, Ev>(
                         cmd
                     };
                     if let Err(e) = apply_command(&mut player, applied, seed) {
-                        eprintln!("player: command error: {e:?}");
+                        tracing::warn!(error = ?e, "command error");
                     }
                     changed = true;
                 }
@@ -281,7 +337,7 @@ fn pump_thread<K, Mk, Ev>(
                         changed = true;
                     }
                 }
-                Err(e) => eprintln!("player: open track {id} failed: {e:#}"),
+                Err(e) => tracing::warn!(id, error = %format!("{e:#}"), "open track failed"),
             }
         }
         while let Some(id) = player.poll_open() {
@@ -295,17 +351,116 @@ fn pump_thread<K, Mk, Ev>(
         //     the device just refused; the current exclusive sink is kept on failure).
         maybe_switch_native_rate(&mut player, &mut native_rate_tried);
 
-        // 3. Pump one block (paced by the real sink's backpressure; NullSink
-        //    returns immediately, so tests run briefly then drop the actor).
-        let progress = match player.pump() {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("player: pump error: {e:?}");
-                Progress::Idle
+        // 2c. Live output switching: if the host changed the output device or
+        //     exclusive mode since the last pump, apply it to the CURRENT track now
+        //     (not just the next session; best practice — foobar/Roon apply
+        //     immediately). `maybe_apply_output_change` does a release-then-acquire
+        //     swap (park → drop old sink → build new on the freed device → swap),
+        //     preserving position + ReplayGain, so a same-device exclusive switch
+        //     doesn't hit device-in-use. A strict-only change is just recorded. On a
+        //     failure it restores the old device (playback never dies) and we LATCH
+        //     the failing config so we don't park/rebuild it every block.
+        {
+            let desired = output_desired.lock().expect("output config mutex").clone();
+            if output_live {
+                // Normal path: the deck is on a real device sink. Apply a device/exclusive
+                // change live (release-then-acquire); skip re-attempting a config that just
+                // failed (latched) to avoid per-block device thrash.
+                if output_apply_failed.as_ref() != Some(&desired) {
+                    match maybe_apply_output_change(
+                        &mut player,
+                        &desired,
+                        &mut output_applied,
+                        &make_sink,
+                        &make_park,
+                    ) {
+                        OutputSwap::Applied => output_apply_failed = None,
+                        OutputSwap::KeptCurrent(e) => {
+                            // The change failed but a working sink still plays (the previous
+                            // device, or a kept non-strict shared stream). Latch it.
+                            output_apply_failed = Some(desired.clone());
+                            tracing::warn!(?desired, error = %format!("{e:#}"), "live output change failed; kept the current device");
+                        }
+                        OutputSwap::Parked(e) => {
+                            // The deck is SILENT now (a strict stop, or even the restore
+                            // could not open). Drop to the parked state so the pump holds the
+                            // position and recovers on a config change or the retry timer,
+                            // instead of racing the queue through the silent placeholder.
+                            output_apply_failed = Some(desired.clone());
+                            output_live = false;
+                            output_applied = desired.clone();
+                            last_output_retry = Instant::now();
+                            tracing::warn!(?desired, error = %format!("{e:#}"), "output could not open; stopped (silent); recovers on a config change or when the device frees");
+                        }
+                    }
+                }
+            } else {
+                // Parked on the SILENT placeholder (a build failed). Recover when the config
+                // changes (user toggles exclusive/strict off, or picks another device) OR on
+                // the retry timer (a transient device-in-use clears). A config change
+                // bypasses the timer so a user toggle recovers instantly.
+                let config_changed = desired != output_applied;
+                if config_changed || last_output_retry.elapsed() >= OUTPUT_RETRY_EVERY {
+                    last_output_retry = Instant::now();
+                    match rebuild_output_sink(
+                        &mut player,
+                        &desired,
+                        &mut output_applied,
+                        &make_sink,
+                    ) {
+                        Ok(()) => {
+                            output_live = true;
+                            output_apply_failed = None;
+                            tracing::info!(
+                                ?desired,
+                                "output recovered; playback resumes on the device"
+                            );
+                        }
+                        Err(e) => {
+                            // Still unavailable — stay silent and retry on the next tick /
+                            // config change. Debug level so a persistent failure doesn't
+                            // spam the log every second.
+                            output_apply_failed = Some(desired.clone());
+                            tracing::debug!(?desired, error = %format!("{e:#}"), "output still unavailable; staying silent");
+                        }
+                    }
+                }
             }
+        }
+
+        // 3. Pump one block (paced by the real sink's backpressure; NullSink
+        //    returns immediately, so tests run briefly then drop the actor). While
+        //    PARKED on the silent placeholder (a failed / strict-stopped output), do NOT
+        //    pump: the placeholder has no backpressure, so pumping would race the track
+        //    through the void at non-real-time speed and silently burn the queue. Hold the
+        //    position until the device recovers; the loop paces itself via the Idle sleep.
+        let progress = if output_live {
+            match player.pump() {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!(error = ?e, "pump error");
+                    Progress::Idle
+                }
+            }
+        } else {
+            Progress::Idle
         };
         if matches!(progress, Progress::TrackChanged | Progress::Ended) {
             changed = true;
+        }
+        // On a track change, log the resolved signal path (decode/device rate, resampling,
+        // exclusive) once — event-driven, so the pipeline is visible in the logs without
+        // any per-block noise.
+        if matches!(progress, Progress::TrackChanged)
+            && let Some(sp) = project_signal_path(&player)
+        {
+            tracing::info!(
+                decoded_rate = sp.decoded_rate,
+                device_rate = sp.device_rate,
+                resampling = sp.resampling,
+                exclusive = sp.exclusive,
+                "track signal path"
+            );
         }
 
         // 3b. Drain finished background analyses (the hybrid-ReplayGain worker),
@@ -484,7 +639,9 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
+            Arc::new(Mutex::new(OutputConfig::default())),
             {
                 let c = Arc::clone(&lib);
                 let d: Arc<dyn TrackSource> = c;
@@ -518,6 +675,192 @@ mod tests {
         assert!(saw_playing, "never observed track 0 playing");
 
         drop(player); // clean shutdown (joins threads)
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The output-config WIRING: the pump watches the shared `output_desired` and,
+    /// when the host changes the device (or exclusive mode) mid-playback, rebuilds
+    /// the sink by calling `make_sink` again with the NEW config — so the change is
+    /// live, not deferred to the next session. We record the device of every config
+    /// `make_sink` builds for; flipping the device while track 0 plays must produce a
+    /// second build carrying the new device name. (The pure apply mechanism —
+    /// position / ReplayGain preservation — is covered by `driver::tests`; this
+    /// proves the pump is wired to it.)
+    #[test]
+    fn changing_output_config_mid_play_rebuilds_the_sink_live() {
+        let dir = std::env::temp_dir().join(format!("sas_actor_outcfg_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = fixture_library(&dir);
+
+        // Record the device of every config the pump builds a sink for.
+        let built: Arc<Mutex<Vec<Option<String>>>> = Arc::new(Mutex::new(Vec::new()));
+        let desired = Arc::new(Mutex::new(OutputConfig::default()));
+
+        let (ev_tx, ev_rx) = mpsc::channel::<Event>();
+        let player = AudioPlayer::spawn(
+            {
+                let built = Arc::clone(&built);
+                move |cfg: &OutputConfig| {
+                    built.lock().unwrap().push(cfg.device.clone());
+                    Ok(NullSink::new(48_000, 2))
+                }
+            },
+            || NullSink::new(48_000, 2),
+            Arc::clone(&desired),
+            {
+                let c = Arc::clone(&lib);
+                let d: Arc<dyn TrackSource> = c;
+                d
+            },
+            move |ev| {
+                let _ = ev_tx.send(ev);
+            },
+        );
+
+        player.send(Command::PlayContext {
+            ids: vec![0, 1],
+            start: 0,
+        });
+        assert!(
+            wait_for_now_playing(&ev_rx, 0, 2.0),
+            "track 0 never started"
+        );
+
+        // The initial sink was built once, for the default (system-default) device.
+        assert_eq!(
+            built.lock().unwrap().as_slice(),
+            &[None],
+            "exactly one build (the initial default-device sink) before any change"
+        );
+
+        // Host switches the output device live.
+        desired.lock().unwrap().device = Some("Living Room DAC".to_string());
+
+        // The pump must rebuild the sink for the NEW device within a bounded window.
+        let mut rebuilt = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if built
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|d| d.as_deref() == Some("Living Room DAC"))
+            {
+                rebuilt = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(
+            rebuilt,
+            "device change was not applied live; builds = {:?}",
+            built.lock().unwrap()
+        );
+
+        drop(player);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The STRICT-blocking regression: when the output sink can't be built at startup
+    /// (e.g. strict exclusive-or-stop and the device is in use), the pump must NOT die —
+    /// a dead pump can't observe the user toggling exclusive/strict off or the device
+    /// freeing, so it would lock the user out until a restart. It must instead start
+    /// SILENT, keep emitting ticks (alive), retry the output, and RECOVER once the build
+    /// can succeed. We fail the build while a flag is set, then clear it.
+    #[test]
+    fn a_failed_output_sink_keeps_the_pump_alive_and_recovers() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let dir = std::env::temp_dir().join(format!("sas_actor_strict_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = fixture_library(&dir);
+
+        let fail = Arc::new(AtomicBool::new(true));
+        let builds = Arc::new(AtomicUsize::new(0));
+        let successes = Arc::new(AtomicUsize::new(0));
+        let make_sink = {
+            let fail = Arc::clone(&fail);
+            let builds = Arc::clone(&builds);
+            let successes = Arc::clone(&successes);
+            move |_cfg: &OutputConfig| -> anyhow::Result<NullSink> {
+                builds.fetch_add(1, Ordering::Relaxed);
+                if fail.load(Ordering::Relaxed) {
+                    anyhow::bail!("exclusive output unavailable (strict, test)");
+                }
+                successes.fetch_add(1, Ordering::Relaxed);
+                Ok(NullSink::new(48_000, 2))
+            }
+        };
+
+        let (ev_tx, ev_rx) = mpsc::channel::<Event>();
+        let player = AudioPlayer::spawn(
+            make_sink,
+            || NullSink::new(48_000, 2), // silent park placeholder (same K)
+            Arc::new(Mutex::new(OutputConfig {
+                device: None,
+                exclusive: true,
+                strict: true,
+            })),
+            {
+                let c = Arc::clone(&lib);
+                let d: Arc<dyn TrackSource> = c;
+                d
+            },
+            move |ev| {
+                let _ = ev_tx.send(ev);
+            },
+        );
+
+        // The initial strict build FAILS — the old code would `return` here and the pump
+        // thread would be gone. Prove it is alive: it keeps emitting ticks AND retries the
+        // output build (> the one initial attempt), without ever opening a sink.
+        player.send(Command::PlayContext {
+            ids: vec![0, 1],
+            start: 0,
+        });
+        let mut got_tick = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Ok(Event::Tick(_)) = ev_rx.recv_timeout(Duration::from_millis(200)) {
+                got_tick = true;
+            }
+            if got_tick && builds.load(Ordering::Relaxed) >= 2 {
+                break;
+            }
+        }
+        assert!(
+            got_tick,
+            "a dead pump emits no ticks — the pump must stay alive while the output is parked"
+        );
+        assert!(
+            builds.load(Ordering::Relaxed) >= 2,
+            "the parked pump must RETRY the output (proving it's alive), builds={}",
+            builds.load(Ordering::Relaxed)
+        );
+        assert_eq!(
+            successes.load(Ordering::Relaxed),
+            0,
+            "no sink is opened while the device is unavailable (strict: never the OS mixer)"
+        );
+
+        // The device frees up → the next retry must RECOVER (a real sink opens).
+        fail.store(false, Ordering::Relaxed);
+        let mut recovered = false;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if successes.load(Ordering::Relaxed) > 0 {
+                recovered = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            recovered,
+            "the output must recover (a sink opens) once the device frees — the user is \
+             never locked out"
+        );
+
+        drop(player);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -563,7 +906,9 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
+            Arc::new(Mutex::new(OutputConfig::default())),
             {
                 let c = Arc::clone(&lib_a);
                 let d: Arc<dyn TrackSource> = c;
@@ -609,7 +954,9 @@ mod tests {
 
         let (ev_tx, ev_rx) = mpsc::channel::<Event>();
         let player = AudioPlayer::spawn(
-            || Ok(NullSink::new(48_000, 2)),
+            |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
+            Arc::new(Mutex::new(OutputConfig::default())),
             {
                 let c = Arc::clone(&lib);
                 let d: Arc<dyn TrackSource> = c;

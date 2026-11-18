@@ -478,12 +478,12 @@ settings.musicDataDesc:
   cs: 'Složky načtené do knihovny. Úpravy nikdy nepřeruší přehrávání.'
   ja: 'ライブラリに読み込むフォルダ。編集しても再生は止まりません。'
 settings.noSources:
-  en: 'No sources yet — add a folder to build your library.'
-  de: 'Noch keine Quellen — fügen Sie einen Ordner hinzu.'
+  en: 'No sources yet, add a folder to build your library.'
+  de: 'Noch keine Quellen, fügen Sie einen Ordner hinzu.'
   es: 'Aún no hay fuentes: añade una carpeta para crear tu biblioteca.'
-  zh: '暂无来源 — 添加文件夹以建立音乐库。'
-  cs: 'Zatím žádné zdroje — přidejte složku pro vytvoření knihovny.'
-  ja: 'ソースがまだありません — フォルダを追加してライブラリを作成します。'
+  zh: '暂无来源，添加文件夹以建立音乐库。'
+  cs: 'Zatím žádné zdroje, přidejte složku pro vytvoření knihovny.'
+  ja: 'ソースがまだありません、フォルダを追加してライブラリを作成します。'
 settings.tracksRemoved:
   en: '%{count} tracks removed from %{folder}'
   de: '%{count} Titel aus %{folder} entfernt'
@@ -521,17 +521,17 @@ settings.indexingModeGentle:
   ja: '控えめ'
 settings.indexingAutoDesc:
   en: 'Scans faster when your computer is idle and eases off when you are busy, so it stays out of your way.'
-  de: 'Scannt schneller, wenn der Computer im Leerlauf ist, und bremst ab, wenn Sie beschäftigt sind — so stört es nie.'
+  de: 'Scannt schneller, wenn der Computer im Leerlauf ist, und bremst ab, wenn Sie beschäftigt sind, so stört es nie.'
   es: 'Escanea más rápido cuando el equipo está inactivo y afloja cuando estás ocupado, para no molestar.'
   zh: '电脑空闲时扫描更快，繁忙时自动放缓，始终不打扰你。'
-  cs: 'Skenuje rychleji, když je počítač nečinný, a zpomalí, když pracujete — nikdy nepřekáží.'
+  cs: 'Skenuje rychleji, když je počítač nečinný, a zpomalí, když pracujete, nikdy nepřekáží.'
   ja: 'パソコンが空いているときは速く、使用中は控えめにスキャンし、作業の邪魔をしません。'
 settings.indexingMaxDesc:
-  en: 'Always scans as fast as possible — best for a big first import. May briefly slow other apps.'
-  de: 'Scannt immer so schnell wie möglich — ideal für den ersten großen Import. Kann andere Apps kurz verlangsamen.'
+  en: 'Always scans as fast as possible, best for a big first import. May briefly slow other apps.'
+  de: 'Scannt immer so schnell wie möglich, ideal für den ersten großen Import. Kann andere Apps kurz verlangsamen.'
   es: 'Escanea siempre lo más rápido posible: ideal para una primera importación grande. Puede ralentizar otras apps un momento.'
-  zh: '始终以最快速度扫描 — 适合首次大量导入。可能会短暂影响其他应用。'
-  cs: 'Vždy skenuje co nejrychleji — ideální pro první velký import. Může krátce zpomalit jiné aplikace.'
+  zh: '始终以最快速度扫描，适合首次大量导入。可能会短暂影响其他应用。'
+  cs: 'Vždy skenuje co nejrychleji, ideální pro první velký import. Může krátce zpomalit jiné aplikace.'
   ja: '常に最速でスキャンします。初回の大量取り込みに最適。他のアプリが一時的に遅くなることがあります。'
 settings.indexingGentleDesc:
   en: 'Goes easy on your computer and network drives (NAS). Slower, but you will barely notice it.'
@@ -961,7 +961,7 @@ settings.starRepo:
   cs: 'Ohvězdičkovat repozitář'
   ja: 'リポジトリにスターを付ける'
 crash.body:
-  en: 'The last session ended without closing normally. Open a pre-filled bug report? Your recent log is included — you can review it before sending.'
+  en: 'The last session ended without closing normally. Open a pre-filled bug report? Your recent log is included, you can review it before sending.'
   de: 'Die letzte Sitzung wurde nicht normal beendet. Einen vorausgefüllten Fehlerbericht öffnen? Ihr aktuelles Protokoll ist enthalten – Sie können es vor dem Senden prüfen.'
   es: 'La última sesión terminó sin cerrarse con normalidad. ¿Abrir un informe de error rellenado? Se incluye tu registro reciente; puedes revisarlo antes de enviarlo.'
   zh: '上次会话未正常关闭。是否打开预填写的错误报告？已附上最近的日志，发送前可供查看。'
@@ -1073,12 +1073,12 @@ settings.systemDefault:
   cs: 'Výchozí systémové'
   ja: 'システムの既定'
 settings.exclusiveDesc:
-  en: 'Bit-perfect output — bypass the OS mixer and feed the DAC untouched, at its native rate.'
-  de: 'Bitgenaue Ausgabe — den System-Mixer umgehen und den DAC unverändert mit seiner nativen Rate speisen.'
+  en: 'Bit-perfect output: bypass the OS mixer and feed the DAC untouched, at its native rate.'
+  de: 'Bitgenaue Ausgabe, den System-Mixer umgehen und den DAC unverändert mit seiner nativen Rate speisen.'
   es: 'Salida exacta a bits: omite el mezclador del sistema y alimenta el DAC sin alterar, a su frecuencia nativa.'
-  zh: '比特完美输出 — 绕过系统混音器，以原生采样率将未经处理的信号直接送入 DAC。'
-  cs: 'Bitově přesný výstup — obejde systémový směšovač a předá DAC nedotčený signál v nativní frekvenci.'
-  ja: 'ビットパーフェクト出力 — OS ミキサーをバイパスし、ネイティブレートのまま DAC に信号を渡します。'
+  zh: '比特完美输出，绕过系统混音器，以原生采样率将未经处理的信号直接送入 DAC。'
+  cs: 'Bitově přesný výstup, obejde systémový směšovač a předá DAC nedotčený signál v nativní frekvenci.'
+  ja: 'ビットパーフェクト出力、OS ミキサーをバイパスし、ネイティブレートのまま DAC に信号を渡します。'
 settings.exclusiveOn:
   en: 'On'
   de: 'Ein'
@@ -1129,12 +1129,12 @@ settings.exclusiveStrict:
   cs: 'Striktní (exkluzivní, nebo stop)'
   ja: '厳格（排他または停止）'
 settings.exclusivePending:
-  en: 'Enabled — applies when playback starts.'
-  de: 'Aktiviert — wird bei Wiedergabebeginn angewendet.'
+  en: 'Enabled, applies when playback starts.'
+  de: 'Aktiviert, wird bei Wiedergabebeginn angewendet.'
   es: 'Activado: se aplica al comenzar la reproducción.'
-  zh: '已启用 — 将在开始播放时生效。'
-  cs: 'Zapnuto — projeví se při zahájení přehrávání.'
-  ja: '有効 — 再生開始時に適用されます。'
+  zh: '已启用，将在开始播放时生效。'
+  cs: 'Zapnuto, projeví se při zahájení přehrávání.'
+  ja: '有効、再生開始時に適用されます。'
 settings.noOutputDevices:
   en: 'No output devices detected.'
   de: 'Keine Ausgabegeräte erkannt.'
@@ -1354,7 +1354,7 @@ settings.signalPathDesc:
   ja: '現在のトラックのデコードから出力までの経路（排他出力とDSP/EQ段を含む）。'
 
 # Settings -> Music Data: the Managed Library card (write-path organizer). The
-# template is chosen from presets (no free-text entry — Rune's IME is pre-release).
+# template is chosen from presets (no free-text entry, Rune's IME is pre-release).
 settings.managedLibrary:
   en: 'Managed Library'
   de: 'Verwaltete Bibliothek'
