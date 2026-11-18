@@ -21,9 +21,11 @@
 //!
 //! [`HttpRangeReader`] is the streaming alternative to [`MediaFetch`]'s
 //! download-then-play: a `Read + Seek` over `GET /v0/track/{id}` HTTP Range
-//! requests, for a decoder to open directly without materializing the whole
-//! file first. Wiring a decoder over it is a separate, later increment —
-//! this is just the reader.
+//! requests, opened directly into a decoder with no materialized file. It's
+//! wired up as [`RemoteLibrary`]'s [`TrackSource::open_decoder`] override —
+//! the loader's entry point for actually playing a track: a remote id streams
+//! through this reader by default, falling back to [`MediaFetch`]'s
+//! download-then-play only if the stream can't be opened.
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -33,6 +35,7 @@ use anyhow::{Context, bail};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
+use soul_audio_desktop::{OwnedDecoder, open_seekable_src, open_track};
 use soul_audio_multicatalog::{pack, unpack};
 use soul_player_backend::library::{Library, TrackSource};
 
@@ -260,6 +263,59 @@ impl TrackSource for RemoteLibrary {
 
     fn duration_of(&self, id: u32) -> Option<f64> {
         self.lib.duration_of(id)
+    }
+
+    /// A **local** id delegates straight to the local `Library`'s own
+    /// `open_decoder` (the trait default — `path_of` then `open_track`,
+    /// unchanged). A **remote** one STREAMS the track over HTTP Range
+    /// ([`HttpRangeReader`] opened straight into [`open_seekable_src`])
+    /// instead of downloading it first, so playback can start on the first
+    /// fetched window rather than waiting for (or requiring) the whole file
+    /// on disk. If the stream can't be opened — the server rejects Range, a
+    /// transient network error, the track is otherwise unreachable that way —
+    /// this falls back to the same download-to-cache path
+    /// [`path_of`](Self::path_of) has always used, so a track that can't
+    /// stream still plays.
+    fn open_decoder(&self, id: u32) -> anyhow::Result<OwnedDecoder> {
+        let located = self
+            .lib
+            .locate(id)
+            .ok_or_else(|| anyhow::anyhow!("no such track id {id}"))?;
+        let resolve = self
+            .resolve
+            .get(located.source)
+            .ok_or_else(|| anyhow::anyhow!("no source resolver for track id {id}"))?;
+        match resolve {
+            SourceResolve::Local => self.lib.open_decoder(id),
+            SourceResolve::Remote { server, base } => {
+                let (_, local) = unpack(id);
+                let j = u32::try_from(located.source.checked_sub(*base).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "track id {id}'s source {} precedes its remote block's base {base}",
+                        located.source
+                    )
+                })?)
+                .map_err(|_| {
+                    anyhow::anyhow!("remote source index {} doesn't fit in u32", located.source)
+                })?;
+                let server_track_id = pack(j, local);
+
+                let streamed =
+                    HttpRangeReader::new(server, server_track_id).and_then(open_seekable_src);
+                match streamed {
+                    Ok(decoder) => Ok(decoder),
+                    Err(_stream_err) => {
+                        // Streaming didn't work out — fall back to the
+                        // download-to-cache path the loader used before Inc 4b
+                        // (also what RG-tag reading still goes through via
+                        // `path_of`, so this is a well-trodden path, not a new
+                        // failure mode).
+                        let path = self.fetch.fetch(server, server_track_id)?;
+                        open_track(&path)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -984,6 +1040,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
 
+    use soul_audio_core::Decoder;
     use soul_server::auth::signer::Signer;
     use soul_server::domain::UserId;
     use soul_server::domain::ports::{IndexPort, UserStore};
@@ -1963,6 +2020,95 @@ mod tests {
                  byte-identical to the server's own file"
             );
         }
+    }
+
+    /// [`RemoteLibrary::open_decoder`], end to end against a REAL in-process
+    /// server: a LOCAL id delegates to `Library::open_decoder` (`open_track`,
+    /// unchanged) and a REMOTE id decodes via the STREAMING path
+    /// ([`HttpRangeReader`] + `open_seekable_src`) — proven by decoding a real
+    /// block from each AND by the download cache staying completely empty
+    /// afterwards, since the happy streaming path never touches
+    /// [`DownloadCache`] (the fallback it would otherwise fall back to).
+    #[test]
+    fn remote_library_open_decoder_streams_remote_and_delegates_local() {
+        let local_dir = tempfile::tempdir().expect("local dir");
+        fs::copy(
+            testdata_dir().join("meta.flac"),
+            local_dir.path().join("meta.flac"),
+        )
+        .expect("copy local fixture");
+        let local_root = local_dir.path().to_path_buf();
+        let local_blob = scan_blob(&local_root);
+
+        let remote_src_dir = tempfile::tempdir().expect("remote dir");
+        fs::copy(
+            testdata_dir().join("tone.flac"),
+            remote_src_dir.path().join("tone.flac"),
+        )
+        .expect("copy remote fixture");
+        let server = start_server_over(vec![remote_src_dir.path().to_path_buf()]);
+        let remote_server = Arc::new(RemoteServer {
+            url: server.url.clone(),
+            access_token: server.token(),
+        });
+        let remote_blobs = fetch_index(&remote_server).expect("fetch_index");
+
+        let cache_dir = tempfile::tempdir().expect("download cache dir");
+        let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
+            dir: cache_dir.path().to_path_buf(),
+        });
+        let remote_lib = Arc::new(RemoteLibrary::build(
+            vec![(local_root, local_blob)],
+            vec![(Arc::clone(&remote_server), remote_blobs)],
+            fetch,
+        ));
+
+        // `OwnedDecoder` is large by value (the boxed `AnyDecoder`) — a
+        // big-stack thread, the same precaution `open_track`'s own decode
+        // tests (and `remote_e2e.rs`) take for debug-build move frames.
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let mut buf = [0i32; 4096];
+
+                // The single local source (index 0) still decodes through the
+                // ordinary `open_track` path.
+                let local_id = pack(0, 0);
+                let mut local_decoder = remote_lib
+                    .open_decoder(local_id)
+                    .expect("local id should open a decoder");
+                let n = local_decoder
+                    .decode_into(&mut buf)
+                    .expect("decode the local track's first block");
+                assert!(n > 0, "expected a non-empty decoded block (local)");
+
+                // The remote block starts at source 1 (base 1 — the single
+                // local source before it) and STREAMS over HTTP Range.
+                let remote_id = pack(1, 0);
+                let mut remote_decoder = remote_lib
+                    .open_decoder(remote_id)
+                    .expect("remote id should open a STREAMING decoder");
+                let n = remote_decoder
+                    .decode_into(&mut buf)
+                    .expect("decode the remote track's first block");
+                assert!(
+                    n > 0,
+                    "expected a non-empty decoded block (remote, streamed)"
+                );
+            })
+            .expect("spawn decode thread")
+            .join()
+            .expect("decode thread panicked");
+
+        // The happy streaming path never falls back to the download cache —
+        // no file should have landed there.
+        let cache_is_empty = fs::read_dir(cache_dir.path())
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(true);
+        assert!(
+            cache_is_empty,
+            "streaming a remote track must not fall back to downloading it first"
+        );
     }
 
     /// Drives [`login_with_opener`] through its REAL bind→accept→parse→

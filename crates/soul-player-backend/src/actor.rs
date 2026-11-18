@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use soul_audio_control::Player;
 use soul_audio_core::{Deck, Progress, Quality, Sink};
-use soul_audio_desktop::{OwnedDecoder, open_track};
+use soul_audio_desktop::OwnedDecoder;
 use soul_audio_engine::{Engine, Provided};
 
 use crate::driver::{
@@ -99,11 +99,21 @@ impl Drop for AudioPlayer {
     }
 }
 
-/// The loader thread: `id → path → (ReplayGain tags, OwnedDecoder)`, sent back to
-/// the pump. The RG tags are read here, on the loader thread, so the pump's hot
-/// loop never touches the filesystem for them; they ride the same message as the
+/// The loader thread: `id → (ReplayGain tags, OwnedDecoder)`, sent back to the
+/// pump. The RG tags are read here, on the loader thread, so the pump's hot loop
+/// never touches the filesystem for them; they ride the same message as the
 /// decoder, keyed to the id, and the pump banks them for when the track becomes
 /// current (see [`pump_thread`]).
+///
+/// The decoder itself opens via [`TrackSource::open_decoder`], NOT a direct
+/// `path_of` + `open_track` — a local `Library` resolves that straight to
+/// `open_track` (the trait's default), but a remote source (the host's
+/// `RemoteLibrary`) overrides it to STREAM over HTTP Range instead of
+/// downloading the whole file first. RG tags still go through `path_of` (see
+/// [`read_rg_tags`]): a local path reads tags straight off disk, and a remote
+/// one resolves through the existing download-cache fetch — the same tag
+/// source remote playback already used before streaming, kept as-is so RG
+/// never regresses for either kind of track.
 fn loader_thread(
     req_rx: Receiver<u32>,
     res_tx: Sender<(u32, RgInfo, anyhow::Result<OwnedDecoder>)>,
@@ -112,13 +122,10 @@ fn loader_thread(
     for id in req_rx {
         let (rg, opened) = {
             let lib = library.lock().expect("library mutex").clone();
-            match lib.path_of(id) {
-                Some(path) => (read_rg_tags(&path), open_track(&path)),
-                None => (
-                    RgInfo::default(),
-                    Err(anyhow::anyhow!("no path for track id {id}")),
-                ),
-            }
+            let rg = lib
+                .path_of(id)
+                .map_or_else(RgInfo::default, |path| read_rg_tags(&path));
+            (rg, lib.open_decoder(id))
         };
         if res_tx.send((id, rg, opened)).is_err() {
             break; // pump gone
