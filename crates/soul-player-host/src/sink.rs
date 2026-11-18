@@ -237,6 +237,20 @@ fn device_sink_factory(
 ) -> impl Fn(&OutputConfig) -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
     move |cfg: &OutputConfig| {
         let device = open_device_sink(cfg.device.clone(), cfg.exclusive, cfg.strict, &status)?;
+        // Event log (once per sink build): what the device sink ACTUALLY opened as — the
+        // requested vs resolved exclusive mode, rate, channels, format, and the exclusive
+        // outcome. Makes the output pipeline visible in the logs without per-block noise.
+        let si = device.stream_info();
+        tracing::info!(
+            requested_exclusive = cfg.exclusive,
+            requested_device = ?cfg.device,
+            got_exclusive = device.exclusive(),
+            rate = si.sample_rate,
+            channels = si.channels,
+            format = ?si.format,
+            status = ?status.lock().ok().map(|s| format!("{s:?}")),
+            "device sink opened"
+        );
         Ok(DspSink::new(device, dsp.clone(), spectrum.clone()))
     }
 }

@@ -190,7 +190,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
     let sink = match make_sink(&output_applied) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("player: sink init failed: {e:#}");
+            tracing::error!(error = %format!("{e:#}"), "sink init failed");
             return;
         }
     };
@@ -290,7 +290,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         cmd
                     };
                     if let Err(e) = apply_command(&mut player, applied, seed) {
-                        eprintln!("player: command error: {e:?}");
+                        tracing::warn!(error = ?e, "command error");
                     }
                     changed = true;
                 }
@@ -313,7 +313,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         changed = true;
                     }
                 }
-                Err(e) => eprintln!("player: open track {id} failed: {e:#}"),
+                Err(e) => tracing::warn!(id, error = %format!("{e:#}"), "open track failed"),
             }
         }
         while let Some(id) = player.poll_open() {
@@ -348,7 +348,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
                 ) {
                     Ok(()) => output_apply_failed = None,
                     Err(e) => {
-                        eprintln!("player: live output change failed (kept current device): {e:#}");
+                        tracing::warn!(error = %format!("{e:#}"), ?desired, "live output change failed; kept current device");
                         output_apply_failed = Some(desired);
                     }
                 }
@@ -360,12 +360,26 @@ fn pump_thread<K, Mk, Pk, Ev>(
         let progress = match player.pump() {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("player: pump error: {e:?}");
+                tracing::error!(error = ?e, "pump error");
                 Progress::Idle
             }
         };
         if matches!(progress, Progress::TrackChanged | Progress::Ended) {
             changed = true;
+        }
+        // On a track change, log the resolved signal path (decode/device rate, resampling,
+        // exclusive) once — event-driven, so the pipeline is visible in the logs without
+        // any per-block noise.
+        if matches!(progress, Progress::TrackChanged)
+            && let Some(sp) = project_signal_path(&player)
+        {
+            tracing::info!(
+                decoded_rate = sp.decoded_rate,
+                device_rate = sp.device_rate,
+                resampling = sp.resampling,
+                exclusive = sp.exclusive,
+                "track signal path"
+            );
         }
 
         // 3b. Drain finished background analyses (the hybrid-ReplayGain worker),
