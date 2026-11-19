@@ -61,6 +61,48 @@ fn every_key_is_translated_in_all_shipped_locales() {
     );
 }
 
+/// Task 11's feature-scoped regression guard for the Playlists feature:
+/// every `playlists.*` key (and `nav.playlists`) that `en` defines must carry
+/// a non-empty value in every other shipped locale too. Redundant with
+/// `every_key_is_translated_in_all_shipped_locales` above (which already
+/// covers every key in the file, playlists included), but a narrower,
+/// feature-named failure is easier to spot than a page of unrelated keys
+/// when only the Playlists locale work regresses.
+#[test]
+fn playlists_keys_are_translated_in_all_shipped_locales() {
+    let map = parse_locales(include_str!("../locales/app.yml"));
+    let playlist_keys: Vec<&String> = map
+        .keys()
+        .filter(|k| *k == "nav.playlists" || k.starts_with("playlists."))
+        .collect();
+    assert!(
+        playlist_keys.len() >= 15,
+        "expected the playlists.* + nav.playlists keys in app.yml, found only {}: {:?}",
+        playlist_keys.len(),
+        playlist_keys
+    );
+
+    let mut missing = Vec::new();
+    for key in &playlist_keys {
+        let present = &map[key.as_str()];
+        assert!(
+            present.iter().any(|l| l == "en"),
+            "{key} has no English value to compare the other locales against"
+        );
+        for &locale in crate::LOCALES {
+            if !present.iter().any(|l| l == locale) {
+                missing.push(format!("  {key} → {locale}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "{} missing playlists translation(s) in locales/app.yml:\n{}",
+        missing.len(),
+        missing.join("\n"),
+    );
+}
+
 /// Whether `s` contains a run of 3+ ASCII letters — i.e. a word, as opposed to a
 /// glyph ("✕", "▶"), a lowercase-hyphenated element key ("sort-artist"), or a
 /// two-letter locale code. Those never need localizing; words do.

@@ -4245,6 +4245,101 @@ mod tests {
         );
     }
 
+    /// The Task 11 completeness-plus-overflow safety net for the Playlists
+    /// feature: the same contain-itself invariant
+    /// `app_layout_contains_itself_in_every_locale` checks, but for the two
+    /// routes that test's scene list doesn't cover: the Playlists list and a
+    /// playlist's detail page. A fresh on-disk playlist is seeded through the
+    /// real `PlaylistStore` (two of the testdata library's own tracks, so the
+    /// hero's "{n} tracks · {duration}" string and a resolved track row both
+    /// render, not just the empty state) under the shared test config dir.
+    #[test]
+    fn playlists_layout_contains_itself_in_every_locale() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let viewports = [(1100.0_f32, 720.0_f32), (900.0, 640.0)];
+        let mut failures = Vec::new();
+        for &viewport in &viewports {
+            for &loc in LOCALES {
+                // A clean store per pass: exactly one playlist, so the list
+                // page's row count (and thus its layout) doesn't grow across
+                // iterations of this loop.
+                let _ = std::fs::remove_dir_all(playlists::playlist_store_path());
+
+                let mut list_state = populated_state();
+                let seed_tracks: Vec<(u32, String, String, String, f64)> = list_state
+                    .library
+                    .iter()
+                    .take(2)
+                    .map(|t| {
+                        (
+                            t.id,
+                            t.title.clone().unwrap_or_default(),
+                            t.artist.clone().unwrap_or_default(),
+                            t.album.clone().unwrap_or_default(),
+                            t.duration_secs,
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    seed_tracks.len(),
+                    2,
+                    "the testdata library has at least two tracks to seed a playlist from"
+                );
+                let id = list_state.playlists.create("Road Trip");
+                for (tid, title, artist, album, duration_secs) in seed_tracks {
+                    if let Some(locator) = list_state.host.locator_of(tid) {
+                        list_state.playlists.add_entry(
+                            id,
+                            playlists::PlaylistEntry {
+                                locator,
+                                snapshot: soul_player_host::TrackSnapshot {
+                                    title,
+                                    artist,
+                                    album,
+                                    duration_secs: duration_secs.round() as u32,
+                                    track_no: None,
+                                    disc_no: None,
+                                },
+                                mbid: None,
+                            },
+                        );
+                    }
+                }
+                list_state.route = Route::Playlists;
+                apply_locale(loc);
+                let mut rt = Runtime::new(list_state, view, viewport, env);
+                rt.frame(0.0);
+                for bad in horizontal_overflows(&rt, viewport.0) {
+                    failures.push(format!("[{loc}/playlists@{}] {bad}", viewport.0));
+                }
+
+                // The same seeded playlist's detail page, re-loaded from disk
+                // (what the list pass above just persisted) the way a real
+                // navigation would.
+                let mut detail_state = populated_state();
+                detail_state.route = Route::Playlist;
+                detail_state.open_playlist = Some(id);
+                apply_locale(loc);
+                let mut rt = Runtime::new(detail_state, view, viewport, env);
+                rt.frame(0.0);
+                for bad in horizontal_overflows(&rt, viewport.0) {
+                    failures.push(format!("[{loc}/playlist-detail@{}] {bad}", viewport.0));
+                }
+            }
+        }
+        apply_locale("en");
+        assert!(
+            failures.is_empty(),
+            "{} playlists layout overflow(s) across locales:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
     /// A Sources refresh clears any stale deletion warning (the next scan's own
     /// `TracksRemoved`, applied right after, re-sets it if there were deletions).
     #[test]
