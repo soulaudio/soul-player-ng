@@ -860,7 +860,7 @@ impl PlayerHandle {
         self.set_library(lib);
         // Status for the FULL configured set — disabled / unavailable sources are
         // listed too, with 0 tracks, so the caller can render and re-enable them.
-        let sources: Vec<SourceStatus> = cfg
+        let local_sources: Vec<SourceStatus> = cfg
             .iter()
             .map(|f| {
                 let available = f.path.is_dir();
@@ -887,7 +887,14 @@ impl PlayerHandle {
             .collect();
         // Cache the computed status (with real counts) so `sources()` — the
         // startup UI seed — reports true counts, not a 0 placeholder.
-        *self.inner.last_sources.lock().expect("last_sources mutex") = sources.clone();
+        *self.inner.last_sources.lock().expect("last_sources mutex") = local_sources.clone();
+        // A folder reconcile (e.g. Rescan) must STILL report the retained REMOTE
+        // sources with their live health — otherwise the WatchUpdate drops them
+        // and the UI shows a connected remote as offline. Append them exactly as
+        // `sources()` does; `last_sources` stays local-only above so `sources()`
+        // never double-counts the remotes.
+        let mut sources = local_sources;
+        sources.extend(self.remote_statuses());
         Ok((WatchUpdate { views, sources }, removed))
     }
 
