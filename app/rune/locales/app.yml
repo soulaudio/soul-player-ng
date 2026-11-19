@@ -369,6 +369,13 @@ playlists.added:
   zh: '已添加'
   cs: 'Přidáno'
   ja: '追加済み'
+playlists.done:
+  en: 'Done'
+  de: 'Fertig'
+  es: 'Listo'
+  zh: '完成'
+  cs: 'Hotovo'
+  ja: '完了'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
