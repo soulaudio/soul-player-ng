@@ -267,7 +267,7 @@ impl Library {
         Some(Located { source, rel })
     }
 
-    /// A durable [`TrackLocator`] for the current track `id` — the absolute
+    /// A durable [`TrackLocator`] for the current track `id`: the absolute
     /// path (forward-slash normalized), independent of the volatile compound
     /// id a rescan can renumber. Playlists store this instead of the id. Every
     /// source behind this `Library` is local, so this always yields `Local`
@@ -283,7 +283,7 @@ impl Library {
 
     /// Resolve durable locators back to **current** track ids, surviving a
     /// rescan that renumbered them. Phase 1: exact-locator (Local path) match
-    /// only — `None` for anything that doesn't match (a missing file, a moved
+    /// only; `None` for anything that doesn't match (a missing file, a moved
     /// file, or a `Remote` locator, which this local-only `Library` can never
     /// produce or match). Builds a `locator-key -> id` reverse map from the
     /// current catalog once, then looks up each input by
