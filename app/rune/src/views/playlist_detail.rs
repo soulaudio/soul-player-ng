@@ -145,18 +145,19 @@ fn icon_ctrl(
     )
 }
 
-/// The hero's action row: Play All, then either the Rename/Delete icon pair,
-/// an open inline rename field, or an open delete-confirm prompt, per
+/// The hero's action row: Play All (omitted entirely when nothing in the
+/// playlist is playable, so a Play All click can never fire an empty
+/// `PlayContext`), then either the Rename/Delete icon pair, an open inline
+/// rename field, or an open delete-confirm prompt, per
 /// `State::playlist_renaming`/`playlist_delete_confirm` for this playlist.
 fn hero_actions(s: &State, p: &Palette, id: PlaylistId, play_ids: Vec<u32>) -> El {
-    let mut r = row()
-        .key("playlist-actions")
-        .gap(space::SM)
-        .center_y()
-        .child(
+    let mut r = row().key("playlist-actions").gap(space::SM).center_y();
+    if !play_ids.is_empty() {
+        r = r.child(
             play_all_pill("playlist-play-all", play_ids, p)
                 .label(t!("playlists.playAll").to_string()),
         );
+    }
 
     if s.playlist_renaming == Some(id) {
         r = r
@@ -584,10 +585,13 @@ mod tests {
         (rt, id)
     }
 
-    /// A playlist holding exactly one entry whose locator never resolves (no
-    /// library is opened at all), titled `title` in its captured snapshot.
-    /// Caller must hold `config::use_test_config_dir()` for the duration.
-    fn runtime_playlist_with_one_missing_entry(title: &str) -> (Runtime<State>, PlaylistId) {
+    /// A playlist holding exactly one entry whose locator never resolves,
+    /// titled `title` in its captured snapshot, backed by `host`. Caller
+    /// must hold `config::use_test_config_dir()` for the duration.
+    fn runtime_playlist_with_one_missing_entry_on(
+        host: PlayerHandle,
+        title: &str,
+    ) -> (Runtime<State>, PlaylistId) {
         let mut store = PlaylistStore::load();
         let id = store.create("Haunted");
         store.add_entry(
@@ -608,7 +612,54 @@ mod tests {
             },
         );
 
-        let mut s = State::new(PlayerHandle::offline());
+        let mut s = State::new(host);
+        s.route = Route::Playlist;
+        s.open_playlist = Some(id);
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env());
+        rt.frame(0.0);
+        (rt, id)
+    }
+
+    /// Same as [`runtime_playlist_with_one_missing_entry_on`], backed by a
+    /// plain `offline()` handle (no library, nothing recorded) for tests
+    /// that only care about rendering, not what gets sent.
+    fn runtime_playlist_with_one_missing_entry(title: &str) -> (Runtime<State>, PlaylistId) {
+        runtime_playlist_with_one_missing_entry_on(PlayerHandle::offline(), title)
+    }
+
+    /// A playlist with three entries: two whose locators resolve against the
+    /// real scanned testdata library (first and third) and one in between
+    /// (second) that never resolves. Lets a test assert that remove/move act
+    /// on the full entry-list index (matching the rendered row index, which
+    /// includes unavailable rows), not an availability-filtered index.
+    fn runtime_playlist_mixed_availability() -> (Runtime<State>, PlaylistId) {
+        let host = PlayerHandle::recording();
+        let views = host.open_folder(&testdata_dir()).expect("scan testdata/");
+        let loc_a = host.locator_of(views[0].id).expect("a resolves");
+        let loc_c = host.locator_of(views[1].id).expect("c resolves");
+        let mut store = PlaylistStore::load();
+        let id = store.create("Mixed");
+        store.add_entry(id, entry_from(&views[0], loc_a));
+        store.add_entry(
+            id,
+            PlaylistEntry {
+                locator: TrackLocator::Local {
+                    path: "D:/nowhere/gone.flac".into(),
+                },
+                snapshot: TrackSnapshot {
+                    title: "Ghost Song".into(),
+                    artist: "Nobody".into(),
+                    album: "Void".into(),
+                    duration_secs: 180,
+                    track_no: None,
+                    disc_no: None,
+                },
+                mbid: None,
+            },
+        );
+        store.add_entry(id, entry_from(&views[1], loc_c));
+
+        let mut s = State::new(host);
         s.route = Route::Playlist;
         s.open_playlist = Some(id);
         let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env());
@@ -619,7 +670,29 @@ mod tests {
     #[test]
     fn play_all_issues_playcontext_with_resolved_ids_in_order() {
         let _g = config::use_test_config_dir();
-        let (mut rt, _id) = runtime_playlist_over_library();
+        let (mut rt, id) = runtime_playlist_over_library();
+        let locators: Vec<TrackLocator> = rt
+            .state
+            .playlists
+            .get(id)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        let expected_ids: Vec<u32> = rt
+            .state
+            .host
+            .resolve_locators(&locators)
+            .into_iter()
+            .flatten()
+            .collect();
+        assert_eq!(
+            expected_ids.len(),
+            2,
+            "both entries resolve against the scanned library"
+        );
+
         click(&mut rt, "playlist-play-all");
         let cmd = rt
             .state
@@ -628,9 +701,81 @@ mod tests {
             .last()
             .cloned()
             .expect("Play All sent a command");
+        match cmd {
+            Command::PlayContext { ids, start: 0 } => assert_eq!(
+                ids, expected_ids,
+                "Play All plays exactly the playlist's resolved ids, in entry order"
+            ),
+            other => panic!("expected PlayContext starting at 0, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn play_all_is_absent_and_sends_nothing_when_every_entry_is_unavailable() {
+        let _g = config::use_test_config_dir();
+        let (rt, _id) =
+            runtime_playlist_with_one_missing_entry_on(PlayerHandle::recording(), "Ghost Song");
         assert!(
-            matches!(&cmd, Command::PlayContext { ids, start: 0 } if ids.len() == 2),
-            "Play All plays both of the playlist's tracks from the top: {cmd:?}"
+            rt.find("playlist-play-all").is_none(),
+            "no Play All pill is rendered when nothing in the playlist is playable"
+        );
+        assert!(
+            rt.state.host.recorded_commands().is_empty(),
+            "no PlayContext (empty or otherwise) is ever sent for an all-unavailable playlist"
+        );
+    }
+
+    #[test]
+    fn remove_and_move_act_on_the_full_entry_list_index_not_an_availability_filtered_one() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_mixed_availability();
+        let locators_before: Vec<TrackLocator> = rt
+            .state
+            .playlists
+            .get(id)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(locators_before.len(), 3, "A, unavailable B, C");
+
+        // Row index 1 is the UNAVAILABLE middle entry (it still occupies a
+        // rendered row, per `unavailable_row`), not the availability-filtered
+        // "second playable track" (which would be C). Removing row 1 must
+        // drop B, leaving [A, C].
+        click(&mut rt, "playlist-remove-1");
+        let after_remove: Vec<TrackLocator> = rt
+            .state
+            .playlists
+            .get(id)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(
+            after_remove,
+            vec![locators_before[0].clone(), locators_before[2].clone()],
+            "removing entry-list index 1 drops B (the unavailable one), not C"
+        );
+
+        // The two remaining entries are both playable now; move_entry still
+        // runs on the full (post-removal) entry-list index.
+        click(&mut rt, "playlist-down-0");
+        let after_move: Vec<TrackLocator> = rt
+            .state
+            .playlists
+            .get(id)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(
+            after_move,
+            vec![locators_before[2].clone(), locators_before[0].clone()],
+            "moving entry-list index 0 down swaps the remaining pair to [C, A]"
         );
     }
 
