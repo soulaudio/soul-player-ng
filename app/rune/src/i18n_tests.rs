@@ -68,16 +68,23 @@ fn every_key_is_translated_in_all_shipped_locales() {
 /// covers every key in the file, playlists included), but a narrower,
 /// feature-named failure is easier to spot than a page of unrelated keys
 /// when only the Playlists locale work regresses.
+///
+/// Also covers `player.addToPlaylist` (the now-playing heart's label/tooltip
+/// that opens this feature's add/remove-membership dialogue): it lives
+/// outside the `playlists.*` namespace, so the glob below wouldn't otherwise
+/// catch it.
 #[test]
 fn playlists_keys_are_translated_in_all_shipped_locales() {
     let map = parse_locales(include_str!("../locales/app.yml"));
     let playlist_keys: Vec<&String> = map
         .keys()
-        .filter(|k| *k == "nav.playlists" || k.starts_with("playlists."))
+        .filter(|k| {
+            *k == "nav.playlists" || *k == "player.addToPlaylist" || k.starts_with("playlists.")
+        })
         .collect();
     assert!(
-        playlist_keys.len() >= 15,
-        "expected the playlists.* + nav.playlists keys in app.yml, found only {}: {:?}",
+        playlist_keys.len() >= 16,
+        "expected the playlists.* + nav.playlists + player.addToPlaylist keys in app.yml, found only {}: {:?}",
         playlist_keys.len(),
         playlist_keys
     );
