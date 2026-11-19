@@ -757,6 +757,62 @@ fn remote_health_line(index: usize, health: &RemoteHealth, p: &Palette) -> El {
         )
 }
 
+/// Whether `status` (a remote's [`SourceStatus`]) has nothing useful to show
+/// on its health line yet — either it has never been probed at all (fresh
+/// off a connect, before the first `/v0/ping` lands) or a manual
+/// reconnect/resync is currently in flight for this already-live row
+/// (`url` present in `reconnecting`, i.e. `State::remote_reconnecting`).
+/// `false` for a local source (no health line to begin with). The two cases
+/// [`live_source_row`] swaps [`remote_health_line`]'s latency/version/
+/// last-checked trio for a "Connecting…"/"Syncing…" state instead — without
+/// this, a freshly-connected remote (or one mid-resync) renders as three
+/// "—" placeholders at once, read by users as "broken", not "loading" (the
+/// "when I log in the scanning should have better loading than just
+/// '- - -'" report this fixes).
+fn remote_row_is_loading(status: &SourceStatus, reconnecting: &[String]) -> bool {
+    let SourceKind::Remote { url } = &status.kind else {
+        return false;
+    };
+    let never_probed = status
+        .remote
+        .as_ref()
+        .is_some_and(|h| h.last_checked_unix.is_none());
+    never_probed || reconnecting.iter().any(|u| u == url)
+}
+
+/// Whether ANY configured remote currently warrants the Sources row's
+/// "Connecting…"/"Syncing…" loading state ([`remote_row_is_loading`]) — used
+/// by the app's per-frame poll ([`crate::spectrum_poll`]) to keep the
+/// shared activity pulse (`State::scan_anim`) animating while at least one
+/// remote row shows it, mirroring the title-bar scan widget's own
+/// `scan_progress.is_some()` gate.
+pub fn any_remote_row_is_loading(s: &State) -> bool {
+    s.sources
+        .iter()
+        .any(|st| remote_row_is_loading(st, &s.remote_reconnecting))
+}
+
+/// The Sources row health line's "still establishing" state ([`live_source_row`],
+/// swapped in for [`remote_health_line`] while [`remote_row_is_loading`] is
+/// true): a pulsing activity glyph (the title bar's own `ACTIVITY` icon,
+/// breathing on `anim` — `State::scan_anim` — the same formula
+/// `titlebar::scan_activity` uses) plus the loading word, instead of
+/// latency/version/last-checked reading as three dashes at once.
+fn remote_loading_line(index: usize, anim: f32, label: String, p: &Palette) -> El {
+    let icon_op = 0.5 + 0.5 * (0.5 + 0.5 * (anim * 4.2).sin());
+    row()
+        .key(format!("source-loading-{index}"))
+        .gap(space::XS)
+        .center_y()
+        .child(icon(&icons::ACTIVITY, 12.0).color(p.accent.alpha(icon_op)))
+        .child(
+            text(label)
+                .key(format!("source-loading-label-{index}"))
+                .font(type_::LABEL)
+                .color(p.text_secondary),
+        )
+}
+
 /// One row to render in the Sources card: a live source from `s.sources`
 /// (local, or a currently-connected remote) — [`SourceRow::Live`] — or a
 /// persisted remote URL with no live entry — [`SourceRow::Offline`] (Inc 6).
@@ -934,13 +990,33 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                 .truncate(),
         );
     if let Some(health) = &status.remote {
+        // Loading: a remote with nothing useful to show yet — never
+        // probed (fresh off a connect) or a manual reconnect/resync in
+        // flight for this already-live row — gets a "Connecting…"/
+        // "Syncing…" line instead of the latency/version/last-checked trio,
+        // which would otherwise render as three "—" placeholders at once.
+        let loading = remote_row_is_loading(status, &s.remote_reconnecting);
+        let is_reconnecting = match &status.kind {
+            SourceKind::Remote { url } => s.remote_reconnecting.iter().any(|u| u == url),
+            SourceKind::Local { .. } => false,
+        };
+        let line = if loading {
+            let label = if is_reconnecting {
+                t!("settings.syncingRow").to_string()
+            } else {
+                t!("settings.connectingRow").to_string()
+            };
+            remote_loading_line(index, s.scan_anim, label, p)
+        } else {
+            remote_health_line(index, health, p)
+        };
         // The online/offline dot leads the telemetry line it describes.
         identity = identity.child(
             row()
                 .gap(space::XS)
                 .center_y()
                 .child(health_dot(index, health.online, p))
-                .child(remote_health_line(index, health, p)),
+                .child(line),
         );
         if let SourceKind::Remote { url } = &status.kind
             && health.online

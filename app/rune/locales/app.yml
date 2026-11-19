@@ -841,6 +841,20 @@ settings.reconnecting:
   zh: '正在重新连接…'
   cs: 'Připojuji znovu…'
   ja: '再接続中…'
+settings.connectingRow:
+  en: 'Connecting…'
+  de: 'Verbinde…'
+  es: 'Conectando…'
+  zh: '正在连接…'
+  cs: 'Připojování…'
+  ja: '接続中…'
+settings.syncingRow:
+  en: 'Syncing…'
+  de: 'Synchronisiere…'
+  es: 'Sincronizando…'
+  zh: '正在同步…'
+  cs: 'Synchronizace…'
+  ja: '同期中…'
 settings.updateAvailable:
   en: 'Update available'
   de: 'Update verfügbar'
