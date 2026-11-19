@@ -1983,6 +1983,82 @@ mod tests {
         );
     }
 
+    /// Re-adding an already-configured remote (exactly what a Rescan / the
+    /// periodic re-sync does) REPLACES its entry rather than appending a second
+    /// one — the guard for the user-facing "rescan duplicated the remote" bug.
+    /// After two adds of the same url the aggregate lists exactly ONE remote
+    /// source, and its catalog is present once, not doubled.
+    #[test]
+    fn re_adding_a_remote_dedupes_to_one_source() {
+        let server = start_server();
+        let handle = crate::PlayerHandle::offline();
+
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("first add");
+        let first_tracks = handle.views().len();
+        assert!(first_tracks > 0, "the first add should populate tracks");
+
+        // A re-sync: the same url added again (fresh tokens, freshly-fetched
+        // index), the way reconnect_remote_source feeds it back in.
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("re-add (re-sync) the same url");
+
+        let remote_rows = handle
+            .sources()
+            .iter()
+            .filter(|s| matches!(&s.kind, crate::SourceKind::Remote { url } if url == &server.url))
+            .count();
+        assert_eq!(
+            remote_rows, 1,
+            "re-adding the same url must not duplicate the source row"
+        );
+        assert_eq!(
+            handle.views().len(),
+            first_tracks,
+            "the re-synced catalog holds the same tracks once, not doubled"
+        );
+    }
+
+    /// Disabling a connected remote keeps its row listed but drops its tracks
+    /// from the aggregate (mirroring a disabled local folder); re-enabling
+    /// restores them from the already-fetched blobs with no network call — the
+    /// remote enable/disable toggle the Sources panel exposes.
+    #[test]
+    fn disabling_a_remote_drops_its_tracks_but_keeps_the_row() {
+        let server = start_server();
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("add remote");
+        let enabled_tracks = handle.views().len();
+        assert!(enabled_tracks > 0, "the enabled remote contributes tracks");
+
+        handle
+            .set_remote_enabled(&server.url, false)
+            .expect("disable the remote");
+        assert!(
+            handle.sources().iter().any(
+                |s| matches!(&s.kind, crate::SourceKind::Remote { url } if url == &server.url)
+            ),
+            "a disabled remote stays listed"
+        );
+        assert!(
+            handle.views().is_empty(),
+            "a disabled remote contributes no tracks to the aggregate"
+        );
+
+        handle
+            .set_remote_enabled(&server.url, true)
+            .expect("re-enable the remote");
+        assert_eq!(
+            handle.views().len(),
+            enabled_tracks,
+            "re-enabling restores the remote's tracks from the already-fetched blobs"
+        );
+    }
+
     #[test]
     fn remote_library_resolves_local_and_remote_tracks_with_a_nonzero_base() {
         // A local source with exactly ONE track, so its single id is
