@@ -95,6 +95,10 @@ fn views_have_no_hardcoded_ui_strings() {
         ("artists.rs", include_str!("views/artists.rs")),
         ("genres.rs", include_str!("views/genres.rs")),
         ("playlists.rs", include_str!("views/playlists.rs")),
+        (
+            "playlist_detail.rs",
+            include_str!("views/playlist_detail.rs"),
+        ),
         ("media_card.rs", include_str!("views/media_card.rs")),
         ("detail_page.rs", include_str!("views/detail_page.rs")),
         ("grid.rs", include_str!("views/grid.rs")),
