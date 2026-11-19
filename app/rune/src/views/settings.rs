@@ -1168,6 +1168,7 @@ fn offline_remote_row(s: &State, p: &Palette, url: &str, index: usize) -> El {
             reconnecting,
             p,
         ))
+        .child(remote_relogin_button(index, url, reconnecting, p))
         .child(remote_remove_button(index, url, p))
 }
 
@@ -1242,6 +1243,37 @@ fn remote_remove_button(index: usize, url: &str, p: &Palette) -> El {
         .cursor(Cursor::Pointer)
         .child(text("✕").color(p.text_secondary))
         .on_press(move |st: &mut State| disconnect_remote_source(st, url.clone()))
+}
+
+/// An offline remote row's "Sign in again" action: when a silent Reconnect
+/// can't recover the source because its stored refresh token is dead (revoked,
+/// or orphaned by an unclean exit mid-rotation), this re-runs the full browser
+/// login for the SAME url via [`crate::relogin_remote`], minting a fresh
+/// credential in one click instead of forcing a remove + re-add. Disabled
+/// (inert) while a reconnect/relogin is already in flight for this url,
+/// mirroring [`remote_reconnect_button`].
+fn remote_relogin_button(index: usize, url: &str, reconnecting: bool, p: &Palette) -> El {
+    let label = t!("settings.remoteSignIn").to_string();
+    let base = el()
+        .key(format!("remote-relogin-{index}"))
+        .role("button")
+        .label(label.clone())
+        .focusable(!reconnecting)
+        .padding(space::SNUG)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .child(text(label).font(type_::LABEL).color(if reconnecting {
+            p.text_secondary
+        } else {
+            p.accent
+        }));
+    if reconnecting {
+        base.opacity(fx::DISABLED)
+    } else {
+        let url = url.to_string();
+        base.cursor(Cursor::Pointer)
+            .on_press(move |st: &mut State| crate::relogin_remote(st, url.clone()))
+    }
 }
 
 /// One theme choice; the active preference is filled with the primary color.

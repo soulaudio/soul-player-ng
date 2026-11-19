@@ -1322,6 +1322,44 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
     }
 }
 
+/// Re-run the interactive browser login for an ALREADY-configured remote `url`
+/// — the escape hatch for when a silent [`reconnect_remote_now`] can't recover
+/// it because the stored refresh token is dead (revoked, or orphaned by an
+/// unclean exit mid-rotation): no amount of silent retrying will work, so the
+/// only fix is a fresh sign-in. Unlike Reconnect, this opens the system browser
+/// via [`PlayerHandle::add_remote_source`], which mints and persists a BRAND-NEW
+/// refresh token (replacing the dead one) and re-fetches the catalog — turning
+/// the old "remove the source, then add it again" dance into one click that
+/// keeps the row, its position, and its enabled flag. Off the UI thread (the
+/// browser round-trip blocks), guarded by `remote_reconnecting` — shared with
+/// [`reconnect_remote_now`] — so it can't race a silent reconnect or a double
+/// press. Reuses [`apply_remote_connect`]'s success tail (refresh
+/// library/sources, persist the url, mirror into `remote_urls`); on failure the
+/// row simply stays offline, same as a failed reconnect.
+pub(crate) fn relogin_remote(s: &mut State, url: String) {
+    if s.remote_reconnecting.iter().any(|u| u == &url) {
+        return;
+    }
+    s.remote_reconnecting.push(url.clone());
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                let result = host.add_remote_source(&url);
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.remote_reconnecting.retain(|u| u != &url);
+                    apply_remote_connect(s, &url, result);
+                });
+            });
+        }
+        None => {
+            let result = s.host.add_remote_source(&url);
+            s.remote_reconnecting.retain(|u| u != &url);
+            apply_remote_connect(s, &url, result);
+        }
+    }
+}
+
 /// Open/close the expanded signal-path panel (pressing the now-playing chain line).
 pub(crate) fn toggle_signal_path(s: &mut State) {
     s.signal_path_open = !s.signal_path_open;
@@ -7896,6 +7934,11 @@ mod tests {
             rt.find("remote-reconnect-0").is_some(),
             "a keyed Reconnect control renders for the offline remote"
         );
+        assert!(
+            rt.find("remote-relogin-0").is_some(),
+            "a keyed Sign-in-again control renders for the offline remote, so a \
+             dead credential is fixable in one click without remove + re-add"
+        );
     }
 
     /// `merged_source_rows` must never duplicate a source: a persisted
@@ -8226,6 +8269,26 @@ mod tests {
             s.remote_reconnecting,
             vec![url],
             "a second attempt for the same url already in flight is a no-op"
+        );
+    }
+
+    /// `relogin_remote` shares `reconnect_remote_now`'s in-flight guard: a
+    /// relogin (or reconnect) already running for a url makes a second press a
+    /// no-op, so a stray double-click can't open two browser logins racing for
+    /// the same source. (Only the guard's early return is exercised here — the
+    /// success path would open the system browser, untestable headlessly.)
+    #[test]
+    fn relogin_remote_guards_against_a_second_concurrent_attempt() {
+        let mut s = State::new(PlayerHandle::offline());
+        let url = "http://already-relogging-in.test".to_string();
+        s.remote_reconnecting = vec![url.clone()];
+
+        relogin_remote(&mut s, url.clone());
+
+        assert_eq!(
+            s.remote_reconnecting,
+            vec![url],
+            "a relogin for a url already in flight is a no-op (no second browser login)"
         );
     }
 
