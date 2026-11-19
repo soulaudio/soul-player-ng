@@ -837,6 +837,11 @@ mod tests {
             "all remote, same host -> that host"
         );
         assert_eq!(
+            group_remote_source([&h("a")]),
+            Some("a".to_string()),
+            "a single remote track is trivially unanimous -> that host"
+        );
+        assert_eq!(
             group_remote_source([&h("a"), &None, &h("a")]),
             None,
             "one local track breaks consensus"
