@@ -4340,6 +4340,117 @@ mod tests {
         );
     }
 
+    /// Whether any rendered element's text contains `needle`. Mirrors
+    /// `views::playlists`' and `views::playlist_detail`'s own `shows`, redone
+    /// here since those are private to their own test modules.
+    fn shows(rt: &Runtime<State>, needle: &str) -> bool {
+        rt.elements()
+            .into_iter()
+            .any(|e| e.text.as_deref().is_some_and(|t| t.contains(needle)))
+    }
+
+    /// Capstone end-to-end: the full user flow through the real `Runtime`, from
+    /// an empty Playlists page to a playing playlist, over a real scanned
+    /// `testdata/` library. Exercises every handoff Tasks 1-11 built in one
+    /// pass: the real inline New-playlist field (click to focus, IME commit,
+    /// Enter) persists "Mix" to the on-disk `PlaylistStore`; the shared
+    /// `add_track_to_playlist` helper (the same call the Add-to-playlist
+    /// overlay's pick list and its own New-playlist field both make) appends
+    /// the library's first two tracks, in order; navigating into the playlist
+    /// renders its name; and Play All issues a `PlayContext` carrying exactly
+    /// those two resolved ids, in that order.
+    #[test]
+    fn e2e_new_playlist_add_tracks_then_play_all() {
+        let _g = config::use_test_config_dir();
+        let _ = std::fs::remove_dir_all(playlists::playlist_store_path());
+
+        let host = PlayerHandle::recording();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        s.route = Route::Playlists;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        // Create "Mix" through the real inline New-playlist field: click to
+        // focus, type via IME commit, confirm with Enter (the same mechanics
+        // `views::playlists`' own `trigger_new_playlist` test helper drives).
+        let (x, y) = rt
+            .find("playlist-new-input")
+            .expect("the new-playlist field renders");
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.ime(rune::Ime::Commit("Mix".to_string()));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+
+        let pid = playlists::PlaylistStore::load().list()[0].id;
+
+        // Add the library's first two tracks, in order, via the shared helper
+        // production code's own "add to playlist" surfaces call
+        // (`views::add_to_playlist::add_track_to_playlist`), bypassing the
+        // overlay's click plumbing exactly as that module's own tests do.
+        let ids: Vec<u32> = rt.state.library.iter().take(2).map(|t| t.id).collect();
+        assert_eq!(
+            ids.len(),
+            2,
+            "the scanned testdata library has at least two tracks"
+        );
+        for &tid in &ids {
+            rt.update(move |st: &mut State, _tx: &mut Tx| {
+                crate::views::add_to_playlist::add_track_to_playlist(st, tid, pid);
+            });
+        }
+        rt.frame(0.0);
+
+        // Navigate into the playlist: its name renders.
+        rt.update(move |st: &mut State, _tx: &mut Tx| {
+            navigate_to(st, Route::Playlist, None, None, None, Some(pid));
+        });
+        rt.frame(0.0);
+        assert!(
+            shows(&rt, "Mix"),
+            "the playlist's name renders on its detail page"
+        );
+
+        // The freshly-navigated detail page's hero (and its Play All pill)
+        // enter-animates in (opacity/position mid-flight on the first frame);
+        // settle instantly so it's actually pickable, the same `settle_all`
+        // pattern used elsewhere in this app (e.g. `playlist_detail.rs`'s own
+        // delete-confirm test).
+        rt.settle_all();
+        rt.frame(0.0);
+
+        // Play All issues PlayContext with both resolved ids, in entry order.
+        click(&mut rt, "playlist-play-all");
+        let cmd = rt
+            .state
+            .host
+            .recorded_commands()
+            .last()
+            .cloned()
+            .expect("Play All sent a command");
+        match cmd {
+            Command::PlayContext {
+                ids: played,
+                start: 0,
+            } => assert_eq!(
+                played, ids,
+                "Play All plays exactly the two added tracks, in entry order"
+            ),
+            other => panic!("expected PlayContext starting at 0, got {other:?}"),
+        }
+    }
+
     /// A Sources refresh clears any stale deletion warning (the next scan's own
     /// `TracksRemoved`, applied right after, re-sets it if there were deletions).
     #[test]
