@@ -473,6 +473,28 @@ mod tests {
     }
 
     #[test]
+    fn create_after_manifest_rebuild_does_not_reissue_a_live_id() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let mut s = PlaylistStore::load();
+        // Advance next_id well past 0, then force a manifest-less recovery.
+        let ids: Vec<_> = (0..5).map(|i| s.create(&format!("P{i}"))).collect();
+        let keeper = *ids.last().unwrap();
+        s.add_entry(keeper, entry("x"));
+        fs::remove_file(playlist_store_path().join("index.toml")).unwrap();
+
+        let mut s2 = PlaylistStore::load();
+        let fresh = s2.create("Fresh");
+        assert!(
+            ids.iter().all(|&old| fresh != old),
+            "rebuild reissued a live id: {fresh}"
+        );
+        assert!(fresh > keeper, "next_id did not advance past recovered ids");
+        assert_eq!(s2.get(keeper).unwrap().entries.len(), 1);
+        assert!(s2.get(fresh).is_some());
+    }
+
+    #[test]
     fn duplicate_names_get_distinct_folders() {
         let _g = config::use_test_config_dir();
         reset();
