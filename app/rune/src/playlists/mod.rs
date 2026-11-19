@@ -5,13 +5,17 @@
 //! selector) in; Task 9 wires the detail page's mutators
 //! (rename/delete/remove_entry/move_entry) and `Playlist`/`PlaylistEntry` in.
 #![forbid(unsafe_code)]
-// `entries_fingerprint` (cover-mosaic memoization) is exercised only by
-// `cover.rs`'s own tests; no view calls it yet (the list/detail pages don't
-// memoize the cover decision, they just recompute it per render), so in a
-// non-test build it is genuinely dead_code. Narrowing further would mean
-// adding a per-item allow inside `cover.rs` itself, out of this task's touch
-// scope (`mod.rs` only); this blanket allow is now scoped to just that one
-// still-unreached item, everything else Task 9 wires up below is reached.
+// This is a module-wide inner attribute: it covers everything in `cover`,
+// `model`, and `store`, not just one item. Right now it only masks
+// `entries_fingerprint` (cover-mosaic memoization), which is exercised only
+// by `cover.rs`'s own tests; no view calls it yet (the list/detail pages
+// don't memoize the cover decision, they just recompute it per render), so
+// in a non-test build it is genuinely dead_code. But the same blanket allow
+// would just as silently mask any future dead item added anywhere in these
+// submodules. Narrowing it to `entries_fingerprint` alone would mean adding
+// a per-item allow inside `cover.rs` itself, out of this task's touch scope
+// (`mod.rs` only), so it stays module-wide for now; everything else Task 9
+// wires up below is reached.
 #![allow(dead_code)]
 
 pub mod cover;
