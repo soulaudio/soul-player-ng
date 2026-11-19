@@ -251,6 +251,12 @@ struct State {
     /// ([`playlists::PlaylistStore::load`]). Every mutation
     /// (create/rename/delete/reorder) persists through the store itself.
     playlists: playlists::PlaylistStore,
+    /// The text buffer the Playlists list page's inline "New playlist" field
+    /// draws and the user types into. Confirming (Enter or the button)
+    /// creates a playlist named by the trimmed text and resets this buffer;
+    /// a blank/whitespace-only name is a no-op. One dedicated buffer per
+    /// inline editor, like `dsp_rename_buf`/`remote_url_buf`.
+    playlist_new_buf: rune::TextEdit,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -633,6 +639,7 @@ impl State {
             host,
             library,
             playlists,
+            playlist_new_buf: rune::TextEdit::new(""),
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -2348,7 +2355,7 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
         Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
         Route::Genres => views::genres::genres_page(s, p).grow(1.0),
         Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
-        Route::Playlists => views::playlists::page(s, p).grow(1.0),
+        Route::Playlists => views::playlists::page(s, p, scale).grow(1.0),
         Route::Playlist => views::playlist_detail::page(s, p, scale).grow(1.0),
         Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
     };
