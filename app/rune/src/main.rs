@@ -6517,6 +6517,82 @@ mod tests {
         );
     }
 
+    /// Investigation, pinned as a regression: the connect form's URL
+    /// field (`remote-url`, a plain `rune::TextEdit`/`text_input` — see
+    /// `settings::remote_field`) is a standard Rune text field, which
+    /// natively handles typing, Backspace, and the platform's primary edit
+    /// chords (`TextEdit::key`'s `Key::Command(_)` arm) — Ctrl+A (⌘A on
+    /// macOS) selects the whole field (`anchor = 0`, `focus = text.len()`),
+    /// entirely inside the crate; the app wires none of it itself. This
+    /// drives the REAL open-form flow (menu click → "Remote server") and the
+    /// REAL key dispatch (`rt.key`, no app-level `on_key` needed — a focused
+    /// field claims its own chords first) to prove end to end that the form,
+    /// as actually wired (inside `.modal()` + `.focus_group()`), doesn't
+    /// block any of this: typing inserts, Backspace edits, and Ctrl+A
+    /// selects all.
+    #[test]
+    fn remote_connect_form_field_types_and_ctrl_a_selects_all() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source-opt-remote");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.state.remote_url_buf.focused,
+            "opening the form focuses the URL field (TextEdit::focused)"
+        );
+
+        let press = |rt: &mut Runtime<State>, key: Key| {
+            rt.key(KeyEvent {
+                key,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+        };
+        for ch in "http://x.test".chars() {
+            press(&mut rt, Key::Text(ch.to_string()));
+        }
+        assert_eq!(
+            rt.state.remote_url_buf.text, "http://x.test",
+            "typed characters reach the focused field"
+        );
+        press(&mut rt, Key::Backspace);
+        assert_eq!(
+            rt.state.remote_url_buf.text, "http://x.tes",
+            "Backspace edits it like any other field"
+        );
+
+        rt.key(cmd_chord('a'));
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.remote_url_buf.anchor, 0,
+            "Ctrl+A/Cmd+A selects from the start"
+        );
+        assert_eq!(
+            rt.state.remote_url_buf.focus,
+            rt.state.remote_url_buf.text.len(),
+            "…to the end — the whole field is selected"
+        );
+
+        // And it actually replaces the selection, proving this is a real
+        // selection the field will act on (not just two numbers that happen
+        // to bracket the text): typing now overwrites everything selected.
+        press(&mut rt, Key::Text("y".into()));
+        assert_eq!(
+            rt.state.remote_url_buf.text, "y",
+            "typing over a Ctrl+A selection replaces the whole field"
+        );
+    }
+
     /// First open of the Remote connect form must render as one fully formed
     /// card, not with its content trailing far behind the card's own fade-in.
     /// Before the fix, the card (`remote-form`) and everything it holds each
