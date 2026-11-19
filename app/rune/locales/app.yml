@@ -362,13 +362,13 @@ playlists.addToNew:
   zh: '新建播放列表…'
   cs: 'Nový playlist…'
   ja: '新しいプレイリスト…'
-playlists.added:
-  en: 'Added'
-  de: 'Hinzugefügt'
-  es: 'Añadido'
-  zh: '已添加'
-  cs: 'Přidáno'
-  ja: '追加済み'
+playlists.done:
+  en: 'Done'
+  de: 'Fertig'
+  es: 'Listo'
+  zh: '完成'
+  cs: 'Hotovo'
+  ja: '完了'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
@@ -454,6 +454,13 @@ player.repeatOne:
   zh: '单曲循环'
   cs: 'Opakovat: jednu'
   ja: 'リピート: 1曲'
+player.addToPlaylist:
+  en: 'Add to playlist'
+  de: 'Zu Playlist hinzufügen'
+  es: 'Añadir a lista'
+  zh: '添加到播放列表'
+  cs: 'Přidat do playlistu'
+  ja: 'プレイリストに追加'
 
 library.sort:
   en: 'Sort'
