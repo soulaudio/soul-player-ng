@@ -603,7 +603,16 @@ fn rescan_button(p: &Palette) -> El {
             // Reconcile the current configured set (set_folders preserves each
             // source's enabled flag), re-aggregating files/roots that changed on
             // disk. The set itself is unchanged, so no save (apply_watch).
-            let roots: Vec<std::path::PathBuf> = s.sources.iter().map(|x| x.path.clone()).collect();
+            // ONLY local roots: `set_folders` manages the watched-FOLDER set, so a
+            // remote source's synthetic path must be excluded — passing it here
+            // would re-add the remote's URL as a bogus local folder (and leave the
+            // real remote in place), duplicating the source.
+            let roots: Vec<std::path::PathBuf> = s
+                .sources
+                .iter()
+                .filter(|x| matches!(x.kind, SourceKind::Local { .. }))
+                .map(|x| x.path.clone())
+                .collect();
             // Off the UI thread: a reconcile of a big library must not freeze the
             // window, and running it in the background lets the title-bar activity
             // widget animate while it scans.
