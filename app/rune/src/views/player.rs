@@ -310,7 +310,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
             .cursor(Cursor::Pointer)
             .on_press(move |st: &mut State| {
                 if let Some(a) = &album {
-                    crate::navigate_to(st, crate::Route::Album, Some(a.clone()), None, None);
+                    crate::navigate_to(st, crate::Route::Album, Some(a.clone()), None, None, None);
                 }
             });
     }

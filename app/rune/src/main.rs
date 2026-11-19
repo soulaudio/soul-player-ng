@@ -96,6 +96,16 @@ pub(crate) enum Route {
     Genres,
     /// A genre's detail page; which genre is in [`State::open_genre`].
     Genre,
+    Playlists,
+    /// A playlist's detail page; which playlist is in [`State::open_playlist`].
+    /// Not yet reachable outside tests and the stub dispatch below: a playlist
+    /// row's click (the real `navigate_to(.., Route::Playlist, ..)` call site)
+    /// lands in Task 8/9, once `views::playlists::page` has real rows to click.
+    #[allow(
+        dead_code,
+        reason = "constructed by tests until Task 8/9 wires a playlist row's click"
+    )]
+    Playlist,
     Settings,
 }
 
@@ -107,6 +117,7 @@ pub(crate) struct NavEntry {
     pub open_album: Option<String>,
     pub open_artist: Option<String>,
     pub open_genre: Option<String>,
+    pub open_playlist: Option<playlists::PlaylistId>,
 }
 
 /// The current location as a `NavEntry`.
@@ -116,6 +127,7 @@ fn here(s: &State) -> NavEntry {
         open_album: s.open_album.clone(),
         open_artist: s.open_artist.clone(),
         open_genre: s.open_genre.clone(),
+        open_playlist: s.open_playlist,
     }
 }
 
@@ -128,12 +140,14 @@ pub(crate) fn navigate_to(
     open_album: Option<String>,
     open_artist: Option<String>,
     open_genre: Option<String>,
+    open_playlist: Option<playlists::PlaylistId>,
 ) {
     let target = NavEntry {
         route,
         open_album: open_album.clone(),
         open_artist: open_artist.clone(),
         open_genre: open_genre.clone(),
+        open_playlist,
     };
     let current = here(s);
     if current != target {
@@ -143,6 +157,7 @@ pub(crate) fn navigate_to(
     s.open_album = open_album;
     s.open_artist = open_artist;
     s.open_genre = open_genre;
+    s.open_playlist = open_playlist;
     s.mobile_show_content = true;
     s.genre_search = rune::TextEdit::new("");
 }
@@ -157,11 +172,13 @@ pub(crate) fn go_back(s: &mut State) {
         s.open_album = prev.open_album;
         s.open_artist = prev.open_artist;
         s.open_genre = prev.open_genre;
+        s.open_playlist = prev.open_playlist;
     } else {
         s.route = match s.route {
             Route::Album | Route::Albums => Route::Albums,
             Route::Artist | Route::Artists => Route::Artists,
             Route::Genre | Route::Genres => Route::Genres,
+            Route::Playlist | Route::Playlists => Route::Playlists,
             _ => Route::Home,
         };
     }
@@ -230,6 +247,10 @@ struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
     library: Vec<TrackView>,
+    /// User-created playlists, loaded from the on-disk store at startup
+    /// ([`playlists::PlaylistStore::load`]). Every mutation
+    /// (create/rename/delete/reorder) persists through the store itself.
+    playlists: playlists::PlaylistStore,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -272,6 +293,12 @@ struct State {
     /// Which genre's detail page is showing, when `route == Route::Genre`.
     /// Set from a genre row's click.
     open_genre: Option<String>,
+    /// Which playlist's detail page is showing, when `route == Route::Playlist`.
+    /// Unlike `open_album`/`open_artist`/`open_genre` (keyed by display name),
+    /// this is the playlist's stable [`playlists::PlaylistId`]: a
+    /// playlist has no natural unique name, so the id is the only durable key.
+    /// Set from a playlist row's click.
+    open_playlist: Option<playlists::PlaylistId>,
     /// The navigation back-stack (ephemeral): locations behind the current one, so
     /// a detail's back button returns to where you came from rather than a
     /// hardcoded parent. Pushed by [`navigate_to`], popped by [`go_back`]; cleared
@@ -564,6 +591,9 @@ struct State {
 impl State {
     fn new(host: PlayerHandle) -> Self {
         let library = host.views();
+        // Load user-created playlists from the on-disk store (empty store if none
+        // exist yet, or the folder hasn't been created).
+        let playlists = playlists::PlaylistStore::load();
         // Seed the per-source status from the host (its configured set, each with
         // live availability). Counts are 0 until the first rescan's WatchUpdate —
         // live edits refresh the full status via apply_watch.
@@ -602,6 +632,7 @@ impl State {
         Self {
             host,
             library,
+            playlists,
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -621,6 +652,7 @@ impl State {
             open_album: None,
             open_artist: None,
             open_genre: None,
+            open_playlist: None,
             nav_history: Vec::new(),
             discography_list: false,
             genre_search: rune::TextEdit::new(""),
@@ -2316,6 +2348,8 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
         Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
         Route::Genres => views::genres::genres_page(s, p).grow(1.0),
         Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
+        Route::Playlists => views::playlists::page(s, p).grow(1.0),
+        Route::Playlist => views::playlist_detail::page(s, p, scale).grow(1.0),
         Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
     };
     // Content zoom (Ctrl +/-/0): lay the page out in a `pane / zoom` logical box and
@@ -2443,6 +2477,12 @@ fn mobile_title(s: &State) -> String {
             .open_genre
             .clone()
             .unwrap_or_else(|| t!("nav.genres").to_string()),
+        Route::Playlists => t!("nav.playlists").to_string(),
+        Route::Playlist => s
+            .open_playlist
+            .and_then(|id| s.playlists.get(id))
+            .map(|pl| pl.name.clone())
+            .unwrap_or_else(|| t!("nav.playlists").to_string()),
         Route::Settings => t!("settings.title").to_string(),
     }
 }
@@ -8512,6 +8552,33 @@ mod tests {
         s.route = Route::Genre;
         go_back(&mut s);
         assert!(matches!(s.route, Route::Genres), "genre → genres");
+        s.route = Route::Playlist;
+        go_back(&mut s);
+        assert!(matches!(s.route, Route::Playlists), "playlist → playlists");
+    }
+
+    /// The sidebar offers a Playlists destination.
+    #[test]
+    fn sidebar_has_a_playlists_destination() {
+        assert!(views::sidebar::NAV_DEFS.iter().any(|d| d.id == "playlists"));
+    }
+
+    /// Opening a playlist's detail page sets `route` + `open_playlist`; `go_back`
+    /// returns to the Playlists list. The playlist comes from a real on-disk
+    /// store (via `State::new`'s `PlaylistStore::load`), guarded by the shared
+    /// per-process test config dir so this doesn't race another config test.
+    #[test]
+    fn opening_a_playlist_sets_open_playlist_and_back_returns() {
+        let _guard = config::use_test_config_dir();
+        let mut store = playlists::PlaylistStore::load();
+        let id = store.create("P");
+        let mut s = State::new(PlayerHandle::offline());
+        s.route = Route::Playlists; // as if opened from the Playlists list
+        navigate_to(&mut s, Route::Playlist, None, None, None, Some(id));
+        assert!(matches!(s.route, Route::Playlist));
+        assert_eq!(s.open_playlist, Some(id));
+        go_back(&mut s);
+        assert!(matches!(s.route, Route::Playlists));
     }
 
     /// With more than five tracks, Show more expands the Top-Songs list.

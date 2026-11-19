@@ -89,6 +89,13 @@ nav.genres:
   zh: '流派'
   cs: 'Žánry'
   ja: 'ジャンル'
+nav.playlists:
+  en: 'Playlists'
+  de: 'Playlists'
+  es: 'Listas de reproducción'
+  zh: '播放列表'
+  cs: 'Playlisty'
+  ja: 'プレイリスト'
 nav.home:
   en: 'Home'
   de: 'Start'
