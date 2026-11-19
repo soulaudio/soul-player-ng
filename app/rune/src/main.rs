@@ -1186,6 +1186,13 @@ fn apply_remote_connect(s: &mut State, url: &str, result: anyhow::Result<()>) {
             }
             config::save_remote(url);
             close_remote_form(s);
+            // A fresh connect leaves the new remote's health UNPROBED (adding a
+            // source doesn't ping it), so `sources()` above reports it offline
+            // until the next 30s poll — flashing the title-bar indicator red for
+            // a remote that just connected fine. Kick an immediate health probe
+            // so it reads online within a round-trip instead. Guarded + off the
+            // UI thread (see `refresh_remote_health`); a no-op if one's running.
+            refresh_remote_health(s);
         }
         Err(err) => {
             s.remote_error = Some(err.to_string());
