@@ -617,6 +617,14 @@ fn rescan_button(p: &Palette) -> El {
             // window, and running it in the background lets the title-bar activity
             // widget animate while it scans.
             scan_in_background(s, move |h| h.set_folders(&roots), apply_watch);
+            // A Rescan should also pull fresh from every connected remote, not
+            // just re-aggregate local roots (set_folders rebuilds remote tracks
+            // from already-fetched blobs and would miss server-side additions).
+            // Force-resync each enabled remote via the shared, guarded reconnect
+            // path (off the UI thread, like the local reconcile above).
+            for url in crate::enabled_remote_urls(s) {
+                crate::reconnect_remote_now(s, url);
+            }
         })
 }
 
