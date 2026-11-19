@@ -160,9 +160,11 @@ pub(crate) fn navigate_to(
     s.open_playlist = open_playlist;
     s.mobile_show_content = true;
     s.genre_search = rune::TextEdit::new("");
-    // A playlist's inline rename/delete-confirm is page-scoped ephemeral UI,
-    // same as `genre_search` above; reset rather than carried to wherever we
-    // land next (including back onto the same detail page via a fresh open).
+    // A playlist's inline new/rename/delete-confirm fields are page-scoped
+    // ephemeral UI, same as `genre_search` above; reset rather than carried to
+    // wherever we land next (including back onto the same detail page via a
+    // fresh open).
+    s.playlist_new_buf = rune::TextEdit::new("");
     s.playlist_renaming = None;
     s.playlist_rename_buf = rune::TextEdit::new("");
     s.playlist_delete_confirm = None;
@@ -173,6 +175,7 @@ pub(crate) fn navigate_to(
 /// end.
 pub(crate) fn go_back(s: &mut State) {
     s.genre_search = rune::TextEdit::new("");
+    s.playlist_new_buf = rune::TextEdit::new("");
     s.playlist_renaming = None;
     s.playlist_rename_buf = rune::TextEdit::new("");
     s.playlist_delete_confirm = None;
@@ -263,14 +266,16 @@ struct State {
     /// The text buffer the Playlists list page's inline "New playlist" field
     /// draws and the user types into. Confirming (Enter or the button)
     /// creates a playlist named by the trimmed text and resets this buffer;
-    /// a blank/whitespace-only name is a no-op. One dedicated buffer per
-    /// inline editor, like `dsp_rename_buf`/`remote_url_buf`.
+    /// a blank/whitespace-only name is a no-op. Also reset when
+    /// `navigate_to`/`go_back`/sidebar nav leaves the page, so stale text never
+    /// resurfaces. One dedicated buffer per inline editor, like
+    /// `dsp_rename_buf`/`remote_url_buf`.
     playlist_new_buf: rune::TextEdit,
     /// Which playlist's inline rename field (on its detail page) is open, or
     /// `None`. Mirrors `dsp_rename`; its buffer is `playlist_rename_buf`. Reset
     /// (not committed) on cancel and whenever `navigate_to`/`go_back` leaves the
     /// current location, so a stale buffer never resurfaces on the next visit
-    /// (the miss `playlist_new_buf` had before this was noticed).
+    /// (the same page-scoped reset `playlist_new_buf` gets).
     playlist_renaming: Option<playlists::PlaylistId>,
     /// The text buffer the inline playlist-rename editor draws. Seeded from the
     /// playlist's current name when a rename opens; ignored while
@@ -8850,6 +8855,21 @@ mod tests {
         assert_eq!(s.open_playlist, Some(id));
         go_back(&mut s);
         assert!(matches!(s.route, Route::Playlists));
+    }
+
+    /// Partially-typed New-playlist text does not survive leaving the page
+    /// (via navigate_to, go_back, or a sidebar tab).
+    #[test]
+    fn new_playlist_field_text_is_cleared_on_navigate_away() {
+        let _guard = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.route = Route::Playlists;
+        s.playlist_new_buf = rune::TextEdit::new("half typed");
+        navigate_to(&mut s, Route::Albums, None, None, None, None);
+        assert_eq!(s.playlist_new_buf.text, "");
+        s.playlist_new_buf = rune::TextEdit::new("again");
+        go_back(&mut s);
+        assert_eq!(s.playlist_new_buf.text, "");
     }
 
     /// With more than five tracks, Show more expands the Top-Songs list.
