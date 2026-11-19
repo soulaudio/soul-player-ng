@@ -5,7 +5,7 @@
 //! thin wrappers over this.
 #![forbid(unsafe_code)]
 
-use rune::{Color, Cursor, El, col, el, icon, text};
+use rune::{Color, Cursor, El, col, el, icon, row, text};
 use soul_player_host::Command;
 
 use crate::State;
@@ -13,7 +13,7 @@ use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::grid;
 use crate::views::icons;
-use crate::views::player::cover;
+use crate::views::player::{cover, remote_badge_for};
 
 /// The hover play-overlay button — the old app's `w-14 h-14 rounded-xl` (56 px).
 const PLAY_BTN: f32 = 56.0;
@@ -49,6 +49,11 @@ pub(crate) struct CardSpec {
     pub(crate) circular: bool,
     /// Every track id the play-overlay plays, in order.
     pub(crate) play_ids: Vec<u32>,
+    /// `Some(host)` when every track behind this card streams from that same
+    /// remote host (see `views::player::group_remote_source`) — shows a cloud
+    /// badge next to the title. `None` (a local or mixed-source card) shows
+    /// nothing, the unremarked default.
+    pub(crate) remote_source: Option<String>,
 }
 
 /// One library card: artwork (square or circular) with a hover play-overlay, a
@@ -119,13 +124,30 @@ pub(crate) fn media_card(
                 ),
         );
 
-    let mut text_col = col().key("card-text").gap(space::XXS).min_w(0.0).child(
-        text(spec.title)
-            .font(type_::CARD_TITLE)
-            .color(p.fg)
-            .truncate()
-            .group_opacity(1.0, 0.8),
-    );
+    let title_el = text(spec.title)
+        .font(type_::CARD_TITLE)
+        .color(p.fg)
+        .truncate()
+        .group_opacity(1.0, 0.8);
+    // A local/mixed-source card (the common case) keeps the plain title; only a
+    // card whose tracks all stream from one remote host gains the badge, same
+    // "local is unremarked" rule as the track-row badge.
+    let title_row: El = if let Some(host) = &spec.remote_source {
+        row()
+            .key("card-title")
+            .gap(space::XS)
+            .center_y()
+            .min_w(0.0)
+            .child(title_el.grow(1.0))
+            .child(remote_badge_for(&format!("{}-remote", spec.key), host, p))
+    } else {
+        title_el
+    };
+    let mut text_col = col()
+        .key("card-text")
+        .gap(space::XXS)
+        .min_w(0.0)
+        .child(title_row);
     if let Some(sub) = spec.subtitle {
         text_col = text_col.child(
             text(sub)

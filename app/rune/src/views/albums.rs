@@ -18,12 +18,14 @@ use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::grid;
 use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
-use crate::views::player::remote_badge;
+use crate::views::player::{group_remote_source, remote_badge};
 
 /// One grouped album: display name, its artist, a track id to draw the cover
-/// from, every track id (in library order) to play on click, and the album's
+/// from, every track id (in library order) to play on click, the album's
 /// original/release dates (packed `(year<<9)|(month<<5)|day`, `0` = unknown;
-/// see [`album_year`]).
+/// see [`album_year`]), and whether every one of its tracks streams from the
+/// same remote host (`None` for a local or mixed-source album — see
+/// [`group_remote_source`]).
 #[derive(Clone)]
 pub(crate) struct Album {
     pub(crate) name: String,
@@ -32,6 +34,7 @@ pub(crate) struct Album {
     pub(crate) ids: Vec<u32>,
     pub(crate) original_date: u32,
     pub(crate) release_date: u32,
+    pub(crate) remote_source: Option<String>,
 }
 
 /// Group the flat library into albums, preserving first-seen (library) order so
@@ -52,10 +55,24 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
                 ids: Vec::new(),
                 original_date: t.original_date,
                 release_date: t.release_date,
+                remote_source: None, // resolved below, once every member track is known
             });
             albums.len() - 1
         });
         albums[i].ids.push(t.id);
+    }
+    // A second pass: each album's remote-source consensus needs every one of its
+    // member tracks, which aren't all known until the loop above finishes. A
+    // `track id -> remote_source` map avoids an O(n²) `library.iter().find` per id.
+    let remote_by_id: HashMap<u32, &Option<String>> =
+        library.iter().map(|t| (t.id, &t.remote_source)).collect();
+    for album in &mut albums {
+        album.remote_source = group_remote_source(
+            album
+                .ids
+                .iter()
+                .filter_map(|id| remote_by_id.get(id).copied()),
+        );
     }
     albums
 }
@@ -151,6 +168,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             cover_id: a.cover_id,
             circular: false,
             play_ids: a.ids.clone(),
+            remote_source: a.remote_source.clone(),
         },
         card_w,
         scale,
@@ -359,6 +377,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         },
         t!("album.eyebrow").to_uppercase(),
         album.name.clone(),
+        album.remote_source.clone(),
         album_subtitle(&album, s.album_year),
         meta,
         play_all_pill("album-play-all", album.ids.clone(), p),
@@ -422,6 +441,35 @@ mod tests {
         }
     }
 
+    /// An album's `remote_source` is the unanimous host across every one of
+    /// its tracks; a mix of remote and local has no consensus and must show
+    /// no badge.
+    #[test]
+    fn group_albums_resolves_remote_source_consensus() {
+        let mut remote1 = atv(1, "Bach", "Cello Suites");
+        remote1.remote_source = Some("h".to_string());
+        let mut remote2 = atv(2, "Bach", "Cello Suites");
+        remote2.remote_source = Some("h".to_string());
+        let all_remote = group_albums(&[remote1, remote2]);
+        assert_eq!(
+            all_remote[0].remote_source,
+            Some("h".to_string()),
+            "every track shares the same host"
+        );
+
+        let mut remote = atv(3, "Bach", "Goldberg");
+        remote.remote_source = Some("h".to_string());
+        let local = atv(4, "Bach", "Goldberg");
+        let mixed = group_albums(&[remote, local]);
+        assert_eq!(
+            mixed[0].remote_source, None,
+            "a local track in the mix breaks consensus"
+        );
+
+        let all_local = group_albums(&[atv(5, "Bach", "Partitas"), atv(6, "Bach", "Partitas")]);
+        assert_eq!(all_local[0].remote_source, None, "all local -> no badge");
+    }
+
     #[test]
     fn total_duration_rounds_to_whole_minutes_and_formats_hours() {
         rust_i18n::set_locale("en");
@@ -442,6 +490,7 @@ mod tests {
             ids: vec![],
             original_date: 1973u32 << 9,
             release_date: 2015u32 << 9,
+            remote_source: None,
         };
         assert_eq!(album_year(&a, Original), Some(1973));
         assert_eq!(album_year(&a, Release), Some(2015));
@@ -561,6 +610,121 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.contains("· 0")),
             "never render a bare zero year; got {texts:?}"
+        );
+    }
+
+    /// End-to-end through the real Albums grid: a remote album's card shows
+    /// the same cloud badge + "streams from" tooltip the track rows and
+    /// now-playing line already show, keyed off the card rather than a track
+    /// id; a local album's card shows none.
+    #[test]
+    fn album_card_shows_the_remote_badge_for_a_remote_album() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            albums_page(s, &p, cx, scale)
+        }
+
+        rust_i18n::set_locale("en");
+        let mut remote_track = atv(1, "Remote Artist", "Remote Album");
+        remote_track.remote_source = Some("listen.home.lan".into());
+        let local_track = atv(2, "Local Artist", "Local Album");
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![remote_track, local_track];
+        s.route = crate::Route::Albums;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "album-0-remote"),
+            "the remote album's card should show the cloud badge"
+        );
+        assert!(
+            !badge_visible(&rt, "album-1-remote"),
+            "the local album's card should show no badge"
+        );
+        let help = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("album-0-remote"))
+            .and_then(|e| e.help);
+        assert_eq!(
+            help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the card badge's tooltip should name the source host"
+        );
+    }
+
+    /// A remote album's detail-page header shows the same cloud badge +
+    /// tooltip next to the title; a local album's header shows none.
+    #[test]
+    fn album_detail_header_shows_the_remote_badge_for_a_remote_album() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        fn render(s: State) -> Runtime<State> {
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            rt
+        }
+
+        rust_i18n::set_locale("en");
+
+        let mut remote_track = atv(1, "Artist", "Remote Album");
+        remote_track.remote_source = Some("listen.home.lan".into());
+        let mut remote_state = State::new(soul_player_host::PlayerHandle::offline());
+        remote_state.library = vec![remote_track];
+        remote_state.route = crate::Route::Album;
+        remote_state.open_album = Some("Remote Album".into());
+        let remote_rt = render(remote_state);
+        let badge = remote_rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("album-remote"));
+        assert!(
+            badge.is_some(),
+            "a remote album's header should show the cloud badge"
+        );
+        assert_eq!(
+            badge.and_then(|e| e.help).as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the header badge's tooltip should name the source host"
+        );
+
+        let local_track = atv(2, "Artist", "Local Album");
+        let mut local_state = State::new(soul_player_host::PlayerHandle::offline());
+        local_state.library = vec![local_track];
+        local_state.route = crate::Route::Album;
+        local_state.open_album = Some("Local Album".into());
+        let local_rt = render(local_state);
+        assert!(
+            !local_rt
+                .elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some("album-remote")),
+            "a local album's header should show no badge"
         );
     }
 
