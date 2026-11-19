@@ -19,14 +19,17 @@ use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::grid;
 use crate::views::icons;
 use crate::views::media_card::{CardSpec, media_card};
-use crate::views::player::cover;
+use crate::views::player::{cover, group_remote_source};
 
-/// One grouped artist: display name, a track id to draw a cover from, and every
-/// track id (in library order) for Play All / the detail list.
+/// One grouped artist: display name, a track id to draw a cover from, every
+/// track id (in library order) for Play All / the detail list, and whether
+/// every one of its tracks streams from the same remote host (`None` for a
+/// local or mixed-source artist — see [`group_remote_source`]).
 pub(crate) struct Artist {
     name: String,
     cover_id: u32,
     ids: Vec<u32>,
+    remote_source: Option<String>,
 }
 
 /// Group the flat library by artist, preserving first-seen (library) order so
@@ -45,10 +48,23 @@ pub(crate) fn group_artists(library: &[TrackView]) -> Vec<Artist> {
                 name,
                 cover_id: t.id,
                 ids: Vec::new(),
+                remote_source: None, // resolved below, once every member track is known
             });
             artists.len() - 1
         });
         artists[i].ids.push(t.id);
+    }
+    // See `group_albums`' matching second pass: a track id -> remote_source map
+    // avoids an O(n²) `library.iter().find` per id.
+    let remote_by_id: HashMap<u32, &Option<String>> =
+        library.iter().map(|t| (t.id, &t.remote_source)).collect();
+    for artist in &mut artists {
+        artist.remote_source = group_remote_source(
+            artist
+                .ids
+                .iter()
+                .filter_map(|id| remote_by_id.get(id).copied()),
+        );
     }
     artists
 }
@@ -69,6 +85,7 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
             cover_id: a.cover_id,
             circular: true,
             play_ids: a.ids.clone(),
+            remote_source: a.remote_source.clone(),
         },
         card_w,
         scale,
@@ -165,6 +182,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         },
         t!("artist.eyebrow").to_uppercase(),
         artist.name.clone(),
+        artist.remote_source.clone(),
         None,
         meta,
         play_all_pill("artist-play-all", artist.ids.clone(), p),
@@ -293,6 +311,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                         cover_id: alb.cover_id,
                         circular: false,
                         play_ids: alb.ids.clone(),
+                        remote_source: alb.remote_source.clone(),
                     },
                     card_w,
                     scale,
@@ -422,5 +441,34 @@ mod tests {
         assert_eq!(artists[1].ids, vec![2]);
         // An empty/absent artist falls under the shared Unknown bucket.
         assert_eq!(artists[2].ids, vec![4]);
+    }
+
+    /// An artist's `remote_source` is the unanimous host across every one of
+    /// its tracks; a mix of remote and local (or two different hosts) has no
+    /// consensus and must show no badge.
+    #[test]
+    fn group_artists_resolves_remote_source_consensus() {
+        let mut remote1 = tv(1, "Bach");
+        remote1.remote_source = Some("h".to_string());
+        let mut remote2 = tv(2, "Bach");
+        remote2.remote_source = Some("h".to_string());
+        let all_remote = group_artists(&[remote1, remote2]);
+        assert_eq!(
+            all_remote[0].remote_source,
+            Some("h".to_string()),
+            "every track shares the same host"
+        );
+
+        let mut remote = tv(3, "Satie");
+        remote.remote_source = Some("h".to_string());
+        let local = tv(4, "Satie");
+        let mixed = group_artists(&[remote, local]);
+        assert_eq!(
+            mixed[0].remote_source, None,
+            "a local track in the mix breaks consensus"
+        );
+
+        let all_local = group_artists(&[tv(5, "Satie"), tv(6, "Satie")]);
+        assert_eq!(all_local[0].remote_source, None, "all local -> no badge");
     }
 }

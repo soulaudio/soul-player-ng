@@ -12,7 +12,7 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
-use crate::views::player::cover;
+use crate::views::player::{cover, remote_badge_for};
 
 /// Large cover on a detail hero (the old app's `w-44`).
 pub(crate) const DETAIL_COVER: f32 = 176.0;
@@ -55,6 +55,12 @@ fn hero_artwork(s: &State, p: &Palette, scale: f32, prefix: &str, art: HeroArt) 
 /// optional subtitle, a meta line, then `actions`). Reflows to stacked when the
 /// pane is too narrow (`flex_wrap`). `prefix` keys the row/cover/meta so each page
 /// keeps stable keys (`album-header`, `artist-cover`, …).
+///
+/// `remote_source` is `Some(host)` when the viewed album/artist/genre's tracks
+/// all stream from that same remote host (`views::player::group_remote_source`,
+/// read straight off the already-grouped struct) — it puts the same cloud badge
+/// and "streams from {host}" tooltip the grid cards and track rows show next
+/// to the title. `None` (a local or mixed-source group) shows nothing.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn detail_hero(
     s: &State,
@@ -64,10 +70,26 @@ pub(crate) fn detail_hero(
     art: HeroArt,
     eyebrow: String,
     title: String,
+    remote_source: Option<String>,
     subtitle: Option<String>,
     meta: String,
     actions: El,
 ) -> El {
+    let title_el = text(title).font(type_::DISPLAY).color(p.fg).truncate();
+    // A local/mixed-source group (the common case) keeps the plain title; only a
+    // group whose tracks all stream from one remote host gains the badge, same
+    // "local is unremarked" rule as the grid cards and track rows.
+    let title_row: El = if let Some(host) = &remote_source {
+        row()
+            .key(format!("{prefix}-title"))
+            .gap(space::XS)
+            .center_y()
+            .min_w(0.0)
+            .child(title_el.grow(1.0))
+            .child(remote_badge_for(&format!("{prefix}-remote"), host, p))
+    } else {
+        title_el
+    };
     let mut info = col()
         .key(format!("{prefix}-meta"))
         .gap(space::XS)
@@ -75,7 +97,7 @@ pub(crate) fn detail_hero(
         .min_w(0.0)
         .center_y()
         .child(text(eyebrow).font(type_::SECTION).color(p.text_secondary))
-        .child(text(title).font(type_::DISPLAY).color(p.fg).truncate());
+        .child(title_row);
     if let Some(sub) = subtitle {
         info = info.child(
             text(sub)
