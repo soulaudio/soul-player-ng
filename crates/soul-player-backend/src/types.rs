@@ -418,3 +418,92 @@ mod tests {
         assert_eq!(PlayState::from(DeckState::Playing), PlayState::Playing);
     }
 }
+
+/// A durable reference to a track: where it lives, independent of any
+/// catalog's volatile internal id (which can shift on rescan/re-aggregation).
+/// Playlists store these (plus a [`TrackSnapshot`]) rather than a track id, so
+/// a playlist entry survives a rescan, a library edit, or the track moving
+/// between catalogs.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum TrackLocator {
+    /// A file on local disk, by absolute path (normalized, not necessarily
+    /// canonicalized).
+    Local { path: String },
+    /// A file on a remote `soul-server`, by the server's base URL and the
+    /// track's path relative to that server's root.
+    Remote { server: String, rel: String },
+}
+
+impl TrackLocator {
+    /// Normalized comparison key: backslashes become forward slashes and the
+    /// whole string is lowercased, unconditionally (not gated on OS), so two
+    /// locators that name the same file under different casing/separator
+    /// conventions compare equal regardless of which platform produced them.
+    #[must_use]
+    pub fn key(&self) -> String {
+        let raw = match self {
+            TrackLocator::Local { path } => path.clone(),
+            TrackLocator::Remote { server, rel } => format!("{server}/{rel}"),
+        };
+        raw.replace('\\', "/").to_lowercase()
+    }
+}
+
+/// A point-in-time metadata snapshot of a track, carried alongside its
+/// [`TrackLocator`] in a playlist entry: enough to render the row (title,
+/// artist, album, duration, track/disc number) even if the source file is
+/// temporarily unreachable or has since been retagged.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TrackSnapshot {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub duration_secs: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub track_no: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc_no: Option<u32>,
+}
+
+#[cfg(test)]
+mod locator_tests {
+    use super::*;
+
+    // `toml` is not a dependency of this crate (it is a dev-dependency nowhere
+    // and a regular dependency nowhere); `serde_json` already is (see
+    // `[dev-dependencies]` in Cargo.toml), and this round-trip only needs to
+    // prove the serde derives work, not any particular wire format, so we use
+    // that instead of pulling in a new dependency just for this test.
+    #[test]
+    fn locator_serde_roundtrips_both_variants() {
+        let local = TrackLocator::Local {
+            path: "D:/Music/a.flac".into(),
+        };
+        let remote = TrackLocator::Remote {
+            server: "https://h".into(),
+            rel: "x/y.flac".into(),
+        };
+        for loc in [local, remote] {
+            let s = serde_json::to_string(&Wrap { loc: loc.clone() }).unwrap();
+            let back: Wrap = serde_json::from_str(&s).unwrap();
+            assert_eq!(back.loc, loc);
+        }
+    }
+
+    #[test]
+    fn local_key_is_case_and_separator_normalized() {
+        let a = TrackLocator::Local {
+            path: r"D:\Music\A.flac".into(),
+        };
+        let b = TrackLocator::Local {
+            path: "d:/music/a.flac".into(),
+        };
+        assert_eq!(a.key(), b.key());
+    }
+
+    #[derive(serde::Serialize, serde::Deserialize)]
+    struct Wrap {
+        loc: TrackLocator,
+    }
+}
