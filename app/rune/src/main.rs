@@ -281,6 +281,15 @@ struct State {
     /// Rename/Delete icons), or `None`. A single stray click never deletes.
     /// Reset the same way as `playlist_renaming`.
     playlist_delete_confirm: Option<playlists::PlaylistId>,
+    /// The track id pending an "Add to playlist" pick, or `None`. `Some`
+    /// opens `views::add_to_playlist::overlay`, mounted at the window root
+    /// like `signal_path_open`/`remote_health_open`: it survives a route
+    /// change (a global action, not a page-local widget) and is reset only
+    /// by `open_add_to_playlist`/`close_add_to_playlist`.
+    add_to_playlist_for: Option<u32>,
+    /// The overlay's inline "New playlist..." field, bound the same way
+    /// `playlist_new_buf` binds the Playlists page's own field.
+    add_to_playlist_buf: rune::TextEdit,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -667,6 +676,8 @@ impl State {
             playlist_renaming: None,
             playlist_rename_buf: rune::TextEdit::new(""),
             playlist_delete_confirm: None,
+            add_to_playlist_for: None,
+            add_to_playlist_buf: rune::TextEdit::new(""),
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -1351,6 +1362,25 @@ pub(crate) fn toggle_remote_health_popover(s: &mut State) {
 /// or its own "Open sources settings" action).
 pub(crate) fn close_remote_health_popover(s: &mut State) {
     s.remote_health_open = false;
+}
+
+// ---- Add-to-playlist overlay (a track row's context menu) ----
+
+/// Open the "Add to playlist" overlay for `track_id`: reset the inline
+/// New-playlist buffer to empty (so a stale typed name never resurfaces),
+/// then mark `track_id` as pending, which is what tells
+/// `views::add_to_playlist::overlay` to render.
+pub(crate) fn open_add_to_playlist(s: &mut State, track_id: u32) {
+    s.add_to_playlist_buf = rune::TextEdit::new("");
+    s.add_to_playlist_for = Some(track_id);
+}
+
+/// Close the overlay (a pick, a successful New-playlist create, Escape via
+/// `El::modal`, or an outside press) and reset its buffer + pending track so
+/// the next open always starts clean.
+pub(crate) fn close_add_to_playlist(s: &mut State) {
+    s.add_to_playlist_for = None;
+    s.add_to_playlist_buf = rune::TextEdit::new("");
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
@@ -2358,6 +2388,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let mut overlays = views::settings::settings_overlays(s, &p, cx);
     overlays.extend(views::signal_path::overlay(s, &p));
     overlays.extend(views::titlebar::overlay(s, &p));
+    overlays.extend(views::add_to_playlist::overlay(s, &p));
     // The crash-report modal draws over everything, on any route — last, so it
     // stacks above any panel still mounted beneath it.
     if let Some(dialog) = crash_overlay(s, &p) {

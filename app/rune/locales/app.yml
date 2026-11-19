@@ -348,6 +348,27 @@ playlists.unavailable:
   zh: '不可用'
   cs: 'Nedostupné'
   ja: '利用不可'
+playlists.addTo:
+  en: 'Add to playlist'
+  de: 'Zu Playlist hinzufügen'
+  es: 'Añadir a lista'
+  zh: '添加到播放列表'
+  cs: 'Přidat do playlistu'
+  ja: 'プレイリストに追加'
+playlists.addToNew:
+  en: 'New playlist…'
+  de: 'Neue Playlist…'
+  es: 'Nueva lista…'
+  zh: '新建播放列表…'
+  cs: 'Nový playlist…'
+  ja: '新しいプレイリスト…'
+playlists.added:
+  en: 'Added'
+  de: 'Hinzugefügt'
+  es: 'Añadido'
+  zh: '已添加'
+  cs: 'Přidáno'
+  ja: '追加済み'
 
 player.nowPlaying:
   en: 'NOW PLAYING'

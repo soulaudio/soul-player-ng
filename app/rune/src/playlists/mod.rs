@@ -2,8 +2,10 @@
 //! on-disk per-folder store (`store`), and pure cover-mosaic selection
 //! (`cover`). Task 7 wired `PlaylistStore`/`PlaylistId` into `State` and the
 //! routes; Task 8 wired the Playlists list page (list/create, the cover
-//! selector) in; Task 9 wires the detail page's mutators
-//! (rename/delete/remove_entry/move_entry) and `Playlist`/`PlaylistEntry` in.
+//! selector) in; Task 9 wired the detail page's mutators
+//! (rename/delete/remove_entry/move_entry) and `Playlist`/`PlaylistEntry` in;
+//! Task 10 wires `add_entry` in, via the Add-to-playlist overlay's
+//! `views::add_to_playlist::add_track_to_playlist`.
 #![forbid(unsafe_code)]
 // This is a module-wide inner attribute: it covers everything in `cover`,
 // `model`, and `store`, not just one item. Right now it only masks
@@ -14,8 +16,8 @@
 // would just as silently mask any future dead item added anywhere in these
 // submodules. Narrowing it to `entries_fingerprint` alone would mean adding
 // a per-item allow inside `cover.rs` itself, out of this task's touch scope
-// (`mod.rs` only), so it stays module-wide for now; everything else Task 9
-// wires up below is reached.
+// (`mod.rs` only), so it stays module-wide for now; everything else,
+// including `add_entry`/`PlaylistEntry` as of Task 10, is reached.
 #![allow(dead_code)]
 
 pub mod cover;
