@@ -841,6 +841,13 @@ settings.reconnecting:
   zh: '正在重新连接…'
   cs: 'Připojuji znovu…'
   ja: '再接続中…'
+settings.remoteSignIn:
+  en: 'Sign in again'
+  de: 'Erneut anmelden'
+  es: 'Iniciar sesión de nuevo'
+  zh: '重新登录'
+  cs: 'Přihlásit se znovu'
+  ja: '再度サインイン'
 settings.connectingRow:
   en: 'Connecting…'
   de: 'Verbinde…'
