@@ -588,3 +588,96 @@ fn remote_add_with_trailing_slash_collapses_to_the_same_entry() {
         "a trailing-slash re-add must not double the aggregated track count, got {views:?}"
     );
 }
+
+/// Regression (the "click Rescan and the remote shows 0 tracks" bug): the
+/// Sources "Rescan" button reconciles the LOCAL folder set only (the remote
+/// isn't a watched folder — `settings.rs`'s `rescan_button` filters to
+/// `SourceKind::Local` before calling `set_folders`), but the shared
+/// `rescan` tail it runs through swaps in a fresh local `Library` via
+/// `set_library`, whose own doc comment notes it clears
+/// `Inner::remote_library` because a fresh library's compound ids don't
+/// match the old aggregate. Before the fix, nothing rebuilt that aggregate
+/// afterward: the remote's tracks silently vanished from the returned
+/// `WatchUpdate.views` and `remote_statuses` (reading the now-`None`
+/// aggregate) reported the remote's `track_count` as 0, even though the
+/// remote was still fully connected and healthy.
+///
+/// Pins the fix (`rescan_build` now calls `rebuild_remote_library` — the
+/// same tail `add_remote_source` uses — before computing `views`): a rescan
+/// over a local root, with a remote already connected, must keep the
+/// remote's tracks in `views` (each still stamped with its
+/// `remote_source`), report the remote's REAL non-zero `track_count`, carry
+/// its live health, and list it exactly once.
+#[test]
+fn rescan_keeps_a_connected_remotes_tracks_and_live_health() {
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    let server = start_server(FIXTURES);
+
+    let handle = PlayerHandle::offline();
+    let tokens = oauth_login(&server.url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&server.url, tokens)
+        .expect("add remote source: fetch the index, fold it into the library");
+    assert_eq!(
+        handle.views().len(),
+        FIXTURES.len(),
+        "sanity: the remote's tracks are in the library before any rescan"
+    );
+
+    // A local root, deliberately empty — the bug reproduces with or without
+    // local tracks of its own; this isolates the assertion to whether the
+    // REMOTE survives the reconcile.
+    let local_root = tempfile::tempdir().expect("create local root");
+
+    // Mirrors the Rescan button: ONLY local roots are passed to
+    // `set_folders` (the remote's synthetic path is excluded — commit
+    // b2fa8da), so this is exactly the "click Rescan" path.
+    let update = handle
+        .set_folders(&[local_root.path().to_path_buf()])
+        .expect("set_folders (a rescan) must not drop the connected remote");
+
+    let remotes: Vec<_> = update
+        .sources
+        .iter()
+        .filter(|s| matches!(&s.kind, soul_player_host::SourceKind::Remote { url } if url == &server.url))
+        .collect();
+    assert_eq!(
+        remotes.len(),
+        1,
+        "exactly one Remote entry after a rescan, no duplicate; got {remotes:?}"
+    );
+    let remote_status = remotes[0];
+    assert!(
+        remote_status.remote.is_some(),
+        "the Remote entry must carry its health, not go back to None"
+    );
+    assert_eq!(
+        remote_status.track_count,
+        FIXTURES.len(),
+        "a rescan must not zero out the remote's track_count, got {remote_status:?}"
+    );
+
+    // The aggregated views must still carry the remote's tracks, each
+    // stamped with its remote_source — the "not local-only after a rescan"
+    // half of the bug.
+    let remote_views_in_update = update
+        .views
+        .iter()
+        .filter(|v| v.remote_source.is_some())
+        .count();
+    assert_eq!(
+        remote_views_in_update,
+        FIXTURES.len(),
+        "the remote's tracks must remain in WatchUpdate.views after a rescan, got {:?}",
+        update.views
+    );
+
+    // The handle's own cached views (not just the just-returned WatchUpdate)
+    // must agree — the whole point of restoring the aggregate is that every
+    // reader of the live library, not just this one return value, sees it.
+    assert_eq!(
+        handle.views().len(),
+        FIXTURES.len(),
+        "handle.views() must still include the remote's tracks after the rescan"
+    );
+}

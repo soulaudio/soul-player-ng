@@ -855,7 +855,6 @@ impl PlayerHandle {
             bytes.retain(|p, _| configured.contains(p));
         }
         let lib = Arc::new(library);
-        let views = lib.views();
         let counts = lib.source_counts(); // (root, n) for the scanned roots only
         self.set_library(lib);
         // Status for the FULL configured set — disabled / unavailable sources are
@@ -888,6 +887,24 @@ impl PlayerHandle {
         // Cache the computed status (with real counts) so `sources()` — the
         // startup UI seed — reports true counts, not a 0 placeholder.
         *self.inner.last_sources.lock().expect("last_sources mutex") = local_sources.clone();
+        // `set_library` above just cleared `Inner::remote_library` (a fresh local
+        // `Library`'s compound ids don't match the old aggregate — see its own doc
+        // comment), so a folder reconcile (e.g. Rescan) must rebuild the
+        // remote-aware aggregate from the FRESH local bytes just cached above plus
+        // every still-retained remote, exactly like `add_remote_source` does.
+        // Without this, a rescan silently drops every remote track from `views`
+        // (the WatchUpdate reverts to local-only) and zeroes each remote's
+        // `track_count` (`remote_statuses` reads `remote_library`'s per-source
+        // counts, which were just nulled) even though the remote itself is still
+        // connected — the "rescan shows 0 tracks on the remote" bug. Harmless when
+        // there are no remotes: `rebuild_remote_library` then rebuilds an aggregate
+        // equal to the plain local library.
+        self.rebuild_remote_library();
+        // The aggregate (local ∪ retained, enabled remotes) now active in
+        // `self.inner.library` — not the local-only `lib` above — so a connected
+        // remote's tracks stay in the WatchUpdate; `views()` also stamps
+        // `remote_source` on them.
+        let views = self.views();
         // A folder reconcile (e.g. Rescan) must STILL report the retained REMOTE
         // sources with their live health — otherwise the WatchUpdate drops them
         // and the UI shows a connected remote as offline. Append them exactly as
