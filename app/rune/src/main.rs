@@ -8464,6 +8464,87 @@ mod tests {
         assert_eq!(enabled_remote_urls(&s), vec![on.to_string()]);
     }
 
+    /// Several remotes advancing at once are all returned, in `sources` order —
+    /// the poller pulls each rather than only the first it finds.
+    #[test]
+    fn remotes_needing_sync_returns_all_advanced_in_source_order() {
+        let mut s = settings_state(&[], &[]);
+        for (url, live) in [("http://a.test:8080", 4u64), ("http://b.test:8080", 7)] {
+            let mut st = online_remote_status(url);
+            if let Some(h) = &mut st.remote {
+                h.index_version = Some(live);
+            }
+            s.sources.push(st);
+            s.remote_synced_index.insert(url.to_string(), 1);
+        }
+        assert_eq!(
+            remotes_needing_sync(&s),
+            vec![
+                "http://a.test:8080".to_string(),
+                "http://b.test:8080".to_string()
+            ],
+        );
+    }
+
+    /// Only a STRICTLY greater live version counts: a live reading at or below
+    /// the synced baseline (a server reindex that lowered the counter, or a
+    /// stale probe) must not trigger a pointless re-sync. Guards `>` vs `>=`/`!=`.
+    #[test]
+    fn remotes_needing_sync_ignores_a_live_version_at_or_below_baseline() {
+        let mut s = settings_state(&[], &[]);
+        let url = "http://roll.test:8080";
+        let mut st = online_remote_status(url);
+        if let Some(h) = &mut st.remote {
+            h.index_version = Some(2); // below the synced baseline
+        }
+        s.sources.push(st);
+        s.remote_synced_index.insert(url.to_string(), 5);
+        assert!(remotes_needing_sync(&s).is_empty());
+    }
+
+    /// The auto-sync converges: once a pull records the fresh version as synced
+    /// (`record_synced_index`), the same remote no longer needs syncing — the
+    /// loop-prevention guarantee that keeps the 30s poller from re-pulling an
+    /// already-current remote forever.
+    #[test]
+    fn remotes_needing_sync_is_empty_after_recording_the_synced_index() {
+        let mut s = settings_state(&[], &[]);
+        let url = "http://conv.test:8080";
+        let mut st = online_remote_status(url);
+        if let Some(h) = &mut st.remote {
+            h.index_version = Some(8);
+        }
+        s.sources.push(st);
+        s.remote_synced_index.insert(url.to_string(), 3);
+        assert_eq!(remotes_needing_sync(&s), vec![url.to_string()]);
+
+        // Simulate the successful pull catching the baseline up to the live
+        // version (what `reconnect_remote_now` does via `record_synced_index`).
+        let sources = s.sources.clone();
+        record_synced_index(&mut s, url, &sources);
+        assert!(
+            remotes_needing_sync(&s).is_empty(),
+            "after the pull records the fresh version, the remote is caught up",
+        );
+    }
+
+    /// No remotes at all (only local roots) → nothing to force-resync on Rescan.
+    #[test]
+    fn enabled_remote_urls_is_empty_with_only_local_sources() {
+        let mut s = settings_state(&[], &[]);
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("/music"),
+            enabled: true,
+            available: true,
+            track_count: 3,
+            kind: SourceKind::Local {
+                path: PathBuf::from("/music"),
+            },
+            remote: None,
+        });
+        assert!(enabled_remote_urls(&s).is_empty());
+    }
+
     /// The leading enable toggle is a focusable control that disables its source:
     /// clicking it flips `enabled` off and the (now-disabled) source stops
     /// contributing tracks, emptying the aggregated library.
