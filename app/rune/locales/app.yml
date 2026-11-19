@@ -250,6 +250,41 @@ genre.noMatches:
   zh: '无匹配项'
   cs: 'Žádné shody'
   ja: '一致なし'
+playlists.title:
+  en: 'Playlists'
+  de: 'Playlists'
+  es: 'Listas de reproducción'
+  zh: '播放列表'
+  cs: 'Playlisty'
+  ja: 'プレイリスト'
+playlists.new:
+  en: 'New playlist'
+  de: 'Neue Playlist'
+  es: 'Nueva lista'
+  zh: '新建播放列表'
+  cs: 'Nový playlist'
+  ja: '新しいプレイリスト'
+playlists.newPlaceholder:
+  en: 'Playlist name'
+  de: 'Playlist-Name'
+  es: 'Nombre de la lista'
+  zh: '播放列表名称'
+  cs: 'Název playlistu'
+  ja: 'プレイリスト名'
+playlists.empty:
+  en: 'No playlists yet'
+  de: 'Noch keine Playlists'
+  es: 'Aún no hay listas'
+  zh: '暂无播放列表'
+  cs: 'Zatím žádné playlisty'
+  ja: 'プレイリストはまだありません'
+playlists.trackCount:
+  en: '%{count} tracks'
+  de: '%{count} Titel'
+  es: '%{count} pistas'
+  zh: '%{count} 首'
+  cs: '%{count} skladeb'
+  ja: '%{count} 曲'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
