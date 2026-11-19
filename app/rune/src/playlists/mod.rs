@@ -24,9 +24,9 @@ pub mod cover;
 pub mod model;
 pub mod store;
 
-// As of Task 9, every mutator (`rename`/`delete`/`add_entry`/`remove_entry`/
+// As of Task 10, every mutator (`rename`/`delete`/`add_entry`/`remove_entry`/
 // `move_entry`) and `Playlist`/`PlaylistEntry` are reached from non-test code
-// (the detail page). `slugify` is reached in production too, but only via
+// (the detail page, plus `add_entry` from the Add-to-playlist overlay). `slugify` is reached in production too, but only via
 // `store::create`'s own internal `super::model::slugify` path, never through
 // this re-export, so the re-exported binding itself stays unused outside
 // tests; `playlist_store_path` likewise, only reached through each view's own
