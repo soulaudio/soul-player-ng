@@ -362,13 +362,6 @@ playlists.addToNew:
   zh: '新建播放列表…'
   cs: 'Nový playlist…'
   ja: '新しいプレイリスト…'
-playlists.added:
-  en: 'Added'
-  de: 'Hinzugefügt'
-  es: 'Añadido'
-  zh: '已添加'
-  cs: 'Přidáno'
-  ja: '追加済み'
 playlists.done:
   en: 'Done'
   de: 'Fertig'
