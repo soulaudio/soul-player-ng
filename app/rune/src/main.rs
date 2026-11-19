@@ -7754,6 +7754,86 @@ mod tests {
         );
     }
 
+    /// Regression: pins the host-side rescan fix (soul-player-host commits
+    /// b2fa8da/103068c + the `rebuild_remote_library` fix alongside this PR) at
+    /// the UI layer. A rescan's `WatchUpdate.sources` now always carries any
+    /// still-connected remote alongside the local roots passed to
+    /// `set_folders` — `apply_watch` must fold that remote in as the SAME live
+    /// row it already had (telemetry + Disconnect), never demote it to the
+    /// stale "offline merge" row `merged_source_rows` falls back to for a
+    /// persisted `remote_urls` entry with no live `s.sources` match. Before the
+    /// host fix, a rescan's `WatchUpdate` dropped the remote from `.sources`
+    /// entirely, so this exact fold (a local root's `SourceStatus` plus the
+    /// SAME remote's `SourceStatus`, both present at once — the shape a fixed
+    /// rescan now returns) is what must render as one local row + one live
+    /// remote row, not a duplicate or an offline/Reconnect row.
+    #[test]
+    fn apply_watch_keeps_a_rescanned_remote_as_a_live_row_not_offline() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        // Seed the pre-rescan state the way a real session would: the remote
+        // is both connected (s.sources) and persisted (s.remote_urls, as
+        // `apply_remote_connect`/`reconnect_remotes_on_startup` leave it).
+        s.sources
+            .push(online_remote_status("http://127.0.0.1:8080"));
+        s.remote_urls = vec!["http://127.0.0.1:8080".to_string()];
+
+        // The WatchUpdate a "Rescan" over a local root now returns (per the
+        // host fix): the local root's status AND the retained remote's,
+        // still carrying its live health — exactly `set_folders`' shape.
+        let up = WatchUpdate {
+            views: Vec::new(),
+            sources: vec![
+                SourceStatus {
+                    path: PathBuf::from("local-root"),
+                    enabled: true,
+                    available: true,
+                    track_count: 2,
+                    kind: SourceKind::Local {
+                        path: PathBuf::from("local-root"),
+                    },
+                    remote: None,
+                },
+                online_remote_status("http://127.0.0.1:8080"),
+            ],
+        };
+        apply_watch(&mut s, up);
+
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let badge_count = rt
+            .elements()
+            .iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("source-badge-"))
+            })
+            .count();
+        assert_eq!(
+            badge_count, 2,
+            "one local row + one remote row after the rescan, no duplicate/offline-merge row"
+        );
+        assert!(
+            rt.find("source-online-1").is_some(),
+            "the remote (index 1, after the local root) still renders its live online dot"
+        );
+        assert_eq!(
+            el_info(&rt, "source-latency-1").text.as_deref(),
+            Some("42ms"),
+            "a rescanned remote keeps its live telemetry, not the offline dash placeholder"
+        );
+        assert!(
+            rt.find("remote-reconnect-1").is_none(),
+            "a live remote row shows no Reconnect control"
+        );
+    }
+
     /// Inc 6 item 2: a connected remote's row offers a keyed Disconnect
     /// (remove) control — the remote counterpart of a local row's ✕, under
     /// its own `remote-remove-{index}` key, wired to `disconnect_remote_source`
