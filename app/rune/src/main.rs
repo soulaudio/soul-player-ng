@@ -37,6 +37,7 @@ mod logging;
 mod media_session;
 mod notify;
 mod organize_job;
+mod playlists;
 mod report;
 mod systray;
 mod theme;
