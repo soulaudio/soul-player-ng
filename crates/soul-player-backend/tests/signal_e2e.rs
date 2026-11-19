@@ -450,3 +450,91 @@ fn surround_5_1_folds_to_stereo_through_the_player() {
         panic!("5.1 downmix e2e failed:\n{e}");
     }
 }
+
+/// Play a committed 5.1 fixture that carries a 440 Hz tone ONLY in the front-centre channel,
+/// through the full player, and assert the centre folds EQUALLY to L and R (−3 dB each).
+///
+/// This is a channel-ORDER check: Vorbis and Opus put the surround centre channel second
+/// (`FL C FR …`), unlike WAVEFORMATEXTENSIBLE. If the decoder's order were mis-read (centre
+/// taken as front-right), the centre would land only in R and L would be silent — so a true
+/// equal L/R fold proves the order is honoured end to end through the real decode path.
+fn centre_folds_equally(file: &str) -> Result<(), String> {
+    let path = testdata_dir().join(file);
+    require!(path.is_file(), "committed fixture {path:?} is missing");
+    let device_rate = 48_000u32;
+    let ch = 2usize;
+    let deck = Deck::new(
+        CaptureSink {
+            rate: device_rate,
+            channels: 2,
+            written: Vec::new(),
+        },
+        Quality::Hq,
+    );
+    let engine = Engine::new(deck, queue_for(vec![0]));
+    let mut player: HarnessPlayer = Player::new(engine, u64::from(device_rate));
+    apply_command(
+        &mut player,
+        Command::PlayContext {
+            ids: vec![0],
+            start: 0,
+        },
+        0,
+    )
+    .map_err(|e| format!("{file}: PlayContext: {e:?}"))?;
+
+    let want = (RENDER_SECS * f64::from(device_rate)) as usize;
+    pump_capture_frames(&mut player, &path, want, ch);
+
+    let written = &player.deck().sink().written;
+    let (peak, rms) = peak_and_rms(written);
+    require!(
+        (PLAYS_PEAK_FLOOR..=PLAYS_PEAK_CEIL).contains(&peak) && rms > PLAYS_RMS_FLOOR,
+        "{file}: silent (surround centre not folded to stereo?)"
+    );
+    let skip = (device_rate as usize / 100) * ch;
+    let analysis = &written[skip.min(written.len())..];
+    let l = channel(analysis, ch, 0);
+    let r = channel(analysis, ch, 1);
+    let rate_f = f64::from(device_rate);
+
+    // The centre must reach BOTH sides (a wrong order silences one), at ~equal power.
+    assert_tone(&l, rate_f, 440.0, &format!("{file} L (centre fold)"))?;
+    assert_tone(&r, rate_f, 440.0, &format!("{file} R (centre fold)"))?;
+    let (pl, pr) = (
+        goertzel_power(&l, rate_f, 440.0),
+        goertzel_power(&r, rate_f, 440.0),
+    );
+    require!(
+        pl > 0.0 && pr > 0.0 && pl.min(pr) / pl.max(pr) > 0.5,
+        "{file}: centre must fold EQUALLY to L and R (L={pl:.2e} R={pr:.2e}); decoder channel order wrong?"
+    );
+    println!("  {file}: centre folds L≈R OK (L={pl:.2e} R={pr:.2e})");
+    Ok(())
+}
+
+/// END-TO-END channel-ORDER check for the lossy surround formats. Vorbis and Opus fix a
+/// channel order that puts the centre SECOND (`FL C FR …`), which a plain channel mask can't
+/// express; the deck folds them via an ordered layout. These committed 5.1 fixtures (centre-
+/// only tone) drive the full `ServicePlayer` and prove the centre reaches BOTH stereo sides.
+/// Opus is also covered in core's conformance suite, but Vorbis decodes only through the
+/// desktop `open_track`/`OwnedDecoder` path exercised here.
+#[test]
+fn surround_centre_folds_equally_through_the_player() {
+    let run = || -> Result<(), String> {
+        centre_folds_equally("tone-fc-5.1.ogg")?; // Vorbis (centre second)
+        centre_folds_equally("tone-fc-5.1.opus")?; // Opus multistream (family-1 order)
+        Ok(())
+    };
+    let res = std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(s, run)
+            .expect("spawn")
+            .join()
+            .unwrap_or_else(|_| Err("centre-fold harness thread panicked (see stderr)".into()))
+    });
+    if let Err(e) = res {
+        panic!("surround centre-fold e2e failed:\n{e}");
+    }
+}
