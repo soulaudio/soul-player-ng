@@ -4144,6 +4144,100 @@ mod tests {
         s.dsp_units[0].as_eq_mut().unwrap()
     }
 
+    /// Clicking the now-playing heart opens the add-to-playlist dialogue for the
+    /// current track (sets `add_to_playlist_for`). Driven through the full app
+    /// `view`; the panel-only harness in `views::player` does not route pointer
+    /// events to the panel's buttons, so the click-through lives here.
+    #[test]
+    fn now_playing_heart_opens_the_add_to_playlist_dialogue() {
+        let _g = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        let id = s
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("the test library has tracks");
+        s.now_playing_id = Some(id);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        click_key(&mut rt, "np-heart");
+        assert_eq!(rt.state.add_to_playlist_for, Some(id));
+    }
+
+    /// Full heart -> dialogue -> toggle membership flow, driven end-to-end
+    /// through the real app `view` (not the overlay-only harness in
+    /// `views::add_to_playlist`, which already covers the toggle in
+    /// isolation): clicking the now-playing heart opens the dialogue for the
+    /// current track, pressing a playlist's pick row adds the track and
+    /// persists it, and pressing the SAME row again removes it, all without
+    /// the dialogue closing in between.
+    #[test]
+    fn e2e_heart_opens_dialogue_and_toggles_membership() {
+        let _g = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        let id = s
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("the test library has tracks");
+        s.now_playing_id = Some(id);
+        let pid = s.playlists.create("Mix");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+
+        click_key(&mut rt, "np-heart");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.add_to_playlist_for,
+            Some(id),
+            "the heart opens the add-to-playlist dialogue for the playing track"
+        );
+
+        let pick_key = format!("add-to-playlist-pick-{pid}");
+        click_key(&mut rt, &pick_key);
+        assert_eq!(
+            playlists::PlaylistStore::load()
+                .get(pid)
+                .unwrap()
+                .entries
+                .len(),
+            1,
+            "the first press on the row adds the track to the playlist"
+        );
+        assert_eq!(
+            rt.state.add_to_playlist_for,
+            Some(id),
+            "the dialogue stays open across the add"
+        );
+
+        click_key(&mut rt, &pick_key);
+        assert_eq!(
+            playlists::PlaylistStore::load()
+                .get(pid)
+                .unwrap()
+                .entries
+                .len(),
+            0,
+            "a second press on the same row removes the track again"
+        );
+        assert_eq!(
+            rt.state.add_to_playlist_for,
+            Some(id),
+            "the dialogue stays open across the remove"
+        );
+    }
+
     /// End-to-end feed pipeline: as the player's now-playing state changes, the
     /// media session receives the right `Update`s over its channel — track
     /// metadata (resolved from the library) on a track change, playback on a
