@@ -906,6 +906,13 @@ pub(crate) fn refresh_remote_health(s: &mut State) {
                     seed_synced_baseline(s, &sources);
                     s.sources = sources;
                     s.remote_health_refreshing = false;
+                    // This probe may have seen a remote's catalog advance past
+                    // our last sync — auto-pull those so the track list stays
+                    // current without the user pressing Sync-now (the periodic
+                    // "rescan the server" behaviour).
+                    for url in remotes_needing_sync(s) {
+                        reconnect_remote_now(s, url);
+                    }
                 });
             });
         }
@@ -914,6 +921,9 @@ pub(crate) fn refresh_remote_health(s: &mut State) {
             seed_synced_baseline(s, &sources);
             s.sources = sources;
             s.remote_health_refreshing = false;
+            for url in remotes_needing_sync(s) {
+                reconnect_remote_now(s, url);
+            }
         }
     }
 }
@@ -955,8 +965,55 @@ fn record_synced_index(s: &mut State, url: &str, sources: &[SourceStatus]) {
     }
 }
 
+/// Select the connected remotes whose server-side catalog has advanced past
+/// what we last synced — the SAME predicate the "update available" cue uses
+/// (`views::settings::remote_update_available`): a live `index_version`
+/// strictly greater than the recorded `remote_synced_index` baseline. These
+/// are the remotes the periodic poller auto-pulls (via [`reconnect_remote_now`])
+/// so a connected source's track list stays current without the user pressing
+/// Sync-now. A disabled remote is skipped (its tracks are intentionally out of
+/// the aggregate); so is one with no baseline yet ([`seed_synced_baseline`]
+/// seeds it on first sight, so a brand-new remote never counts as "advanced"
+/// until a REAL change afterward) or no live reading (offline — reconnecting
+/// that is the offline row's job, not the version-advanced auto-sync's).
+pub(crate) fn remotes_needing_sync(s: &State) -> Vec<String> {
+    s.sources
+        .iter()
+        .filter(|st| st.enabled)
+        .filter_map(|st| {
+            let SourceKind::Remote { url } = &st.kind else {
+                return None;
+            };
+            let live = st.remote.as_ref()?.index_version?;
+            let synced = s.remote_synced_index.get(url).copied()?;
+            (live > synced).then(|| url.clone())
+        })
+        .collect()
+}
+
+/// Every ENABLED remote source's url, in `sources` order — the set the Rescan
+/// action force-resyncs (pull fresh from each server), independent of whether
+/// a version change has been detected yet: a plain local-root reconcile
+/// rebuilds remote tracks from already-fetched blobs and would miss
+/// server-side additions, so Rescan re-fetches each remote's index too.
+/// Reuses the same enabled-Remote filter as [`remotes_needing_sync`] without
+/// that one's version gate; local roots and disabled remotes are excluded.
+pub(crate) fn enabled_remote_urls(s: &State) -> Vec<String> {
+    s.sources
+        .iter()
+        .filter(|st| st.enabled)
+        .filter_map(|st| match &st.kind {
+            SourceKind::Remote { url } => Some(url.clone()),
+            SourceKind::Local { .. } => None,
+        })
+        .collect()
+}
+
 /// Reconnect every persisted remote source at launch (Inc 5): off the UI
 /// thread, for each url `config::load_remotes()` returns, silently
+/// re-authenticate with the OS-keychain-stored refresh token and re-sync its
+/// catalog via [`PlayerHandle::reconnect_remote_source`], then fold the
+/// refreshed library + source list back onto the UI thread — mirroring
 /// re-authenticate with the OS-keychain-stored refresh token and re-sync its
 /// catalog via [`PlayerHandle::reconnect_remote_source`], then fold the
 /// refreshed library + source list back onto the UI thread — mirroring
@@ -8323,6 +8380,88 @@ mod tests {
             rt.find("remote-update-0").is_none(),
             "no cue when the live version matches the last synced one"
         );
+    }
+
+    /// The periodic poller auto-pulls exactly the connected remotes whose live
+    /// catalog version has advanced past the last synced baseline — the same
+    /// predicate as the "update available" cue, but driving an automatic
+    /// re-sync rather than a manual button. (Selection only; the reconnect glue
+    /// is the already-tested `reconnect_remote_now`.)
+    #[test]
+    fn remotes_needing_sync_picks_only_the_advanced_connected_ones() {
+        let mut s = settings_state(&[], &[]);
+        let fresh = "http://fresh.test:8080"; // live 5 > synced 3 -> needs sync
+        let caught_up = "http://same.test:8080"; // live 3 == synced 3 -> no
+        let unseen = "http://new.test:8080"; // live 3, no baseline yet -> no
+
+        let mut fresh_status = online_remote_status(fresh);
+        if let Some(h) = &mut fresh_status.remote {
+            h.index_version = Some(5);
+        }
+        s.sources.push(fresh_status);
+        s.remote_synced_index.insert(fresh.to_string(), 3);
+
+        s.sources.push(online_remote_status(caught_up)); // index_version Some(3)
+        s.remote_synced_index.insert(caught_up.to_string(), 3);
+
+        s.sources.push(online_remote_status(unseen)); // Some(3), no baseline
+
+        assert_eq!(remotes_needing_sync(&s), vec![fresh.to_string()]);
+    }
+
+    /// A disabled remote is never auto-pulled even when its server advanced —
+    /// its tracks are intentionally out of the aggregate, so re-fetching them
+    /// would be pointless churn.
+    #[test]
+    fn remotes_needing_sync_skips_disabled_remotes() {
+        let mut s = settings_state(&[], &[]);
+        let url = "http://off.test:8080";
+        let mut status = online_remote_status(url);
+        status.enabled = false;
+        if let Some(h) = &mut status.remote {
+            h.index_version = Some(9);
+        }
+        s.sources.push(status);
+        s.remote_synced_index.insert(url.to_string(), 1);
+        assert!(remotes_needing_sync(&s).is_empty());
+    }
+
+    /// An offline remote (no live index reading) is not auto-pulled — there is
+    /// nothing to compare against, and reconnecting it is the offline row's job,
+    /// not the version-advanced auto-sync's.
+    #[test]
+    fn remotes_needing_sync_skips_offline_remotes() {
+        let mut s = settings_state(&[], &[]);
+        let url = "http://down.test:8080";
+        s.sources.push(offline_remote_status(url)); // index_version None
+        s.remote_synced_index.insert(url.to_string(), 1);
+        assert!(remotes_needing_sync(&s).is_empty());
+    }
+
+    /// The Rescan action force-resyncs every ENABLED remote regardless of a
+    /// detected version change (a plain local-root reconcile rebuilds remote
+    /// tracks from cached blobs and would miss server-side additions); a
+    /// disabled remote and local roots are excluded.
+    #[test]
+    fn enabled_remote_urls_lists_enabled_remotes_only() {
+        let mut s = settings_state(&[], &[]);
+        let on = "http://on.test:8080";
+        let off = "http://off.test:8080";
+        s.sources.push(online_remote_status(on));
+        let mut disabled = online_remote_status(off);
+        disabled.enabled = false;
+        s.sources.push(disabled);
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("/music"),
+            enabled: true,
+            available: true,
+            track_count: 3,
+            kind: SourceKind::Local {
+                path: PathBuf::from("/music"),
+            },
+            remote: None,
+        });
+        assert_eq!(enabled_remote_urls(&s), vec![on.to_string()]);
     }
 
     /// The leading enable toggle is a focusable control that disables its source:
