@@ -297,3 +297,156 @@ fn every_format_produces_the_correct_tone_at_both_device_rates() {
         panic!("signal e2e failed:\n{e}");
     }
 }
+
+/// A 5.1 (FL FR FC LFE BL BR) 24-bit WAV at 48 kHz carrying the LEFT/RIGHT tones ONLY in the
+/// SURROUND channels (BL = 440 Hz, BR = 659.25 Hz), silence in front + LFE. The front/LFE
+/// channels are silent on purpose: the tones can reach the stereo output ONLY if the deck
+/// folds the surrounds in (at -3 dB). A stereo-only player, or a broken downmix, emits
+/// silence here.
+fn surround_5_1_tone_wav() -> Vec<u8> {
+    const SR: u32 = 48_000;
+    const N: usize = 24_000; // 0.5 s
+    let sine = |hz: f64| -> Vec<i32> {
+        (0..N)
+            .map(|n| {
+                (6_000_000.0 * (2.0 * std::f64::consts::PI * hz * n as f64 / SR as f64).sin())
+                    .round() as i32
+            })
+            .collect()
+    };
+    let silent = vec![0i32; N];
+    // Channel order FL FR FC LFE BL BR.
+    let planes = [
+        silent.clone(),
+        silent.clone(),
+        silent.clone(),
+        silent,
+        sine(LEFT_HZ),
+        sine(RIGHT_HZ),
+    ];
+    let mask: u32 = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20; // FL FR FC LFE BL BR = 5.1
+
+    let ch = 6u16;
+    let block_align = ch * 3;
+    let mut fmt = Vec::new();
+    fmt.extend_from_slice(&0xFFFEu16.to_le_bytes());
+    fmt.extend_from_slice(&ch.to_le_bytes());
+    fmt.extend_from_slice(&SR.to_le_bytes());
+    fmt.extend_from_slice(&(SR * u32::from(block_align)).to_le_bytes());
+    fmt.extend_from_slice(&block_align.to_le_bytes());
+    fmt.extend_from_slice(&24u16.to_le_bytes());
+    fmt.extend_from_slice(&22u16.to_le_bytes()); // cbSize
+    fmt.extend_from_slice(&24u16.to_le_bytes()); // valid bits
+    fmt.extend_from_slice(&mask.to_le_bytes()); // dwChannelMask = 5.1
+    // KSDATAFORMAT_SUBTYPE_PCM {00000001-0000-0010-8000-00AA00389B71}.
+    fmt.extend_from_slice(&[
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B,
+        0x71,
+    ]);
+
+    let mut data = Vec::with_capacity(N * usize::from(ch) * 3);
+    for n in 0..N {
+        for plane in &planes {
+            let v = plane[n];
+            data.push((v & 0xFF) as u8);
+            data.push(((v >> 8) & 0xFF) as u8);
+            data.push(((v >> 16) & 0xFF) as u8);
+        }
+    }
+
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(4 + 8 + fmt.len() as u32 + 8 + data.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(b"WAVE");
+    bytes.extend_from_slice(b"fmt ");
+    bytes.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&fmt);
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(&data);
+    bytes
+}
+
+/// END-TO-END multichannel downmix: a 5.1 source whose only audio is in the SURROUND
+/// channels, driven through the full `ServicePlayer` into a stereo device. The captured
+/// stereo must carry LEFT = 440 / RIGHT = 659.25 — which can only happen if the deck folds
+/// the surrounds to stereo. Proves `soul-audio-core`'s mask-driven downmix reaches the app's
+/// real playback path (not just a core unit test).
+#[test]
+fn surround_5_1_folds_to_stereo_through_the_player() {
+    let run = || -> Result<(), String> {
+        // open_track takes a path, so materialise the generated fixture (unique per process).
+        let path =
+            std::env::temp_dir().join(format!("soul_signal_e2e_5_1_{}.wav", std::process::id()));
+        std::fs::write(&path, surround_5_1_tone_wav())
+            .map_err(|e| format!("write fixture: {e}"))?;
+
+        let device_rate = 48_000u32;
+        let ch = 2usize;
+        let deck = Deck::new(
+            CaptureSink {
+                rate: device_rate,
+                channels: 2,
+                written: Vec::new(),
+            },
+            Quality::Hq,
+        );
+        let engine = Engine::new(deck, queue_for(vec![0]));
+        let mut player: HarnessPlayer = Player::new(engine, u64::from(device_rate));
+        apply_command(
+            &mut player,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .map_err(|e| format!("PlayContext: {e:?}"))?;
+
+        let want = (RENDER_SECS * f64::from(device_rate)) as usize;
+        pump_capture_frames(&mut player, &path, want, ch);
+        let _ = std::fs::remove_file(&path);
+
+        let written = &player.deck().sink().written;
+        let (peak, rms) = peak_and_rms(written);
+        require!(
+            (PLAYS_PEAK_FLOOR..=PLAYS_PEAK_CEIL).contains(&peak) && rms > PLAYS_RMS_FLOOR,
+            "5.1 downmix: peak={peak} rms={rms:.0} — silent (surround not folded to stereo?)"
+        );
+
+        let skip = (device_rate as usize / 100) * ch; // ~10 ms (clears the fade)
+        let analysis = &written[skip.min(written.len())..];
+        require!(
+            analysis.len() >= device_rate as usize * ch / 33,
+            "5.1 downmix: too little steady audio ({} samples)",
+            analysis.len()
+        );
+        let l = channel(analysis, ch, 0);
+        let r = channel(analysis, ch, 1);
+        let rate_f = f64::from(device_rate);
+
+        assert_tone(&l, rate_f, LEFT_HZ, "5.1 LEFT (folded from BL)")?;
+        assert_tone(&r, rate_f, RIGHT_HZ, "5.1 RIGHT (folded from BR)")?;
+        require!(
+            goertzel_power(&l, rate_f, LEFT_HZ) > goertzel_power(&l, rate_f, RIGHT_HZ) * 10.0
+                && goertzel_power(&r, rate_f, RIGHT_HZ)
+                    > goertzel_power(&r, rate_f, LEFT_HZ) * 10.0,
+            "5.1 downmix: L/R surround tones crossed"
+        );
+        println!(
+            "  5.1→stereo through the player: peak={peak} rms={rms:.0} — surround BL=440 BR=659.25 reached L/R OK"
+        );
+        Ok(())
+    };
+    let res = std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn_scoped(s, run)
+            .expect("spawn")
+            .join()
+            .unwrap_or_else(|_| Err("5.1 harness thread panicked (see stderr)".into()))
+    });
+    if let Err(e) = res {
+        panic!("5.1 downmix e2e failed:\n{e}");
+    }
+}
