@@ -1,36 +1,37 @@
 //! User-created playlists: an in-memory data model (`model`), persisted to an
 //! on-disk per-folder store (`store`), and pure cover-mosaic selection
 //! (`cover`). Task 7 wired `PlaylistStore`/`PlaylistId` into `State` and the
-//! routes; Task 8 wires the real Playlists list page (list/create, the cover
-//! selector) in; the mutators a detail page needs
-//! (rename/delete/add_entry/remove_entry/move_entry) land in Task 9.
+//! routes; Task 8 wired the Playlists list page (list/create, the cover
+//! selector) in; Task 9 wires the detail page's mutators
+//! (rename/delete/remove_entry/move_entry) and `Playlist`/`PlaylistEntry` in.
 #![forbid(unsafe_code)]
-// `cover`/`model`/`store` each have their own tests exercising this fully, so
-// what's flagged below is not dead code, just not yet reached from non-test
-// `main.rs`/`views` code. This can't be narrowed further than "the whole
-// submodule tree" without editing those files directly (out of scope for
-// this crate's "allow trim" convention; see the per-import allows below for
-// exactly what's still unreached after Task 8).
+// `entries_fingerprint` (cover-mosaic memoization) is exercised only by
+// `cover.rs`'s own tests; no view calls it yet (the list/detail pages don't
+// memoize the cover decision, they just recompute it per render), so in a
+// non-test build it is genuinely dead_code. Narrowing further would mean
+// adding a per-item allow inside `cover.rs` itself, out of this task's touch
+// scope (`mod.rs` only); this blanket allow is now scoped to just that one
+// still-unreached item, everything else Task 9 wires up below is reached.
 #![allow(dead_code)]
 
 pub mod cover;
 pub mod model;
 pub mod store;
 
-// As of Task 8, the Playlists list page reaches `PlaylistId`, `PlaylistStore`
-// (list/create), `PlaylistCover`, and `select_cover` from non-test code.
-// `playlist_store_path` is still only reached through test code (the view's
-// own render tests reset the shared on-disk store between runs); the rest of
-// each module's public surface (`entries_fingerprint`'s memoization,
-// `Playlist`/`PlaylistEntry`/`slugify`, and the mutators
-// `rename`/`delete`/`add_entry`/`remove_entry`/`move_entry`) is wired up by
-// the real detail page body in Task 9.
+// As of Task 9, every mutator (`rename`/`delete`/`add_entry`/`remove_entry`/
+// `move_entry`) and `Playlist`/`PlaylistEntry` are reached from non-test code
+// (the detail page). `slugify` is reached in production too, but only via
+// `store::create`'s own internal `super::model::slugify` path, never through
+// this re-export, so the re-exported binding itself stays unused outside
+// tests; `playlist_store_path` likewise, only reached through each view's own
+// render tests resetting the shared on-disk store between runs.
 #[allow(unused_imports)]
 pub use cover::entries_fingerprint;
 pub use cover::{PlaylistCover, select_cover};
 pub use model::PlaylistId;
 #[allow(unused_imports)]
-pub use model::{Playlist, PlaylistEntry, slugify};
+pub use model::slugify;
+pub use model::{Playlist, PlaylistEntry};
 #[allow(unused_imports)]
 pub use store::playlist_store_path;
 pub use store::{PlaylistStore, PlaylistSummary};

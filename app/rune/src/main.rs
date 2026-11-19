@@ -160,6 +160,12 @@ pub(crate) fn navigate_to(
     s.open_playlist = open_playlist;
     s.mobile_show_content = true;
     s.genre_search = rune::TextEdit::new("");
+    // A playlist's inline rename/delete-confirm is page-scoped ephemeral UI,
+    // same as `genre_search` above; reset rather than carried to wherever we
+    // land next (including back onto the same detail page via a fresh open).
+    s.playlist_renaming = None;
+    s.playlist_rename_buf = rune::TextEdit::new("");
+    s.playlist_delete_confirm = None;
 }
 
 /// The detail back button: pop to the previous location, or — if the stack is
@@ -167,6 +173,9 @@ pub(crate) fn navigate_to(
 /// end.
 pub(crate) fn go_back(s: &mut State) {
     s.genre_search = rune::TextEdit::new("");
+    s.playlist_renaming = None;
+    s.playlist_rename_buf = rune::TextEdit::new("");
+    s.playlist_delete_confirm = None;
     if let Some(prev) = s.nav_history.pop() {
         s.route = prev.route;
         s.open_album = prev.open_album;
@@ -257,6 +266,21 @@ struct State {
     /// a blank/whitespace-only name is a no-op. One dedicated buffer per
     /// inline editor, like `dsp_rename_buf`/`remote_url_buf`.
     playlist_new_buf: rune::TextEdit,
+    /// Which playlist's inline rename field (on its detail page) is open, or
+    /// `None`. Mirrors `dsp_rename`; its buffer is `playlist_rename_buf`. Reset
+    /// (not committed) on cancel and whenever `navigate_to`/`go_back` leaves the
+    /// current location, so a stale buffer never resurfaces on the next visit
+    /// (the miss `playlist_new_buf` had before this was noticed).
+    playlist_renaming: Option<playlists::PlaylistId>,
+    /// The text buffer the inline playlist-rename editor draws. Seeded from the
+    /// playlist's current name when a rename opens; ignored while
+    /// `playlist_renaming` is `None`.
+    playlist_rename_buf: rune::TextEdit,
+    /// Which playlist's delete action is pending the confirm step (its detail
+    /// page shows "Delete this playlist?" plus Delete/Cancel in place of the
+    /// Rename/Delete icons), or `None`. A single stray click never deletes.
+    /// Reset the same way as `playlist_renaming`.
+    playlist_delete_confirm: Option<playlists::PlaylistId>,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -640,6 +664,9 @@ impl State {
             library,
             playlists,
             playlist_new_buf: rune::TextEdit::new(""),
+            playlist_renaming: None,
+            playlist_rename_buf: rune::TextEdit::new(""),
+            playlist_delete_confirm: None,
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
