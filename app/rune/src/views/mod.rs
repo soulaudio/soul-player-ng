@@ -1,6 +1,7 @@
 //! Views composing the main window's layout out of `theme::Palette` + `State`.
 #![forbid(unsafe_code)]
 
+pub mod add_to_playlist;
 pub mod albums;
 pub mod artists;
 pub mod detail_page;
@@ -13,6 +14,8 @@ pub mod icons;
 pub mod library;
 pub mod media_card;
 pub mod player;
+pub mod playlist_detail;
+pub mod playlists;
 pub mod queue;
 pub mod reveal;
 pub mod scrollbar;

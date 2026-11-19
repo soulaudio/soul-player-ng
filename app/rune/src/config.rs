@@ -56,8 +56,12 @@ pub(crate) fn use_test_config_dir() -> std::sync::MutexGuard<'static, ()> {
 /// that persists a setting must not let another's write leak into its
 /// assertions (set the relevant `State` field explicitly instead of trusting a
 /// loaded value). In production it is `<os-config>/soul-player`.
+///
+/// `pub(crate)`: the playlist store (`playlists::store`) falls back to
+/// `<this>/playlists` when no managed-library root is configured, so it needs
+/// the same test/production split every other per-setting path here gets.
 #[cfg(test)]
-fn soul_player_dir() -> Option<PathBuf> {
+pub(crate) fn soul_player_dir() -> Option<PathBuf> {
     Some(
         TEST_CONFIG_DIR
             .get_or_init(|| {
@@ -68,7 +72,7 @@ fn soul_player_dir() -> Option<PathBuf> {
 }
 
 #[cfg(not(test))]
-fn soul_player_dir() -> Option<PathBuf> {
+pub(crate) fn soul_player_dir() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("soul-player"))
 }
 
