@@ -1927,19 +1927,23 @@ pub(crate) fn set_eq_preamp(s: &mut State, unit: usize, preamp_db: f32) {
 }
 
 /// Per-frame poll (wired as `AppSpec::poll`). Drives the title-bar scan-activity
-/// pulse (while a scan runs) *and* the live EQ spectrum analyzer. Returns whether
-/// the view must re-render.
+/// pulse (while a scan runs, or a Sources row is showing its "Connecting…"/
+/// "Syncing…" loading state) *and* the live EQ spectrum analyzer. Returns
+/// whether the view must re-render.
 fn spectrum_poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // `now` is Rune's ABSOLUTE frame clock (seconds since launch), not a per-frame
     // delta — see `AppSpec::poll`. Recover the real time this frame covered for the
     // manual, time-based animations (clamped so an idle gap can't teleport them).
     let frame_dt = views::reveal::frame_delta(now, &mut s.reveal_clock);
-    // Title-bar activity: while a library scan is in flight, keep the frame clock
-    // ticking and breathe the icon's pulse — independent of the spectrum, so the
-    // pill animates even when nothing is playing. The phase rides the absolute
-    // clock directly (a constant real-time rate), bounded modulo to stay finite and
-    // f32-precise over a long scan.
-    let scanning = s.scan_progress.is_some();
+    // Title-bar activity: while a library scan is in flight, OR a Sources row
+    // is showing its own "Connecting…"/"Syncing…" loading state (a remote
+    // with no health probe yet, or a reconnect/resync in flight), keep the
+    // frame clock ticking and breathe the shared activity icon's pulse
+    // (`remote_loading_line` reads the same `scan_anim`) — independent of the
+    // spectrum, so the pill animates even when nothing is playing. The phase
+    // rides the absolute clock directly (a constant real-time rate), bounded
+    // modulo to stay finite and f32-precise over a long scan.
+    let scanning = s.scan_progress.is_some() || views::settings::any_remote_row_is_loading(s);
     if scanning {
         s.scan_anim = (now as f32) % 1000.0;
         tx.wake_after(std::time::Duration::from_millis(16));
@@ -7626,6 +7630,97 @@ mod tests {
             el_info(&rt, "source-latency-0").text.as_deref(),
             Some("—"),
             "no latency reading renders as the dash placeholder"
+        );
+    }
+
+    /// Regression: a remote that was JUST connected (its row exists in
+    /// `s.sources` — the add succeeded — but no health probe has landed yet,
+    /// `RemoteHealth::last_checked_unix: None`) must NOT render the bare
+    /// latency/version/last-checked "— — —" trio `offline_remote_source_row_
+    /// shows_dash_latency_and_offline_dot` pins for a genuinely offline
+    /// (probed-and-failed) remote. It renders the keyed loading affordance
+    /// instead, reading "Connecting…" — the "better loading than just
+    /// '- - -'" fix.
+    #[test]
+    fn freshly_connected_remote_shows_connecting_not_dash_placeholders() {
+        // Defends against the pre-existing global-locale test race (another
+        // test leaving rust_i18n on a non-English locale): this asserts the
+        // exact English string.
+        rust_i18n::set_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("http://example.test:8080"),
+            enabled: true,
+            available: false,
+            track_count: 3,
+            kind: SourceKind::Remote {
+                url: "http://example.test:8080".to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: false,
+                latency_ms: None,
+                server_version: None,
+                index_version: None,
+                last_checked_unix: None, // never probed
+            }),
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("source-loading-0").is_some(),
+            "a never-probed remote shows the Connecting…/Syncing… loading affordance"
+        );
+        assert_eq!(
+            el_info(&rt, "source-loading-label-0").text.as_deref(),
+            Some("Connecting…"),
+            "the loading line reads Connecting…, not a bare dash"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "no dash-placeholder latency element renders while connecting"
+        );
+    }
+
+    /// Regression: a LIVE remote (already probed at least once, with
+    /// real telemetry) that is mid a manual reconnect/resync
+    /// (`State::remote_reconnecting`) shows "Syncing…" in place of its
+    /// (possibly stale) health line, rather than leaving the old
+    /// latency/version reading up as if nothing were happening.
+    #[test]
+    fn live_remote_mid_reconnect_shows_syncing_not_its_health_line() {
+        // See the matching note in `freshly_connected_remote_shows_connecting_
+        // not_dash_placeholders`: defends against the global-locale test race.
+        rust_i18n::set_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let url = "http://example.test:8080";
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources.push(online_remote_status(url));
+        s.remote_reconnecting = vec![url.to_string()];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("source-loading-0").is_some(),
+            "a mid-reconnect live remote shows the loading affordance"
+        );
+        assert_eq!(
+            el_info(&rt, "source-loading-label-0").text.as_deref(),
+            Some("Syncing…"),
+            "mid-reconnect reads Syncing…, distinct from the fresh-connect Connecting… wording"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "the stale latency reading is hidden while a resync is in flight"
         );
     }
 
