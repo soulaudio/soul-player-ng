@@ -1610,12 +1610,8 @@ impl PlayerHandle {
     /// [`Library::locator_of`]; playlists store this instead of the volatile
     /// id.
     pub fn locator_of(&self, id: u32) -> Option<TrackLocator> {
-        self.inner
-            .library
-            .lock()
-            .expect("library mutex")
-            .as_ref()?
-            .locator_of(id)
+        let lib = self.inner.library.lock().expect("library mutex").clone()?;
+        lib.locator_of(id)
     }
 
     /// Resolve durable locators back to current track ids against whatever
@@ -1623,13 +1619,11 @@ impl PlayerHandle {
     /// for each entry (no library open, or that locator doesn't resolve)
     /// rather than erroring.
     pub fn resolve_locators(&self, locs: &[TrackLocator]) -> Vec<Option<u32>> {
-        self.inner
-            .library
-            .lock()
-            .expect("library mutex")
-            .as_ref()
-            .map(|l| l.resolve_locators(locs))
-            .unwrap_or_else(|| vec![None; locs.len()])
+        let lib = self.inner.library.lock().expect("library mutex").clone();
+        match lib {
+            Some(lib) => lib.resolve_locators(locs),
+            None => vec![None; locs.len()],
+        }
     }
 
     /// Fire one transport/queue command (fire-and-forget). No-op until a folder
