@@ -191,8 +191,11 @@ fn track_row(
             .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
     )
     // Right-click: a context menu with the fuller per-track actions (Play,
-    // Play next, Add to queue). Anchored at the click point. Where popup
-    // menus aren't supported, the inline + button remains the fallback.
+    // Play next, Add to queue, Add to playlist). Anchored at the click
+    // point. "Add to playlist" is a native menu ITEM opening the themed
+    // `views::add_to_playlist` overlay (not a `PopupMenu::picker`, which the
+    // arch test bans only for selection dropdowns). Where popup menus aren't
+    // supported, the inline + button remains the add-to-queue fallback.
     .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
         let play_ids = menu_ids.clone();
         tx.popup_menu(
@@ -205,6 +208,10 @@ fn track_row(
                 .item(PopupItem::new(
                     "enqueue",
                     t!("library.addToQueue").to_string(),
+                ))
+                .item(PopupItem::new(
+                    "add-to-playlist",
+                    t!("playlists.addTo").to_string(),
                 )),
             press,
             move |st: &mut State, picked, _tx: &mut Tx| match picked {
@@ -214,6 +221,7 @@ fn track_row(
                 }),
                 Some("play-next") => st.host.send(Command::PlayNext(tid)),
                 Some("enqueue") => st.host.send(Command::Enqueue(tid)),
+                Some("add-to-playlist") => crate::open_add_to_playlist(st, tid),
                 _ => {}
             },
         );
