@@ -26,13 +26,29 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use soul_player_host::TrackLocator;
 
+use super::cover::first_distinct_album_indices;
 use super::model::{Playlist, PlaylistEntry, PlaylistId, slugify};
 use crate::config;
 
-/// How many of a playlist's leading entries ride along in the manifest as
-/// its cheap cover preview. Task 5 just takes the first N; a later selector
-/// (Task 6) refines this to the first N *distinct-album* entries.
+/// How many of a playlist's leading distinct-album entries ride along in the
+/// manifest as its cheap cover preview (every entry is "eligible" here; only
+/// the art-presence gate in [`super::cover::select_cover`] differs).
 const MANIFEST_COVER_LIMIT: usize = 4;
+
+/// The first [`MANIFEST_COVER_LIMIT`] distinct-album entries' locators, in
+/// playlist order; shares the dedupe rule [`super::cover::select_cover`]
+/// uses, so the list page's cover candidates are already album-distinct.
+fn manifest_cover(entries: &[PlaylistEntry]) -> Vec<TrackLocator> {
+    first_distinct_album_indices(
+        entries,
+        MANIFEST_COVER_LIMIT,
+        |_| true,
+        |e| e.snapshot.album.as_str(),
+    )
+    .into_iter()
+    .map(|i| entries[i].locator.clone())
+    .collect()
+}
 
 /// Where playlists live on disk: `<managed-library-root>/.soul/playlists`
 /// once a managed library is configured, else `<config-dir>/playlists`. This
@@ -241,13 +257,7 @@ impl PlaylistStore {
                     order,
                     name: loaded.playlist.name.clone(),
                     count: loaded.playlist.entries.len(),
-                    cover: loaded
-                        .playlist
-                        .entries
-                        .iter()
-                        .take(MANIFEST_COVER_LIMIT)
-                        .map(|e| e.locator.clone())
-                        .collect(),
+                    cover: manifest_cover(&loaded.playlist.entries),
                 })
             })
             .collect();
@@ -351,13 +361,7 @@ impl PlaylistStore {
                     id: *id,
                     name: loaded.playlist.name.clone(),
                     count: loaded.playlist.entries.len(),
-                    cover: loaded
-                        .playlist
-                        .entries
-                        .iter()
-                        .take(MANIFEST_COVER_LIMIT)
-                        .map(|e| e.locator.clone())
-                        .collect(),
+                    cover: manifest_cover(&loaded.playlist.entries),
                 })
             })
             .collect()
@@ -370,6 +374,10 @@ mod tests {
     use soul_player_host::TrackSnapshot;
 
     fn entry(title: &str) -> PlaylistEntry {
+        entry_with_album(title, "Album")
+    }
+
+    fn entry_with_album(title: &str, album: &str) -> PlaylistEntry {
         PlaylistEntry {
             locator: TrackLocator::Local {
                 path: format!("D:/music/{title}.flac"),
@@ -377,7 +385,7 @@ mod tests {
             snapshot: TrackSnapshot {
                 title: title.into(),
                 artist: "Artist".into(),
-                album: "Album".into(),
+                album: album.into(),
                 duration_secs: 180,
                 track_no: None,
                 disc_no: None,
@@ -567,5 +575,39 @@ mod tests {
             .map(|e| e.snapshot.title.as_str())
             .collect();
         assert_eq!(titles, ["c", "a"]);
+    }
+
+    #[test]
+    fn manifest_cover_dedupes_by_album() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let mut s = PlaylistStore::load();
+        let id = s.create("Mix");
+        // Two tracks share album "X"; 5 distinct albums follow, so the cover
+        // should hold the first 4 distinct-album locators, not 4 raw entries.
+        s.add_entry(id, entry_with_album("a", "X"));
+        s.add_entry(id, entry_with_album("b", "X"));
+        s.add_entry(id, entry_with_album("c", "Y"));
+        s.add_entry(id, entry_with_album("d", "Z"));
+        s.add_entry(id, entry_with_album("e", "W"));
+        s.add_entry(id, entry_with_album("f", "V"));
+
+        let cover_titles: Vec<String> = s.list()[0]
+            .cover
+            .iter()
+            .map(|loc| match loc {
+                TrackLocator::Local { path } => path.clone(),
+                TrackLocator::Remote { .. } => unreachable!("test only adds local entries"),
+            })
+            .collect();
+        assert_eq!(
+            cover_titles,
+            [
+                "D:/music/a.flac",
+                "D:/music/c.flac",
+                "D:/music/d.flac",
+                "D:/music/e.flac",
+            ]
+        );
     }
 }
