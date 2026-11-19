@@ -4069,6 +4069,10 @@ mod tests {
     /// contains itself. This is the regression net for i18n text robustness.
     #[test]
     fn settings_layout_contains_itself_in_every_locale() {
+        // Hold the locale lock across the whole sweep: this test flips the
+        // global locale per iteration, so it must not interleave with a test
+        // asserting a specific localised string (see `use_test_locale`).
+        let _locale = config::use_test_locale("en");
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -4194,6 +4198,10 @@ mod tests {
     /// coverage by adding a scene here.
     #[test]
     fn app_layout_contains_itself_in_every_locale() {
+        // Hold the locale lock across the whole sweep (see `use_test_locale`):
+        // this test cycles every locale and must not race a localised-string
+        // assertion in a sibling test.
+        let _locale = config::use_test_locale("en");
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -6429,7 +6437,11 @@ mod tests {
     /// clip), the choices render, and picking one commits the locale + closes.
     #[test]
     fn language_dropdown_opens_renders_and_picks() {
-        // Picking flows through `set_locale_pref`, which writes config — isolate it.
+        // Picking commits a non-"en" locale (German) globally for part of this
+        // test, so hold the locale lock too (acquired BEFORE the config lock, the
+        // documented order) — otherwise it races a sibling test asserting a
+        // localised string. Picking also writes config, hence the config lock.
+        let _locale = config::use_test_locale("en");
         let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -8973,7 +8985,7 @@ mod tests {
     /// track there shows the same cloud badge + hover tooltip too.
     #[test]
     fn the_artist_detail_page_shows_the_remote_badge_for_a_remote_track() {
-        rust_i18n::set_locale("en");
+        let _locale = config::use_test_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.library = vec![
@@ -9728,7 +9740,7 @@ mod tests {
     /// same album shows none.
     #[test]
     fn the_album_detail_page_shows_the_remote_badge_for_a_remote_track() {
-        rust_i18n::set_locale("en");
+        let _locale = config::use_test_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.library = vec![
@@ -9973,7 +9985,7 @@ mod tests {
     /// lives on. The badge's hover tooltip ([`El::help`]) names that source.
     #[test]
     fn now_playing_shows_the_remote_badge_for_a_remote_track() {
-        rust_i18n::set_locale("en");
+        let _locale = config::use_test_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.library = vec![soul_player_host::TrackView {
@@ -10273,7 +10285,7 @@ mod tests {
     /// (`remote_source == None`, the unremarked default) shows none.
     #[test]
     fn a_remote_track_row_shows_the_remote_badge_a_local_one_does_not() {
-        rust_i18n::set_locale("en");
+        let _locale = config::use_test_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.library = vec![

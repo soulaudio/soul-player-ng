@@ -627,7 +627,7 @@ mod tests {
             albums_page(s, &p, cx, scale)
         }
 
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let mut remote_track = atv(1, "Remote Artist", "Remote Album");
         remote_track.remote_source = Some("listen.home.lan".into());
         let local_track = atv(2, "Local Artist", "Local Album");
@@ -690,7 +690,7 @@ mod tests {
             rt
         }
 
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
 
         let mut remote_track = atv(1, "Artist", "Remote Album");
         remote_track.remote_source = Some("listen.home.lan".into());
