@@ -11,6 +11,7 @@
 //! unchanged — only the backing store moved from an in-memory `CatalogInput` to
 //! the baked index the DAP also reads.
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -21,9 +22,9 @@ use soul_audio_catalog::{BrowseAxis, Catalog, StrRef};
 use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_import::{ScanCache, ScanProgress};
 use soul_audio_index::IndexReader;
-use soul_audio_multicatalog::{MultiCatalog, unpack};
+use soul_audio_multicatalog::{MultiCatalog, pack, unpack};
 
-use crate::types::TrackView;
+use crate::types::{TrackLocator, TrackView};
 
 /// The result of an [incremental scan](Library::scan_many_incremental): the baked
 /// library plus the warm cache and deletions, carried back so the host can persist
@@ -266,6 +267,43 @@ impl Library {
         Some(Located { source, rel })
     }
 
+    /// A durable [`TrackLocator`] for the current track `id`: the absolute
+    /// path (forward-slash normalized), independent of the volatile compound
+    /// id a rescan can renumber. Playlists store this instead of the id. Every
+    /// source behind this `Library` is local, so this always yields `Local`
+    /// (or `None` for an id that doesn't resolve); a remote source's own
+    /// locator is built by its own layer (`soul_player_host::remote`).
+    #[must_use]
+    pub fn locator_of(&self, id: u32) -> Option<TrackLocator> {
+        let path = self.path_of(id)?;
+        Some(TrackLocator::Local {
+            path: path.to_string_lossy().replace('\\', "/"),
+        })
+    }
+
+    /// Resolve durable locators back to **current** track ids, surviving a
+    /// rescan that renumbered them. Phase 1: exact-locator (Local path) match
+    /// only; `None` for anything that doesn't match (a missing file, a moved
+    /// file, or a `Remote` locator, which this local-only `Library` can never
+    /// produce or match). Builds a `locator-key -> id` reverse map from the
+    /// current catalog once, then looks up each input by
+    /// [`TrackLocator::key`] so separator/case differences don't matter.
+    #[must_use]
+    pub fn resolve_locators(&self, locs: &[TrackLocator]) -> Vec<Option<u32>> {
+        let mut by_key: HashMap<String, u32> = HashMap::new();
+        for (source, &count) in self.counts.iter().enumerate() {
+            for local in 0..count as u32 {
+                let id = pack(source as u32, local);
+                if let Some(loc) = self.locator_of(id) {
+                    by_key.insert(loc.key(), id);
+                }
+            }
+        }
+        locs.iter()
+            .map(|loc| by_key.get(&loc.key()).copied())
+            .collect()
+    }
+
     /// The tag-derived duration (seconds) for `id`, if known (> 0). Used to fill
     /// a Tick when the decoder can't report a length, keeping the progress bar
     /// consistent with the track list.
@@ -484,6 +522,66 @@ mod tests {
         // scan_finds_supported_files_skips_others_and_assigns_index_ids) returns
         // None for.
         assert_eq!(lib.locate(9), None);
+    }
+
+    #[test]
+    fn locator_of_returns_the_absolute_path_for_a_local_track() {
+        let root = tmpdir("locator_of");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(root.join("b.wav"), wav(48_000, 48_000)).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        let id = lib.views()[0].id;
+        let loc = lib.locator_of(id).unwrap();
+        match loc {
+            TrackLocator::Local { path } => assert!(path.ends_with("a.wav")),
+            TrackLocator::Remote { .. } => panic!("expected a local locator"),
+        }
+    }
+
+    #[test]
+    fn resolve_locators_survives_a_rescan_that_renumbers_ids() {
+        let root = tmpdir("rescan_renumber");
+        std::fs::write(root.join("b.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(root.join("c.wav"), wav(48_000, 48_000)).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        // Capture a durable locator for the track currently named b.wav.
+        let b_id = lib
+            .views()
+            .iter()
+            .find(|v| {
+                matches!(
+                    lib.locator_of(v.id),
+                    Some(TrackLocator::Local { path }) if path.ends_with("b.wav")
+                )
+            })
+            .unwrap()
+            .id;
+        let loc = lib.locator_of(b_id).unwrap();
+
+        // Insert an alphabetically-earlier file: b.wav's local id shifts.
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        let lib2 = Library::scan(&root).unwrap();
+        let resolved =
+            lib2.resolve_locators(std::slice::from_ref(&loc))[0].expect("resolves after rescan");
+
+        // The resolved id must still map back to b.wav.
+        assert!(matches!(
+            lib2.locator_of(resolved),
+            Some(TrackLocator::Local { path }) if path.ends_with("b.wav")
+        ));
+        // And the raw id value should differ from before (renumbered).
+        assert_ne!(resolved, b_id);
+    }
+
+    #[test]
+    fn resolve_locators_returns_none_for_a_missing_path() {
+        let root = tmpdir("resolve_missing");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        let miss = TrackLocator::Local {
+            path: "D:/nope/gone.flac".into(),
+        };
+        assert_eq!(lib.resolve_locators(&[miss]), vec![None]);
     }
 
     #[test]

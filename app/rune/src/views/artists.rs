@@ -73,7 +73,14 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
         card_w,
         scale,
         move |st: &mut State| {
-            crate::navigate_to(st, crate::Route::Artist, None, Some(name.clone()), None);
+            crate::navigate_to(
+                st,
+                crate::Route::Artist,
+                None,
+                Some(name.clone()),
+                None,
+                None,
+            );
             st.artist_top_expanded = false;
         },
     )
@@ -297,7 +304,14 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                     card_w,
                     scale,
                     move |st: &mut State| {
-                        crate::navigate_to(st, crate::Route::Album, Some(name.clone()), None, None);
+                        crate::navigate_to(
+                            st,
+                            crate::Route::Album,
+                            Some(name.clone()),
+                            None,
+                            None,
+                            None,
+                        );
                     },
                 ));
             }
@@ -382,7 +396,14 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
                 ),
         )
         .on_press(move |st: &mut State| {
-            crate::navigate_to(st, crate::Route::Album, Some(name.clone()), None, None);
+            crate::navigate_to(
+                st,
+                crate::Route::Album,
+                Some(name.clone()),
+                None,
+                None,
+                None,
+            );
         })
 }
 
