@@ -461,6 +461,13 @@ player.repeatOne:
   zh: '单曲循环'
   cs: 'Opakovat: jednu'
   ja: 'リピート: 1曲'
+player.addToPlaylist:
+  en: 'Add to playlist'
+  de: 'Zu Playlist hinzufügen'
+  es: 'Añadir a lista'
+  zh: '添加到播放列表'
+  cs: 'Přidat do playlistu'
+  ja: 'プレイリストに追加'
 
 library.sort:
   en: 'Sort'
