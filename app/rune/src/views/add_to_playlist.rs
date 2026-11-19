@@ -1,19 +1,34 @@
 //! The "Add to playlist" overlay: opened from a track row's context menu, it
-//! lists the user's playlists (pick one to add the pending track immediately)
-//! plus an inline "New playlist..." field that creates one and adds to it.
+//! is a MEMBERSHIP MANAGER over the user's playlists, not a one-shot picker.
+//! Each row shows whether the pending track is already in that playlist (a
+//! checkbox) and pressing the row toggles membership immediately and
+//! persists, without closing the overlay, so a track can be added to or
+//! removed from several playlists in one visit. The inline "New playlist..."
+//! field creates a playlist and adds the track to it, also without closing.
+//! The overlay only closes via its explicit "Done" button, the dim
+//! backdrop, or Escape.
 //! A centered, dim-backdrop modal (mirrors `main.rs`'s crash-report dialog)
 //! rather than an anchored popover: its trigger is a native context-menu item
 //! that has already closed by the time this renders, so there is no trigger
 //! element left to anchor under.
 #![forbid(unsafe_code)]
 
-use rune::{Color, Cursor, El, col, el, row, text, text_input};
+use rune::{Color, Cursor, El, col, el, icon, row, text, text_input};
 use soul_player_host::TrackSnapshot;
 
 use crate::State;
 use crate::playlists::{PlaylistEntry, PlaylistId, PlaylistSummary};
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
+use crate::views::icons;
+
+/// The membership checkbox's size: filled and checked when the track is
+/// already in the playlist, outline-only when not. Smaller than
+/// `views::settings`'s own enable/disable toggle box (`TOGGLE_PX`) since
+/// this sits inside a denser list row.
+const MEMBER_BOX_PX: f32 = 18.0;
+/// The check glyph's size inside [`MEMBER_BOX_PX`].
+const MEMBER_CHECK_PX: f32 = 12.0;
 
 /// Build the `PlaylistEntry` for `track_id` from its durable locator (via
 /// `host.locator_of`) and the on-screen `TrackView` for that id in
@@ -52,9 +67,9 @@ pub(crate) fn add_track_to_playlist(s: &mut State, track_id: u32, playlist_id: P
 }
 
 /// Whether playlist `playlist_id` already holds `track_id`, compared by
-/// durable-locator key (so the pick list can badge a playlist the track is
-/// already in instead of inviting a blind duplicate). `false` if the
-/// track's locator doesn't resolve: nothing to compare against.
+/// durable-locator key (so each row's checkbox reflects live membership
+/// instead of inviting a blind duplicate). `false` if the track's locator
+/// doesn't resolve: nothing to compare against.
 fn already_has(s: &State, playlist_id: PlaylistId, track_id: u32) -> bool {
     let Some(locator) = s.host.locator_of(track_id) else {
         return false;
@@ -65,23 +80,74 @@ fn already_has(s: &State, playlist_id: PlaylistId, track_id: u32) -> bool {
         .is_some_and(|pl| pl.entries.iter().any(|e| e.locator.key() == key))
 }
 
-/// One playlist row in the pick list: its name, then either the track count
-/// or (if `track_id` is already in this playlist) an "Added" badge in its
-/// place. Picking it adds the pending track and closes the overlay.
+/// Remove `track_id` from playlist `playlist_id`, the inverse of
+/// [`add_track_to_playlist`]: resolve the track's durable locator, find the
+/// entry in `playlist_id` whose own locator shares its key, and remove that
+/// entry by index. A no-op (never panics, never removes the wrong entry) if
+/// the locator doesn't resolve, the playlist isn't loaded, or no entry
+/// matches: the track simply isn't in this playlist.
+pub(crate) fn remove_track_from_playlist(s: &mut State, track_id: u32, playlist_id: PlaylistId) {
+    let Some(locator) = s.host.locator_of(track_id) else {
+        return;
+    };
+    let key = locator.key();
+    let Some(playlist) = s.playlists.get(playlist_id) else {
+        return;
+    };
+    let Some(index) = playlist.entries.iter().position(|e| e.locator.key() == key) else {
+        return;
+    };
+    s.playlists.remove_entry(playlist_id, index);
+}
+
+/// Toggle `track_id`'s membership in playlist `playlist_id`: remove it if
+/// already present, add it otherwise. The one action every row/button in
+/// this overlay drives now that it's a membership manager rather than a
+/// one-shot picker.
+pub(crate) fn toggle_track_in_playlist(s: &mut State, track_id: u32, playlist_id: PlaylistId) {
+    if already_has(s, playlist_id, track_id) {
+        remove_track_from_playlist(s, track_id, playlist_id);
+    } else {
+        add_track_to_playlist(s, track_id, playlist_id);
+    }
+}
+
+/// The membership checkbox: filled with a check glyph when `checked` (the
+/// track IS in this playlist), outline-only (muted fill, bordered, no
+/// glyph) when not. Mirrors `views::settings`'s own enable/disable toggle
+/// box shape, scaled down for an inline list row.
+fn membership_box(checked: bool, p: &Palette) -> El {
+    let mut b = el()
+        .size(MEMBER_BOX_PX, MEMBER_BOX_PX)
+        .radius(radius::XS)
+        .center()
+        .fill(if checked { p.primary } else { p.muted });
+    if !checked {
+        b = b.border(1.0, p.border);
+    }
+    if checked {
+        b = b.child(icon(&icons::CHECK, MEMBER_CHECK_PX).color(p.bg));
+    }
+    b
+}
+
+/// One playlist row in the membership list: a checkbox reflecting whether
+/// `track_id` is already in this playlist, its name, and its track count.
+/// Pressing the row toggles membership (via [`toggle_track_in_playlist`])
+/// without closing the overlay, so a track can be ticked into (or out of)
+/// several playlists in one visit; the overlay only closes via the "Done"
+/// button, the backdrop, or Escape.
 fn pick_row(s: &State, p: &Palette, track_id: u32, summary: &PlaylistSummary) -> El {
     let id = summary.id;
-    let added = already_has(s, id, track_id);
-    let trailing = if added {
-        text(t!("playlists.added").to_string())
-    } else {
-        text(t!("playlists.trackCount", count => summary.count).to_string())
-    }
-    .font(type_::CAPTION)
-    .color(p.text_secondary);
+    let checked = already_has(s, id, track_id);
+    let count = text(t!("playlists.trackCount", count => summary.count).to_string())
+        .font(type_::CAPTION)
+        .color(p.text_secondary);
     row()
         .key(format!("add-to-playlist-pick-{id}"))
         .role("button")
         .label(summary.name.clone())
+        .checked(checked)
         .focusable(true)
         .w_full()
         .center_y()
@@ -92,6 +158,7 @@ fn pick_row(s: &State, p: &Palette, track_id: u32, summary: &PlaylistSummary) ->
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
+        .child(membership_box(checked, p))
         .child(
             text(summary.name.clone())
                 .font(type_::ITEM)
@@ -99,17 +166,17 @@ fn pick_row(s: &State, p: &Palette, track_id: u32, summary: &PlaylistSummary) ->
                 .grow(1.0)
                 .truncate(),
         )
-        .child(trailing)
+        .child(count)
         .on_press(move |st: &mut State| {
-            add_track_to_playlist(st, track_id, id);
-            crate::close_add_to_playlist(st);
+            toggle_track_in_playlist(st, track_id, id);
         })
 }
 
 /// Commit the overlay's inline New-playlist field: a blank/whitespace-only
 /// name is a no-op (mirrors `views::playlists::confirm_new_playlist`);
-/// otherwise create the playlist, add the pending track to it, and close.
-/// A no-op (but still closes nothing) if the overlay isn't actually open.
+/// otherwise create the playlist, add the pending track to it, reset the
+/// field, and KEEP the overlay open (the fresh playlist's row then renders
+/// checked). A no-op if the overlay isn't actually open.
 fn confirm_new_playlist(s: &mut State) {
     let Some(track_id) = s.add_to_playlist_for else {
         return;
@@ -120,7 +187,7 @@ fn confirm_new_playlist(s: &mut State) {
     }
     let id = s.playlists.create(&name);
     add_track_to_playlist(s, track_id, id);
-    crate::close_add_to_playlist(s);
+    s.add_to_playlist_buf = rune::TextEdit::new("");
 }
 
 /// The inline "New playlist..." affordance: a text field bound to
@@ -162,10 +229,36 @@ fn new_playlist_field(s: &State, p: &Palette) -> El {
         )
 }
 
+/// The explicit close affordance: a right-aligned "Done" button, the
+/// membership manager's only in-dialog way to close (besides the dim
+/// backdrop press / Escape that `El::modal` already wires). Rows no longer
+/// close the overlay themselves, so without this there would be no way to
+/// leave once satisfied short of dismissing via the backdrop.
+fn done_row(p: &Palette) -> El {
+    row()
+        .key("add-to-playlist-done-row")
+        .w_full()
+        .justify_end()
+        .child(
+            el().key("add-to-playlist-done")
+                .role("button")
+                .label(t!("playlists.done").to_string())
+                .focusable(true)
+                .px(space::MD)
+                .py(space::XS)
+                .radius(radius::SM)
+                .fill(p.primary)
+                .cursor(Cursor::Pointer)
+                .child(text(t!("playlists.done").to_string()).color(p.bg))
+                .on_press(|st: &mut State| crate::close_add_to_playlist(st)),
+        )
+}
+
 /// The "Add to playlist" overlay, mounted at the window root (via
 /// [`crate::view`]'s overlay layer): a centered, dim-backdrop modal listing
 /// every playlist (or the empty-state message) over the inline New-playlist
-/// field. `None` while `State::add_to_playlist_for` is `None` (closed).
+/// field, with an explicit "Done" button to close it. `None` while
+/// `State::add_to_playlist_for` is `None` (closed).
 pub fn overlay(s: &State, p: &Palette) -> Option<El> {
     let track_id = s.add_to_playlist_for?;
     let summaries = s.playlists.list();
@@ -208,7 +301,8 @@ pub fn overlay(s: &State, p: &Palette) -> Option<El> {
                             .color(p.fg),
                     )
                     .child(list)
-                    .child(new_playlist_field(s, p)),
+                    .child(new_playlist_field(s, p))
+                    .child(done_row(p)),
             ),
     )
 }
@@ -290,6 +384,39 @@ mod tests {
     }
 
     #[test]
+    fn toggling_adds_then_removes_and_persists() {
+        let _g = config::use_test_config_dir();
+        let mut rt = runtime_over_library(&["a.wav"]);
+        let pid = rt.state.playlists.create("P");
+        let tid = rt.state.library[0].id;
+
+        toggle_track_in_playlist(&mut rt.state, tid, pid);
+        assert_eq!(
+            PlaylistStore::load().get(pid).unwrap().entries.len(),
+            1,
+            "the first toggle adds the track"
+        );
+
+        toggle_track_in_playlist(&mut rt.state, tid, pid);
+        assert_eq!(
+            PlaylistStore::load().get(pid).unwrap().entries.len(),
+            0,
+            "the second toggle removes it again"
+        );
+    }
+
+    #[test]
+    fn remove_is_a_no_op_when_absent() {
+        let _g = config::use_test_config_dir();
+        let mut rt = runtime_over_library(&["a.wav"]);
+        let pid = rt.state.playlists.create("P");
+        let tid = rt.state.library[0].id;
+
+        remove_track_from_playlist(&mut rt.state, tid, pid); // never added
+        assert_eq!(PlaylistStore::load().get(pid).unwrap().entries.len(), 0);
+    }
+
+    #[test]
     fn add_to_playlist_stores_locator_and_snapshot() {
         let _g = config::use_test_config_dir();
         let mut rt = runtime_over_library(&["a.wav"]);
@@ -321,6 +448,19 @@ mod tests {
         rt.frame(0.0);
     }
 
+    /// Press playlist `pid`'s row in the already-open overlay, the same
+    /// toggle a real click on its membership checkbox drives. Panics if the
+    /// row isn't found (the overlay isn't open, or `pid` isn't in the list).
+    fn toggle_row(rt: &mut Runtime<State>, pid: PlaylistId) {
+        let (x, y) = rt
+            .find(&format!("add-to-playlist-pick-{pid}"))
+            .expect("the playlist's pick row renders");
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+    }
+
     /// Drive the overlay's inline New-playlist field through the real
     /// harness: click to focus it, type `name` via IME commit, then confirm
     /// with Return. Mirrors `views::playlists`' own `trigger_new_playlist`.
@@ -341,8 +481,13 @@ mod tests {
         rt.frame(0.0);
     }
 
+    /// Confirming the New-playlist field creates the playlist and adds the
+    /// pending track to it, same as before this task; what changed is that
+    /// a membership manager keeps the overlay open afterward (Task 1 no
+    /// longer treats confirming as a terminal "pick and close" action), so
+    /// the newly-created playlist's own row can render checked.
     #[test]
-    fn add_overlay_new_playlist_adds_to_the_new_one() {
+    fn add_overlay_new_playlist_keeps_overlay_open_and_adds() {
         let _g = config::use_test_config_dir();
         let mut rt = runtime_over_library(&["a.wav"]);
         let tid = rt.state.library[0].id;
@@ -364,35 +509,73 @@ mod tests {
             .id;
         assert_eq!(store.get(created).unwrap().entries.len(), 1);
         assert_eq!(
-            rt.state.add_to_playlist_for, None,
-            "confirming closes the overlay"
+            rt.state.add_to_playlist_for,
+            Some(tid),
+            "creating a playlist keeps the membership-manager overlay open"
         );
     }
 
-    /// Picking an existing playlist from the pick list adds the pending
-    /// track to THAT playlist and closes the overlay, without touching the
-    /// New-playlist field.
+    /// Pressing an existing playlist's row toggles the pending track's
+    /// membership in it: the first press adds it (ticking the row) without
+    /// closing the overlay, and a second press on the SAME row removes it
+    /// again. Neither press touches the New-playlist field.
     #[test]
-    fn add_overlay_pick_existing_playlist_adds_and_closes() {
+    fn add_overlay_pick_existing_playlist_toggles_membership() {
         let _g = config::use_test_config_dir();
         let mut rt = runtime_over_library(&["a.wav"]);
         let tid = rt.state.library[0].id;
         let pid = rt.state.playlists.create("Existing");
 
         open_add_overlay(&mut rt, tid);
+
+        toggle_row(&mut rt, pid);
+        assert_eq!(PlaylistStore::load().get(pid).unwrap().entries.len(), 1);
+        assert_eq!(
+            rt.state.add_to_playlist_for,
+            Some(tid),
+            "adding via the row keeps the overlay open"
+        );
+
+        toggle_row(&mut rt, pid);
+        assert_eq!(
+            PlaylistStore::load().get(pid).unwrap().entries.len(),
+            0,
+            "pressing the same row again removes it"
+        );
+    }
+
+    #[test]
+    fn overlay_stays_open_after_a_toggle() {
+        let _g = config::use_test_config_dir();
+        let mut rt = runtime_over_library(&["a.wav"]);
+        let pid = rt.state.playlists.create("P");
+        let tid = rt.state.library[0].id;
+
+        open_add_overlay(&mut rt, tid);
+        // Toggling a row must NOT close the overlay (membership manager,
+        // not a picker).
+        toggle_row(&mut rt, pid);
+
+        assert_eq!(rt.state.add_to_playlist_for, Some(tid));
+    }
+
+    /// The explicit "Done" button is the membership manager's own way to
+    /// close once the overlay's rows don't close it themselves anymore.
+    #[test]
+    fn done_button_closes_the_overlay() {
+        let _g = config::use_test_config_dir();
+        let mut rt = runtime_over_library(&["a.wav"]);
+        let tid = rt.state.library[0].id;
+
+        open_add_overlay(&mut rt, tid);
         let (x, y) = rt
-            .find(&format!("add-to-playlist-pick-{pid}"))
-            .expect("the existing playlist's pick row renders");
+            .find("add-to-playlist-done")
+            .expect("the Done button renders");
         rt.pointer_move(x, y);
         rt.pointer_down(x, y);
         rt.pointer_up(x, y);
         rt.frame(0.0);
 
-        let store = PlaylistStore::load();
-        assert_eq!(store.get(pid).unwrap().entries.len(), 1);
-        assert_eq!(
-            rt.state.add_to_playlist_for, None,
-            "picking a playlist closes the overlay"
-        );
+        assert_eq!(rt.state.add_to_playlist_for, None);
     }
 }
