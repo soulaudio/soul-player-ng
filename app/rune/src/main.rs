@@ -4144,6 +4144,31 @@ mod tests {
         s.dsp_units[0].as_eq_mut().unwrap()
     }
 
+    /// Clicking the now-playing heart opens the add-to-playlist dialogue for the
+    /// current track (sets `add_to_playlist_for`). Driven through the full app
+    /// `view`; the panel-only harness in `views::player` does not route pointer
+    /// events to the panel's buttons, so the click-through lives here.
+    #[test]
+    fn now_playing_heart_opens_the_add_to_playlist_dialogue() {
+        let _g = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        let id = s
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("the test library has tracks");
+        s.now_playing_id = Some(id);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        click_key(&mut rt, "np-heart");
+        assert_eq!(rt.state.add_to_playlist_for, Some(id));
+    }
+
     /// End-to-end feed pipeline: as the player's now-playing state changes, the
     /// media session receives the right `Update`s over its channel — track
     /// metadata (resolved from the library) on a track change, playback on a
