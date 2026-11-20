@@ -603,11 +603,28 @@ fn rescan_button(p: &Palette) -> El {
             // Reconcile the current configured set (set_folders preserves each
             // source's enabled flag), re-aggregating files/roots that changed on
             // disk. The set itself is unchanged, so no save (apply_watch).
-            let roots: Vec<std::path::PathBuf> = s.sources.iter().map(|x| x.path.clone()).collect();
+            // ONLY local roots: `set_folders` manages the watched-FOLDER set, so a
+            // remote source's synthetic path must be excluded — passing it here
+            // would re-add the remote's URL as a bogus local folder (and leave the
+            // real remote in place), duplicating the source.
+            let roots: Vec<std::path::PathBuf> = s
+                .sources
+                .iter()
+                .filter(|x| matches!(x.kind, SourceKind::Local { .. }))
+                .map(|x| x.path.clone())
+                .collect();
             // Off the UI thread: a reconcile of a big library must not freeze the
             // window, and running it in the background lets the title-bar activity
             // widget animate while it scans.
             scan_in_background(s, move |h| h.set_folders(&roots), apply_watch);
+            // A Rescan should also pull fresh from every connected remote, not
+            // just re-aggregate local roots (set_folders rebuilds remote tracks
+            // from already-fetched blobs and would miss server-side additions).
+            // Force-resync each enabled remote via the shared, guarded reconnect
+            // path (off the UI thread, like the local reconcile above).
+            for url in crate::enabled_remote_urls(s) {
+                crate::reconnect_remote_now(s, url);
+            }
         })
 }
 
@@ -748,6 +765,62 @@ fn remote_health_line(index: usize, health: &RemoteHealth, p: &Palette) -> El {
         )
 }
 
+/// Whether `status` (a remote's [`SourceStatus`]) has nothing useful to show
+/// on its health line yet — either it has never been probed at all (fresh
+/// off a connect, before the first `/v0/ping` lands) or a manual
+/// reconnect/resync is currently in flight for this already-live row
+/// (`url` present in `reconnecting`, i.e. `State::remote_reconnecting`).
+/// `false` for a local source (no health line to begin with). The two cases
+/// [`live_source_row`] swaps [`remote_health_line`]'s latency/version/
+/// last-checked trio for a "Connecting…"/"Syncing…" state instead — without
+/// this, a freshly-connected remote (or one mid-resync) renders as three
+/// "—" placeholders at once, read by users as "broken", not "loading" (the
+/// "when I log in the scanning should have better loading than just
+/// '- - -'" report this fixes).
+fn remote_row_is_loading(status: &SourceStatus, reconnecting: &[String]) -> bool {
+    let SourceKind::Remote { url } = &status.kind else {
+        return false;
+    };
+    let never_probed = status
+        .remote
+        .as_ref()
+        .is_some_and(|h| h.last_checked_unix.is_none());
+    never_probed || reconnecting.iter().any(|u| u == url)
+}
+
+/// Whether ANY configured remote currently warrants the Sources row's
+/// "Connecting…"/"Syncing…" loading state ([`remote_row_is_loading`]) — used
+/// by the app's per-frame poll ([`crate::spectrum_poll`]) to keep the
+/// shared activity pulse (`State::scan_anim`) animating while at least one
+/// remote row shows it, mirroring the title-bar scan widget's own
+/// `scan_progress.is_some()` gate.
+pub fn any_remote_row_is_loading(s: &State) -> bool {
+    s.sources
+        .iter()
+        .any(|st| remote_row_is_loading(st, &s.remote_reconnecting))
+}
+
+/// The Sources row health line's "still establishing" state ([`live_source_row`],
+/// swapped in for [`remote_health_line`] while [`remote_row_is_loading`] is
+/// true): a pulsing activity glyph (the title bar's own `ACTIVITY` icon,
+/// breathing on `anim` — `State::scan_anim` — the same formula
+/// `titlebar::scan_activity` uses) plus the loading word, instead of
+/// latency/version/last-checked reading as three dashes at once.
+fn remote_loading_line(index: usize, anim: f32, label: String, p: &Palette) -> El {
+    let icon_op = 0.5 + 0.5 * (0.5 + 0.5 * (anim * 4.2).sin());
+    row()
+        .key(format!("source-loading-{index}"))
+        .gap(space::XS)
+        .center_y()
+        .child(icon(&icons::ACTIVITY, 12.0).color(p.accent.alpha(icon_op)))
+        .child(
+            text(label)
+                .key(format!("source-loading-label-{index}"))
+                .font(type_::LABEL)
+                .color(p.text_secondary),
+        )
+}
+
 /// One row to render in the Sources card: a live source from `s.sources`
 /// (local, or a currently-connected remote) — [`SourceRow::Live`] — or a
 /// persisted remote URL with no live entry — [`SourceRow::Offline`] (Inc 6).
@@ -755,6 +828,17 @@ fn remote_health_line(index: usize, health: &RemoteHealth, p: &Palette) -> El {
 enum SourceRow<'a> {
     Live(&'a SourceStatus),
     Offline(&'a str),
+}
+
+/// Normalizes a remote URL for equality comparisons only (never for
+/// display or for the host, which does its own normalizing): trims a single
+/// trailing `/`, the one variance a persisted URL and a live one can differ
+/// by (the host normalizes the same way in
+/// `add_remote_source_with_tokens`/`remove_remote_source`). Mirrors that
+/// host-side `trim_end_matches('/')` so a persisted `http://h:8080` and a
+/// live `http://h:8080/` are recognized as the same source here too.
+fn normalize_remote_url(url: &str) -> &str {
+    url.trim_end_matches('/')
 }
 
 /// `s.sources` (live: local roots + currently-connected remotes) followed by
@@ -765,16 +849,28 @@ enum SourceRow<'a> {
 /// action instead of silently vanishing from the Sources list (Inc 6). Live
 /// rows keep the host's own order; offline rows are appended in the order
 /// they were added, so the ordering never reshuffles as health changes.
+///
+/// Both comparisons are normalized ([`normalize_remote_url`]) and the
+/// offline pass itself dedupes, so sources never duplicate even if
+/// `s.remote_urls` and a live entry (or two `remote_urls` entries) differ
+/// only by a trailing slash, or `remote_urls` somehow carries the same URL
+/// twice: at most one row per distinct normalized URL, ever.
 fn merged_source_rows(s: &State) -> Vec<SourceRow<'_>> {
     let mut rows: Vec<SourceRow> = s.sources.iter().map(SourceRow::Live).collect();
+    let mut offline_seen: Vec<&str> = Vec::new();
     for url in &s.remote_urls {
-        let connected = s
-            .sources
-            .iter()
-            .any(|st| matches!(&st.kind, SourceKind::Remote { url: live } if live == url));
-        if !connected {
-            rows.push(SourceRow::Offline(url));
+        let normalized = normalize_remote_url(url);
+        let connected = s.sources.iter().any(|st| {
+            matches!(&st.kind, SourceKind::Remote { url: live } if normalize_remote_url(live) == normalized)
+        });
+        if connected {
+            continue;
         }
+        if offline_seen.contains(&normalized) {
+            continue;
+        }
+        offline_seen.push(normalized);
+        rows.push(SourceRow::Offline(url));
     }
     rows
 }
@@ -902,13 +998,33 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                 .truncate(),
         );
     if let Some(health) = &status.remote {
+        // Loading: a remote with nothing useful to show yet — never
+        // probed (fresh off a connect) or a manual reconnect/resync in
+        // flight for this already-live row — gets a "Connecting…"/
+        // "Syncing…" line instead of the latency/version/last-checked trio,
+        // which would otherwise render as three "—" placeholders at once.
+        let loading = remote_row_is_loading(status, &s.remote_reconnecting);
+        let is_reconnecting = match &status.kind {
+            SourceKind::Remote { url } => s.remote_reconnecting.iter().any(|u| u == url),
+            SourceKind::Local { .. } => false,
+        };
+        let line = if loading {
+            let label = if is_reconnecting {
+                t!("settings.syncingRow").to_string()
+            } else {
+                t!("settings.connectingRow").to_string()
+            };
+            remote_loading_line(index, s.scan_anim, label, p)
+        } else {
+            remote_health_line(index, health, p)
+        };
         // The online/offline dot leads the telemetry line it describes.
         identity = identity.child(
             row()
                 .gap(space::XS)
                 .center_y()
                 .child(health_dot(index, health.online, p))
-                .child(remote_health_line(index, health, p)),
+                .child(line),
         );
         if let SourceKind::Remote { url } = &status.kind
             && health.online
@@ -1052,6 +1168,7 @@ fn offline_remote_row(s: &State, p: &Palette, url: &str, index: usize) -> El {
             reconnecting,
             p,
         ))
+        .child(remote_relogin_button(index, url, reconnecting, p))
         .child(remote_remove_button(index, url, p))
 }
 
@@ -1126,6 +1243,37 @@ fn remote_remove_button(index: usize, url: &str, p: &Palette) -> El {
         .cursor(Cursor::Pointer)
         .child(text("✕").color(p.text_secondary))
         .on_press(move |st: &mut State| disconnect_remote_source(st, url.clone()))
+}
+
+/// An offline remote row's "Sign in again" action: when a silent Reconnect
+/// can't recover the source because its stored refresh token is dead (revoked,
+/// or orphaned by an unclean exit mid-rotation), this re-runs the full browser
+/// login for the SAME url via [`crate::relogin_remote`], minting a fresh
+/// credential in one click instead of forcing a remove + re-add. Disabled
+/// (inert) while a reconnect/relogin is already in flight for this url,
+/// mirroring [`remote_reconnect_button`].
+fn remote_relogin_button(index: usize, url: &str, reconnecting: bool, p: &Palette) -> El {
+    let label = t!("settings.remoteSignIn").to_string();
+    let base = el()
+        .key(format!("remote-relogin-{index}"))
+        .role("button")
+        .label(label.clone())
+        .focusable(!reconnecting)
+        .padding(space::SNUG)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .child(text(label).font(type_::LABEL).color(if reconnecting {
+            p.text_secondary
+        } else {
+            p.accent
+        }));
+    if reconnecting {
+        base.opacity(fx::DISABLED)
+    } else {
+        let url = url.to_string();
+        base.cursor(Cursor::Pointer)
+            .on_press(move |st: &mut State| crate::relogin_remote(st, url.clone()))
+    }
 }
 
 /// One theme choice; the active preference is filled with the primary color.

@@ -234,12 +234,15 @@ pub struct TrackView {
     /// is a real, browse-able "Unknown Genre" group that keys the Genre axis.
     pub genre: Option<String>,
     pub duration_secs: f64,
-    /// Whether this track streams from a remote source rather than sitting on
-    /// local disk. The backend/local catalog projection always sets this
-    /// `false`; the host's remote-aware aggregate (`soul-player-host`) stamps
-    /// it `true` for a track whose compound id falls in a remote server's
-    /// block — see `soul_player_host::PlayerHandle::views`.
-    pub remote: bool,
+    /// `None` when this track sits on local disk; `Some(host)` when it
+    /// streams from a remote source, naming the remote server (a
+    /// human-readable host/label, e.g. `listen.home.lan:8080`) so the UI can
+    /// show WHICH server a track streams from (not just that it's remote).
+    /// The backend/local catalog projection always sets this `None`; the
+    /// host's remote-aware aggregate (`soul-player-host`) sets `Some(host)`
+    /// for a track whose compound id falls in a remote server's block — see
+    /// `soul_player_host::PlayerHandle::views`.
+    pub remote_source: Option<String>,
     /// The album's ORIGINAL-release date, packed `(year<<9)|(month<<5)|day`
     /// (`0` = unknown) — mirrors `soul_audio_catalog::PackedDate`. The audiophile
     /// canonical year; the UI prefers it, falling back to `release_date`.

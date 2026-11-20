@@ -989,6 +989,13 @@ pub(crate) fn refresh_remote_health(s: &mut State) {
                     seed_synced_baseline(s, &sources);
                     s.sources = sources;
                     s.remote_health_refreshing = false;
+                    // This probe may have seen a remote's catalog advance past
+                    // our last sync — auto-pull those so the track list stays
+                    // current without the user pressing Sync-now (the periodic
+                    // "rescan the server" behaviour).
+                    for url in remotes_needing_sync(s) {
+                        reconnect_remote_now(s, url);
+                    }
                 });
             });
         }
@@ -997,6 +1004,9 @@ pub(crate) fn refresh_remote_health(s: &mut State) {
             seed_synced_baseline(s, &sources);
             s.sources = sources;
             s.remote_health_refreshing = false;
+            for url in remotes_needing_sync(s) {
+                reconnect_remote_now(s, url);
+            }
         }
     }
 }
@@ -1038,8 +1048,55 @@ fn record_synced_index(s: &mut State, url: &str, sources: &[SourceStatus]) {
     }
 }
 
+/// Select the connected remotes whose server-side catalog has advanced past
+/// what we last synced — the SAME predicate the "update available" cue uses
+/// (`views::settings::remote_update_available`): a live `index_version`
+/// strictly greater than the recorded `remote_synced_index` baseline. These
+/// are the remotes the periodic poller auto-pulls (via [`reconnect_remote_now`])
+/// so a connected source's track list stays current without the user pressing
+/// Sync-now. A disabled remote is skipped (its tracks are intentionally out of
+/// the aggregate); so is one with no baseline yet ([`seed_synced_baseline`]
+/// seeds it on first sight, so a brand-new remote never counts as "advanced"
+/// until a REAL change afterward) or no live reading (offline — reconnecting
+/// that is the offline row's job, not the version-advanced auto-sync's).
+pub(crate) fn remotes_needing_sync(s: &State) -> Vec<String> {
+    s.sources
+        .iter()
+        .filter(|st| st.enabled)
+        .filter_map(|st| {
+            let SourceKind::Remote { url } = &st.kind else {
+                return None;
+            };
+            let live = st.remote.as_ref()?.index_version?;
+            let synced = s.remote_synced_index.get(url).copied()?;
+            (live > synced).then(|| url.clone())
+        })
+        .collect()
+}
+
+/// Every ENABLED remote source's url, in `sources` order — the set the Rescan
+/// action force-resyncs (pull fresh from each server), independent of whether
+/// a version change has been detected yet: a plain local-root reconcile
+/// rebuilds remote tracks from already-fetched blobs and would miss
+/// server-side additions, so Rescan re-fetches each remote's index too.
+/// Reuses the same enabled-Remote filter as [`remotes_needing_sync`] without
+/// that one's version gate; local roots and disabled remotes are excluded.
+pub(crate) fn enabled_remote_urls(s: &State) -> Vec<String> {
+    s.sources
+        .iter()
+        .filter(|st| st.enabled)
+        .filter_map(|st| match &st.kind {
+            SourceKind::Remote { url } => Some(url.clone()),
+            SourceKind::Local { .. } => None,
+        })
+        .collect()
+}
+
 /// Reconnect every persisted remote source at launch (Inc 5): off the UI
 /// thread, for each url `config::load_remotes()` returns, silently
+/// re-authenticate with the OS-keychain-stored refresh token and re-sync its
+/// catalog via [`PlayerHandle::reconnect_remote_source`], then fold the
+/// refreshed library + source list back onto the UI thread — mirroring
 /// re-authenticate with the OS-keychain-stored refresh token and re-sync its
 /// catalog via [`PlayerHandle::reconnect_remote_source`], then fold the
 /// refreshed library + source list back onto the UI thread — mirroring
@@ -1212,6 +1269,13 @@ fn apply_remote_connect(s: &mut State, url: &str, result: anyhow::Result<()>) {
             }
             config::save_remote(url);
             close_remote_form(s);
+            // A fresh connect leaves the new remote's health UNPROBED (adding a
+            // source doesn't ping it), so `sources()` above reports it offline
+            // until the next 30s poll — flashing the title-bar indicator red for
+            // a remote that just connected fine. Kick an immediate health probe
+            // so it reads online within a round-trip instead. Guarded + off the
+            // UI thread (see `refresh_remote_health`); a no-op if one's running.
+            refresh_remote_health(s);
         }
         Err(err) => {
             s.remote_error = Some(err.to_string());
@@ -1344,6 +1408,44 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
                 record_synced_index(s, &url, &sources);
             }
             s.sources = sources;
+        }
+    }
+}
+
+/// Re-run the interactive browser login for an ALREADY-configured remote `url`
+/// — the escape hatch for when a silent [`reconnect_remote_now`] can't recover
+/// it because the stored refresh token is dead (revoked, or orphaned by an
+/// unclean exit mid-rotation): no amount of silent retrying will work, so the
+/// only fix is a fresh sign-in. Unlike Reconnect, this opens the system browser
+/// via [`PlayerHandle::add_remote_source`], which mints and persists a BRAND-NEW
+/// refresh token (replacing the dead one) and re-fetches the catalog — turning
+/// the old "remove the source, then add it again" dance into one click that
+/// keeps the row, its position, and its enabled flag. Off the UI thread (the
+/// browser round-trip blocks), guarded by `remote_reconnecting` — shared with
+/// [`reconnect_remote_now`] — so it can't race a silent reconnect or a double
+/// press. Reuses [`apply_remote_connect`]'s success tail (refresh
+/// library/sources, persist the url, mirror into `remote_urls`); on failure the
+/// row simply stays offline, same as a failed reconnect.
+pub(crate) fn relogin_remote(s: &mut State, url: String) {
+    if s.remote_reconnecting.iter().any(|u| u == &url) {
+        return;
+    }
+    s.remote_reconnecting.push(url.clone());
+    match s.app_handle.clone() {
+        Some(handle) => {
+            let host = s.host.clone();
+            std::thread::spawn(move || {
+                let result = host.add_remote_source(&url);
+                handle.update(move |s: &mut State, _tx: &mut Tx| {
+                    s.remote_reconnecting.retain(|u| u != &url);
+                    apply_remote_connect(s, &url, result);
+                });
+            });
+        }
+        None => {
+            let result = s.host.add_remote_source(&url);
+            s.remote_reconnecting.retain(|u| u != &url);
+            apply_remote_connect(s, &url, result);
         }
     }
 }
@@ -2029,19 +2131,23 @@ pub(crate) fn set_eq_preamp(s: &mut State, unit: usize, preamp_db: f32) {
 }
 
 /// Per-frame poll (wired as `AppSpec::poll`). Drives the title-bar scan-activity
-/// pulse (while a scan runs) *and* the live EQ spectrum analyzer. Returns whether
-/// the view must re-render.
+/// pulse (while a scan runs, or a Sources row is showing its "Connecting…"/
+/// "Syncing…" loading state) *and* the live EQ spectrum analyzer. Returns
+/// whether the view must re-render.
 fn spectrum_poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // `now` is Rune's ABSOLUTE frame clock (seconds since launch), not a per-frame
     // delta — see `AppSpec::poll`. Recover the real time this frame covered for the
     // manual, time-based animations (clamped so an idle gap can't teleport them).
     let frame_dt = views::reveal::frame_delta(now, &mut s.reveal_clock);
-    // Title-bar activity: while a library scan is in flight, keep the frame clock
-    // ticking and breathe the icon's pulse — independent of the spectrum, so the
-    // pill animates even when nothing is playing. The phase rides the absolute
-    // clock directly (a constant real-time rate), bounded modulo to stay finite and
-    // f32-precise over a long scan.
-    let scanning = s.scan_progress.is_some();
+    // Title-bar activity: while a library scan is in flight, OR a Sources row
+    // is showing its own "Connecting…"/"Syncing…" loading state (a remote
+    // with no health probe yet, or a reconnect/resync in flight), keep the
+    // frame clock ticking and breathe the shared activity icon's pulse
+    // (`remote_loading_line` reads the same `scan_anim`) — independent of the
+    // spectrum, so the pill animates even when nothing is playing. The phase
+    // rides the absolute clock directly (a constant real-time rate), bounded
+    // modulo to stay finite and f32-precise over a long scan.
+    let scanning = s.scan_progress.is_some() || views::settings::any_remote_row_is_loading(s);
     if scanning {
         s.scan_anim = (now as f32) % 1000.0;
         tx.wake_after(std::time::Duration::from_millis(16));
@@ -2961,7 +3067,7 @@ fn seed_demo_library(s: &mut State) {
                 album: Some(album.clone()),
                 genre: Some(genre.to_string()),
                 duration_secs: f64::from(120 + id % 180),
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             });
@@ -4081,6 +4187,10 @@ mod tests {
     /// contains itself. This is the regression net for i18n text robustness.
     #[test]
     fn settings_layout_contains_itself_in_every_locale() {
+        // Hold the locale lock across the whole sweep: this test flips the
+        // global locale per iteration, so it must not interleave with a test
+        // asserting a specific localised string (see `use_test_locale`).
+        let _locale = config::use_test_locale("en");
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -4300,6 +4410,10 @@ mod tests {
     /// coverage by adding a scene here.
     #[test]
     fn app_layout_contains_itself_in_every_locale() {
+        // Hold the locale lock across the whole sweep (see `use_test_locale`):
+        // this test cycles every locale and must not race a localised-string
+        // assertion in a sibling test.
+        let _locale = config::use_test_locale("en");
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -6875,7 +6989,11 @@ mod tests {
     /// clip), the choices render, and picking one commits the locale + closes.
     #[test]
     fn language_dropdown_opens_renders_and_picks() {
-        // Picking flows through `set_locale_pref`, which writes config — isolate it.
+        // Picking commits a non-"en" locale (German) globally for part of this
+        // test, so hold the locale lock too (acquired BEFORE the config lock, the
+        // documented order) — otherwise it races a sibling test asserting a
+        // localised string. Picking also writes config, hence the config lock.
+        let _locale = config::use_test_locale("en");
         let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -7055,6 +7173,82 @@ mod tests {
         assert!(
             rt.find("remote-pass").is_none(),
             "remote-pass no longer renders (login happens in the browser)"
+        );
+    }
+
+    /// Investigation, pinned as a regression: the connect form's URL
+    /// field (`remote-url`, a plain `rune::TextEdit`/`text_input` — see
+    /// `settings::remote_field`) is a standard Rune text field, which
+    /// natively handles typing, Backspace, and the platform's primary edit
+    /// chords (`TextEdit::key`'s `Key::Command(_)` arm) — Ctrl+A (⌘A on
+    /// macOS) selects the whole field (`anchor = 0`, `focus = text.len()`),
+    /// entirely inside the crate; the app wires none of it itself. This
+    /// drives the REAL open-form flow (menu click → "Remote server") and the
+    /// REAL key dispatch (`rt.key`, no app-level `on_key` needed — a focused
+    /// field claims its own chords first) to prove end to end that the form,
+    /// as actually wired (inside `.modal()` + `.focus_group()`), doesn't
+    /// block any of this: typing inserts, Backspace edits, and Ctrl+A
+    /// selects all.
+    #[test]
+    fn remote_connect_form_field_types_and_ctrl_a_selects_all() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "add-source-opt-remote");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.state.remote_url_buf.focused,
+            "opening the form focuses the URL field (TextEdit::focused)"
+        );
+
+        let press = |rt: &mut Runtime<State>, key: Key| {
+            rt.key(KeyEvent {
+                key,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+        };
+        for ch in "http://x.test".chars() {
+            press(&mut rt, Key::Text(ch.to_string()));
+        }
+        assert_eq!(
+            rt.state.remote_url_buf.text, "http://x.test",
+            "typed characters reach the focused field"
+        );
+        press(&mut rt, Key::Backspace);
+        assert_eq!(
+            rt.state.remote_url_buf.text, "http://x.tes",
+            "Backspace edits it like any other field"
+        );
+
+        rt.key(cmd_chord('a'));
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.remote_url_buf.anchor, 0,
+            "Ctrl+A/Cmd+A selects from the start"
+        );
+        assert_eq!(
+            rt.state.remote_url_buf.focus,
+            rt.state.remote_url_buf.text.len(),
+            "…to the end — the whole field is selected"
+        );
+
+        // And it actually replaces the selection, proving this is a real
+        // selection the field will act on (not just two numbers that happen
+        // to bracket the text): typing now overwrites everything selected.
+        press(&mut rt, Key::Text("y".into()));
+        assert_eq!(
+            rt.state.remote_url_buf.text, "y",
+            "typing over a Ctrl+A selection replaces the whole field"
         );
     }
 
@@ -8174,6 +8368,98 @@ mod tests {
         );
     }
 
+    /// Regression: a remote that was JUST connected (its row exists in
+    /// `s.sources` — the add succeeded — but no health probe has landed yet,
+    /// `RemoteHealth::last_checked_unix: None`) must NOT render the bare
+    /// latency/version/last-checked "— — —" trio `offline_remote_source_row_
+    /// shows_dash_latency_and_offline_dot` pins for a genuinely offline
+    /// (probed-and-failed) remote. It renders the keyed loading affordance
+    /// instead, reading "Connecting…" — the "better loading than just
+    /// '- - -'" fix.
+    #[test]
+    fn freshly_connected_remote_shows_connecting_not_dash_placeholders() {
+        // Holds the locale lock (see `use_test_locale`): this asserts the exact
+        // English "Connecting…" string, so it must not interleave with a test
+        // that flips the process-global locale (the i18n test race).
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("http://example.test:8080"),
+            enabled: true,
+            available: false,
+            track_count: 3,
+            kind: SourceKind::Remote {
+                url: "http://example.test:8080".to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online: false,
+                latency_ms: None,
+                server_version: None,
+                index_version: None,
+                last_checked_unix: None, // never probed
+            }),
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("source-loading-0").is_some(),
+            "a never-probed remote shows the Connecting…/Syncing… loading affordance"
+        );
+        assert_eq!(
+            el_info(&rt, "source-loading-label-0").text.as_deref(),
+            Some("Connecting…"),
+            "the loading line reads Connecting…, not a bare dash"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "no dash-placeholder latency element renders while connecting"
+        );
+    }
+
+    /// Regression: a LIVE remote (already probed at least once, with
+    /// real telemetry) that is mid a manual reconnect/resync
+    /// (`State::remote_reconnecting`) shows "Syncing…" in place of its
+    /// (possibly stale) health line, rather than leaving the old
+    /// latency/version reading up as if nothing were happening.
+    #[test]
+    fn live_remote_mid_reconnect_shows_syncing_not_its_health_line() {
+        // Holds the locale lock (see `use_test_locale`): asserts the exact
+        // English "Syncing…" string — same race guard as the matching note in
+        // `freshly_connected_remote_shows_connecting_not_dash_placeholders`.
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let url = "http://example.test:8080";
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources.push(online_remote_status(url));
+        s.remote_reconnecting = vec![url.to_string()];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("source-loading-0").is_some(),
+            "a mid-reconnect live remote shows the loading affordance"
+        );
+        assert_eq!(
+            el_info(&rt, "source-loading-label-0").text.as_deref(),
+            Some("Syncing…"),
+            "mid-reconnect reads Syncing…, distinct from the fresh-connect Connecting… wording"
+        );
+        assert!(
+            rt.find("source-latency-0").is_none(),
+            "the stale latency reading is hidden while a resync is in flight"
+        );
+    }
+
     /// Inc 6 item 1: a persisted remote with NO live entry at all in
     /// `s.sources` (it failed to reconnect at launch, or hasn't tried yet) —
     /// the gap this increment closes, where the remote used to simply be
@@ -8212,6 +8498,175 @@ mod tests {
         assert!(
             rt.find("remote-reconnect-0").is_some(),
             "a keyed Reconnect control renders for the offline remote"
+        );
+        assert!(
+            rt.find("remote-relogin-0").is_some(),
+            "a keyed Sign-in-again control renders for the offline remote, so a \
+             dead credential is fixable in one click without remove + re-add"
+        );
+    }
+
+    /// `merged_source_rows` must never duplicate a source: a persisted
+    /// `remote_urls` entry that differs from its LIVE `s.sources` entry only
+    /// by a trailing slash (a real-world mismatch — the host normalizes on
+    /// add, but a config file written by an older build, or a URL typed
+    /// with a slash, could still carry one) must collapse onto the SAME row
+    /// as the live one, not render a second "offline" row alongside it.
+    #[test]
+    fn persisted_url_with_trailing_slash_collapses_onto_the_live_row() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.sources
+            .push(online_remote_status("http://127.0.0.1:8080"));
+        s.remote_urls = vec!["http://127.0.0.1:8080/".to_string()];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let badge_count = rt
+            .elements()
+            .iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("source-badge-"))
+            })
+            .count();
+        assert_eq!(
+            badge_count, 1,
+            "a trailing-slash variant of an already-live url must render ONE row, not two"
+        );
+        assert!(
+            rt.find("source-badge-0").is_some(),
+            "the single row is the live one at index 0"
+        );
+        assert!(
+            rt.find("remote-reconnect-0").is_none(),
+            "the row is the LIVE (connected) one, so it offers Disconnect, not Reconnect"
+        );
+    }
+
+    /// `merged_source_rows` must also dedupe within `s.remote_urls` itself:
+    /// the same url listed twice (even differing by a trailing slash) must
+    /// still render only ONE offline row, not one per occurrence.
+    #[test]
+    fn duplicate_entries_within_remote_urls_render_only_one_offline_row() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        s.remote_urls = vec![
+            "http://dup-remote.test".to_string(),
+            "http://dup-remote.test/".to_string(),
+        ];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let badge_count = rt
+            .elements()
+            .iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("source-badge-"))
+            })
+            .count();
+        assert_eq!(
+            badge_count, 1,
+            "two remote_urls entries for the same url (trailing slash aside) must render ONE row"
+        );
+        assert!(
+            rt.find("remote-reconnect-0").is_some(),
+            "the single surviving row is still the offline one, with its Reconnect control"
+        );
+        assert!(
+            rt.find("remote-reconnect-1").is_none(),
+            "no second offline row for the duplicate entry"
+        );
+    }
+
+    /// Regression: pins the host-side rescan fix (soul-player-host commits
+    /// b2fa8da/103068c + the `rebuild_remote_library` fix alongside this PR) at
+    /// the UI layer. A rescan's `WatchUpdate.sources` now always carries any
+    /// still-connected remote alongside the local roots passed to
+    /// `set_folders` — `apply_watch` must fold that remote in as the SAME live
+    /// row it already had (telemetry + Disconnect), never demote it to the
+    /// stale "offline merge" row `merged_source_rows` falls back to for a
+    /// persisted `remote_urls` entry with no live `s.sources` match. Before the
+    /// host fix, a rescan's `WatchUpdate` dropped the remote from `.sources`
+    /// entirely, so this exact fold (a local root's `SourceStatus` plus the
+    /// SAME remote's `SourceStatus`, both present at once — the shape a fixed
+    /// rescan now returns) is what must render as one local row + one live
+    /// remote row, not a duplicate or an offline/Reconnect row.
+    #[test]
+    fn apply_watch_keeps_a_rescanned_remote_as_a_live_row_not_offline() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        // Seed the pre-rescan state the way a real session would: the remote
+        // is both connected (s.sources) and persisted (s.remote_urls, as
+        // `apply_remote_connect`/`reconnect_remotes_on_startup` leave it).
+        s.sources
+            .push(online_remote_status("http://127.0.0.1:8080"));
+        s.remote_urls = vec!["http://127.0.0.1:8080".to_string()];
+
+        // The WatchUpdate a "Rescan" over a local root now returns (per the
+        // host fix): the local root's status AND the retained remote's,
+        // still carrying its live health — exactly `set_folders`' shape.
+        let up = WatchUpdate {
+            views: Vec::new(),
+            sources: vec![
+                SourceStatus {
+                    path: PathBuf::from("local-root"),
+                    enabled: true,
+                    available: true,
+                    track_count: 2,
+                    kind: SourceKind::Local {
+                        path: PathBuf::from("local-root"),
+                    },
+                    remote: None,
+                },
+                online_remote_status("http://127.0.0.1:8080"),
+            ],
+        };
+        apply_watch(&mut s, up);
+
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let badge_count = rt
+            .elements()
+            .iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("source-badge-"))
+            })
+            .count();
+        assert_eq!(
+            badge_count, 2,
+            "one local row + one remote row after the rescan, no duplicate/offline-merge row"
+        );
+        assert!(
+            rt.find("source-online-1").is_some(),
+            "the remote (index 1, after the local root) still renders its live online dot"
+        );
+        assert_eq!(
+            el_info(&rt, "source-latency-1").text.as_deref(),
+            Some("42ms"),
+            "a rescanned remote keeps its live telemetry, not the offline dash placeholder"
+        );
+        assert!(
+            rt.find("remote-reconnect-1").is_none(),
+            "a live remote row shows no Reconnect control"
         );
     }
 
@@ -8382,6 +8837,26 @@ mod tests {
         );
     }
 
+    /// `relogin_remote` shares `reconnect_remote_now`'s in-flight guard: a
+    /// relogin (or reconnect) already running for a url makes a second press a
+    /// no-op, so a stray double-click can't open two browser logins racing for
+    /// the same source. (Only the guard's early return is exercised here — the
+    /// success path would open the system browser, untestable headlessly.)
+    #[test]
+    fn relogin_remote_guards_against_a_second_concurrent_attempt() {
+        let mut s = State::new(PlayerHandle::offline());
+        let url = "http://already-relogging-in.test".to_string();
+        s.remote_reconnecting = vec![url.clone()];
+
+        relogin_remote(&mut s, url.clone());
+
+        assert_eq!(
+            s.remote_reconnecting,
+            vec![url],
+            "a relogin for a url already in flight is a no-op (no second browser login)"
+        );
+    }
+
     /// Inc 6 item 3 (behavior): a failed manual reconnect (no stored
     /// credential — the common case in a fresh test config dir) still
     /// clears the transient "reconnecting" state — the row must not get
@@ -8533,6 +9008,169 @@ mod tests {
             rt.find("remote-update-0").is_none(),
             "no cue when the live version matches the last synced one"
         );
+    }
+
+    /// The periodic poller auto-pulls exactly the connected remotes whose live
+    /// catalog version has advanced past the last synced baseline — the same
+    /// predicate as the "update available" cue, but driving an automatic
+    /// re-sync rather than a manual button. (Selection only; the reconnect glue
+    /// is the already-tested `reconnect_remote_now`.)
+    #[test]
+    fn remotes_needing_sync_picks_only_the_advanced_connected_ones() {
+        let mut s = settings_state(&[], &[]);
+        let fresh = "http://fresh.test:8080"; // live 5 > synced 3 -> needs sync
+        let caught_up = "http://same.test:8080"; // live 3 == synced 3 -> no
+        let unseen = "http://new.test:8080"; // live 3, no baseline yet -> no
+
+        let mut fresh_status = online_remote_status(fresh);
+        if let Some(h) = &mut fresh_status.remote {
+            h.index_version = Some(5);
+        }
+        s.sources.push(fresh_status);
+        s.remote_synced_index.insert(fresh.to_string(), 3);
+
+        s.sources.push(online_remote_status(caught_up)); // index_version Some(3)
+        s.remote_synced_index.insert(caught_up.to_string(), 3);
+
+        s.sources.push(online_remote_status(unseen)); // Some(3), no baseline
+
+        assert_eq!(remotes_needing_sync(&s), vec![fresh.to_string()]);
+    }
+
+    /// A disabled remote is never auto-pulled even when its server advanced —
+    /// its tracks are intentionally out of the aggregate, so re-fetching them
+    /// would be pointless churn.
+    #[test]
+    fn remotes_needing_sync_skips_disabled_remotes() {
+        let mut s = settings_state(&[], &[]);
+        let url = "http://off.test:8080";
+        let mut status = online_remote_status(url);
+        status.enabled = false;
+        if let Some(h) = &mut status.remote {
+            h.index_version = Some(9);
+        }
+        s.sources.push(status);
+        s.remote_synced_index.insert(url.to_string(), 1);
+        assert!(remotes_needing_sync(&s).is_empty());
+    }
+
+    /// An offline remote (no live index reading) is not auto-pulled — there is
+    /// nothing to compare against, and reconnecting it is the offline row's job,
+    /// not the version-advanced auto-sync's.
+    #[test]
+    fn remotes_needing_sync_skips_offline_remotes() {
+        let mut s = settings_state(&[], &[]);
+        let url = "http://down.test:8080";
+        s.sources.push(offline_remote_status(url)); // index_version None
+        s.remote_synced_index.insert(url.to_string(), 1);
+        assert!(remotes_needing_sync(&s).is_empty());
+    }
+
+    /// The Rescan action force-resyncs every ENABLED remote regardless of a
+    /// detected version change (a plain local-root reconcile rebuilds remote
+    /// tracks from cached blobs and would miss server-side additions); a
+    /// disabled remote and local roots are excluded.
+    #[test]
+    fn enabled_remote_urls_lists_enabled_remotes_only() {
+        let mut s = settings_state(&[], &[]);
+        let on = "http://on.test:8080";
+        let off = "http://off.test:8080";
+        s.sources.push(online_remote_status(on));
+        let mut disabled = online_remote_status(off);
+        disabled.enabled = false;
+        s.sources.push(disabled);
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("/music"),
+            enabled: true,
+            available: true,
+            track_count: 3,
+            kind: SourceKind::Local {
+                path: PathBuf::from("/music"),
+            },
+            remote: None,
+        });
+        assert_eq!(enabled_remote_urls(&s), vec![on.to_string()]);
+    }
+
+    /// Several remotes advancing at once are all returned, in `sources` order —
+    /// the poller pulls each rather than only the first it finds.
+    #[test]
+    fn remotes_needing_sync_returns_all_advanced_in_source_order() {
+        let mut s = settings_state(&[], &[]);
+        for (url, live) in [("http://a.test:8080", 4u64), ("http://b.test:8080", 7)] {
+            let mut st = online_remote_status(url);
+            if let Some(h) = &mut st.remote {
+                h.index_version = Some(live);
+            }
+            s.sources.push(st);
+            s.remote_synced_index.insert(url.to_string(), 1);
+        }
+        assert_eq!(
+            remotes_needing_sync(&s),
+            vec![
+                "http://a.test:8080".to_string(),
+                "http://b.test:8080".to_string()
+            ],
+        );
+    }
+
+    /// Only a STRICTLY greater live version counts: a live reading at or below
+    /// the synced baseline (a server reindex that lowered the counter, or a
+    /// stale probe) must not trigger a pointless re-sync. Guards `>` vs `>=`/`!=`.
+    #[test]
+    fn remotes_needing_sync_ignores_a_live_version_at_or_below_baseline() {
+        let mut s = settings_state(&[], &[]);
+        let url = "http://roll.test:8080";
+        let mut st = online_remote_status(url);
+        if let Some(h) = &mut st.remote {
+            h.index_version = Some(2); // below the synced baseline
+        }
+        s.sources.push(st);
+        s.remote_synced_index.insert(url.to_string(), 5);
+        assert!(remotes_needing_sync(&s).is_empty());
+    }
+
+    /// The auto-sync converges: once a pull records the fresh version as synced
+    /// (`record_synced_index`), the same remote no longer needs syncing — the
+    /// loop-prevention guarantee that keeps the 30s poller from re-pulling an
+    /// already-current remote forever.
+    #[test]
+    fn remotes_needing_sync_is_empty_after_recording_the_synced_index() {
+        let mut s = settings_state(&[], &[]);
+        let url = "http://conv.test:8080";
+        let mut st = online_remote_status(url);
+        if let Some(h) = &mut st.remote {
+            h.index_version = Some(8);
+        }
+        s.sources.push(st);
+        s.remote_synced_index.insert(url.to_string(), 3);
+        assert_eq!(remotes_needing_sync(&s), vec![url.to_string()]);
+
+        // Simulate the successful pull catching the baseline up to the live
+        // version (what `reconnect_remote_now` does via `record_synced_index`).
+        let sources = s.sources.clone();
+        record_synced_index(&mut s, url, &sources);
+        assert!(
+            remotes_needing_sync(&s).is_empty(),
+            "after the pull records the fresh version, the remote is caught up",
+        );
+    }
+
+    /// No remotes at all (only local roots) → nothing to force-resync on Rescan.
+    #[test]
+    fn enabled_remote_urls_is_empty_with_only_local_sources() {
+        let mut s = settings_state(&[], &[]);
+        s.sources.push(SourceStatus {
+            path: PathBuf::from("/music"),
+            enabled: true,
+            available: true,
+            track_count: 3,
+            kind: SourceKind::Local {
+                path: PathBuf::from("/music"),
+            },
+            remote: None,
+        });
+        assert!(enabled_remote_urls(&s).is_empty());
     }
 
     /// The leading enable toggle is a focusable control that disables its source:
@@ -8767,7 +9405,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -8781,7 +9419,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -8795,7 +9433,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: Some(genre.to_string()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -8892,6 +9530,71 @@ mod tests {
                 start: 0
             }],
             "Play All plays only this artist's tracks, from the top"
+        );
+    }
+
+    /// The artist detail's Top-Songs rows share `albums::detail_track_row`
+    /// with the main track list and the album detail page, so a remote
+    /// track there shows the same cloud badge + hover tooltip too.
+    #[test]
+    fn the_artist_detail_page_shows_the_remote_badge_for_a_remote_track() {
+        let _locale = config::use_test_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Streamed".into()),
+                artist: Some("Bach".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote_source: Some("listen.home.lan".into()),
+                original_date: 0,
+                release_date: 0,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("OnDisk".into()),
+                artist: Some("Bach".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote_source: None,
+                original_date: 0,
+                release_date: 0,
+            },
+        ];
+        s.route = Route::Artist;
+        s.open_artist = Some("Bach".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "track-remote-1"),
+            "a remote track's artist-detail row should show the remote badge"
+        );
+        assert!(
+            !badge_visible(&rt, "track-remote-2"),
+            "a local track's artist-detail row should not show a remote badge"
+        );
+        let help = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("track-remote-1"))
+            .and_then(|e| e.help);
+        assert_eq!(
+            help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the artist-detail remote badge's tooltip should name the source host"
         );
     }
 
@@ -9139,7 +9842,7 @@ mod tests {
             album: Some(album.to_string()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -9258,7 +9961,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             },
@@ -9269,7 +9972,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Jazz".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             },
@@ -9624,6 +10327,74 @@ mod tests {
         );
     }
 
+    /// The album detail page's track rows share `albums::detail_track_row`
+    /// with the main track list, so a track carrying a remote source
+    /// (`TrackView::remote_source == Some(host)`) must show the SAME subtle
+    /// cloud badge and hover tooltip ([`El::help`]) there too, not just in
+    /// the flat library view and the now-playing line; a local track in the
+    /// same album shows none.
+    #[test]
+    fn the_album_detail_page_shows_the_remote_badge_for_a_remote_track() {
+        let _locale = config::use_test_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.library = vec![
+            soul_player_host::TrackView {
+                id: 1,
+                title: Some("Streamed".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote_source: Some("listen.home.lan".into()),
+                original_date: 0,
+                release_date: 0,
+            },
+            soul_player_host::TrackView {
+                id: 2,
+                title: Some("OnDisk".into()),
+                artist: Some("A".into()),
+                album: Some("Alb".into()),
+                genre: Some("Rock".into()),
+                duration_secs: 1.0,
+                remote_source: None,
+                original_date: 0,
+                release_date: 0,
+            },
+        ];
+        s.route = Route::Album;
+        s.open_album = Some("Alb".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "track-remote-1"),
+            "a remote track's album-detail row should show the remote badge"
+        );
+        assert!(
+            !badge_visible(&rt, "track-remote-2"),
+            "a local track's album-detail row should not show a remote badge"
+        );
+        let help = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("track-remote-1"))
+            .and_then(|e| e.help);
+        assert_eq!(
+            help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the album-detail remote badge's tooltip should name the source host"
+        );
+    }
+
     /// The album detail page's "Play All" pill plays the album from the top.
     #[test]
     fn the_album_detail_play_all_plays_from_the_top() {
@@ -9803,11 +10574,13 @@ mod tests {
     }
 
     /// The now-playing title line shows the remote badge when the current track
-    /// streams from a remote source (`TrackView::remote`) — the one spot outside
-    /// the track lists where the badge cleanly fits, since `now_playing_row`
-    /// already carries the real `TrackView` the Inc-3 marker lives on.
+    /// streams from a remote source (`TrackView::remote_source`) — the one spot
+    /// outside the track lists where the badge cleanly fits, since
+    /// `now_playing_row` already carries the real `TrackView` the Inc-3 marker
+    /// lives on. The badge's hover tooltip ([`El::help`]) names that source.
     #[test]
     fn now_playing_shows_the_remote_badge_for_a_remote_track() {
+        let _locale = config::use_test_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.library = vec![soul_player_host::TrackView {
@@ -9817,7 +10590,7 @@ mod tests {
             album: None,
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: true,
+            remote_source: Some("listen.home.lan".into()),
             original_date: 0,
             release_date: 0,
         }];
@@ -9828,11 +10601,18 @@ mod tests {
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
+        let badge = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("track-remote-1") && e.opacity > 0.01);
         assert!(
-            rt.elements()
-                .iter()
-                .any(|e| e.key.as_deref() == Some("track-remote-1") && e.opacity > 0.01),
+            badge.is_some(),
             "the now-playing line should show the remote badge for a remote track"
+        );
+        assert_eq!(
+            badge.unwrap().help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the badge's hover tooltip should name the remote source"
         );
     }
 
@@ -10094,11 +10874,13 @@ mod tests {
         );
     }
 
-    /// A track row for a remote-flagged track (`TrackView::remote == true`, the
-    /// per-track Local/Remote marker) shows the subtle cloud badge; a local one
-    /// (`remote == false`, the unremarked default) shows none.
+    /// A track row for a track carrying a remote source (`TrackView::remote_source
+    /// == Some(host)`, the per-track Local/Remote marker) shows the subtle cloud
+    /// badge, whose hover tooltip ([`El::help`]) names that host; a local one
+    /// (`remote_source == None`, the unremarked default) shows none.
     #[test]
     fn a_remote_track_row_shows_the_remote_badge_a_local_one_does_not() {
+        let _locale = config::use_test_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.library = vec![
@@ -10109,7 +10891,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: true,
+                remote_source: Some("listen.home.lan".into()),
                 original_date: 0,
                 release_date: 0,
             },
@@ -10120,7 +10902,7 @@ mod tests {
                 album: Some("Alb".into()),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             },
@@ -10143,6 +10925,16 @@ mod tests {
         assert!(
             !badge_visible(&rt, "track-remote-2"),
             "a local track's row should not show a remote badge"
+        );
+        let help = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("track-remote-1"))
+            .and_then(|e| e.help);
+        assert_eq!(
+            help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the remote badge's hover tooltip should name the source host"
         );
     }
 
@@ -10572,7 +11364,7 @@ mod tests {
                 album: Some(format!("Album {a:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             })
@@ -10652,7 +11444,7 @@ mod tests {
                 album: Some(format!("Album {a:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             })
@@ -10760,7 +11552,7 @@ mod tests {
                 album: Some(format!("Album {id:02}")),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
-                remote: false,
+                remote_source: None,
                 original_date: 0,
                 release_date: 0,
             }
@@ -10813,7 +11605,7 @@ mod tests {
             album: Some(format!("Album {id:02}")),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -11031,7 +11823,7 @@ mod tests {
             album: Some("Dark Side".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 1973u32 << 9,
             release_date: 2015u32 << 9,
         }];

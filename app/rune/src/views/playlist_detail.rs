@@ -554,7 +554,8 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
         art,
         t!("playlists.eyebrow").to_uppercase(),
         playlist.name.clone(),
-        None,
+        None, // remote_source: a playlist spans sources, never one remote host
+        None, // subtitle
         meta,
         hero_actions(s, p, id, play_ids.clone()),
     );

@@ -52,6 +52,28 @@ pub struct RemoteServer {
     pub access_token: String,
 }
 
+/// `url`'s host (and port, if non-default) for display, e.g. as a per-track
+/// "streams from" tooltip — a bare `https://` isn't informative, and the
+/// whole URL carries path noise a label doesn't need. Falls back to the
+/// whole `url` if it carries no recognizable scheme.
+///
+/// Mirrors `app/rune`'s `views::settings::display_host` (a remote-source row's
+/// title line uses the exact same rule), duplicated here rather than shared:
+/// the host crate and the Rune UI crate sit in separate cargo workspaces with
+/// no dependency edge between them, so this one small helper is cheaper to
+/// keep in sync by inspection than to split into a new shared crate for.
+pub(crate) fn host_label(url: &str) -> String {
+    let without_scheme = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or(url);
+    without_scheme
+        .split('/')
+        .next()
+        .unwrap_or(without_scheme)
+        .to_string()
+}
+
 /// Where a track's original media lives.
 ///
 /// `Remote`'s `server` is an index into whatever list of [`RemoteServer`]s
@@ -1825,12 +1847,15 @@ mod tests {
     }
 
     /// The Inc-3 library marker, end to end: `views()` stamps
-    /// [`crate::TrackView::remote`] from the aggregate's compound id, using
-    /// the SAME sentinel-root convention `sources_lists_remote_with_kind_and_health`
-    /// already proved for `track_count` — a remote server's tracks come back
-    /// `remote == true`, the configured local folder's stay `remote == false`.
+    /// [`crate::TrackView::remote_source`] from the aggregate's compound id,
+    /// using the SAME sentinel-root convention
+    /// `sources_lists_remote_with_kind_and_health` already proved for
+    /// `track_count` — a remote server's tracks come back
+    /// `remote_source == Some(host)` (a non-empty host/label naming THAT
+    /// server, not just a bare flag), the configured local folder's stay
+    /// `remote_source == None`.
     #[test]
-    fn views_marks_remote_tracks_remote_and_local_tracks_not_remote() {
+    fn views_marks_remote_tracks_with_their_source_host_and_local_tracks_none() {
         let server = start_server();
         let tokens = login_as_test_user(&server);
 
@@ -1845,13 +1870,21 @@ mod tests {
         let views = handle.views();
         assert!(!views.is_empty(), "the aggregate should list tracks");
 
+        let remote_hosts: Vec<&str> = views
+            .iter()
+            .filter_map(|v| v.remote_source.as_deref())
+            .collect();
         assert!(
-            views.iter().any(|v| v.remote),
-            "the synced remote catalog should contribute at least one track marked remote"
+            !remote_hosts.is_empty(),
+            "the synced remote catalog should contribute at least one track with a remote_source"
         );
         assert!(
-            views.iter().any(|v| !v.remote),
-            "the configured local folder should still contribute at least one non-remote track"
+            remote_hosts.iter().all(|h| !h.is_empty()),
+            "every remote_source host should be non-empty: {remote_hosts:?}"
+        );
+        assert!(
+            views.iter().any(|v| v.remote_source.is_none()),
+            "the configured local folder should still contribute at least one track with remote_source == None"
         );
     }
 
@@ -1947,6 +1980,82 @@ mod tests {
         assert!(
             handle.views().is_empty(),
             "with no other source configured, removing the only remote should empty the library"
+        );
+    }
+
+    /// Re-adding an already-configured remote (exactly what a Rescan / the
+    /// periodic re-sync does) REPLACES its entry rather than appending a second
+    /// one — the guard for the user-facing "rescan duplicated the remote" bug.
+    /// After two adds of the same url the aggregate lists exactly ONE remote
+    /// source, and its catalog is present once, not doubled.
+    #[test]
+    fn re_adding_a_remote_dedupes_to_one_source() {
+        let server = start_server();
+        let handle = crate::PlayerHandle::offline();
+
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("first add");
+        let first_tracks = handle.views().len();
+        assert!(first_tracks > 0, "the first add should populate tracks");
+
+        // A re-sync: the same url added again (fresh tokens, freshly-fetched
+        // index), the way reconnect_remote_source feeds it back in.
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("re-add (re-sync) the same url");
+
+        let remote_rows = handle
+            .sources()
+            .iter()
+            .filter(|s| matches!(&s.kind, crate::SourceKind::Remote { url } if url == &server.url))
+            .count();
+        assert_eq!(
+            remote_rows, 1,
+            "re-adding the same url must not duplicate the source row"
+        );
+        assert_eq!(
+            handle.views().len(),
+            first_tracks,
+            "the re-synced catalog holds the same tracks once, not doubled"
+        );
+    }
+
+    /// Disabling a connected remote keeps its row listed but drops its tracks
+    /// from the aggregate (mirroring a disabled local folder); re-enabling
+    /// restores them from the already-fetched blobs with no network call — the
+    /// remote enable/disable toggle the Sources panel exposes.
+    #[test]
+    fn disabling_a_remote_drops_its_tracks_but_keeps_the_row() {
+        let server = start_server();
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("add remote");
+        let enabled_tracks = handle.views().len();
+        assert!(enabled_tracks > 0, "the enabled remote contributes tracks");
+
+        handle
+            .set_remote_enabled(&server.url, false)
+            .expect("disable the remote");
+        assert!(
+            handle.sources().iter().any(
+                |s| matches!(&s.kind, crate::SourceKind::Remote { url } if url == &server.url)
+            ),
+            "a disabled remote stays listed"
+        );
+        assert!(
+            handle.views().is_empty(),
+            "a disabled remote contributes no tracks to the aggregate"
+        );
+
+        handle
+            .set_remote_enabled(&server.url, true)
+            .expect("re-enable the remote");
+        assert_eq!(
+            handle.views().len(),
+            enabled_tracks,
+            "re-enabling restores the remote's tracks from the already-fetched blobs"
         );
     }
 

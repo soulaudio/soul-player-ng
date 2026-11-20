@@ -859,12 +859,11 @@ impl PlayerHandle {
             bytes.retain(|p, _| configured.contains(p));
         }
         let lib = Arc::new(library);
-        let views = lib.views();
         let counts = lib.source_counts(); // (root, n) for the scanned roots only
         self.set_library(lib);
         // Status for the FULL configured set — disabled / unavailable sources are
         // listed too, with 0 tracks, so the caller can render and re-enable them.
-        let sources: Vec<SourceStatus> = cfg
+        let local_sources: Vec<SourceStatus> = cfg
             .iter()
             .map(|f| {
                 let available = f.path.is_dir();
@@ -891,7 +890,32 @@ impl PlayerHandle {
             .collect();
         // Cache the computed status (with real counts) so `sources()` — the
         // startup UI seed — reports true counts, not a 0 placeholder.
-        *self.inner.last_sources.lock().expect("last_sources mutex") = sources.clone();
+        *self.inner.last_sources.lock().expect("last_sources mutex") = local_sources.clone();
+        // `set_library` above just cleared `Inner::remote_library` (a fresh local
+        // `Library`'s compound ids don't match the old aggregate — see its own doc
+        // comment), so a folder reconcile (e.g. Rescan) must rebuild the
+        // remote-aware aggregate from the FRESH local bytes just cached above plus
+        // every still-retained remote, exactly like `add_remote_source` does.
+        // Without this, a rescan silently drops every remote track from `views`
+        // (the WatchUpdate reverts to local-only) and zeroes each remote's
+        // `track_count` (`remote_statuses` reads `remote_library`'s per-source
+        // counts, which were just nulled) even though the remote itself is still
+        // connected — the "rescan shows 0 tracks on the remote" bug. Harmless when
+        // there are no remotes: `rebuild_remote_library` then rebuilds an aggregate
+        // equal to the plain local library.
+        self.rebuild_remote_library();
+        // The aggregate (local ∪ retained, enabled remotes) now active in
+        // `self.inner.library` — not the local-only `lib` above — so a connected
+        // remote's tracks stay in the WatchUpdate; `views()` also stamps
+        // `remote_source` on them.
+        let views = self.views();
+        // A folder reconcile (e.g. Rescan) must STILL report the retained REMOTE
+        // sources with their live health — otherwise the WatchUpdate drops them
+        // and the UI shows a connected remote as offline. Append them exactly as
+        // `sources()` does; `last_sources` stays local-only above so `sources()`
+        // never double-counts the remotes.
+        let mut sources = local_sources;
+        sources.extend(self.remote_statuses());
         Ok((WatchUpdate { views, sources }, removed))
     }
 
@@ -1530,9 +1554,9 @@ impl PlayerHandle {
     }
 
     /// Current library views (empty until a folder is opened). Stamps
-    /// [`TrackView::remote`] for every track belonging to a retained remote
-    /// source (see [`is_remote_source`](Self::is_remote_source)) — the
-    /// backend projection itself always returns `remote: false`.
+    /// [`TrackView::remote_source`] for every track belonging to a retained
+    /// remote source (see [`remote_source_of`](Self::remote_source_of)) — the
+    /// backend projection itself always returns `remote_source: None`.
     pub fn views(&self) -> Vec<TrackView> {
         let mut views = self
             .inner
@@ -1548,7 +1572,7 @@ impl PlayerHandle {
 
     /// Current library views in a chosen browse order (Title / ArtistAlbumTrack /
     /// Album / Folder) — the baked axis tables, no re-sort. Stamps
-    /// [`TrackView::remote`] the same way [`views`](Self::views) does.
+    /// [`TrackView::remote_source`] the same way [`views`](Self::views) does.
     pub fn views_by(&self, axis: BrowseAxis) -> Vec<TrackView> {
         let mut views = self
             .inner
@@ -1562,40 +1586,37 @@ impl PlayerHandle {
         views
     }
 
-    /// Sets [`TrackView::remote`] on every view whose compound id belongs to
-    /// a retained remote source, using [`is_remote_source`](Self::is_remote_source)
-    /// for each — the shared tail of [`views`](Self::views)/
-    /// [`views_by`](Self::views_by).
+    /// Sets [`TrackView::remote_source`] on every view whose compound id
+    /// belongs to a retained remote source, using
+    /// [`remote_source_of`](Self::remote_source_of) for each — the shared
+    /// tail of [`views`](Self::views)/[`views_by`](Self::views_by).
     fn mark_remote(&self, views: &mut [TrackView]) {
         for view in views {
-            view.remote = self.is_remote_source(view.id);
+            view.remote_source = self.remote_source_of(view.id);
         }
     }
 
-    /// Whether aggregate track `track_id` belongs to one of the retained
-    /// remote servers in [`Inner::remotes`] — the SAME sentinel-root
-    /// convention [`remote_statuses`](Self::remote_statuses)' `track_count`
-    /// sum relies on (`remote:{url}#i`, set by [`RemoteLibrary::build`]):
-    /// locate the id's aggregate source, then check whether that source's
-    /// root falls in any remote server's namespace. `false` for a local id,
-    /// an id with no current library, or an id that doesn't resolve.
-    fn is_remote_source(&self, track_id: u32) -> bool {
-        let Some(lib) = self.inner.library.lock().expect("library mutex").clone() else {
-            return false;
-        };
-        let Some(located) = lib.locate(track_id) else {
-            return false;
-        };
-        let Some((root, _)) = lib.source_counts().into_iter().nth(located.source) else {
-            return false;
-        };
+    /// `Some(host)` naming the remote server aggregate track `track_id`
+    /// belongs to, if it belongs to one of the retained remote servers in
+    /// [`Inner::remotes`] — the SAME sentinel-root convention
+    /// [`remote_statuses`](Self::remote_statuses)' `track_count` sum relies
+    /// on (`remote:{url}#i`, set by [`RemoteLibrary::build`]): locate the
+    /// id's aggregate source, then check whether that source's root falls in
+    /// any remote server's namespace, returning that server's
+    /// [`remote::host_label`] if so. `None` for a local id, an id with no
+    /// current library, or an id that doesn't resolve.
+    fn remote_source_of(&self, track_id: u32) -> Option<String> {
+        let lib = self.inner.library.lock().expect("library mutex").clone()?;
+        let located = lib.locate(track_id)?;
+        let (root, _) = lib.source_counts().into_iter().nth(located.source)?;
         let root = root.to_string_lossy();
         self.inner
             .remotes
             .lock()
             .expect("remotes mutex")
             .iter()
-            .any(|(server, _blobs)| root.starts_with(&format!("remote:{}#", server.url)))
+            .find(|(server, _blobs)| root.starts_with(&format!("remote:{}#", server.url)))
+            .map(|(server, _blobs)| remote::host_label(&server.url))
     }
 
     /// Raw cover art for a track id (bytes + mime), or `None`.
@@ -1742,17 +1763,21 @@ impl PlayerHandle {
         url: &str,
         tokens: remote::Tokens,
     ) -> anyhow::Result<()> {
+        let normalized = url.trim_end_matches('/').to_string();
         let server = Arc::new(RemoteServer {
-            url: url.trim_end_matches('/').to_string(),
+            url: normalized.clone(),
             access_token: tokens.access,
         });
         let blobs = remote::fetch_index(&server)?;
 
-        self.inner
-            .remotes
-            .lock()
-            .expect("remotes mutex")
-            .push((server, blobs));
+        {
+            let mut remotes = self.inner.remotes.lock().expect("remotes mutex");
+            // No duplicate sources: re-adding or reconnecting a URL already in
+            // the set REPLACES its entry (fresh token + freshly-fetched index)
+            // rather than appending a second row for the same server.
+            remotes.retain(|(existing, _blobs)| existing.url != normalized);
+            remotes.push((server, blobs));
+        }
 
         self.rebuild_remote_library();
         Ok(())
