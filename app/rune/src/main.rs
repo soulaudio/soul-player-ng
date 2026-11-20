@@ -498,6 +498,10 @@ struct State {
     eq_bands_expanded: Vec<bool>,
     /// In-flight unit-list reorder drag: `(from, to)` indices, or `None`.
     dsp_drag: Option<(usize, usize)>,
+    /// In-flight playlist-entry reorder drag: `(from, to)` entry indices while a
+    /// detail-row grip is dragged, or `None`. Committed via `move_entry` on
+    /// release. Mirrors `dsp_drag`.
+    playlist_drag: Option<(usize, usize)>,
     /// In-flight EQ-graph node drag: `(unit, band, band state at press)`, so the
     /// drag applies absolutely from the press point. `None` when not dragging.
     eq_drag: Option<(usize, usize, Band)>,
@@ -743,6 +747,7 @@ impl State {
             dsp_expanded,
             eq_bands_expanded,
             dsp_drag: None,
+            playlist_drag: None,
             eq_drag: None,
             eq_selected: None,
             eq_num_drag: None,
