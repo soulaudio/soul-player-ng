@@ -8,7 +8,10 @@
 //! Mirrors `genres::genre_detail` for the detail-page shape.
 #![forbid(unsafe_code)]
 
-use rune::{Color, Cursor, El, Icon, ScrollSpec, col, el, icon, row, text, text_input};
+use rune::{
+    Color, Cursor, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text,
+    text_input,
+};
 use soul_player_host::TrackLocator;
 
 use crate::State;
@@ -145,10 +148,102 @@ fn icon_ctrl(
     )
 }
 
+/// Like [`icon_ctrl`], but routed through [`Tx`] rather than a plain
+/// `&mut State` closure: the one control here that needs it ("Set cover",
+/// which opens a file dialog). Always enabled; unlike `icon_ctrl`, there's no
+/// disabled case to represent.
+fn icon_ctrl_tx(
+    key: String,
+    glyph: &'static Icon,
+    label: String,
+    p: &Palette,
+    on: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
+    el().key(key)
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .size(CTRL_BTN, CTRL_BTN)
+        .center()
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(icon(glyph, CTRL_ICON).color(p.text_secondary))
+        .on_press_tx(move |st: &mut State, tx: &mut Tx| on(st, tx))
+}
+
+/// The "Set cover" control: opens an image-file dialog (jpg/jpeg/png/webp/gif)
+/// and, if the user picks one, applies it as playlist `id`'s custom cover via
+/// `PlaylistStore::set_custom_cover`. A set cover always wins over the
+/// cover-track/icon fallback (see `page`'s `art` match), so from here on the
+/// hero shows exactly what was picked.
+fn set_cover_control(p: &Palette, id: PlaylistId) -> El {
+    icon_ctrl_tx(
+        "playlist-set-cover".to_string(),
+        &icons::UPLOAD,
+        t!("playlists.setCover").to_string(),
+        p,
+        move |_s: &mut State, tx: &mut Tx| {
+            tx.open_file(
+                FileDialogOptions {
+                    title: t!("playlists.setCoverDialog").to_string(),
+                    ..Default::default()
+                }
+                .filter(
+                    "Images (*.jpg, *.jpeg, *.png, *.webp, *.gif)",
+                    &["jpg", "jpeg", "png", "webp", "gif"],
+                ),
+                move |s: &mut State, result, _tx| {
+                    if let Ok(Some(path)) = result {
+                        // A replaced cover overwrites `cover.<ext>` in place
+                        // when the extension is unchanged, so the art cache's
+                        // path-keyed memo (`views::player::ArtCache`) must be
+                        // dropped for both the old and new path, otherwise
+                        // the hero and the Playlists-list thumbnail keep
+                        // showing the stale decode until restart.
+                        let old = s.playlists.custom_cover_path(id);
+                        if s.playlists.set_custom_cover(id, &path) {
+                            if let Some(old) = old {
+                                s.art.forget_path(&old);
+                            }
+                            if let Some(new) = s.playlists.custom_cover_path(id) {
+                                s.art.forget_path(&new);
+                            }
+                        }
+                    }
+                },
+            );
+        },
+    )
+}
+
+/// The "Remove cover" control: clears playlist `id`'s custom cover, falling
+/// the hero back to its cover-track/icon default. Only rendered when a
+/// custom cover is actually set (see `hero_actions`); there is nothing to
+/// remove otherwise.
+fn remove_cover_control(p: &Palette, id: PlaylistId) -> El {
+    icon_ctrl(
+        "playlist-remove-cover".to_string(),
+        &icons::X,
+        t!("playlists.removeCover").to_string(),
+        true,
+        p,
+        move |st: &mut State| {
+            let old = st.playlists.custom_cover_path(id);
+            st.playlists.clear_custom_cover(id);
+            if let Some(old) = old {
+                st.art.forget_path(&old);
+            }
+        },
+    )
+}
+
 /// The hero's action row: Play All (omitted entirely when nothing in the
 /// playlist is playable, so a Play All click can never fire an empty
-/// `PlayContext`), then either the Rename/Delete icon pair, an open inline
-/// rename field, or an open delete-confirm prompt, per
+/// `PlayContext`), then either the Rename/Delete icon pair (itself preceded
+/// by Set cover, plus Remove cover once one is set), an open inline rename
+/// field, or an open delete-confirm prompt, per
 /// `State::playlist_renaming`/`playlist_delete_confirm` for this playlist.
 fn hero_actions(s: &State, p: &Palette, id: PlaylistId, play_ids: Vec<u32>) -> El {
     let mut r = row().key("playlist-actions").gap(space::SM).center_y();
@@ -214,7 +309,12 @@ fn hero_actions(s: &State, p: &Palette, id: PlaylistId, play_ids: Vec<u32>) -> E
                 cancel_playlist_delete,
             ));
     } else {
+        r = r.child(set_cover_control(p, id));
+        if s.playlists.custom_cover_path(id).is_some() {
+            r = r.child(remove_cover_control(p, id));
+        }
         r = r
+            .child(el().w(1.0).h(16.0).radius(0.5).fill(p.border))
             .child(icon_ctrl(
                 "playlist-rename".to_string(),
                 &icons::PENCIL,
@@ -433,12 +533,17 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
     )
     .to_string();
 
-    let art = match play_ids.first() {
-        Some(&cid) if s.host.art(cid).is_some() => HeroArt::Cover {
-            id: cid,
-            circular: false,
+    // A user-set custom cover always wins over the cover-track/icon fallback,
+    // matching the Playlists list page's own precedence (`playlists::playlist_cover`).
+    let art = match s.playlists.custom_cover_path(id) {
+        Some(path) => HeroArt::Image(path),
+        None => match play_ids.first() {
+            Some(&cid) if s.host.art(cid).is_some() => HeroArt::Cover {
+                id: cid,
+                circular: false,
+            },
+            _ => HeroArt::Icon(&icons::MUSIC),
         },
-        _ => HeroArt::Icon(&icons::MUSIC),
     };
 
     let hero = detail_hero(
@@ -494,7 +599,7 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
 mod tests {
     use std::path::PathBuf;
 
-    use rune::{Cx, Env, Ime, Key, KeyEvent, Mods, Runtime};
+    use rune::{Cx, Env, FileDialogKind, Ime, Key, KeyEvent, Mods, Runtime};
     use soul_player_host::{Command, PlayerHandle, TrackSnapshot, TrackView};
 
     use super::*;
@@ -625,6 +730,65 @@ mod tests {
     /// that only care about rendering, not what gets sent.
     fn runtime_playlist_with_one_missing_entry(title: &str) -> (Runtime<State>, PlaylistId) {
         runtime_playlist_with_one_missing_entry_on(PlayerHandle::offline(), title)
+    }
+
+    /// A temp directory unique to this call (process id + atomic counter),
+    /// so parallel tests in this binary never collide. Mirrors
+    /// `playlists::store`'s own test helper of the same shape.
+    fn temp_source_dir() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "soul_rune_playlist_detail_cover_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write a tiny but real PNG (just the 8-byte file signature; it never
+    /// needs to decode, only to exist as a `.png` file under the size cap)
+    /// to a fresh temp dir and return its path. Mirrors `playlists::store`'s
+    /// own `write_temp_png` test helper.
+    fn write_temp_png() -> PathBuf {
+        const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let path = temp_source_dir().join("source.png");
+        std::fs::write(&path, PNG_SIGNATURE).unwrap();
+        path
+    }
+
+    /// Like [`write_temp_png`], but a visibly different (still tiny, still
+    /// non-decoding) byte sequence under the same `.png` extension, so a
+    /// test can "pick a different picture" that still lands on the exact
+    /// same `cover.png` destination path when applied as a replacement.
+    fn write_temp_png_variant() -> PathBuf {
+        const DIFFERENT_BYTES: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0xAA, 0xBB, 0xCC, 0xDD];
+        let path = temp_source_dir().join("source.png");
+        std::fs::write(&path, DIFFERENT_BYTES).unwrap();
+        path
+    }
+
+    /// Same as [`runtime_playlist_over_library`], but with a custom cover
+    /// image applied before the page ever renders, so the hero must prefer
+    /// [`HeroArt::Image`] over the cover-track it would otherwise pick.
+    fn runtime_playlist_over_library_with_custom_cover() -> (Runtime<State>, PlaylistId) {
+        let host = PlayerHandle::recording();
+        let views = host.open_folder(&testdata_dir()).expect("scan testdata/");
+        let loc_a = host.locator_of(views[0].id).expect("a resolves");
+        let mut store = PlaylistStore::load();
+        let id = store.create("Mix");
+        store.add_entry(id, entry_from(&views[0], loc_a));
+        assert!(
+            store.set_custom_cover(id, &write_temp_png()),
+            "the custom cover applies"
+        );
+
+        let mut s = State::new(host);
+        s.route = Route::Playlist;
+        s.open_playlist = Some(id);
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env());
+        rt.frame(0.0);
+        (rt, id)
     }
 
     /// A playlist with three entries: two whose locators resolve against the
@@ -867,5 +1031,172 @@ mod tests {
         click(&mut rt, "playlist-rename-cancel");
         assert_eq!(rt.state.playlist_renaming, None);
         assert_eq!(rt.state.playlists.get(id).unwrap().name, "Mix");
+    }
+
+    /// A playlist with a custom cover set renders the hero as
+    /// `HeroArt::Image` (keyed `playlist-hero-image`), not the cover-track
+    /// hero it would otherwise pick for a playlist whose first track has art.
+    #[test]
+    fn custom_cover_renders_the_hero_image_element() {
+        let _g = config::use_test_config_dir();
+        let (rt, _id) = runtime_playlist_over_library_with_custom_cover();
+        assert!(
+            rt.find("playlist-hero-image").is_some(),
+            "a custom cover renders the keyed hero image element"
+        );
+        assert!(
+            rt.find("playlist-cover").is_none(),
+            "the custom cover takes precedence over the cover-track hero"
+        );
+    }
+
+    /// Without a custom cover, the hero falls back to the existing
+    /// cover-track/icon logic: no `playlist-hero-image` element at all.
+    #[test]
+    fn no_custom_cover_falls_back_to_the_existing_hero() {
+        let _g = config::use_test_config_dir();
+        let (rt, _id) = runtime_playlist_over_library();
+        assert!(
+            rt.find("playlist-hero-image").is_none(),
+            "no custom cover set means no hero image element renders"
+        );
+    }
+
+    /// End-to-end: pressing **Set cover** opens an open-file dialog; answering
+    /// it with a picked image applies it as the playlist's custom cover.
+    /// Exercises the real `playlist-set-cover` button → `tx.open_file` → the
+    /// runtime's scripted dialog → `PlaylistStore::set_custom_cover`, mirroring
+    /// `main.rs`'s `e2e_importing_an_autoeq_profile_through_the_button`.
+    #[test]
+    fn set_cover_through_the_scripted_file_dialog_applies_the_picked_image() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_over_library();
+        assert!(
+            rt.state.playlists.custom_cover_path(id).is_none(),
+            "no custom cover yet"
+        );
+
+        click(&mut rt, "playlist-set-cover");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Set cover opens a file dialog");
+        assert_eq!(kind, FileDialogKind::Open);
+
+        let picked = write_temp_png();
+        rt.resolve_file_dialog(Some(picked)).unwrap();
+        rt.frame(0.0);
+
+        let cover = rt
+            .state
+            .playlists
+            .custom_cover_path(id)
+            .expect("the picked image applied as the custom cover");
+        assert!(cover.exists(), "the stored cover file exists on disk");
+    }
+
+    /// **Remove cover** is absent before any custom cover is set, appears once
+    /// one is, and pressing it clears the cover again (falling the hero back
+    /// to its cover-track/icon default).
+    #[test]
+    fn remove_cover_control_is_absent_then_present_then_clears_the_cover() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_over_library();
+        assert!(
+            rt.find("playlist-remove-cover").is_none(),
+            "no remove-cover control before any cover is set"
+        );
+
+        assert!(rt.state.playlists.set_custom_cover(id, &write_temp_png()));
+        rt.invalidate();
+        rt.frame(0.0);
+        assert!(
+            rt.find("playlist-remove-cover").is_some(),
+            "the control appears once a custom cover is set"
+        );
+        // A brand-new subtree (it just appeared), so it enter-animates from
+        // opacity 0; settle instantly so it's pickable (matches the
+        // settle_all pattern the delete-confirm test above uses).
+        rt.settle_all();
+        rt.frame(0.0);
+
+        click(&mut rt, "playlist-remove-cover");
+        assert!(
+            rt.state.playlists.custom_cover_path(id).is_none(),
+            "pressing it clears the cover"
+        );
+        assert!(
+            rt.find("playlist-remove-cover").is_none(),
+            "and the control disappears again"
+        );
+    }
+
+    /// Replacing a custom cover with a DIFFERENT image saved under the SAME
+    /// extension (`.png` -> `.png`) overwrites `cover.png` in place
+    /// (`PlaylistStore::set_custom_cover`), so the destination `PathBuf` is
+    /// identical before and after. `views::player::ArtCache` memoizes
+    /// decodes by that path, so the "Set cover" callback must forget it;
+    /// otherwise the hero (and the Playlists-list thumbnail) would keep
+    /// showing the first cover's decode until restart.
+    ///
+    /// `rune::Image`'s id is content-addressed (`rune::ImageId`), so this
+    /// doesn't need decoded pixels (the tiny fixture images here are
+    /// deliberately too small to decode): two DIFFERENT source byte strings
+    /// produce two DIFFERENT ids once each is actually re-read from disk.
+    /// If the stale path were never forgotten, the second render would keep
+    /// serving the first id, since `image_for_path` only re-reads a path
+    /// that's missing from its memo.
+    #[test]
+    fn set_cover_control_forgets_the_stale_path_on_same_extension_replace() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_over_library();
+        // `Runtime::new` doesn't run `AppSpec::setup` (only the real app
+        // does), so wire the art cache here, mirroring `player::tests`.
+        rt.state.art.wire(std::sync::Arc::new(|| {}));
+
+        // First Set cover.
+        click(&mut rt, "playlist-set-cover");
+        rt.frame(0.0);
+        rt.file_dialog().expect("Set cover opens a file dialog");
+        rt.resolve_file_dialog(Some(write_temp_png())).unwrap();
+        // Render once so the hero's `cover_from_path` (see `page`'s `art`
+        // match) memoizes the decode under the cover's path, just like the
+        // real app does on every frame.
+        rt.frame(0.0);
+        let cover_path = rt.state.playlists.custom_cover_path(id).expect("cover set");
+        let first_id = rt
+            .state
+            .art
+            .path_image_id(&cover_path)
+            .expect("rendering the hero after Set cover memoizes a decode");
+
+        // Replace with a DIFFERENT image under the same extension: the store
+        // overwrites `cover.png` in place, so the destination path is
+        // unchanged (the bug's exact repro case).
+        click(&mut rt, "playlist-set-cover");
+        rt.frame(0.0);
+        rt.file_dialog()
+            .expect("Set cover opens a file dialog again");
+        rt.resolve_file_dialog(Some(write_temp_png_variant()))
+            .unwrap();
+        rt.frame(0.0);
+
+        let cover_path_after = rt
+            .state
+            .playlists
+            .custom_cover_path(id)
+            .expect("cover is still set after the replace");
+        assert_eq!(
+            cover_path, cover_path_after,
+            "a same-extension replace overwrites the identical destination path"
+        );
+        let second_id = rt
+            .state
+            .art
+            .path_image_id(&cover_path)
+            .expect("rendering the hero after the replace memoizes a decode again");
+        assert_ne!(
+            first_id, second_id,
+            "the call site must forget the old path so the replaced file's different bytes \
+             produce a different content-addressed id, not the first cover's stale one"
+        );
     }
 }

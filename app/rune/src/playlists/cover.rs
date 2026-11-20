@@ -9,17 +9,20 @@
 
 use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 
 use super::model::Playlist;
 
-/// The thumbnail a playlist list row renders: four distinct-album covers
-/// arranged as a 2x2 mosaic, one cover when fewer than 4 distinct albums
-/// have art, or a placeholder when none do.
+/// The thumbnail a playlist list row renders: a user-set custom cover image
+/// (always wins when present), four distinct-album covers arranged as a 2x2
+/// mosaic, one cover when fewer than 4 distinct albums have art, or a
+/// placeholder when none do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlaylistCover {
     Mosaic(Vec<u32>),
     Single(u32),
     Placeholder,
+    Custom(PathBuf),
 }
 
 /// Walks `items` in order, collecting the index of each item that is both
@@ -67,6 +70,23 @@ pub fn select_cover(resolved: &[(u32, String)], has_art: impl Fn(u32) -> bool) -
         0 => PlaylistCover::Placeholder,
         1..=3 => PlaylistCover::Single(ids[0]),
         _ => PlaylistCover::Mosaic(ids),
+    }
+}
+
+/// The full cover-selection precedence for a playlist row: a user-set custom
+/// cover image always wins, even over what would otherwise be a mosaic;
+/// absent that, fall back to [`select_cover`]'s auto mosaic/single/
+/// placeholder pick. Pure (no filesystem or runtime access), so the
+/// precedence itself is unit-tested without a `Runtime`.
+#[must_use]
+pub fn choose_playlist_cover(
+    custom: Option<PathBuf>,
+    resolved: &[(u32, String)],
+    has_art: impl Fn(u32) -> bool,
+) -> PlaylistCover {
+    match custom {
+        Some(path) => PlaylistCover::Custom(path),
+        None => select_cover(resolved, has_art),
     }
 }
 
@@ -123,6 +143,22 @@ mod tests {
     fn no_art_is_placeholder() {
         let cov = select_cover(&ids_albums(&[(1, "A"), (2, "B")]), |_| false);
         assert_eq!(cov, PlaylistCover::Placeholder);
+    }
+
+    #[test]
+    fn custom_cover_takes_precedence_over_mosaic() {
+        // Four distinct albums with art would normally mosaic, but a custom
+        // cover always wins.
+        let resolved = ids_albums(&[(1, "A"), (2, "B"), (3, "C"), (4, "D")]);
+        let cov = choose_playlist_cover(Some(PathBuf::from("/x/cover.png")), &resolved, |_| true);
+        assert!(matches!(cov, PlaylistCover::Custom(_)));
+    }
+
+    #[test]
+    fn falls_back_to_mosaic_without_custom() {
+        let resolved = ids_albums(&[(1, "A"), (2, "B"), (3, "C"), (4, "D")]);
+        let cov = choose_playlist_cover(None, &resolved, |_| true);
+        assert!(matches!(cov, PlaylistCover::Mosaic(_)));
     }
 
     #[test]

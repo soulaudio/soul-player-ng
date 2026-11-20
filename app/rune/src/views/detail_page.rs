@@ -5,6 +5,8 @@
 //! `play_all_pill`, so the three pages share one grammar.
 #![forbid(unsafe_code)]
 
+use std::path::PathBuf;
+
 use rune::{Color, Cursor, El, Icon, col, el, icon, row, text};
 use soul_player_host::Command;
 
@@ -12,18 +14,22 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
-use crate::views::player::cover;
+use crate::views::player::{cover, cover_from_path};
 
 /// Large cover on a detail hero (the old app's `w-44`).
 pub(crate) const DETAIL_COVER: f32 = 176.0;
 /// The genre hero's icon tile (no artwork → a glyph in a muted square).
 const ICON_TILE: f32 = 120.0;
 
-/// A hero's artwork: a square album cover, a circular artist avatar, or a muted
-/// icon tile (genres carry no art).
+/// A hero's artwork: a square album cover, a circular artist avatar, an
+/// on-disk image file (a playlist's custom cover), or a muted icon tile
+/// (genres carry no art).
 pub(crate) enum HeroArt {
     /// A cover drawn from a member track id; `circular` clips it to a circle.
     Cover { id: u32, circular: bool },
+    /// A cover drawn from an image file on disk (a playlist's custom cover),
+    /// rendered via the same path-keyed cache the Playlists list page uses.
+    Image(PathBuf),
     /// A centered glyph in a muted `radius::MD` tile.
     Icon(&'static Icon),
 }
@@ -41,6 +47,18 @@ fn hero_artwork(s: &State, p: &Palette, scale: f32, prefix: &str, art: HeroArt) 
                 .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
                 .child(cover(s, Some(id), DETAIL_COVER, corner, p, scale))
         }
+        HeroArt::Image(path) => el()
+            .key(format!("{prefix}-hero-image"))
+            .radius(radius::MD)
+            .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
+            .child(cover_from_path(
+                s,
+                &path,
+                DETAIL_COVER,
+                radius::MD,
+                p,
+                scale,
+            )),
         HeroArt::Icon(glyph) => el()
             .key(format!("{prefix}-cover"))
             .size(ICON_TILE, ICON_TILE)
