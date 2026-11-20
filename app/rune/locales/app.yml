@@ -1946,4 +1946,11 @@ command.add-to-playlist:
   zh: '将当前曲目添加到播放列表'
   cs: 'Přidat aktuální skladbu do playlistu'
   ja: '現在のトラックをプレイリストに追加'
+command.placeholder:
+  en: 'Type a command…'
+  de: 'Befehl eingeben…'
+  es: 'Escribe un comando…'
+  zh: '输入命令…'
+  cs: 'Zadejte příkaz…'
+  ja: 'コマンドを入力…'
 

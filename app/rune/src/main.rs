@@ -1514,11 +1514,13 @@ pub(crate) fn close_add_to_playlist(s: &mut State) {
 
 // ---- Command palette (Cmd/Ctrl-K) ----
 
-/// Open the command palette: reset its query to empty and focused (so typing
-/// starts filtering immediately, no click needed) and its selection to the
-/// first row. Mirrors `open_add_to_playlist`'s "always start from a clean
-/// buffer" shape; the overlay that actually renders the list is a later task.
+/// Open the command palette: close any open dropdown first (so it isn't left
+/// open behind the palette), then reset its query to empty and focused (so
+/// typing starts filtering immediately, no click needed) and its selection to
+/// the first row. Mirrors `open_add_to_playlist`'s "always start from a clean
+/// buffer" shape.
 pub(crate) fn open_command_palette(s: &mut State) {
+    close_dropdown(s);
     s.command_palette_open = true;
     s.command_palette_query = rune::TextEdit::new("");
     s.command_palette_query.focused = true;
@@ -1528,10 +1530,6 @@ pub(crate) fn open_command_palette(s: &mut State) {
 /// Close the command palette (Escape, an outside press, or running a chosen
 /// command) and reset its query + selection so the next open always starts
 /// clean, the same guarantee `close_add_to_playlist` gives its overlay.
-#[allow(
-    dead_code,
-    reason = "called by this task's own test until Task 2 wires the overlay's Escape/backdrop/Done close affordances"
-)]
 pub(crate) fn close_command_palette(s: &mut State) {
     s.command_palette_open = false;
     s.command_palette_query = rune::TextEdit::new("");
@@ -2548,6 +2546,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     overlays.extend(views::signal_path::overlay(s, &p));
     overlays.extend(views::titlebar::overlay(s, &p));
     overlays.extend(views::add_to_playlist::overlay(s, &p));
+    overlays.extend(views::command_palette::overlay(s, &p));
     // The crash-report modal draws over everything, on any route — last, so it
     // stacks above any panel still mounted beneath it.
     if let Some(dialog) = crash_overlay(s, &p) {
@@ -11992,6 +11991,129 @@ mod tests {
         assert!(!s.command_palette_open);
         assert_eq!(s.command_palette_selected, 0);
         assert!(s.command_palette_query.text.is_empty());
+    }
+
+    /// Opening the palette dismisses any open dropdown first, so the two
+    /// never stack: a dropdown left open behind the palette would still
+    /// catch an outside press meant for the palette instead.
+    #[test]
+    fn opening_the_command_palette_closes_an_open_dropdown() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.open_dropdown = Some("some-dropdown".to_string());
+
+        open_command_palette(&mut s);
+
+        assert!(s.command_palette_open);
+        assert!(s.open_dropdown.is_none(), "the open dropdown is dismissed");
+    }
+
+    /// Opening the palette (bypassing the Ctrl/Cmd-K chord itself, already
+    /// covered by `ctrl_k_opens_the_command_palette`) renders the search
+    /// field and a row for every command in the unfiltered registry, driven
+    /// through the real app `view`.
+    #[test]
+    fn command_palette_overlay_renders_the_input_and_rows_when_open() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        rt.update(|st, _| open_command_palette(st));
+        rt.settle_all();
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("command-palette-input").is_some(),
+            "the search field renders"
+        );
+        assert!(
+            rt.find("command-row-nav-home").is_some(),
+            "a known command's row renders"
+        );
+    }
+
+    /// Typing a filter that narrows the registry to one command, then
+    /// Down (clamped: there is only the one match) and Enter, runs it and
+    /// closes the palette. Drives the real `on_input_key` path on the
+    /// focused search field (via `rt.ime`/`rt.key`), not a direct call into
+    /// the registry.
+    #[test]
+    fn command_palette_filter_then_enter_runs_the_selected_command_and_closes() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        rt.update(|st, _| open_command_palette(st));
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.state.command_palette_query.focused,
+            "the field starts focused so typing filters immediately"
+        );
+
+        rt.ime(rune::Ime::Commit("albums".to_string()));
+        rt.frame(0.0);
+        assert!(
+            rt.find("command-row-nav-albums").is_some(),
+            "the filter narrows to the Albums command"
+        );
+
+        rt.key(KeyEvent {
+            key: Key::Down,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+
+        assert!(
+            matches!(rt.state.route, Route::Albums),
+            "Enter ran the highlighted Albums command"
+        );
+        assert!(
+            !rt.state.command_palette_open,
+            "running a command closes the palette"
+        );
+    }
+
+    /// Clicking a command row runs it and closes the palette, the real
+    /// pointer path (`click_key`) every other overlay's rows are driven
+    /// through in this test module.
+    #[test]
+    fn command_palette_click_a_row_runs_it_and_closes() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        rt.update(|st, _| open_command_palette(st));
+        rt.settle_all();
+        rt.frame(0.0);
+
+        click_key(&mut rt, "command-row-nav-artists");
+
+        assert!(
+            matches!(rt.state.route, Route::Artists),
+            "the click ran nav-artists"
+        );
+        assert!(
+            !rt.state.command_palette_open,
+            "running a command via click closes the palette"
+        );
     }
 
     #[test]

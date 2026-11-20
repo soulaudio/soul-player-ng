@@ -1,20 +1,17 @@
-//! The Cmd/Ctrl-K command palette: model + pure logic. A flat registry of
-//! named actions (go to a page, transport, view, playlist) that can be run
-//! without the mouse, plus the substring filter the overlay's search field
-//! drives. This task wires the registry, the filter, and the localized
-//! labels; the overlay itself (its mount, list rendering, and arrow-key
-//! navigation) is a later task: `main.rs`'s `open_command_palette` /
-//! `close_command_palette` only flip the flag this module's callers will
-//! read.
+//! The Cmd/Ctrl-K command palette: a flat registry of named actions (go to a
+//! page, transport, view, playlist) that can be run without the mouse, the
+//! substring filter its search field drives, and the overlay itself: the
+//! query field, the live-filtered + highlighted list, and Up/Down/Enter/click
+//! to run the highlighted command. `main.rs`'s `open_command_palette` /
+//! `close_command_palette` own the `State::command_palette_open` flag
+//! [`overlay`] reads; `main.rs`'s overlay-root mounts [`overlay`] alongside
+//! the other global overlays (`add_to_playlist`, `signal_path`, ...).
 #![forbid(unsafe_code)]
-// This task wires the registry (`commands`/`command_label`/`filtered`) and
-// every action it lists, but nothing in production code calls into them
-// yet: the overlay that renders the filtered list and runs the highlighted
-// command's `action` is Task 2. Until then this whole module is genuinely
-// unreached outside its own tests, same shape as `playlists::mod`'s own
-// module-wide allow while an earlier task's wiring was still incomplete.
-#![allow(dead_code)]
 
+use rune::{Color, Cursor, El, Key, ScrollSpec, col, row, text, text_input};
+
+use crate::theme::Palette;
+use crate::ui::{fx, radius, space, type_};
 use crate::{Command, RepeatMode, Route, SettingsTab, State, ThemePref};
 
 /// One entry in the command registry: a stable id (the key for the
@@ -304,11 +301,217 @@ pub(crate) fn filtered(cmds: &[PaletteCommand], query: &str) -> Vec<usize> {
         .collect()
 }
 
+/// The overlay's centered-modal width: wide enough to read a mid-length
+/// command label beside its own search field without the dialog looming
+/// over the window. `add_to_playlist`'s own dialog is narrower (`.w(360.0)`)
+/// at that menu's pick-list proportions; this one also hosts a text field.
+const DIALOG_WIDTH: f32 = 520.0;
+
+/// The filtered list's height cap: the full registry (~20 entries) would
+/// otherwise render taller than most windows, so past this the list scrolls
+/// instead of the dialog growing without bound. Set directly on the
+/// `.scroll()` viewport itself (not via a `.grow(1.0)` on an unbounded
+/// dialog): the dialog hugs its content, so there is no ancestor height for
+/// a flex-grow child to fill against.
+const LIST_MAX_HEIGHT: f32 = 360.0;
+
+/// Clamp `selected` into `[0, len)`, or `0` when `len` is `0` (nothing to
+/// select). Both the renderer (so a query edit that shrinks the filtered
+/// list never highlights a row that no longer exists) and the arrow-key
+/// handler read the highlighted index through this, rather than trusting
+/// `State::command_palette_selected` as already in range.
+fn clamp_selected(selected: usize, len: usize) -> usize {
+    if len == 0 { 0 } else { selected.min(len - 1) }
+}
+
+/// Move the highlighted row by one (`Key::Down`, `delta = 1`) or back one
+/// (`Key::Up`, `delta = -1`), clamped to the CURRENT filtered list's bounds.
+/// Re-derives `filtered` rather than trusting the last-known length: typing
+/// narrows (or widens) the list out from under a stale index.
+fn move_selected(s: &mut State, delta: i32) {
+    let cmds = commands(s);
+    let len = filtered(&cmds, &s.command_palette_query.text).len();
+    if len == 0 {
+        s.command_palette_selected = 0;
+        return;
+    }
+    let current = clamp_selected(s.command_palette_selected, len);
+    s.command_palette_selected = if delta < 0 {
+        current.saturating_sub(1)
+    } else {
+        (current + 1).min(len - 1)
+    };
+}
+
+/// Run command `id` (a row's click, or Enter on the highlighted one): close
+/// the palette FIRST, then run its action. Order matters: "Add current
+/// track to playlist" opens another overlay of its own, which closing
+/// afterward would immediately undo. A no-op if `id` isn't registered (it
+/// always is, for an id this module's own rows render).
+fn run_command(s: &mut State, id: &str) {
+    let cmds = commands(s);
+    let Some(action) = cmds.iter().find(|c| c.id == id).map(|c| c.action) else {
+        return;
+    };
+    crate::close_command_palette(s);
+    action(s);
+}
+
+/// Run the CURRENTLY highlighted filtered command (Enter in the search
+/// field): a no-op when the filtered list is empty, so an all-miss query
+/// plus Enter does nothing instead of indexing out of range.
+fn run_selected(s: &mut State) {
+    let cmds = commands(s);
+    let matches = filtered(&cmds, &s.command_palette_query.text);
+    if matches.is_empty() {
+        return;
+    }
+    let selected = clamp_selected(s.command_palette_selected, matches.len());
+    let id = cmds[matches[selected]].id;
+    run_command(s, id);
+}
+
+/// One row in the filtered list: `command_label(id)`, highlighted (a
+/// `fx::SELECTED` foreground wash, the same token `views::artists`' own
+/// list/grid toggle uses for its active state) when it is the row Up/Down
+/// would move off of, or Enter/a click would run. `focus_selected` marks it
+/// as the group's selected child for accessibility; it does not take actual
+/// keyboard focus away from the search field.
+fn command_row(id: &'static str, is_selected: bool, p: &Palette) -> El {
+    let label = command_label(id);
+    row()
+        .key(format!("command-row-{id}"))
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .focus_selected(is_selected)
+        .w_full()
+        .center_y()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if is_selected {
+            p.fg.alpha(fx::SELECTED)
+        } else {
+            Color::TRANSPARENT
+        })
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(
+            text(label)
+                .font(type_::ITEM)
+                .color(p.fg)
+                .grow(1.0)
+                .truncate(),
+        )
+        .on_press(move |st: &mut State| run_command(st, id))
+}
+
+/// The search field: bound to `State::command_palette_query`, plus the
+/// arrow-key / Enter handler that drives selection and runs a command
+/// without ever taking focus off the field. `on_input_key` fires on a
+/// focused text field BEFORE its own editor, so returning `true` for
+/// Up/Down/Enter keeps them from moving the caret or falling through to
+/// Rune's own focus-group traversal.
+fn search_field(s: &State, p: &Palette) -> El {
+    text_input(&s.command_palette_query, type_::ITEM)
+        .key("command-palette-input")
+        .label(t!("command.placeholder").to_string())
+        .placeholder(t!("command.placeholder").to_string(), p.text_secondary)
+        .single_line()
+        .w_full()
+        .px(space::SM)
+        .py(space::XS)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .color(p.fg)
+        .on_edit(|st: &mut State| &mut st.command_palette_query)
+        .on_input_key(
+            |st: &mut State, ev: &rune::KeyEvent, _tx: &mut rune::Tx| match ev.key {
+                Key::Down => {
+                    move_selected(st, 1);
+                    true
+                }
+                Key::Up => {
+                    move_selected(st, -1);
+                    true
+                }
+                Key::Enter => {
+                    run_selected(st);
+                    true
+                }
+                _ => false,
+            },
+        )
+}
+
+/// The Cmd/Ctrl-K command palette overlay, mounted at the window root (via
+/// [`crate::view`]'s overlay layer): a centered, dim-backdrop modal over the
+/// search field and its live-filtered command list, the highlighted row
+/// moved by Up/Down and run by Enter or a click. `None` while
+/// `State::command_palette_open` is `false` (closed).
+pub fn overlay(s: &State, p: &Palette) -> Option<El> {
+    if !s.command_palette_open {
+        return None;
+    }
+    let cmds = commands(s);
+    let matches = filtered(&cmds, &s.command_palette_query.text);
+    let selected = clamp_selected(s.command_palette_selected, matches.len());
+
+    let mut list = col()
+        .key("command-palette-list")
+        .role("list")
+        .reveal_selected(true)
+        .gap(space::XXS);
+    for (row_pos, &idx) in matches.iter().enumerate() {
+        list = list.child(command_row(cmds[idx].id, row_pos == selected, p));
+    }
+
+    Some(
+        col()
+            .key("command-palette-modal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(Color::BLACK.alpha(0.45))
+            .child(
+                col()
+                    .key("command-palette-dialog")
+                    .w(DIALOG_WIDTH)
+                    .fill(p.card)
+                    .radius(radius::LG)
+                    .border(1.0, p.border)
+                    .padding(space::LG)
+                    .gap(space::MD)
+                    .modal(true, crate::close_command_palette)
+                    .child(search_field(s, p))
+                    .child(
+                        list.scroll(ScrollSpec {
+                            stick_bottom: false,
+                        })
+                        .scroll_edge_fade(24.0)
+                        .max_h(LIST_MAX_HEIGHT),
+                    ),
+            ),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use soul_player_host::PlayerHandle;
 
     use super::*;
+
+    /// `overlay` is `None` while `State::command_palette_open` is `false`
+    /// (the ordinary closed state no test leaves it in), the same
+    /// precondition-gate shape as `views::add_to_playlist::overlay`.
+    #[test]
+    fn overlay_is_none_when_palette_is_closed() {
+        let s = State::new(PlayerHandle::offline());
+        assert!(overlay(&s, &crate::theme::palette(true)).is_none());
+    }
 
     #[test]
     fn filtered_substring_matches_labels_case_insensitively() {
