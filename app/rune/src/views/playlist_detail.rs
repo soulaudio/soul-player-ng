@@ -433,12 +433,17 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
     )
     .to_string();
 
-    let art = match play_ids.first() {
-        Some(&cid) if s.host.art(cid).is_some() => HeroArt::Cover {
-            id: cid,
-            circular: false,
+    // A user-set custom cover always wins over the cover-track/icon fallback,
+    // matching the Playlists list page's own precedence (`playlists::playlist_cover`).
+    let art = match s.playlists.custom_cover_path(id) {
+        Some(path) => HeroArt::Image(path),
+        None => match play_ids.first() {
+            Some(&cid) if s.host.art(cid).is_some() => HeroArt::Cover {
+                id: cid,
+                circular: false,
+            },
+            _ => HeroArt::Icon(&icons::MUSIC),
         },
-        _ => HeroArt::Icon(&icons::MUSIC),
     };
 
     let hero = detail_hero(
@@ -625,6 +630,54 @@ mod tests {
     /// that only care about rendering, not what gets sent.
     fn runtime_playlist_with_one_missing_entry(title: &str) -> (Runtime<State>, PlaylistId) {
         runtime_playlist_with_one_missing_entry_on(PlayerHandle::offline(), title)
+    }
+
+    /// A temp directory unique to this call (process id + atomic counter),
+    /// so parallel tests in this binary never collide. Mirrors
+    /// `playlists::store`'s own test helper of the same shape.
+    fn temp_source_dir() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "soul_rune_playlist_detail_cover_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write a tiny but real PNG (just the 8-byte file signature; it never
+    /// needs to decode, only to exist as a `.png` file under the size cap)
+    /// to a fresh temp dir and return its path. Mirrors `playlists::store`'s
+    /// own `write_temp_png` test helper.
+    fn write_temp_png() -> PathBuf {
+        const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let path = temp_source_dir().join("source.png");
+        std::fs::write(&path, PNG_SIGNATURE).unwrap();
+        path
+    }
+
+    /// Same as [`runtime_playlist_over_library`], but with a custom cover
+    /// image applied before the page ever renders, so the hero must prefer
+    /// [`HeroArt::Image`] over the cover-track it would otherwise pick.
+    fn runtime_playlist_over_library_with_custom_cover() -> (Runtime<State>, PlaylistId) {
+        let host = PlayerHandle::recording();
+        let views = host.open_folder(&testdata_dir()).expect("scan testdata/");
+        let loc_a = host.locator_of(views[0].id).expect("a resolves");
+        let mut store = PlaylistStore::load();
+        let id = store.create("Mix");
+        store.add_entry(id, entry_from(&views[0], loc_a));
+        assert!(
+            store.set_custom_cover(id, &write_temp_png()),
+            "the custom cover applies"
+        );
+
+        let mut s = State::new(host);
+        s.route = Route::Playlist;
+        s.open_playlist = Some(id);
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env());
+        rt.frame(0.0);
+        (rt, id)
     }
 
     /// A playlist with three entries: two whose locators resolve against the
@@ -867,5 +920,34 @@ mod tests {
         click(&mut rt, "playlist-rename-cancel");
         assert_eq!(rt.state.playlist_renaming, None);
         assert_eq!(rt.state.playlists.get(id).unwrap().name, "Mix");
+    }
+
+    /// A playlist with a custom cover set renders the hero as
+    /// `HeroArt::Image` (keyed `playlist-hero-image`), not the cover-track
+    /// hero it would otherwise pick for a playlist whose first track has art.
+    #[test]
+    fn custom_cover_renders_the_hero_image_element() {
+        let _g = config::use_test_config_dir();
+        let (rt, _id) = runtime_playlist_over_library_with_custom_cover();
+        assert!(
+            rt.find("playlist-hero-image").is_some(),
+            "a custom cover renders the keyed hero image element"
+        );
+        assert!(
+            rt.find("playlist-cover").is_none(),
+            "the custom cover takes precedence over the cover-track hero"
+        );
+    }
+
+    /// Without a custom cover, the hero falls back to the existing
+    /// cover-track/icon logic: no `playlist-hero-image` element at all.
+    #[test]
+    fn no_custom_cover_falls_back_to_the_existing_hero() {
+        let _g = config::use_test_config_dir();
+        let (rt, _id) = runtime_playlist_over_library();
+        assert!(
+            rt.find("playlist-hero-image").is_none(),
+            "no custom cover set means no hero image element renders"
+        );
     }
 }
