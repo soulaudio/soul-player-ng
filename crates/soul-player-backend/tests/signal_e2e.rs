@@ -516,16 +516,19 @@ fn centre_folds_equally(file: &str) -> Result<(), String> {
 /// END-TO-END channel-ORDER check for the surround formats whose order is NOT
 /// WAVEFORMATEXTENSIBLE. Vorbis and Opus put the centre SECOND (`FL C FR …`); AAC/ALAC put it
 /// FIRST (`C L R …`) — neither expressible as a plain channel mask, so the deck folds them via
-/// an ordered layout. These committed 5.1 fixtures (centre-only tone) drive the full
-/// `ServicePlayer` and prove the centre reaches BOTH stereo sides. Opus and ALAC are also in
-/// core's conformance suite, but Vorbis and multichannel ALAC decode through the desktop
-/// `open_track`/`OwnedDecoder` path exercised only here.
+/// an ordered layout. WavPack is the WAVEFORMATEXTENSIBLE (mask) case, but assembles its
+/// multichannel frame from a run of ≤2ch sub-blocks, exercised end-to-end here. These committed
+/// 5.1 fixtures (centre-only tone) drive the full `ServicePlayer` and prove the centre reaches
+/// BOTH stereo sides. Opus, ALAC, and WavPack are also in core's conformance suite, but Vorbis
+/// and the lossless multichannel decode through the desktop `open_track`/`OwnedDecoder` path are
+/// exercised only here.
 #[test]
 fn surround_centre_folds_equally_through_the_player() {
     let run = || -> Result<(), String> {
         centre_folds_equally("tone-fc-5.1.ogg")?; // Vorbis (centre second)
         centre_folds_equally("tone-fc-5.1.opus")?; // Opus multistream (family-1 order)
         centre_folds_equally("tone-fc-5.1.m4a")?; // ALAC (Apple Lossless, centre first)
+        centre_folds_equally("tone-fc-5.1.wv")?; // WavPack (WAVEFORMATEXTENSIBLE, multi-block frame)
         Ok(())
     };
     let res = std::thread::scope(|s| {
