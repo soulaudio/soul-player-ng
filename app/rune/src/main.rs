@@ -37,6 +37,7 @@ mod logging;
 mod media_session;
 mod notify;
 mod organize_job;
+mod playlists;
 mod report;
 mod systray;
 mod theme;
@@ -95,6 +96,16 @@ pub(crate) enum Route {
     Genres,
     /// A genre's detail page; which genre is in [`State::open_genre`].
     Genre,
+    Playlists,
+    /// A playlist's detail page; which playlist is in [`State::open_playlist`].
+    /// Not yet reachable outside tests and the stub dispatch below: a playlist
+    /// row's click (the real `navigate_to(.., Route::Playlist, ..)` call site)
+    /// lands in Task 8/9, once `views::playlists::page` has real rows to click.
+    #[allow(
+        dead_code,
+        reason = "constructed by tests until Task 8/9 wires a playlist row's click"
+    )]
+    Playlist,
     Settings,
 }
 
@@ -106,6 +117,7 @@ pub(crate) struct NavEntry {
     pub open_album: Option<String>,
     pub open_artist: Option<String>,
     pub open_genre: Option<String>,
+    pub open_playlist: Option<playlists::PlaylistId>,
 }
 
 /// The current location as a `NavEntry`.
@@ -115,6 +127,7 @@ fn here(s: &State) -> NavEntry {
         open_album: s.open_album.clone(),
         open_artist: s.open_artist.clone(),
         open_genre: s.open_genre.clone(),
+        open_playlist: s.open_playlist,
     }
 }
 
@@ -127,12 +140,14 @@ pub(crate) fn navigate_to(
     open_album: Option<String>,
     open_artist: Option<String>,
     open_genre: Option<String>,
+    open_playlist: Option<playlists::PlaylistId>,
 ) {
     let target = NavEntry {
         route,
         open_album: open_album.clone(),
         open_artist: open_artist.clone(),
         open_genre: open_genre.clone(),
+        open_playlist,
     };
     let current = here(s);
     if current != target {
@@ -142,8 +157,17 @@ pub(crate) fn navigate_to(
     s.open_album = open_album;
     s.open_artist = open_artist;
     s.open_genre = open_genre;
+    s.open_playlist = open_playlist;
     s.mobile_show_content = true;
     s.genre_search = rune::TextEdit::new("");
+    // A playlist's inline new/rename/delete-confirm fields are page-scoped
+    // ephemeral UI, same as `genre_search` above; reset rather than carried to
+    // wherever we land next (including back onto the same detail page via a
+    // fresh open).
+    s.playlist_new_buf = rune::TextEdit::new("");
+    s.playlist_renaming = None;
+    s.playlist_rename_buf = rune::TextEdit::new("");
+    s.playlist_delete_confirm = None;
 }
 
 /// The detail back button: pop to the previous location, or — if the stack is
@@ -151,16 +175,22 @@ pub(crate) fn navigate_to(
 /// end.
 pub(crate) fn go_back(s: &mut State) {
     s.genre_search = rune::TextEdit::new("");
+    s.playlist_new_buf = rune::TextEdit::new("");
+    s.playlist_renaming = None;
+    s.playlist_rename_buf = rune::TextEdit::new("");
+    s.playlist_delete_confirm = None;
     if let Some(prev) = s.nav_history.pop() {
         s.route = prev.route;
         s.open_album = prev.open_album;
         s.open_artist = prev.open_artist;
         s.open_genre = prev.open_genre;
+        s.open_playlist = prev.open_playlist;
     } else {
         s.route = match s.route {
             Route::Album | Route::Albums => Route::Albums,
             Route::Artist | Route::Artists => Route::Artists,
             Route::Genre | Route::Genres => Route::Genres,
+            Route::Playlist | Route::Playlists => Route::Playlists,
             _ => Route::Home,
         };
     }
@@ -229,6 +259,42 @@ struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
     library: Vec<TrackView>,
+    /// User-created playlists, loaded from the on-disk store at startup
+    /// ([`playlists::PlaylistStore::load`]). Every mutation
+    /// (create/rename/delete/reorder) persists through the store itself.
+    playlists: playlists::PlaylistStore,
+    /// The text buffer the Playlists list page's inline "New playlist" field
+    /// draws and the user types into. Confirming (Enter or the button)
+    /// creates a playlist named by the trimmed text and resets this buffer;
+    /// a blank/whitespace-only name is a no-op. Also reset when
+    /// `navigate_to`/`go_back`/sidebar nav leaves the page, so stale text never
+    /// resurfaces. One dedicated buffer per inline editor, like
+    /// `dsp_rename_buf`/`remote_url_buf`.
+    playlist_new_buf: rune::TextEdit,
+    /// Which playlist's inline rename field (on its detail page) is open, or
+    /// `None`. Mirrors `dsp_rename`; its buffer is `playlist_rename_buf`. Reset
+    /// (not committed) on cancel and whenever `navigate_to`/`go_back` leaves the
+    /// current location, so a stale buffer never resurfaces on the next visit
+    /// (the same page-scoped reset `playlist_new_buf` gets).
+    playlist_renaming: Option<playlists::PlaylistId>,
+    /// The text buffer the inline playlist-rename editor draws. Seeded from the
+    /// playlist's current name when a rename opens; ignored while
+    /// `playlist_renaming` is `None`.
+    playlist_rename_buf: rune::TextEdit,
+    /// Which playlist's delete action is pending the confirm step (its detail
+    /// page shows "Delete this playlist?" plus Delete/Cancel in place of the
+    /// Rename/Delete icons), or `None`. A single stray click never deletes.
+    /// Reset the same way as `playlist_renaming`.
+    playlist_delete_confirm: Option<playlists::PlaylistId>,
+    /// The track id pending an "Add to playlist" pick, or `None`. `Some`
+    /// opens `views::add_to_playlist::overlay`, mounted at the window root
+    /// like `signal_path_open`/`remote_health_open`: it survives a route
+    /// change (a global action, not a page-local widget) and is reset only
+    /// by `open_add_to_playlist`/`close_add_to_playlist`.
+    add_to_playlist_for: Option<u32>,
+    /// The overlay's inline "New playlist..." field, bound the same way
+    /// `playlist_new_buf` binds the Playlists page's own field.
+    add_to_playlist_buf: rune::TextEdit,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -271,6 +337,12 @@ struct State {
     /// Which genre's detail page is showing, when `route == Route::Genre`.
     /// Set from a genre row's click.
     open_genre: Option<String>,
+    /// Which playlist's detail page is showing, when `route == Route::Playlist`.
+    /// Unlike `open_album`/`open_artist`/`open_genre` (keyed by display name),
+    /// this is the playlist's stable [`playlists::PlaylistId`]: a
+    /// playlist has no natural unique name, so the id is the only durable key.
+    /// Set from a playlist row's click.
+    open_playlist: Option<playlists::PlaylistId>,
     /// The navigation back-stack (ephemeral): locations behind the current one, so
     /// a detail's back button returns to where you came from rather than a
     /// hardcoded parent. Pushed by [`navigate_to`], popped by [`go_back`]; cleared
@@ -563,6 +635,9 @@ struct State {
 impl State {
     fn new(host: PlayerHandle) -> Self {
         let library = host.views();
+        // Load user-created playlists from the on-disk store (empty store if none
+        // exist yet, or the folder hasn't been created).
+        let playlists = playlists::PlaylistStore::load();
         // Seed the per-source status from the host (its configured set, each with
         // live availability). Counts are 0 until the first rescan's WatchUpdate —
         // live edits refresh the full status via apply_watch.
@@ -601,6 +676,13 @@ impl State {
         Self {
             host,
             library,
+            playlists,
+            playlist_new_buf: rune::TextEdit::new(""),
+            playlist_renaming: None,
+            playlist_rename_buf: rune::TextEdit::new(""),
+            playlist_delete_confirm: None,
+            add_to_playlist_for: None,
+            add_to_playlist_buf: rune::TextEdit::new(""),
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -620,6 +702,7 @@ impl State {
             open_album: None,
             open_artist: None,
             open_genre: None,
+            open_playlist: None,
             nav_history: Vec::new(),
             discography_list: false,
             genre_search: rune::TextEdit::new(""),
@@ -1386,6 +1469,25 @@ pub(crate) fn toggle_remote_health_popover(s: &mut State) {
 /// or its own "Open sources settings" action).
 pub(crate) fn close_remote_health_popover(s: &mut State) {
     s.remote_health_open = false;
+}
+
+// ---- Add-to-playlist overlay (a track row's context menu) ----
+
+/// Open the "Add to playlist" overlay for `track_id`: reset the inline
+/// New-playlist buffer to empty (so a stale typed name never resurfaces),
+/// then mark `track_id` as pending, which is what tells
+/// `views::add_to_playlist::overlay` to render.
+pub(crate) fn open_add_to_playlist(s: &mut State, track_id: u32) {
+    s.add_to_playlist_buf = rune::TextEdit::new("");
+    s.add_to_playlist_for = Some(track_id);
+}
+
+/// Close the overlay (a pick, a successful New-playlist create, Escape via
+/// `El::modal`, or an outside press) and reset its buffer + pending track so
+/// the next open always starts clean.
+pub(crate) fn close_add_to_playlist(s: &mut State) {
+    s.add_to_playlist_for = None;
+    s.add_to_playlist_buf = rune::TextEdit::new("");
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
@@ -2397,6 +2499,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     let mut overlays = views::settings::settings_overlays(s, &p, cx);
     overlays.extend(views::signal_path::overlay(s, &p));
     overlays.extend(views::titlebar::overlay(s, &p));
+    overlays.extend(views::add_to_playlist::overlay(s, &p));
     // The crash-report modal draws over everything, on any route — last, so it
     // stacks above any panel still mounted beneath it.
     if let Some(dialog) = crash_overlay(s, &p) {
@@ -2421,6 +2524,8 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
         Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
         Route::Genres => views::genres::genres_page(s, p).grow(1.0),
         Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
+        Route::Playlists => views::playlists::page(s, p, scale).grow(1.0),
+        Route::Playlist => views::playlist_detail::page(s, p, scale).grow(1.0),
         Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
     };
     // Content zoom (Ctrl +/-/0): lay the page out in a `pane / zoom` logical box and
@@ -2548,6 +2653,12 @@ fn mobile_title(s: &State) -> String {
             .open_genre
             .clone()
             .unwrap_or_else(|| t!("nav.genres").to_string()),
+        Route::Playlists => t!("nav.playlists").to_string(),
+        Route::Playlist => s
+            .open_playlist
+            .and_then(|id| s.playlists.get(id))
+            .map(|pl| pl.name.clone())
+            .unwrap_or_else(|| t!("nav.playlists").to_string()),
         Route::Settings => t!("settings.title").to_string(),
     }
 }
@@ -4143,6 +4254,100 @@ mod tests {
         s.dsp_units[0].as_eq_mut().unwrap()
     }
 
+    /// Clicking the now-playing heart opens the add-to-playlist dialogue for the
+    /// current track (sets `add_to_playlist_for`). Driven through the full app
+    /// `view`; the panel-only harness in `views::player` does not route pointer
+    /// events to the panel's buttons, so the click-through lives here.
+    #[test]
+    fn now_playing_heart_opens_the_add_to_playlist_dialogue() {
+        let _g = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        let id = s
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("the test library has tracks");
+        s.now_playing_id = Some(id);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        click_key(&mut rt, "np-heart");
+        assert_eq!(rt.state.add_to_playlist_for, Some(id));
+    }
+
+    /// Full heart -> dialogue -> toggle membership flow, driven end-to-end
+    /// through the real app `view` (not the overlay-only harness in
+    /// `views::add_to_playlist`, which already covers the toggle in
+    /// isolation): clicking the now-playing heart opens the dialogue for the
+    /// current track, pressing a playlist's pick row adds the track and
+    /// persists it, and pressing the SAME row again removes it, all without
+    /// the dialogue closing in between.
+    #[test]
+    fn e2e_heart_opens_dialogue_and_toggles_membership() {
+        let _g = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        let id = s
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("the test library has tracks");
+        s.now_playing_id = Some(id);
+        let pid = s.playlists.create("Mix");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+
+        click_key(&mut rt, "np-heart");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.add_to_playlist_for,
+            Some(id),
+            "the heart opens the add-to-playlist dialogue for the playing track"
+        );
+
+        let pick_key = format!("add-to-playlist-pick-{pid}");
+        click_key(&mut rt, &pick_key);
+        assert_eq!(
+            playlists::PlaylistStore::load()
+                .get(pid)
+                .unwrap()
+                .entries
+                .len(),
+            1,
+            "the first press on the row adds the track to the playlist"
+        );
+        assert_eq!(
+            rt.state.add_to_playlist_for,
+            Some(id),
+            "the dialogue stays open across the add"
+        );
+
+        click_key(&mut rt, &pick_key);
+        assert_eq!(
+            playlists::PlaylistStore::load()
+                .get(pid)
+                .unwrap()
+                .entries
+                .len(),
+            0,
+            "a second press on the same row removes the track again"
+        );
+        assert_eq!(
+            rt.state.add_to_playlist_for,
+            Some(id),
+            "the dialogue stays open across the remove"
+        );
+    }
+
     /// End-to-end feed pipeline: as the player's now-playing state changes, the
     /// media session receives the right `Update`s over its channel — track
     /// metadata (resolved from the library) on a track change, playback on a
@@ -4251,6 +4456,212 @@ mod tests {
             failures.len(),
             failures.join("\n")
         );
+    }
+
+    /// The Task 11 completeness-plus-overflow safety net for the Playlists
+    /// feature: the same contain-itself invariant
+    /// `app_layout_contains_itself_in_every_locale` checks, but for the two
+    /// routes that test's scene list doesn't cover: the Playlists list and a
+    /// playlist's detail page. A fresh on-disk playlist is seeded through the
+    /// real `PlaylistStore` (two of the testdata library's own tracks, so the
+    /// hero's "{n} tracks · {duration}" string and a resolved track row both
+    /// render, not just the empty state) under the shared test config dir.
+    #[test]
+    fn playlists_layout_contains_itself_in_every_locale() {
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let viewports = [(1100.0_f32, 720.0_f32), (900.0, 640.0)];
+        let mut failures = Vec::new();
+        for &viewport in &viewports {
+            for &loc in LOCALES {
+                // A clean store per pass: exactly one playlist, so the list
+                // page's row count (and thus its layout) doesn't grow across
+                // iterations of this loop.
+                let _ = std::fs::remove_dir_all(playlists::playlist_store_path());
+
+                let mut list_state = populated_state();
+                let seed_tracks: Vec<(u32, String, String, String, f64)> = list_state
+                    .library
+                    .iter()
+                    .take(2)
+                    .map(|t| {
+                        (
+                            t.id,
+                            t.title.clone().unwrap_or_default(),
+                            t.artist.clone().unwrap_or_default(),
+                            t.album.clone().unwrap_or_default(),
+                            t.duration_secs,
+                        )
+                    })
+                    .collect();
+                assert_eq!(
+                    seed_tracks.len(),
+                    2,
+                    "the testdata library has at least two tracks to seed a playlist from"
+                );
+                let id = list_state.playlists.create("Road Trip");
+                for (tid, title, artist, album, duration_secs) in seed_tracks {
+                    if let Some(locator) = list_state.host.locator_of(tid) {
+                        list_state.playlists.add_entry(
+                            id,
+                            playlists::PlaylistEntry {
+                                locator,
+                                snapshot: soul_player_host::TrackSnapshot {
+                                    title,
+                                    artist,
+                                    album,
+                                    duration_secs: duration_secs.round() as u32,
+                                    track_no: None,
+                                    disc_no: None,
+                                },
+                                mbid: None,
+                            },
+                        );
+                    }
+                }
+                list_state.route = Route::Playlists;
+                apply_locale(loc);
+                let mut rt = Runtime::new(list_state, view, viewport, env);
+                rt.frame(0.0);
+                for bad in horizontal_overflows(&rt, viewport.0) {
+                    failures.push(format!("[{loc}/playlists@{}] {bad}", viewport.0));
+                }
+
+                // The same seeded playlist's detail page, re-loaded from disk
+                // (what the list pass above just persisted) the way a real
+                // navigation would.
+                let mut detail_state = populated_state();
+                detail_state.route = Route::Playlist;
+                detail_state.open_playlist = Some(id);
+                apply_locale(loc);
+                let mut rt = Runtime::new(detail_state, view, viewport, env);
+                rt.frame(0.0);
+                for bad in horizontal_overflows(&rt, viewport.0) {
+                    failures.push(format!("[{loc}/playlist-detail@{}] {bad}", viewport.0));
+                }
+            }
+        }
+        apply_locale("en");
+        assert!(
+            failures.is_empty(),
+            "{} playlists layout overflow(s) across locales:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
+    /// Whether any rendered element's text contains `needle`. Mirrors
+    /// `views::playlists`' and `views::playlist_detail`'s own `shows`, redone
+    /// here since those are private to their own test modules.
+    fn shows(rt: &Runtime<State>, needle: &str) -> bool {
+        rt.elements()
+            .into_iter()
+            .any(|e| e.text.as_deref().is_some_and(|t| t.contains(needle)))
+    }
+
+    /// Capstone end-to-end: the full user flow through the real `Runtime`, from
+    /// an empty Playlists page to a playing playlist, over a real scanned
+    /// `testdata/` library. Exercises every handoff Tasks 1-11 built in one
+    /// pass: the real inline New-playlist field (click to focus, IME commit,
+    /// Enter) persists "Mix" to the on-disk `PlaylistStore`; the shared
+    /// `add_track_to_playlist` helper (the same call the Add-to-playlist
+    /// overlay's pick list and its own New-playlist field both make) appends
+    /// the library's first two tracks, in order; navigating into the playlist
+    /// renders its name; and Play All issues a `PlayContext` carrying exactly
+    /// those two resolved ids, in that order.
+    #[test]
+    fn e2e_new_playlist_add_tracks_then_play_all() {
+        let _g = config::use_test_config_dir();
+        let _ = std::fs::remove_dir_all(playlists::playlist_store_path());
+
+        let host = PlayerHandle::recording();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        s.route = Route::Playlists;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        // Create "Mix" through the real inline New-playlist field: click to
+        // focus, type via IME commit, confirm with Enter (the same mechanics
+        // `views::playlists`' own `trigger_new_playlist` test helper drives).
+        let (x, y) = rt
+            .find("playlist-new-input")
+            .expect("the new-playlist field renders");
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+        rt.ime(rune::Ime::Commit("Mix".to_string()));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+
+        let pid = playlists::PlaylistStore::load().list()[0].id;
+
+        // Add the library's first two tracks, in order, via the shared helper
+        // production code's own "add to playlist" surfaces call
+        // (`views::add_to_playlist::add_track_to_playlist`), bypassing the
+        // overlay's click plumbing exactly as that module's own tests do.
+        let ids: Vec<u32> = rt.state.library.iter().take(2).map(|t| t.id).collect();
+        assert_eq!(
+            ids.len(),
+            2,
+            "the scanned testdata library has at least two tracks"
+        );
+        for &tid in &ids {
+            rt.update(move |st: &mut State, _tx: &mut Tx| {
+                crate::views::add_to_playlist::add_track_to_playlist(st, tid, pid);
+            });
+        }
+        rt.frame(0.0);
+
+        // Navigate into the playlist: its name renders.
+        rt.update(move |st: &mut State, _tx: &mut Tx| {
+            navigate_to(st, Route::Playlist, None, None, None, Some(pid));
+        });
+        rt.frame(0.0);
+        assert!(
+            shows(&rt, "Mix"),
+            "the playlist's name renders on its detail page"
+        );
+
+        // The freshly-navigated detail page's hero (and its Play All pill)
+        // enter-animates in (opacity/position mid-flight on the first frame);
+        // settle instantly so it's actually pickable, the same `settle_all`
+        // pattern used elsewhere in this app (e.g. `playlist_detail.rs`'s own
+        // delete-confirm test).
+        rt.settle_all();
+        rt.frame(0.0);
+
+        // Play All issues PlayContext with both resolved ids, in entry order.
+        click(&mut rt, "playlist-play-all");
+        let cmd = rt
+            .state
+            .host
+            .recorded_commands()
+            .last()
+            .cloned()
+            .expect("Play All sent a command");
+        match cmd {
+            Command::PlayContext {
+                ids: played,
+                start: 0,
+            } => assert_eq!(
+                played, ids,
+                "Play All plays exactly the two added tracks, in entry order"
+            ),
+            other => panic!("expected PlayContext starting at 0, got {other:?}"),
+        }
     }
 
     /// A Sources refresh clears any stale deletion warning (the next scan's own
@@ -9213,6 +9624,48 @@ mod tests {
         s.route = Route::Genre;
         go_back(&mut s);
         assert!(matches!(s.route, Route::Genres), "genre → genres");
+        s.route = Route::Playlist;
+        go_back(&mut s);
+        assert!(matches!(s.route, Route::Playlists), "playlist → playlists");
+    }
+
+    /// The sidebar offers a Playlists destination.
+    #[test]
+    fn sidebar_has_a_playlists_destination() {
+        assert!(views::sidebar::NAV_DEFS.iter().any(|d| d.id == "playlists"));
+    }
+
+    /// Opening a playlist's detail page sets `route` + `open_playlist`; `go_back`
+    /// returns to the Playlists list. The playlist comes from a real on-disk
+    /// store (via `State::new`'s `PlaylistStore::load`), guarded by the shared
+    /// per-process test config dir so this doesn't race another config test.
+    #[test]
+    fn opening_a_playlist_sets_open_playlist_and_back_returns() {
+        let _guard = config::use_test_config_dir();
+        let mut store = playlists::PlaylistStore::load();
+        let id = store.create("P");
+        let mut s = State::new(PlayerHandle::offline());
+        s.route = Route::Playlists; // as if opened from the Playlists list
+        navigate_to(&mut s, Route::Playlist, None, None, None, Some(id));
+        assert!(matches!(s.route, Route::Playlist));
+        assert_eq!(s.open_playlist, Some(id));
+        go_back(&mut s);
+        assert!(matches!(s.route, Route::Playlists));
+    }
+
+    /// Partially-typed New-playlist text does not survive leaving the page
+    /// (via navigate_to, go_back, or a sidebar tab).
+    #[test]
+    fn new_playlist_field_text_is_cleared_on_navigate_away() {
+        let _guard = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.route = Route::Playlists;
+        s.playlist_new_buf = rune::TextEdit::new("half typed");
+        navigate_to(&mut s, Route::Albums, None, None, None, None);
+        assert_eq!(s.playlist_new_buf.text, "");
+        s.playlist_new_buf = rune::TextEdit::new("again");
+        go_back(&mut s);
+        assert_eq!(s.playlist_new_buf.text, "");
     }
 
     /// With more than five tracks, Show more expands the Top-Songs list.
@@ -11212,6 +11665,65 @@ mod tests {
         assert!(
             worst <= 1.0,
             "artists grid fills within 1 pt; worst empty column {worst:.1} pt at window {w:.0}, scale {scale}"
+        );
+    }
+
+    /// End-to-end through the real render: flipping the Album-year toggle relabels
+    /// the displayed year on the Albums grid. A reissue album (original 1973,
+    /// release 2015) shows the 1973 original year under Original and the 2015
+    /// release year under Release, with no leftover from the other source. Drives
+    /// the live `State.album_year` -> `view` -> `album_subtitle` path, the
+    /// user-facing effect of the setting.
+    #[test]
+    fn album_year_toggle_relabels_the_displayed_year_on_the_albums_grid() {
+        rust_i18n::set_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        s.route = Route::Albums;
+        s.album_year = config::AlbumYearSource::Original;
+        s.library = vec![soul_player_host::TrackView {
+            id: 1,
+            title: Some("T".into()),
+            artist: Some("Pink Floyd".into()),
+            album: Some("Dark Side".into()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote_source: None,
+            original_date: 1973u32 << 9,
+            release_date: 2015u32 << 9,
+        }];
+        let env = Env {
+            system_dark: true,
+            scale: 1.0,
+        };
+        let mut rt = Runtime::new(s, view, (1200.0, 800.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        // The only years rendered are the album-card subtitle, so a bare-year
+        // substring is an unambiguous probe for "which year is shown".
+        let shows = |rt: &Runtime<State>, year: &str| {
+            rt.elements()
+                .into_iter()
+                .any(|e| e.text.as_deref().is_some_and(|t| t.contains(year)))
+        };
+        assert!(
+            shows(&rt, "1973"),
+            "Original source shows the 1973 original year"
+        );
+        assert!(
+            !shows(&rt, "2015"),
+            "the release year is not shown under Original"
+        );
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.album_year = config::AlbumYearSource::Release);
+        rt.frame(0.0);
+        assert!(
+            shows(&rt, "2015"),
+            "flipping to Release relabels to the 2015 release year"
+        );
+        assert!(
+            !shows(&rt, "1973"),
+            "no leftover of the original year under Release"
         );
     }
 

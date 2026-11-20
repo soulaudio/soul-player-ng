@@ -43,6 +43,10 @@ pub use soul_audio_dsp::format;
 /// path-template tree), re-exported so a UI head calls it through the one host
 /// contract rather than taking its own core git dependency.
 pub use soul_audio_organize as organize;
+/// Playlists' durable track reference (locator + metadata snapshot), so a UI
+/// head reaches them through the one host contract rather than reimporting
+/// `soul-player-backend` itself.
+pub use soul_player_backend::types::{TrackLocator, TrackSnapshot};
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
     SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath, SourceCodec, SourceFormat,
@@ -1622,6 +1626,27 @@ impl PlayerHandle {
         cover_bytes(&path)
     }
 
+    /// A durable [`TrackLocator`] for track `id`, or `None` if no library is
+    /// open yet or the id doesn't resolve. Delegates to
+    /// [`Library::locator_of`]; playlists store this instead of the volatile
+    /// id.
+    pub fn locator_of(&self, id: u32) -> Option<TrackLocator> {
+        let lib = self.inner.library.lock().expect("library mutex").clone()?;
+        lib.locator_of(id)
+    }
+
+    /// Resolve durable locators back to current track ids against whatever
+    /// library is open. Delegates to [`Library::resolve_locators`]; `None`
+    /// for each entry (no library open, or that locator doesn't resolve)
+    /// rather than erroring.
+    pub fn resolve_locators(&self, locs: &[TrackLocator]) -> Vec<Option<u32>> {
+        let lib = self.inner.library.lock().expect("library mutex").clone();
+        match lib {
+            Some(lib) => lib.resolve_locators(locs),
+            None => vec![None; locs.len()],
+        }
+    }
+
     /// Fire one transport/queue command (fire-and-forget). No-op until a folder
     /// has been opened (the actor needs a library to start).
     pub fn send(&self, cmd: Command) {
@@ -2152,6 +2177,41 @@ mod tests {
         let views = h.open_folder(dir.path()).expect("open_folder");
         assert_eq!(views.len(), 2, "both wavs scanned");
         assert_eq!(h.views().len(), 2, "views() reflects the opened library");
+    }
+
+    #[test]
+    fn locator_of_and_resolve_locators_round_trip_through_the_handle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.wav"), wav(48_000, 96_000)).unwrap();
+        std::fs::write(dir.path().join("b.wav"), wav(48_000, 96_000)).unwrap();
+
+        let h = PlayerHandle::offline();
+        h.open_folder(dir.path()).expect("open_folder");
+        let id = h.views()[0].id;
+
+        let loc = h.locator_of(id).expect("locator for a scanned track");
+        match &loc {
+            TrackLocator::Local { path } => {
+                assert!(path.ends_with("a.wav") || path.ends_with("b.wav"))
+            }
+            TrackLocator::Remote { .. } => panic!("a local scan must yield a Local locator"),
+        }
+
+        let resolved = h.resolve_locators(&[loc]);
+        assert_eq!(
+            resolved,
+            vec![Some(id)],
+            "locator resolves back to the same id"
+        );
+
+        // An id with no library yet (or a path that was never scanned) falls
+        // through to None on both ends of the round trip.
+        let empty = PlayerHandle::offline();
+        assert_eq!(empty.locator_of(id), None);
+        let missing = TrackLocator::Local {
+            path: "D:/nope/gone.flac".into(),
+        };
+        assert_eq!(h.resolve_locators(&[missing]), vec![None]);
     }
 
     #[test]

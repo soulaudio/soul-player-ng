@@ -11,6 +11,7 @@
 //! unchanged — only the backing store moved from an in-memory `CatalogInput` to
 //! the baked index the DAP also reads.
 
+use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -21,9 +22,9 @@ use soul_audio_catalog::{BrowseAxis, Catalog, StrRef};
 use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_import::{ScanCache, ScanProgress};
 use soul_audio_index::IndexReader;
-use soul_audio_multicatalog::{MultiCatalog, unpack};
+use soul_audio_multicatalog::{MultiCatalog, pack, unpack};
 
-use crate::types::TrackView;
+use crate::types::{TrackLocator, TrackView};
 
 /// The result of an [incremental scan](Library::scan_many_incremental): the baked
 /// library plus the warm cache and deletions, carried back so the host can persist
@@ -266,6 +267,43 @@ impl Library {
         Some(Located { source, rel })
     }
 
+    /// A durable [`TrackLocator`] for the current track `id`: the absolute
+    /// path (forward-slash normalized), independent of the volatile compound
+    /// id a rescan can renumber. Playlists store this instead of the id. Every
+    /// source behind this `Library` is local, so this always yields `Local`
+    /// (or `None` for an id that doesn't resolve); a remote source's own
+    /// locator is built by its own layer (`soul_player_host::remote`).
+    #[must_use]
+    pub fn locator_of(&self, id: u32) -> Option<TrackLocator> {
+        let path = self.path_of(id)?;
+        Some(TrackLocator::Local {
+            path: path.to_string_lossy().replace('\\', "/"),
+        })
+    }
+
+    /// Resolve durable locators back to **current** track ids, surviving a
+    /// rescan that renumbered them. Phase 1: exact-locator (Local path) match
+    /// only; `None` for anything that doesn't match (a missing file, a moved
+    /// file, or a `Remote` locator, which this local-only `Library` can never
+    /// produce or match). Builds a `locator-key -> id` reverse map from the
+    /// current catalog once, then looks up each input by
+    /// [`TrackLocator::key`] so separator/case differences don't matter.
+    #[must_use]
+    pub fn resolve_locators(&self, locs: &[TrackLocator]) -> Vec<Option<u32>> {
+        let mut by_key: HashMap<String, u32> = HashMap::new();
+        for (source, &count) in self.counts.iter().enumerate() {
+            for local in 0..count as u32 {
+                let id = pack(source as u32, local);
+                if let Some(loc) = self.locator_of(id) {
+                    by_key.insert(loc.key(), id);
+                }
+            }
+        }
+        locs.iter()
+            .map(|loc| by_key.get(&loc.key()).copied())
+            .collect()
+    }
+
     /// The tag-derived duration (seconds) for `id`, if known (> 0). Used to fill
     /// a Tick when the decoder can't report a length, keeping the progress bar
     /// consistent with the track list.
@@ -484,6 +522,66 @@ mod tests {
         // scan_finds_supported_files_skips_others_and_assigns_index_ids) returns
         // None for.
         assert_eq!(lib.locate(9), None);
+    }
+
+    #[test]
+    fn locator_of_returns_the_absolute_path_for_a_local_track() {
+        let root = tmpdir("locator_of");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(root.join("b.wav"), wav(48_000, 48_000)).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        let id = lib.views()[0].id;
+        let loc = lib.locator_of(id).unwrap();
+        match loc {
+            TrackLocator::Local { path } => assert!(path.ends_with("a.wav")),
+            TrackLocator::Remote { .. } => panic!("expected a local locator"),
+        }
+    }
+
+    #[test]
+    fn resolve_locators_survives_a_rescan_that_renumbers_ids() {
+        let root = tmpdir("rescan_renumber");
+        std::fs::write(root.join("b.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(root.join("c.wav"), wav(48_000, 48_000)).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        // Capture a durable locator for the track currently named b.wav.
+        let b_id = lib
+            .views()
+            .iter()
+            .find(|v| {
+                matches!(
+                    lib.locator_of(v.id),
+                    Some(TrackLocator::Local { path }) if path.ends_with("b.wav")
+                )
+            })
+            .unwrap()
+            .id;
+        let loc = lib.locator_of(b_id).unwrap();
+
+        // Insert an alphabetically-earlier file: b.wav's local id shifts.
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        let lib2 = Library::scan(&root).unwrap();
+        let resolved =
+            lib2.resolve_locators(std::slice::from_ref(&loc))[0].expect("resolves after rescan");
+
+        // The resolved id must still map back to b.wav.
+        assert!(matches!(
+            lib2.locator_of(resolved),
+            Some(TrackLocator::Local { path }) if path.ends_with("b.wav")
+        ));
+        // And the raw id value should differ from before (renumbered).
+        assert_ne!(resolved, b_id);
+    }
+
+    #[test]
+    fn resolve_locators_returns_none_for_a_missing_path() {
+        let root = tmpdir("resolve_missing");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        let miss = TrackLocator::Local {
+            path: "D:/nope/gone.flac".into(),
+        };
+        assert_eq!(lib.resolve_locators(&[miss]), vec![None]);
     }
 
     #[test]
@@ -766,6 +864,101 @@ mod tests {
         // 1973 packed as a year-only date = 1973 << 9.
         assert_eq!(t.original_date, (1973u32) << 9);
         assert_eq!(t.release_date, (2015u32) << 9);
+    }
+
+    /// End-to-end: a realistic reissue-shaped library (one artist, several albums
+    /// with a mix of date tags) scanned through the WHOLE chain -- file tags ->
+    /// `soul-audio-import` parse -> `.soulidx` v5 bake -> `IndexReader` -> the
+    /// `album_dates` projection -> `TrackView`. Proves per-album dates survive at
+    /// full precision AND that the artist's albums come out ordered chronologically
+    /// by the ORIGINAL date (core's `year_at` default), with undated albums last.
+    #[test]
+    fn reissue_library_scans_to_dated_tracks_in_original_year_order() {
+        let root = tmpdir("reissue_e2e");
+        // One track per album, same artist. Written in a scrambled filename order
+        // so the result order can only come from the baked ArtistAlbumTrack axis,
+        // not from the filesystem.
+        let write = |file: &str, comments: &[&str]| {
+            std::fs::write(root.join(file), flac_with_comments(comments)).unwrap();
+        };
+        write(
+            "z-later.flac",
+            &[
+                "TITLE=L",
+                "ARTIST=Aja Band",
+                "ALBUM=Later",
+                "ORIGINALDATE=1980",
+                "DATE=1980",
+            ],
+        );
+        write(
+            "a-peak.flac",
+            &[
+                "TITLE=P",
+                "ARTIST=Aja Band",
+                "ALBUM=Peak",
+                "ORIGINALDATE=1977-09-23",
+                "DATE=2011",
+            ],
+        );
+        write(
+            "m-early.flac",
+            &[
+                "TITLE=E",
+                "ARTIST=Aja Band",
+                "ALBUM=Early Works",
+                "ORIGINALDATE=1972",
+                "DATE=2010",
+            ],
+        );
+        // Release date only (no ORIGINALDATE): original stays unknown (0).
+        write(
+            "q-relonly.flac",
+            &[
+                "TITLE=R",
+                "ARTIST=Aja Band",
+                "ALBUM=ReleaseOnly",
+                "DATE=1995",
+            ],
+        );
+        // No date tags at all: both dates unknown (0).
+        write(
+            "b-untag.flac",
+            &["TITLE=U", "ARTIST=Aja Band", "ALBUM=Untagged"],
+        );
+
+        let views = Library::scan(&root)
+            .unwrap()
+            .views_by(BrowseAxis::ArtistAlbumTrack);
+        assert_eq!(views.len(), 5);
+
+        // One track per album, so the view order IS the album order. The dated
+        // albums sort by original year (1972 < 1977 < 1980); the two undated-original
+        // albums trail (sort_key u32::MAX), tiebroken by album name (ReleaseOnly < Untagged).
+        let order: Vec<&str> = views.iter().map(|t| t.album.as_deref().unwrap()).collect();
+        assert_eq!(
+            order,
+            vec!["Early Works", "Peak", "Later", "ReleaseOnly", "Untagged"],
+            "artist's albums come out chronological by ORIGINAL date, undated last by title"
+        );
+
+        // Per-album packed dates survived the scan->bake->project chain.
+        let dates = |album: &str| -> (u32, u32) {
+            let t = views
+                .iter()
+                .find(|t| t.album.as_deref() == Some(album))
+                .unwrap();
+            (t.original_date, t.release_date)
+        };
+        assert_eq!(dates("Early Works"), (1972u32 << 9, 2010u32 << 9));
+        // Full YYYY-MM-DD precision is preserved on the original date.
+        assert_eq!(
+            dates("Peak"),
+            ((1977u32 << 9) | (9u32 << 5) | 23, 2011u32 << 9)
+        );
+        assert_eq!(dates("Later"), (1980u32 << 9, 1980u32 << 9));
+        assert_eq!(dates("ReleaseOnly"), (0, 1995u32 << 9)); // no ORIGINALDATE -> original unknown
+        assert_eq!(dates("Untagged"), (0, 0)); // no date tags -> both unknown
     }
 
     #[test]

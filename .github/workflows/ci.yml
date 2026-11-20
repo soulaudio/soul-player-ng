@@ -47,8 +47,21 @@ jobs:
       - name: Audio + keychain build deps (cpal/ALSA, D-Bus — Linux only)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev pkg-config
+          # Ubuntu's apt mirrors intermittently stall under GitHub Actions fleet
+          # load (actions/runner-images#14823, #15297), which a single apt-get
+          # surfaces as a hard "Could not wait for server fd" error instead of a
+          # clean retry. Retry update+install so a transient mirror hiccup
+          # self-heals rather than failing the job.
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update \
+              && sudo apt-get install -y -o Acquire::Retries=3 \
+                   libasound2-dev libdbus-1-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed, retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          echo "::error::apt-get failed after 5 attempts"; exit 1
 
       - name: Set up Rust components (Linux — for fmt/clippy)
         if: runner.os == 'Linux'
@@ -118,9 +131,19 @@ jobs:
         if: runner.os == 'Linux'
         working-directory: .
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libxkbcommon-x11-0 libxkbcommon-dev libwayland-dev \
-            mesa-vulkan-drivers vulkan-tools libasound2-dev libdbus-1-dev pkg-config xvfb
+          # Retry update+install so a transient Ubuntu apt-mirror stall
+          # (actions/runner-images#14823) self-heals rather than failing the job.
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update \
+              && sudo apt-get install -y -o Acquire::Retries=3 \
+                   libxkbcommon-x11-0 libxkbcommon-dev libwayland-dev \
+                   mesa-vulkan-drivers vulkan-tools libasound2-dev libdbus-1-dev pkg-config xvfb; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed, retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          echo "::error::apt-get failed after 5 attempts"; exit 1
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:

@@ -173,7 +173,14 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
         card_w,
         scale,
         move |st: &mut State| {
-            crate::navigate_to(st, crate::Route::Album, Some(name.clone()), None, None);
+            crate::navigate_to(
+                st,
+                crate::Route::Album,
+                Some(name.clone()),
+                None,
+                None,
+                None,
+            );
         },
     )
 }
