@@ -9,8 +9,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Color, Cursor, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text,
-    text_input,
+    Color, Cursor, Drag, El, FileDialogOptions, Icon, Phase, Picked, ScrollSpec, Tx, col, el, icon,
+    row, text, text_input,
 };
 use soul_player_host::TrackLocator;
 
@@ -415,6 +415,7 @@ fn entry_row(
         .key(format!("playlist-entry-{i}"))
         .gap(space::XS)
         .center_y()
+        .child(grip_handle(i, id, p))
         .child(track_el)
         .child(ctrl_btn(
             format!("playlist-up-{i}"),
@@ -444,6 +445,56 @@ fn entry_row(
             p,
             move |st: &mut State| st.playlists.remove_entry(id, i),
         ))
+}
+
+/// The drag-reorder grip at the left of an entry row. Dragging it moves the
+/// entry, committing `move_entry` on release. Rows vary in height (an
+/// unavailable row differs from a track row), so the drop target snaps to
+/// whichever entry the pointer is over via `Tx::element_at_in` (exact
+/// regardless of row height), mirroring the Settings DSP-card reorder. The
+/// up/down buttons remain as a keyboard-reachable fallback.
+fn grip_handle(i: usize, id: PlaylistId, p: &Palette) -> El {
+    el().key(format!("playlist-grip-{i}"))
+        .role("button")
+        .label(t!("playlists.reorder").to_string())
+        .size(space::LG, space::XL)
+        .center()
+        .cursor(Cursor::Pointer)
+        .child(icon(&icons::GRIP, 12.0).color(p.text_secondary.alpha(0.6)))
+        .on_drag(
+            move |st: &mut State, d: &mut Drag, tx: &mut Tx| match d.phase {
+                Phase::Down => st.playlist_drag = Some((i, i)),
+                Phase::Move => {
+                    let [px, py] = d.window_point();
+                    tx.element_at_in("playlist-tracks", px, py, |st: &mut State, picked, _tx| {
+                        let Some((from, cur)) = st.playlist_drag else {
+                            return;
+                        };
+                        // Snap to the entry under the pointer; keep the current
+                        // target when off the rows (gaps/edges).
+                        let to = picked
+                            .as_ref()
+                            .and_then(playlist_entry_index_from_pick)
+                            .unwrap_or(cur);
+                        st.playlist_drag = Some((from, to));
+                    });
+                }
+                Phase::Up => {
+                    if let Some((from, to)) = st.playlist_drag.take() {
+                        st.playlists.move_entry(id, from, to);
+                    }
+                }
+            },
+        )
+}
+
+/// Recover the entry index from an `element_at_in` pick by finding the
+/// `playlist-entry-{i}` segment in the picked element's key path.
+fn playlist_entry_index_from_pick(picked: &Picked) -> Option<usize> {
+    picked.path().split('/').find_map(|seg| {
+        seg.strip_prefix("playlist-entry-")
+            .and_then(|n| n.parse::<usize>().ok())
+    })
 }
 
 /// A back link to the Playlists list: a `←` glyph, matching `genres.rs`'s
@@ -886,6 +937,46 @@ mod tests {
         assert!(
             rt.state.host.recorded_commands().is_empty(),
             "no PlayContext (empty or otherwise) is ever sent for an all-unavailable playlist"
+        );
+    }
+
+    #[test]
+    fn dragging_a_grip_reorders_the_entry() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_mixed_availability(); // A, unavailable B, C
+        let before: Vec<TrackLocator> = rt
+            .state
+            .playlists
+            .get(id)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(before.len(), 3);
+        // Drag entry 0's grip down onto entry 2: snap-to-hovered -> move_entry(0, 2)
+        // -> [B, C, A]. The drag works on the entry index regardless of row
+        // availability (B is an unavailable row but still has a grip).
+        let (gx, gy0) = rt.find("playlist-grip-0").expect("grip 0 renders");
+        let (_, gy2) = rt.find("playlist-grip-2").expect("grip 2 renders");
+        rt.pointer_down(gx, gy0);
+        rt.pointer_move(gx, gy2);
+        rt.frame(0.0);
+        rt.pointer_up(gx, gy2);
+        rt.frame(0.0);
+        let after: Vec<TrackLocator> = rt
+            .state
+            .playlists
+            .get(id)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(
+            after,
+            vec![before[1].clone(), before[2].clone(), before[0].clone()],
+            "dragging entry 0 onto entry 2 moves it to the end"
         );
     }
 
