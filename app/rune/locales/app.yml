@@ -348,6 +348,27 @@ playlists.unavailable:
   zh: '不可用'
   cs: 'Nedostupné'
   ja: '利用不可'
+playlists.setCover:
+  en: 'Set cover'
+  de: 'Cover festlegen'
+  es: 'Establecer portada'
+  zh: '设置封面'
+  cs: 'Nastavit obálku'
+  ja: 'カバーを設定'
+playlists.removeCover:
+  en: 'Remove cover'
+  de: 'Cover entfernen'
+  es: 'Quitar portada'
+  zh: '移除封面'
+  cs: 'Odstranit obálku'
+  ja: 'カバーを削除'
+playlists.setCoverDialog:
+  en: 'Choose a cover image'
+  de: 'Cover-Bild auswählen'
+  es: 'Elige una imagen de portada'
+  zh: '选择封面图片'
+  cs: 'Vybrat obrázek obálky'
+  ja: 'カバー画像を選択'
 playlists.addTo:
   en: 'Add to playlist'
   de: 'Zu Playlist hinzufügen'
