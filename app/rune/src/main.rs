@@ -4550,6 +4550,140 @@ mod tests {
         }
     }
 
+    /// Write a tiny but real PNG (just the 8-byte file signature; it never needs
+    /// to decode, only to exist as a `.png` file under the custom-cover size
+    /// cap) to a fresh temp dir, unique per call so parallel tests in this
+    /// binary never collide. Mirrors `playlist_detail.rs`'s own `write_temp_png`
+    /// test helper, redone here since that one is private to its own module.
+    fn write_temp_cover_png() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        let dir = std::env::temp_dir().join(format!(
+            "soul_rune_playlist_cover_e2e_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("source.png");
+        std::fs::write(&path, PNG_SIGNATURE).unwrap();
+        path
+    }
+
+    /// Capstone end-to-end for the custom-cover feature, driven through the
+    /// real `Runtime`: create a playlist over two of the testdata library's
+    /// tracks and open it, press **Set cover** and answer the scripted
+    /// open-file dialog with a real temp PNG (the `playlist-set-cover` →
+    /// `tx.open_file` → `PlaylistStore::set_custom_cover` handoff
+    /// `playlist_detail.rs`'s own scripted-dialog test already covers in
+    /// isolation), then assert the detail hero renders the custom image
+    /// (`playlist-hero-image`) AND, back on the Playlists list, the row's own
+    /// thumbnail does too (`playlist-cover-{id}-custom`,
+    /// `views::playlists::playlist_cover_el`'s `Custom` branch) AND the cover
+    /// file persisted on disk. Then press **Remove cover** and assert
+    /// everything reverts: the hero image is gone, `custom_cover_path` is
+    /// `None` again, and the file itself is deleted.
+    #[test]
+    fn e2e_set_then_remove_a_custom_playlist_cover() {
+        let _g = config::use_test_config_dir();
+        let _ = std::fs::remove_dir_all(playlists::playlist_store_path());
+
+        let mut s = populated_state();
+        let seed_ids: Vec<u32> = s.library.iter().take(2).map(|t| t.id).collect();
+        assert_eq!(
+            seed_ids.len(),
+            2,
+            "the testdata library has at least two tracks to seed a playlist from"
+        );
+        let pid = s.playlists.create("Mix");
+        for &tid in &seed_ids {
+            let track = s.library.iter().find(|t| t.id == tid).unwrap().clone();
+            let locator = s
+                .host
+                .locator_of(tid)
+                .expect("a scanned track resolves a durable locator");
+            s.playlists.add_entry(
+                pid,
+                playlists::PlaylistEntry {
+                    locator,
+                    snapshot: soul_player_host::TrackSnapshot {
+                        title: track.title.clone().unwrap_or_default(),
+                        artist: track.artist.clone().unwrap_or_default(),
+                        album: track.album.clone().unwrap_or_default(),
+                        duration_secs: track.duration_secs.round() as u32,
+                        track_no: None,
+                        disc_no: None,
+                    },
+                    mbid: None,
+                },
+            );
+        }
+        s.route = Route::Playlist;
+        s.open_playlist = Some(pid);
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("playlist-hero-image").is_none(),
+            "no custom cover yet, so the hero falls back to its default"
+        );
+
+        // Set cover: press the button, answer the scripted open-file dialog
+        // with a real temp PNG, mirroring `playlist_detail.rs`'s own
+        // scripted-dialog test and the EQ import/export e2e tests above.
+        click_key(&mut rt, "playlist-set-cover");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Set cover opens a file dialog");
+        assert_eq!(kind, FileDialogKind::Open);
+        let picked = write_temp_cover_png();
+        rt.resolve_file_dialog(Some(picked)).unwrap();
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("playlist-hero-image").is_some(),
+            "the detail hero now renders the custom cover image"
+        );
+        let cover_path = playlists::PlaylistStore::load()
+            .custom_cover_path(pid)
+            .expect("the picked image persisted as the playlist's custom cover");
+        assert!(cover_path.exists(), "the stored cover file exists on disk");
+
+        // Back to the Playlists list: the row's own thumbnail picks up the
+        // same custom cover. The back button itself was part of the initial
+        // mount (not freshly inserted), so it's clickable without settling;
+        // the list page it lands on IS a fresh mid-session insert, so settle
+        // before the next click.
+        click_key(&mut rt, "playlist-back");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.find(&format!("playlist-cover-{pid}-custom")).is_some(),
+            "the Playlists list row's thumbnail also renders the custom cover"
+        );
+
+        // Back into the detail page (a fresh mid-session insert again):
+        // settle before pressing Remove cover.
+        click_key(&mut rt, &format!("playlist-row-{pid}"));
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "playlist-remove-cover");
+
+        assert!(
+            rt.find("playlist-hero-image").is_none(),
+            "the hero reverts to its default once the cover is removed"
+        );
+        assert!(
+            playlists::PlaylistStore::load()
+                .custom_cover_path(pid)
+                .is_none(),
+            "the store no longer reports a custom cover"
+        );
+        assert!(!cover_path.exists(), "the cover file is deleted from disk");
+    }
+
     /// A Sources refresh clears any stale deletion warning (the next scan's own
     /// `TracksRemoved`, applied right after, re-sets it if there were deletions).
     #[test]
