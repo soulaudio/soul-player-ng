@@ -24,8 +24,8 @@ the keyboard. App-only (`app/rune`); no backend/host/core.
 - **Keyboard:** while the query field holds focus, `El::on_input_key` on it
   handles Up/Down (move the selection, clamped to the filtered list) and Enter
   (run the selected command), returning `true` to consume those; all other keys
-  (typing) pass through to the editor (return `false`). `reveal_selected(true)`
-  keeps the selection scrolled into view.
+  (typing) pass through to the editor (return `false`) and reset the selection
+  to the top match (the query re-ranks the list).
 - **Run:** running a command (Enter or click) first CLOSES the palette, then
   invokes the action (some actions, e.g. "Add to playlist", open another overlay,
   so the palette must be closed first). After a query edit, the selection clamps
@@ -75,6 +75,13 @@ Fuzzy ranking / subsequence scoring (substring only); searching tracks / albums 
 artists as palette results (navigation only); command recency/history; a separate
 keyboard-shortcuts help sheet; customizable keybindings. (The app already has
 transport/volume/zoom shortcuts in `handle_key` - unchanged.)
+
+Auto-scrolling the keyboard selection into view is also deferred: `reveal_selected`
+only takes effect on a virtualized list, and the palette's list is a plain column,
+so arrowing past the visible rows of the full (unfiltered) list moves the highlight
+below the fold without scrolling. The autofocused query field makes type-to-filter
+the primary path (which keeps the active set short), so this is a follow-up (wire
+the list through virtual rows, or track a manual scroll offset), not a v1 blocker.
 
 ## Testing (TDD)
 
