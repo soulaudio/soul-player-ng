@@ -18,12 +18,16 @@ use crate::ui::{fx, radius, space, type_};
 use crate::views::albums::{detail_track_row, fmt_total_dur};
 use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::icons;
+use crate::views::player::{group_remote_source, remote_badge_for};
 
-/// One grouped genre: its display name and every track id (in library order) for
-/// Play All / the detail list.
+/// One grouped genre: its display name, every track id (in library order) for
+/// Play All / the detail list, and whether every one of its tracks streams from
+/// the same remote host (`None` for a local or mixed-source genre — see
+/// [`group_remote_source`]).
 pub(crate) struct Genre {
     name: String,
     ids: Vec<u32>,
+    remote_source: Option<String>,
 }
 
 /// Group the flat library by genre, preserving first-seen (library) order so the
@@ -43,10 +47,23 @@ pub(crate) fn group_genres(library: &[TrackView]) -> Vec<Genre> {
             genres.push(Genre {
                 name,
                 ids: Vec::new(),
+                remote_source: None, // resolved below, once every member track is known
             });
             genres.len() - 1
         });
         genres[i].ids.push(t.id);
+    }
+    // See `group_albums`' matching second pass: a track id -> remote_source map
+    // avoids an O(n²) `library.iter().find` per id.
+    let remote_by_id: HashMap<u32, &Option<String>> =
+        library.iter().map(|t| (t.id, &t.remote_source)).collect();
+    for genre in &mut genres {
+        genre.remote_source = group_remote_source(
+            genre
+                .ids
+                .iter()
+                .filter_map(|id| remote_by_id.get(id).copied()),
+        );
     }
     genres
 }
@@ -56,7 +73,7 @@ pub(crate) fn group_genres(library: &[TrackView]) -> Vec<Genre> {
 /// list entry rather than a card.
 fn genre_row(p: &Palette, slot: usize, g: &Genre) -> El {
     let name = g.name.clone();
-    row()
+    let mut r = row()
         .key(format!("genre-{slot}"))
         .role("button")
         .label(g.name.clone())
@@ -76,22 +93,28 @@ fn genre_row(p: &Palette, slot: usize, g: &Genre) -> El {
                 .color(p.fg)
                 .truncate()
                 .grow(1.0),
-        )
-        .child(
-            text(t!("genre.trackCount", count => g.ids.len()).to_string())
-                .font(type_::ITEM)
-                .color(p.text_secondary),
-        )
-        .on_press(move |st: &mut State| {
-            crate::navigate_to(
-                st,
-                crate::Route::Genre,
-                None,
-                None,
-                Some(name.clone()),
-                None,
-            );
-        })
+        );
+    // A subtle cloud badge when every track in this genre streams from the same
+    // remote host; nothing renders for a local/mixed genre, same unremarked
+    // default as the album/artist cards and the track rows.
+    if let Some(host) = &g.remote_source {
+        r = r.child(remote_badge_for(&format!("genre-remote-{slot}"), host, p));
+    }
+    r.child(
+        text(t!("genre.trackCount", count => g.ids.len()).to_string())
+            .font(type_::ITEM)
+            .color(p.text_secondary),
+    )
+    .on_press(move |st: &mut State| {
+        crate::navigate_to(
+            st,
+            crate::Route::Genre,
+            None,
+            None,
+            Some(name.clone()),
+            None,
+        );
+    })
 }
 
 /// The Genres page: a vertical list of genre rows (name + count), scrolled.
@@ -172,6 +195,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         HeroArt::Icon(&icons::MUSIC),
         t!("genre.eyebrow").to_uppercase(),
         genre.name.clone(),
+        genre.remote_source.clone(),
         None,
         meta,
         play_all_pill("genre-play-all", genre.ids.clone(), p),
@@ -267,7 +291,7 @@ mod tests {
             album: Some("Alb".into()),
             genre: genre.map(|g| g.to_string()),
             duration_secs: 1.0,
-            remote: false,
+            remote_source: None,
             original_date: 0,
             release_date: 0,
         }
@@ -290,5 +314,34 @@ mod tests {
         assert_eq!(genres[1].ids, vec![2]);
         // A None/blank genre falls under the shared Unknown bucket.
         assert_eq!(genres[2].ids, vec![4]);
+    }
+
+    /// A genre's `remote_source` is the unanimous host across every one of its
+    /// tracks; a mix of remote and local has no consensus and must show no
+    /// badge.
+    #[test]
+    fn group_genres_resolves_remote_source_consensus() {
+        let mut remote1 = tv(1, Some("Rock"));
+        remote1.remote_source = Some("h".to_string());
+        let mut remote2 = tv(2, Some("Rock"));
+        remote2.remote_source = Some("h".to_string());
+        let all_remote = group_genres(&[remote1, remote2]);
+        assert_eq!(
+            all_remote[0].remote_source,
+            Some("h".to_string()),
+            "every track shares the same host"
+        );
+
+        let mut remote = tv(3, Some("Jazz"));
+        remote.remote_source = Some("h".to_string());
+        let local = tv(4, Some("Jazz"));
+        let mixed = group_genres(&[remote, local]);
+        assert_eq!(
+            mixed[0].remote_source, None,
+            "a local track in the mix breaks consensus"
+        );
+
+        let all_local = group_genres(&[tv(5, Some("Jazz")), tv(6, Some("Jazz"))]);
+        assert_eq!(all_local[0].remote_source, None, "all local -> no badge");
     }
 }

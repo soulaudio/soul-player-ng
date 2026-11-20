@@ -343,8 +343,8 @@ impl Library {
                     genre: genre_name(&cat, t.genre),
                     duration_secs: f64::from(t.duration_ms) / 1000.0,
                     // The backend/local catalog is always local — the host
-                    // aggregate stamps `true` for a remote source's tracks.
-                    remote: false,
+                    // aggregate sets `Some(host)` for a remote source's tracks.
+                    remote_source: None,
                     original_date,
                     release_date,
                 })

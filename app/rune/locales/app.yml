@@ -630,6 +630,13 @@ library.remoteTrack:
   zh: '远程曲目'
   cs: 'Vzdálená skladba'
   ja: 'リモート曲'
+library.streamsFrom:
+  en: 'Streams from %{host}'
+  de: 'Streamt von %{host}'
+  es: 'Transmite desde %{host}'
+  zh: '来自 %{host} 的流媒体'
+  cs: 'Streamuje z %{host}'
+  ja: '%{host} からストリーミング'
 common.back:
   en: 'Back'
   de: 'Zurück'
@@ -988,6 +995,27 @@ settings.reconnecting:
   zh: '正在重新连接…'
   cs: 'Připojuji znovu…'
   ja: '再接続中…'
+settings.remoteSignIn:
+  en: 'Sign in again'
+  de: 'Erneut anmelden'
+  es: 'Iniciar sesión de nuevo'
+  zh: '重新登录'
+  cs: 'Přihlásit se znovu'
+  ja: '再度サインイン'
+settings.connectingRow:
+  en: 'Connecting…'
+  de: 'Verbinde…'
+  es: 'Conectando…'
+  zh: '正在连接…'
+  cs: 'Připojování…'
+  ja: '接続中…'
+settings.syncingRow:
+  en: 'Syncing…'
+  de: 'Synchronisiere…'
+  es: 'Sincronizando…'
+  zh: '正在同步…'
+  cs: 'Synchronizace…'
+  ja: '同期中…'
 settings.updateAvailable:
   en: 'Update available'
   de: 'Update verfügbar'

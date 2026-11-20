@@ -51,6 +51,31 @@ pub(crate) fn use_test_config_dir() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
+/// A process-wide lock serialising every test whose assertions depend on the
+/// GLOBAL i18n locale. `rust_i18n::set_locale` sets a single process-wide
+/// locale, so a test that sweeps non-"en" locales (the per-locale layout
+/// overflow tests) running concurrently with one asserting a specific
+/// localised string (e.g. a "Streams from …" tooltip) lets the sweeper flip
+/// the locale mid-frame of the asserting test — the i18n test flake. Any test
+/// that sets a non-default locale OR asserts localised text must hold this.
+#[cfg(test)]
+static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Isolate a test from the shared global locale: acquire the process-wide
+/// [`LOCALE_TEST_LOCK`] and set `locale`, returning the guard. Bind it for the
+/// test's duration (`let _locale = config::use_test_locale("en");`) so no
+/// concurrent locale-sensitive test can observe or clobber the locale while it
+/// renders and asserts. A sweeper may set further locales while holding the
+/// guard. Poisoning is ignored (one failing test must not cascade). Acquire
+/// this BEFORE [`use_test_config_dir`] when a test needs both, so the two locks
+/// are always taken in the same order (no deadlock).
+#[cfg(test)]
+pub(crate) fn use_test_locale(locale: &str) -> std::sync::MutexGuard<'static, ()> {
+    let guard = LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    rust_i18n::set_locale(locale);
+    guard
+}
+
 /// The app's config directory. In a **test build this is ALWAYS a throwaway
 /// temp directory** (never the user's real config) — tests share it, so a test
 /// that persists a setting must not let another's write leak into its

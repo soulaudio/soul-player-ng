@@ -144,8 +144,8 @@ fn track_row(
         .child(title_col);
     // A subtle cloud badge for a track streaming from a remote source;
     // nothing renders for a local track, the unremarked default.
-    if t.remote {
-        r = r.child(remote_badge(t.id, p));
+    if let Some(host) = &t.remote_source {
+        r = r.child(remote_badge(t.id, host, p));
     }
     // The standard layout keeps the artist and album as their own columns; the
     // compact layout dropped them above (artist moved under the title).

@@ -303,21 +303,59 @@ pub fn cover_from_path(
 }
 
 /// Side of the inline "remote" badge icon marking a track whose source is a
-/// remote server (`TrackView::remote`) — small enough to read as a marker
-/// next to a title, not a second glyph competing for attention.
+/// remote server (`TrackView::remote_source`) — small enough to read as a
+/// marker next to a title, not a second glyph competing for attention.
 const REMOTE_BADGE_PX: f32 = 12.0;
 
 /// A subtle cloud glyph marking a track that streams from a remote source
-/// rather than sitting on local disk (`TrackView::remote`). Shared by the
-/// main track list (`views::library::track_row`), the album/artist/genre
+/// rather than sitting on local disk (`TrackView::remote_source`). Shared by
+/// the main track list (`views::library::track_row`), the album/artist/genre
 /// detail rows (`views::albums::detail_track_row`), and the now-playing
 /// title line below — nothing renders for a local track, since local is the
 /// unremarked default.
-pub(crate) fn remote_badge(track_id: u32, p: &Palette) -> El {
-    el().key(format!("track-remote-{track_id}"))
+///
+/// `host` names WHICH remote server the track streams from (`remote_source`'s
+/// `Some` payload) — it drives the hover tooltip ([`El::help`], shown after
+/// the system's hover delay) so the badge is more than a bare flag: resting
+/// the pointer on the cloud answers "remote from where". The accessible
+/// label stays the generic "Remote track" (assistive tech reads it
+/// immediately, with no hover); the host-naming tooltip is additive.
+pub(crate) fn remote_badge(track_id: u32, host: &str, p: &Palette) -> El {
+    remote_badge_for(&format!("track-remote-{track_id}"), host, p)
+}
+
+/// [`remote_badge`]'s key-generic form: the same cloud glyph + "streams from
+/// {host}" tooltip, but keyed by whatever stable identity the caller has in
+/// hand rather than a track id. A grid card or a detail-page header has no
+/// single track id to key by (a card represents a whole album/artist/genre),
+/// so callers build their own stable key (e.g. `"{card_key}-remote"`,
+/// `"{prefix}-remote"`) and pass it straight through.
+pub(crate) fn remote_badge_for(key: &str, host: &str, p: &Palette) -> El {
+    el().key(key.to_string())
         .role("img")
         .label(t!("library.remoteTrack").to_string())
+        .help(t!("library.streamsFrom", host => host).to_string())
         .child(icon(&icons::CLOUD, REMOTE_BADGE_PX).color(p.text_secondary))
+}
+
+/// A grouped card's (album/artist/genre) remote-source consensus: `Some(host)`
+/// only when every track folded into the group shares that same `Some(host)`
+/// `remote_source`; `None` the instant a local track (`None`) or a second,
+/// differing host appears, and `None` for an empty group. Mirrors the
+/// grouping functions' own "first-seen wins, mismatch locks to Unknown" style,
+/// but for source-ness a mismatch locks to "no badge" rather than falling back
+/// to a placeholder value — a mixed/local card is the unremarked default, same
+/// as a single local track. Shared by every grouping fn (`group_albums`,
+/// `group_artists`, `group_genres`) so the grid cards and the detail-page
+/// header (which just reads the already-grouped struct's field) agree.
+pub(crate) fn group_remote_source<'a, I>(sources: I) -> Option<String>
+where
+    I: IntoIterator<Item = &'a Option<String>>,
+{
+    let mut iter = sources.into_iter();
+    let first = iter.next()?.clone()?;
+    iter.all(|s| s.as_deref() == Some(first.as_str()))
+        .then_some(first)
 }
 
 fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) -> El {
@@ -345,14 +383,14 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
     // A local track (the overwhelming default) keeps the plain title text
     // unchanged; only a remote one gains the badge row, so the common case
     // never pays for an extra wrapper.
-    let title_row: El = if track.remote {
+    let title_row: El = if let Some(host) = &track.remote_source {
         row()
             .key("now-playing-title")
             .gap(space::XXS)
             .center_y()
             .min_w(0.0)
             .child(title_el.grow(1.0))
-            .child(remote_badge(track.id, p))
+            .child(remote_badge(track.id, host, p))
     } else {
         title_el
     };
@@ -778,7 +816,7 @@ mod tests {
     use rune::{Cx, El, Env, Mods, Runtime, Tx, WheelEvent};
     use soul_player_host::PlayerHandle;
 
-    use super::{ArtCache, player_panel, wheel_volume_delta};
+    use super::{ArtCache, group_remote_source, player_panel, wheel_volume_delta};
     use crate::State;
     use crate::config;
 
@@ -892,6 +930,43 @@ mod tests {
     #[test]
     fn wheel_zero_delta_is_noop() {
         assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, 0.0)), 0.0);
+    }
+
+    /// Every track sharing one host is a consensus; a local track or a
+    /// differing host breaks it; an empty group has no consensus either.
+    #[test]
+    fn group_remote_source_requires_unanimous_agreement() {
+        let h = |s: &str| Some(s.to_string());
+        assert_eq!(
+            group_remote_source([&h("a"), &h("a"), &h("a")]),
+            Some("a".to_string()),
+            "all remote, same host -> that host"
+        );
+        assert_eq!(
+            group_remote_source([&h("a")]),
+            Some("a".to_string()),
+            "a single remote track is trivially unanimous -> that host"
+        );
+        assert_eq!(
+            group_remote_source([&h("a"), &None, &h("a")]),
+            None,
+            "one local track breaks consensus"
+        );
+        assert_eq!(
+            group_remote_source([&h("a"), &h("b")]),
+            None,
+            "two different hosts break consensus"
+        );
+        assert_eq!(
+            group_remote_source([&None, &None]),
+            None,
+            "all local -> no badge"
+        );
+        assert_eq!(
+            group_remote_source(std::iter::empty()),
+            None,
+            "an empty group has no consensus"
+        );
     }
 
     fn testdata_dir() -> PathBuf {
