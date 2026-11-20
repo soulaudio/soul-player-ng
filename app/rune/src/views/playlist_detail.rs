@@ -8,7 +8,10 @@
 //! Mirrors `genres::genre_detail` for the detail-page shape.
 #![forbid(unsafe_code)]
 
-use rune::{Color, Cursor, El, Icon, ScrollSpec, col, el, icon, row, text, text_input};
+use rune::{
+    Color, Cursor, El, FileDialogOptions, Icon, ScrollSpec, Tx, col, el, icon, row, text,
+    text_input,
+};
 use soul_player_host::TrackLocator;
 
 use crate::State;
@@ -145,10 +148,82 @@ fn icon_ctrl(
     )
 }
 
+/// Like [`icon_ctrl`], but routed through [`Tx`] rather than a plain
+/// `&mut State` closure: the one control here that needs it ("Set cover",
+/// which opens a file dialog). Always enabled; unlike `icon_ctrl`, there's no
+/// disabled case to represent.
+fn icon_ctrl_tx(
+    key: String,
+    glyph: &'static Icon,
+    label: String,
+    p: &Palette,
+    on: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
+    el().key(key)
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .size(CTRL_BTN, CTRL_BTN)
+        .center()
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(icon(glyph, CTRL_ICON).color(p.text_secondary))
+        .on_press_tx(move |st: &mut State, tx: &mut Tx| on(st, tx))
+}
+
+/// The "Set cover" control: opens an image-file dialog (jpg/jpeg/png/webp/gif)
+/// and, if the user picks one, applies it as playlist `id`'s custom cover via
+/// `PlaylistStore::set_custom_cover`. A set cover always wins over the
+/// cover-track/icon fallback (see `page`'s `art` match), so from here on the
+/// hero shows exactly what was picked.
+fn set_cover_control(p: &Palette, id: PlaylistId) -> El {
+    icon_ctrl_tx(
+        "playlist-set-cover".to_string(),
+        &icons::UPLOAD,
+        t!("playlists.setCover").to_string(),
+        p,
+        move |_s: &mut State, tx: &mut Tx| {
+            tx.open_file(
+                FileDialogOptions {
+                    title: t!("playlists.setCoverDialog").to_string(),
+                    ..Default::default()
+                }
+                .filter(
+                    "Images (*.jpg, *.jpeg, *.png, *.webp, *.gif)",
+                    &["jpg", "jpeg", "png", "webp", "gif"],
+                ),
+                move |s: &mut State, result, _tx| {
+                    if let Ok(Some(path)) = result {
+                        s.playlists.set_custom_cover(id, &path);
+                    }
+                },
+            );
+        },
+    )
+}
+
+/// The "Remove cover" control: clears playlist `id`'s custom cover, falling
+/// the hero back to its cover-track/icon default. Only rendered when a
+/// custom cover is actually set (see `hero_actions`); there is nothing to
+/// remove otherwise.
+fn remove_cover_control(p: &Palette, id: PlaylistId) -> El {
+    icon_ctrl(
+        "playlist-remove-cover".to_string(),
+        &icons::X,
+        t!("playlists.removeCover").to_string(),
+        true,
+        p,
+        move |st: &mut State| st.playlists.clear_custom_cover(id),
+    )
+}
+
 /// The hero's action row: Play All (omitted entirely when nothing in the
 /// playlist is playable, so a Play All click can never fire an empty
-/// `PlayContext`), then either the Rename/Delete icon pair, an open inline
-/// rename field, or an open delete-confirm prompt, per
+/// `PlayContext`), then either the Rename/Delete icon pair (itself preceded
+/// by Set cover, plus Remove cover once one is set), an open inline rename
+/// field, or an open delete-confirm prompt, per
 /// `State::playlist_renaming`/`playlist_delete_confirm` for this playlist.
 fn hero_actions(s: &State, p: &Palette, id: PlaylistId, play_ids: Vec<u32>) -> El {
     let mut r = row().key("playlist-actions").gap(space::SM).center_y();
@@ -214,7 +289,12 @@ fn hero_actions(s: &State, p: &Palette, id: PlaylistId, play_ids: Vec<u32>) -> E
                 cancel_playlist_delete,
             ));
     } else {
+        r = r.child(set_cover_control(p, id));
+        if s.playlists.custom_cover_path(id).is_some() {
+            r = r.child(remove_cover_control(p, id));
+        }
         r = r
+            .child(el().w(1.0).h(16.0).radius(0.5).fill(p.border))
             .child(icon_ctrl(
                 "playlist-rename".to_string(),
                 &icons::PENCIL,
@@ -499,7 +579,7 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
 mod tests {
     use std::path::PathBuf;
 
-    use rune::{Cx, Env, Ime, Key, KeyEvent, Mods, Runtime};
+    use rune::{Cx, Env, FileDialogKind, Ime, Key, KeyEvent, Mods, Runtime};
     use soul_player_host::{Command, PlayerHandle, TrackSnapshot, TrackView};
 
     use super::*;
@@ -948,6 +1028,73 @@ mod tests {
         assert!(
             rt.find("playlist-hero-image").is_none(),
             "no custom cover set means no hero image element renders"
+        );
+    }
+
+    /// End-to-end: pressing **Set cover** opens an open-file dialog; answering
+    /// it with a picked image applies it as the playlist's custom cover.
+    /// Exercises the real `playlist-set-cover` button → `tx.open_file` → the
+    /// runtime's scripted dialog → `PlaylistStore::set_custom_cover`, mirroring
+    /// `main.rs`'s `e2e_importing_an_autoeq_profile_through_the_button`.
+    #[test]
+    fn set_cover_through_the_scripted_file_dialog_applies_the_picked_image() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_over_library();
+        assert!(
+            rt.state.playlists.custom_cover_path(id).is_none(),
+            "no custom cover yet"
+        );
+
+        click(&mut rt, "playlist-set-cover");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Set cover opens a file dialog");
+        assert_eq!(kind, FileDialogKind::Open);
+
+        let picked = write_temp_png();
+        rt.resolve_file_dialog(Some(picked)).unwrap();
+        rt.frame(0.0);
+
+        let cover = rt
+            .state
+            .playlists
+            .custom_cover_path(id)
+            .expect("the picked image applied as the custom cover");
+        assert!(cover.exists(), "the stored cover file exists on disk");
+    }
+
+    /// **Remove cover** is absent before any custom cover is set, appears once
+    /// one is, and pressing it clears the cover again (falling the hero back
+    /// to its cover-track/icon default).
+    #[test]
+    fn remove_cover_control_is_absent_then_present_then_clears_the_cover() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_over_library();
+        assert!(
+            rt.find("playlist-remove-cover").is_none(),
+            "no remove-cover control before any cover is set"
+        );
+
+        assert!(rt.state.playlists.set_custom_cover(id, &write_temp_png()));
+        rt.invalidate();
+        rt.frame(0.0);
+        assert!(
+            rt.find("playlist-remove-cover").is_some(),
+            "the control appears once a custom cover is set"
+        );
+        // A brand-new subtree (it just appeared), so it enter-animates from
+        // opacity 0; settle instantly so it's pickable (matches the
+        // settle_all pattern the delete-confirm test above uses).
+        rt.settle_all();
+        rt.frame(0.0);
+
+        click(&mut rt, "playlist-remove-cover");
+        assert!(
+            rt.state.playlists.custom_cover_path(id).is_none(),
+            "pressing it clears the cover"
+        );
+        assert!(
+            rt.find("playlist-remove-cover").is_none(),
+            "and the control disappears again"
         );
     }
 }
