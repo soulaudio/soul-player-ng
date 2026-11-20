@@ -36,6 +36,10 @@ soul-audio-organize = { git = "https://github.com/soulaudio/soul-audio-core", br
 # this crate for the same `Library`/`MultiCatalog` plumbing; declaring it here
 # too just names the dependency the host code itself calls directly.
 soul-audio-multicatalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+# Portable no_std playlist model, re-exported so app/rune can import
+# `Playlist`/`PlaylistEntry`/`PlaylistCover`/etc. from the host without a
+# direct core git dep of its own.
+soul-audio-playlist = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["serde"] }
 anyhow = "1"
 # Real-input FFT for the EQ spectrum analyzer (std host only — the no_std core
 # never sees it). Wraps rustfft with an r2c API and reused buffers.
