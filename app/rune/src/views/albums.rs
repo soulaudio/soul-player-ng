@@ -8,7 +8,9 @@
 
 use std::collections::HashMap;
 
-use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
+use rune::{
+    Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
+};
 use soul_player_host::{Command, TrackView};
 
 use crate::State;
@@ -286,12 +288,50 @@ pub(crate) fn detail_track_row(
     if t.remote {
         r = r.child(remote_badge(t.id, p));
     }
+    // Right-click opens the same track actions as a library row (the add-to-
+    // playlist item opens the themed `views::add_to_playlist` overlay), so a
+    // track is reachable from every detail page (album/artist/genre/playlist),
+    // not just the library. `menu_ids` clones the play context for the menu's
+    // "Play" action; the row's own `on_press` still owns `ids`.
+    let menu_ids = ids.clone();
     r.child(
         text(fmt_dur(t.duration_secs))
             .font(type_::ITEM)
             .color(p.text_secondary)
             .w(56.0),
     )
+    .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
+        // Clone per invocation so this outer handler stays `Fn` (the inner
+        // `move` callback would otherwise move `menu_ids` out of it).
+        let play_ids = menu_ids.clone();
+        tx.popup_menu(
+            PopupMenu::new()
+                .item(PopupItem::new("play", t!("player.play").to_string()))
+                .item(PopupItem::new(
+                    "play-next",
+                    t!("library.playNext").to_string(),
+                ))
+                .item(PopupItem::new(
+                    "enqueue",
+                    t!("library.addToQueue").to_string(),
+                ))
+                .item(PopupItem::new(
+                    "add-to-playlist",
+                    t!("playlists.addTo").to_string(),
+                )),
+            press,
+            move |st: &mut State, picked, _tx: &mut Tx| match picked {
+                Some("play") => st.host.send(Command::PlayContext {
+                    ids: play_ids.clone(),
+                    start,
+                }),
+                Some("play-next") => st.host.send(Command::PlayNext(tid)),
+                Some("enqueue") => st.host.send(Command::Enqueue(tid)),
+                Some("add-to-playlist") => crate::open_add_to_playlist(st, tid),
+                _ => {}
+            },
+        );
+    })
     .on_press(move |st: &mut State| {
         let cmd = if st.now_playing_id == Some(tid) {
             Command::TogglePlay
