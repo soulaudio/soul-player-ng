@@ -43,10 +43,17 @@ pub use soul_audio_dsp::format;
 /// path-template tree), re-exported so a UI head calls it through the one host
 /// contract rather than taking its own core git dependency.
 pub use soul_audio_organize as organize;
-/// Playlists' durable track reference (locator + metadata snapshot), so a UI
-/// head reaches them through the one host contract rather than reimporting
-/// `soul-player-backend` itself.
-pub use soul_player_backend::types::{TrackLocator, TrackSnapshot};
+/// The shared no_std playlist model (durable locator + metadata snapshot,
+/// editable ordered playlist, cover selection), re-exported so a UI head
+/// reaches them through the one host contract rather than taking its own
+/// core git dependency. `soul-player-backend` depends on this same crate
+/// (see `types.rs`), so this is the one `TrackLocator`/`Playlist` identity
+/// shared by backend, host and app.
+pub use soul_audio_playlist::{
+    Playlist, PlaylistCover, PlaylistEntry, PlaylistId, TrackLocator, TrackSnapshot,
+    choose_playlist_cover, entries_fingerprint, first_distinct_album_indices, select_cover,
+    slugify,
+};
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
     SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath, SourceCodec, SourceFormat,

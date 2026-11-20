@@ -4,6 +4,8 @@
 //! and `artists::album_row` for the cover-thumbnail-plus-text row shape.
 #![forbid(unsafe_code)]
 
+use std::path::Path;
+
 use rune::{Cursor, El, ScrollSpec, col, el, row, text, text_input};
 
 use crate::State;
@@ -39,9 +41,11 @@ fn playlist_cover(s: &State, summary: &PlaylistSummary) -> PlaylistCover {
         .enumerate()
         .map(|(i, id)| (id, i.to_string()))
         .collect();
-    choose_playlist_cover(summary.custom_cover.clone(), &resolved, |id| {
-        s.host.art(id).is_some()
-    })
+    let custom = summary
+        .custom_cover
+        .clone()
+        .map(|p| p.to_string_lossy().into_owned());
+    choose_playlist_cover(custom, &resolved, |id| s.host.art(id).is_some())
 }
 
 /// Render a playlist row's thumbnail: the user-set custom cover image for
@@ -64,8 +68,10 @@ fn playlist_cover_el(
         PlaylistCover::Placeholder => {
             cover(s, None, ROW_COVER, radius::SM, p, scale).key(format!("{key_prefix}-placeholder"))
         }
-        PlaylistCover::Custom(path) => cover_from_path(s, &path, ROW_COVER, radius::SM, p, scale)
-            .key(format!("{key_prefix}-custom")),
+        PlaylistCover::Custom(path) => {
+            cover_from_path(s, Path::new(&path), ROW_COVER, radius::SM, p, scale)
+                .key(format!("{key_prefix}-custom"))
+        }
         PlaylistCover::Single(id) => {
             cover(s, Some(id), ROW_COVER, radius::SM, p, scale).key(format!("{key_prefix}-single"))
         }
