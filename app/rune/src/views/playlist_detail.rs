@@ -196,7 +196,21 @@ fn set_cover_control(p: &Palette, id: PlaylistId) -> El {
                 ),
                 move |s: &mut State, result, _tx| {
                     if let Ok(Some(path)) = result {
-                        s.playlists.set_custom_cover(id, &path);
+                        // A replaced cover overwrites `cover.<ext>` in place
+                        // when the extension is unchanged, so the art cache's
+                        // path-keyed memo (`views::player::ArtCache`) must be
+                        // dropped for both the old and new path, otherwise
+                        // the hero and the Playlists-list thumbnail keep
+                        // showing the stale decode until restart.
+                        let old = s.playlists.custom_cover_path(id);
+                        if s.playlists.set_custom_cover(id, &path) {
+                            if let Some(old) = old {
+                                s.art.forget_path(&old);
+                            }
+                            if let Some(new) = s.playlists.custom_cover_path(id) {
+                                s.art.forget_path(&new);
+                            }
+                        }
                     }
                 },
             );
@@ -215,7 +229,13 @@ fn remove_cover_control(p: &Palette, id: PlaylistId) -> El {
         t!("playlists.removeCover").to_string(),
         true,
         p,
-        move |st: &mut State| st.playlists.clear_custom_cover(id),
+        move |st: &mut State| {
+            let old = st.playlists.custom_cover_path(id);
+            st.playlists.clear_custom_cover(id);
+            if let Some(old) = old {
+                st.art.forget_path(&old);
+            }
+        },
     )
 }
 
@@ -737,6 +757,17 @@ mod tests {
         path
     }
 
+    /// Like [`write_temp_png`], but a visibly different (still tiny, still
+    /// non-decoding) byte sequence under the same `.png` extension, so a
+    /// test can "pick a different picture" that still lands on the exact
+    /// same `cover.png` destination path when applied as a replacement.
+    fn write_temp_png_variant() -> PathBuf {
+        const DIFFERENT_BYTES: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0xAA, 0xBB, 0xCC, 0xDD];
+        let path = temp_source_dir().join("source.png");
+        std::fs::write(&path, DIFFERENT_BYTES).unwrap();
+        path
+    }
+
     /// Same as [`runtime_playlist_over_library`], but with a custom cover
     /// image applied before the page ever renders, so the hero must prefer
     /// [`HeroArt::Image`] over the cover-track it would otherwise pick.
@@ -1095,6 +1126,77 @@ mod tests {
         assert!(
             rt.find("playlist-remove-cover").is_none(),
             "and the control disappears again"
+        );
+    }
+
+    /// Replacing a custom cover with a DIFFERENT image saved under the SAME
+    /// extension (`.png` -> `.png`) overwrites `cover.png` in place
+    /// (`PlaylistStore::set_custom_cover`), so the destination `PathBuf` is
+    /// identical before and after. `views::player::ArtCache` memoizes
+    /// decodes by that path, so the "Set cover" callback must forget it;
+    /// otherwise the hero (and the Playlists-list thumbnail) would keep
+    /// showing the first cover's decode until restart.
+    ///
+    /// `rune::Image`'s id is content-addressed (`rune::ImageId`), so this
+    /// doesn't need decoded pixels (the tiny fixture images here are
+    /// deliberately too small to decode): two DIFFERENT source byte strings
+    /// produce two DIFFERENT ids once each is actually re-read from disk.
+    /// If the stale path were never forgotten, the second render would keep
+    /// serving the first id, since `image_for_path` only re-reads a path
+    /// that's missing from its memo.
+    #[test]
+    fn set_cover_control_forgets_the_stale_path_on_same_extension_replace() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_over_library();
+        // `Runtime::new` doesn't run `AppSpec::setup` (only the real app
+        // does), so wire the art cache here, mirroring `player::tests`.
+        rt.state.art.wire(std::sync::Arc::new(|| {}));
+
+        // First Set cover.
+        click(&mut rt, "playlist-set-cover");
+        rt.frame(0.0);
+        rt.file_dialog().expect("Set cover opens a file dialog");
+        rt.resolve_file_dialog(Some(write_temp_png())).unwrap();
+        // Render once so the hero's `cover_from_path` (see `page`'s `art`
+        // match) memoizes the decode under the cover's path, just like the
+        // real app does on every frame.
+        rt.frame(0.0);
+        let cover_path = rt.state.playlists.custom_cover_path(id).expect("cover set");
+        let first_id = rt
+            .state
+            .art
+            .path_image_id(&cover_path)
+            .expect("rendering the hero after Set cover memoizes a decode");
+
+        // Replace with a DIFFERENT image under the same extension: the store
+        // overwrites `cover.png` in place, so the destination path is
+        // unchanged (the bug's exact repro case).
+        click(&mut rt, "playlist-set-cover");
+        rt.frame(0.0);
+        rt.file_dialog()
+            .expect("Set cover opens a file dialog again");
+        rt.resolve_file_dialog(Some(write_temp_png_variant()))
+            .unwrap();
+        rt.frame(0.0);
+
+        let cover_path_after = rt
+            .state
+            .playlists
+            .custom_cover_path(id)
+            .expect("cover is still set after the replace");
+        assert_eq!(
+            cover_path, cover_path_after,
+            "a same-extension replace overwrites the identical destination path"
+        );
+        let second_id = rt
+            .state
+            .art
+            .path_image_id(&cover_path)
+            .expect("rendering the hero after the replace memoizes a decode again");
+        assert_ne!(
+            first_id, second_id,
+            "the call site must forget the old path so the replaced file's different bytes \
+             produce a different content-addressed id, not the first cover's stale one"
         );
     }
 }
