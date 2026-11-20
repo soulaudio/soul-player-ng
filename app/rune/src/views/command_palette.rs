@@ -441,7 +441,14 @@ fn search_field(s: &State, p: &Palette) -> El {
                     run_selected(st);
                     true
                 }
-                _ => false,
+                // Any other key edits the query (typed text, backspace, caret
+                // moves) or is unhandled. A changed query re-ranks the list, so
+                // put the highlight back on the top match; return false so the
+                // editor still processes the key.
+                _ => {
+                    st.command_palette_selected = 0;
+                    false
+                }
             },
         )
 }

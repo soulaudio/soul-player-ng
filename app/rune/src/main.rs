@@ -12087,6 +12087,43 @@ mod tests {
         );
     }
 
+    /// Editing the query re-ranks the list, so the highlight returns to the top
+    /// match: arrow the selection down, then type, and it is back at row 0.
+    #[test]
+    fn typing_after_arrowing_resets_the_command_palette_selection_to_the_top() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.update(|st, _| open_command_palette(st));
+        rt.settle_all();
+        rt.frame(0.0);
+        for _ in 0..3 {
+            rt.key(KeyEvent {
+                key: Key::Down,
+                mods: Mods::default(),
+            });
+            rt.frame(0.0);
+        }
+        assert!(
+            rt.state.command_palette_selected > 0,
+            "arrows moved the highlight down"
+        );
+        rt.key(KeyEvent {
+            key: Key::Text("a".to_string()),
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert_eq!(
+            rt.state.command_palette_selected, 0,
+            "typing re-ranks the list and resets the highlight to the top match"
+        );
+    }
+
     /// Clicking a command row runs it and closes the palette, the real
     /// pointer path (`click_key`) every other overlay's rows are driven
     /// through in this test module.
