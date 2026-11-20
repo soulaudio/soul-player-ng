@@ -33,6 +33,7 @@ use soul_player_backend::{Command, ServicePlayer, apply_command, project_signal_
 const FIXTURES: &[&str] = &[
     "tone.wav",     // PCM
     "tone.flac",    // FLAC (lossless)
+    "tone.wv",      // WavPack (lossless)
     "tone.m4a",     // ALAC (lossless, MP4)
     "tone-aac.m4a", // AAC-LC (MP4)
     "tone.aif",     // AIFF PCM
