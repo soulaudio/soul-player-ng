@@ -110,6 +110,49 @@ fn playlists_keys_are_translated_in_all_shipped_locales() {
     );
 }
 
+/// Task 3's feature-scoped regression guard for the command palette: every
+/// `command.*` key (the ~23 command ids `views::command_palette::command_label`
+/// maps, plus `command.placeholder` for the search field) must carry a
+/// non-empty value in every shipped locale. Redundant with
+/// `every_key_is_translated_in_all_shipped_locales` above for any key that
+/// exists at all in the file, but that sweep only walks keys it *finds*:
+/// it can't notice a command id missing from `app.yml` entirely (a
+/// `command_label` match arm added without ever adding its locale block).
+/// The count assertion below catches that: it fails the moment the two
+/// drift apart, the same shape `playlists_keys_are_translated_in_all_shipped_locales`
+/// uses for its own feature.
+#[test]
+fn command_palette_keys_are_translated_in_all_shipped_locales() {
+    let map = parse_locales(include_str!("../locales/app.yml"));
+    let command_keys: Vec<&String> = map.keys().filter(|k| k.starts_with("command.")).collect();
+    assert!(
+        command_keys.len() >= 24,
+        "expected every command.<id> key plus command.placeholder in app.yml, found only {}: {:?}",
+        command_keys.len(),
+        command_keys
+    );
+
+    let mut missing = Vec::new();
+    for key in &command_keys {
+        let present = &map[key.as_str()];
+        assert!(
+            present.iter().any(|l| l == "en"),
+            "{key} has no English value to compare the other locales against"
+        );
+        for &locale in crate::LOCALES {
+            if !present.iter().any(|l| l == locale) {
+                missing.push(format!("  {key} → {locale}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "{} missing command-palette translation(s) in locales/app.yml:\n{}",
+        missing.len(),
+        missing.join("\n"),
+    );
+}
+
 /// Whether `s` contains a run of 3+ ASCII letters — i.e. a word, as opposed to a
 /// glyph ("✕", "▶"), a lowercase-hyphenated element key ("sort-artist"), or a
 /// two-letter locale code. Those never need localizing; words do.

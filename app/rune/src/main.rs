@@ -11961,6 +11961,7 @@ mod tests {
         assert!(!rt.state.command_palette_open);
 
         rt.key(cmd_chord('k'));
+        rt.settle_all();
         rt.frame(0.0);
 
         assert!(
@@ -11970,6 +11971,11 @@ mod tests {
         assert!(
             rt.state.command_palette_query.focused,
             "the query field starts focused so typing filters immediately"
+        );
+        assert!(
+            rt.find("command-palette-input").is_some(),
+            "the real keystroke's effect actually renders the search field, \
+             not just the state flag"
         );
     }
 
@@ -12150,6 +12156,81 @@ mod tests {
         assert!(
             !rt.state.command_palette_open,
             "running a command via click closes the palette"
+        );
+    }
+
+    /// Escape closes the palette through the REAL dismissal path: the
+    /// dialog is `El::modal(true, close_command_palette)`
+    /// (`views::command_palette::overlay`), so a focused-modal Escape is
+    /// trapped and answered by Rune's own focus handling (`focus_key`'s
+    /// `active_modal` dismiss, `crates/rune/src/runtime/input/focus.rs`)
+    /// before it ever reaches `handle_key`: the search field's own
+    /// `on_input_key` sees Escape too but its catch-all arm returns `false`
+    /// for anything but Up/Down/Enter, so it falls through rather than
+    /// swallowing it. `rt.on_key` is still wired to mirror the real app
+    /// exactly, even though this particular key never reaches it with the
+    /// query field focused. Closing this way must reset state identically to
+    /// `close_command_palette` (query cleared, selection back to 0) and the
+    /// overlay must stop rendering, not just flip the flag.
+    #[test]
+    fn escape_closes_the_command_palette_via_the_real_modal_dismissal() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = populated_state();
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+
+        rt.update(|st, _| open_command_palette(st));
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.find("command-palette-input").is_some(),
+            "the palette is open before Escape"
+        );
+
+        rt.ime(rune::Ime::Commit("albums".to_string()));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Down,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert!(
+            rt.state.command_palette_selected > 0
+                || !rt.state.command_palette_query.text.is_empty(),
+            "the query and selection have real state to be reset by the close below"
+        );
+
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.settle_all();
+        rt.frame(0.0);
+
+        assert!(
+            !rt.state.command_palette_open,
+            "Escape closes the command palette"
+        );
+        assert!(
+            rt.state.command_palette_query.text.is_empty(),
+            "closing resets the query like close_command_palette"
+        );
+        assert_eq!(
+            rt.state.command_palette_selected, 0,
+            "closing resets the selection like close_command_palette"
+        );
+        assert!(
+            rt.find("command-palette-input").is_none(),
+            "the overlay stops rendering once closed"
+        );
+        assert!(
+            rt.find("command-palette-modal").is_none(),
+            "no trace of the dialog or its backdrop remains"
         );
     }
 
