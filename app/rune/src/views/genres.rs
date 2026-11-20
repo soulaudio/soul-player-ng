@@ -106,7 +106,14 @@ fn genre_row(p: &Palette, slot: usize, g: &Genre) -> El {
             .color(p.text_secondary),
     )
     .on_press(move |st: &mut State| {
-        crate::navigate_to(st, crate::Route::Genre, None, None, Some(name.clone()));
+        crate::navigate_to(
+            st,
+            crate::Route::Genre,
+            None,
+            None,
+            Some(name.clone()),
+            None,
+        );
     })
 }
 

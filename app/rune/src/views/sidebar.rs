@@ -68,6 +68,11 @@ pub(crate) const NAV_DEFS: &[NavDef] = &[
         route: Route::Genres,
     },
     NavDef {
+        id: "playlists",
+        key: "nav-playlists",
+        route: Route::Playlists,
+    },
+    NavDef {
         id: "tracks",
         key: "nav-library",
         route: Route::Library,
@@ -83,6 +88,7 @@ pub(crate) fn nav_label(id: &str) -> String {
         "albums" => t!("nav.albums").to_string(),
         "artists" => t!("nav.artists").to_string(),
         "genres" => t!("nav.genres").to_string(),
+        "playlists" => t!("nav.playlists").to_string(),
         _ => t!("nav.tracks").to_string(),
     }
 }
@@ -94,6 +100,7 @@ fn nav_active(route: Route, def: &NavDef) -> bool {
         Route::Albums => matches!(route, Route::Albums | Route::Album),
         Route::Artists => matches!(route, Route::Artists | Route::Artist),
         Route::Genres => matches!(route, Route::Genres | Route::Genre),
+        Route::Playlists => matches!(route, Route::Playlists | Route::Playlist),
         other => route == other,
     }
 }
@@ -167,6 +174,7 @@ fn nav_item(
             .on_press(move |s: &mut State| {
                 s.nav_history.clear();
                 s.genre_search = rune::TextEdit::new("");
+                s.playlist_new_buf = rune::TextEdit::new("");
                 s.route = route;
                 s.mobile_show_content = true;
             });
