@@ -2059,6 +2059,63 @@ mod tests {
         );
     }
 
+    /// Playlists store a durable `TrackLocator` per entry, not the volatile
+    /// compound id. This pins the REMOTE case end to end (playlists + remotes
+    /// compose): a remote track's locator round-trips to its current id while
+    /// the remote is online, resolves to `None` (→ the playlist UI's greyed
+    /// "unavailable" row) when the remote is disabled/offline rather than a
+    /// WRONG id, and comes back on re-enable. Durability across a source-order
+    /// shift is what keeps a remote track in a playlist from silently pointing
+    /// at a different song.
+    #[test]
+    fn a_remote_track_locator_round_trips_and_greys_out_when_the_remote_is_disabled() {
+        let server = start_server();
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("add remote");
+
+        let remote_id = handle
+            .views()
+            .iter()
+            .find(|t| t.remote_source.is_some())
+            .map(|t| t.id)
+            .expect("the remote source contributed at least one track");
+
+        // What a playlist would store when you add this remote track.
+        let locator = handle
+            .locator_of(remote_id)
+            .expect("a remote track must yield a durable locator (not None)");
+
+        // Online: the stored locator round-trips back to the current id.
+        assert_eq!(
+            handle.resolve_locators(std::slice::from_ref(&locator)),
+            vec![Some(remote_id)],
+            "a remote locator resolves to the current id while the remote is online"
+        );
+
+        // Disabled: the remote leaves the aggregate, so its locator resolves to
+        // None — the playlist renders it greyed/unavailable, NOT as a wrong id.
+        handle
+            .set_remote_enabled(&server.url, false)
+            .expect("disable the remote");
+        assert_eq!(
+            handle.resolve_locators(std::slice::from_ref(&locator)),
+            vec![None],
+            "a disabled remote's locator resolves to None (greyed/unavailable), never a wrong id"
+        );
+
+        // Re-enabled: it resolves again.
+        handle
+            .set_remote_enabled(&server.url, true)
+            .expect("re-enable the remote");
+        assert_eq!(
+            handle.resolve_locators(std::slice::from_ref(&locator)),
+            vec![Some(remote_id)],
+            "re-enabling the remote restores resolution"
+        );
+    }
+
     #[test]
     fn remote_library_resolves_local_and_remote_tracks_with_a_nonzero_base() {
         // A local source with exactly ONE track, so its single id is
