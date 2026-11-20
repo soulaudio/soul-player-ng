@@ -295,6 +295,20 @@ struct State {
     /// The overlay's inline "New playlist..." field, bound the same way
     /// `playlist_new_buf` binds the Playlists page's own field.
     add_to_playlist_buf: rune::TextEdit,
+    /// Whether the Cmd/Ctrl-K command palette overlay is open. Mirrors
+    /// `add_to_playlist_for`'s "a global overlay mounted at the window root"
+    /// shape: toggled only by `open_command_palette`/`close_command_palette`,
+    /// so it survives a route change. The overlay itself (its mount, list
+    /// rendering, and keyboard navigation) is a later task; this task only
+    /// wires the flag + trigger.
+    command_palette_open: bool,
+    /// The palette's search field, bound the same way `add_to_playlist_buf`
+    /// binds its overlay's field. Reset to empty (and focused) on every open.
+    command_palette_query: rune::TextEdit,
+    /// Index into the CURRENT filtered command list (not the full registry)
+    /// that is highlighted for Enter/arrow-key selection. Reset to 0 on every
+    /// open and on every query edit (Task 2 owns the arrow-key wiring).
+    command_palette_selected: usize,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -687,6 +701,9 @@ impl State {
             playlist_delete_confirm: None,
             add_to_playlist_for: None,
             add_to_playlist_buf: rune::TextEdit::new(""),
+            command_palette_open: false,
+            command_palette_query: rune::TextEdit::new(""),
+            command_palette_selected: 0,
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -1493,6 +1510,32 @@ pub(crate) fn open_add_to_playlist(s: &mut State, track_id: u32) {
 pub(crate) fn close_add_to_playlist(s: &mut State) {
     s.add_to_playlist_for = None;
     s.add_to_playlist_buf = rune::TextEdit::new("");
+}
+
+// ---- Command palette (Cmd/Ctrl-K) ----
+
+/// Open the command palette: reset its query to empty and focused (so typing
+/// starts filtering immediately, no click needed) and its selection to the
+/// first row. Mirrors `open_add_to_playlist`'s "always start from a clean
+/// buffer" shape; the overlay that actually renders the list is a later task.
+pub(crate) fn open_command_palette(s: &mut State) {
+    s.command_palette_open = true;
+    s.command_palette_query = rune::TextEdit::new("");
+    s.command_palette_query.focused = true;
+    s.command_palette_selected = 0;
+}
+
+/// Close the command palette (Escape, an outside press, or running a chosen
+/// command) and reset its query + selection so the next open always starts
+/// clean, the same guarantee `close_add_to_playlist` gives its overlay.
+#[allow(
+    dead_code,
+    reason = "called by this task's own test until Task 2 wires the overlay's Escape/backdrop/Done close affordances"
+)]
+pub(crate) fn close_command_palette(s: &mut State) {
+    s.command_palette_open = false;
+    s.command_palette_query = rune::TextEdit::new("");
+    s.command_palette_selected = 0;
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
@@ -2858,6 +2901,13 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
     s.shift_held = ev.mods.shift;
     if tx.key_repeat() {
         return false;
+    }
+    // Cmd/Ctrl-K opens the command palette from anywhere, ahead of every other
+    // chord and mode below (search-input, dropdowns, zoom) so it is never
+    // shadowed by a page-local handler.
+    if ev.is_command('k') {
+        open_command_palette(s);
+        return true;
     }
     // An open dropdown is light-dismiss (no modal): Escape closes it. Its backdrop
     // handles the outside-press + scroll dismissals.
@@ -11894,6 +11944,54 @@ mod tests {
         assert!((rt.state.ui_zoom - 1.1).abs() < 1e-4, "Ctrl+- zooms out");
         hit(&mut rt, '0'); // Ctrl/⌘ 0
         assert_eq!(rt.state.ui_zoom, 1.0, "Ctrl+0 resets to 100 %");
+    }
+
+    /// Cmd/Ctrl-K opens the command palette from anywhere, routed through the
+    /// real `handle_key` the live app wires (same harness shape as
+    /// `ctrl_chords_zoom_the_content_and_reset`), ahead of every other chord.
+    #[test]
+    fn ctrl_k_opens_the_command_palette() {
+        let s = State::new(PlayerHandle::offline());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        assert!(!rt.state.command_palette_open);
+
+        rt.key(cmd_chord('k'));
+        rt.frame(0.0);
+
+        assert!(
+            rt.state.command_palette_open,
+            "Ctrl/Cmd-K opens the command palette"
+        );
+        assert!(
+            rt.state.command_palette_query.focused,
+            "the query field starts focused so typing filters immediately"
+        );
+    }
+
+    /// `open_command_palette`/`close_command_palette` directly, the shape the
+    /// brief falls back to when a chord can't drive the full harness: open
+    /// sets the flag + focuses the query, close clears both plus the
+    /// selection, so a stale selection never resurfaces on the next open.
+    #[test]
+    fn open_and_close_command_palette_reset_its_state() {
+        let mut s = State::new(PlayerHandle::offline());
+
+        open_command_palette(&mut s);
+        assert!(s.command_palette_open);
+        assert!(s.command_palette_query.focused);
+        assert_eq!(s.command_palette_selected, 0);
+
+        s.command_palette_selected = 3;
+        close_command_palette(&mut s);
+        assert!(!s.command_palette_open);
+        assert_eq!(s.command_palette_selected, 0);
+        assert!(s.command_palette_query.text.is_empty());
     }
 
     #[test]

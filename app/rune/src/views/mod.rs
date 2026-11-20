@@ -4,6 +4,7 @@
 pub mod add_to_playlist;
 pub mod albums;
 pub mod artists;
+pub mod command_palette;
 pub mod detail_page;
 pub mod dropdown;
 pub mod eq_graph;

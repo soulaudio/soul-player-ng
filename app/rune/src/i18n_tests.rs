@@ -155,6 +155,10 @@ fn views_have_no_hardcoded_ui_strings() {
         ("media_card.rs", include_str!("views/media_card.rs")),
         ("detail_page.rs", include_str!("views/detail_page.rs")),
         ("grid.rs", include_str!("views/grid.rs")),
+        (
+            "command_palette.rs",
+            include_str!("views/command_palette.rs"),
+        ),
     ];
     let mut offenders = Vec::new();
     for (name, src) in sources {
