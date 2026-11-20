@@ -5,47 +5,54 @@
 #![forbid(unsafe_code)]
 
 use rune::{Cursor, El, ScrollSpec, col, el, row, text, text_input};
-use soul_player_host::TrackLocator;
 
 use crate::State;
-use crate::playlists::{PlaylistCover, PlaylistSummary, select_cover};
+use crate::playlists::cover::choose_playlist_cover;
+use crate::playlists::{PlaylistCover, PlaylistSummary};
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::player::cover;
+use crate::views::player::{cover, cover_from_path};
 
 /// A row's cover-thumbnail side, matching the library/artist rows' 48 pt
 /// cover size.
 const ROW_COVER: f32 = 48.0;
 
-/// Resolve a playlist summary's cover locators to current track ids and
-/// classify the result via the shared [`select_cover`] mosaic/single/
-/// placeholder rule. The locators are already album-distinct (the store's
-/// manifest walk picks the first 4 distinct-album entries), so no further
-/// dedupe belongs here; each resolved id gets its own unique synthetic
-/// "album" key purely so `select_cover`'s distinct-album dedupe is a no-op
-/// passthrough, letting this reuse that selection logic as-is instead of
-/// duplicating it. Locators that don't resolve (unavailable source, or no
+/// Choose a playlist summary's cover: a user-set custom cover image always
+/// wins (`summary.custom_cover`); absent that, resolve the summary's cover
+/// locators to current track ids and classify the result via the shared
+/// `select_cover` mosaic/single/placeholder rule (reached through
+/// [`choose_playlist_cover`]). The locators are already album-distinct (the
+/// store's manifest walk picks the first 4 distinct-album entries), so no
+/// further dedupe belongs here; each resolved id gets its own unique
+/// synthetic "album" key purely so that rule's distinct-album dedupe is a
+/// no-op passthrough, letting this reuse that selection logic as-is instead
+/// of duplicating it. Locators that don't resolve (unavailable source, or no
 /// library open at all) are dropped before the art-presence check, so this
 /// never panics without a library loaded: everything just resolves to
 /// `PlaylistCover::Placeholder`.
-fn playlist_cover(s: &State, cover_locators: &[TrackLocator]) -> PlaylistCover {
+fn playlist_cover(s: &State, summary: &PlaylistSummary) -> PlaylistCover {
     let resolved: Vec<(u32, String)> = s
         .host
-        .resolve_locators(cover_locators)
+        .resolve_locators(&summary.cover)
         .into_iter()
         .flatten()
         .enumerate()
         .map(|(i, id)| (id, i.to_string()))
         .collect();
-    select_cover(&resolved, |id| s.host.art(id).is_some())
+    choose_playlist_cover(summary.custom_cover.clone(), &resolved, |id| {
+        s.host.art(id).is_some()
+    })
 }
 
-/// Render a playlist row's thumbnail: a 2x2 mosaic for `Mosaic`, a single
-/// full-bleed cover for `Single`, or the shared "no art" placeholder tile for
-/// `Placeholder`. Reuses `views::player::cover` for every tile's pixels so a
-/// mosaic tile and a library row's own cover decode identically (same cache,
-/// same placeholder). `key_prefix` must be unique per row (the playlist id)
-/// so two rows' tiles never collide.
+/// Render a playlist row's thumbnail: the user-set custom cover image for
+/// `Custom`, a 2x2 mosaic for `Mosaic`, a single full-bleed cover for
+/// `Single`, or the shared "no art" placeholder tile for `Placeholder`.
+/// Reuses `views::player::cover`/`cover_from_path` for every tile's pixels
+/// so a mosaic tile and a library row's own cover decode identically (same
+/// cache, same placeholder); `Custom` falls back to that same placeholder
+/// when the file can't be read or hasn't decoded yet, never panicking.
+/// `key_prefix` must be unique per row (the playlist id) so two rows' tiles
+/// never collide.
 fn playlist_cover_el(
     s: &State,
     which: PlaylistCover,
@@ -57,6 +64,8 @@ fn playlist_cover_el(
         PlaylistCover::Placeholder => {
             cover(s, None, ROW_COVER, radius::SM, p, scale).key(format!("{key_prefix}-placeholder"))
         }
+        PlaylistCover::Custom(path) => cover_from_path(s, &path, ROW_COVER, radius::SM, p, scale)
+            .key(format!("{key_prefix}-custom")),
         PlaylistCover::Single(id) => {
             cover(s, Some(id), ROW_COVER, radius::SM, p, scale).key(format!("{key_prefix}-single"))
         }
@@ -87,7 +96,7 @@ fn playlist_cover_el(
 /// the playlist's detail page.
 fn playlist_row(s: &State, p: &Palette, scale: f32, summary: &PlaylistSummary) -> El {
     let id = summary.id;
-    let which = playlist_cover(s, &summary.cover);
+    let which = playlist_cover(s, summary);
     let key_prefix = format!("playlist-cover-{id}");
     row()
         .key(format!("playlist-row-{id}"))
@@ -226,7 +235,7 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
 #[cfg(test)]
 mod tests {
     use rune::{Cx, Env, Key, KeyEvent, Mods, Runtime};
-    use soul_player_host::{PlayerHandle, TrackSnapshot};
+    use soul_player_host::{PlayerHandle, TrackLocator, TrackSnapshot};
 
     use super::*;
     use crate::playlists::{PlaylistEntry, PlaylistStore};
