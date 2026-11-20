@@ -4803,6 +4803,355 @@ mod tests {
         assert!(!cover_path.exists(), "the cover file is deleted from disk");
     }
 
+    /// Capstone end-to-end: the whole Playlists lifecycle driven through ONE
+    /// running `Runtime` over the real scanned `testdata/` library, chaining
+    /// every feature the earlier capstones (above) proved in isolation
+    /// (create, add from two different surfaces, reorder, rename, custom
+    /// cover, remove a track), so a cross-feature or state-leak bug has
+    /// somewhere to hide. The second half is a hard persistence check: a
+    /// brand-new `Runtime`/`State` (a simulated restart) reads the same
+    /// playlist back off disk with everything intact, then deletes it.
+    /// Every step asserts both the rendered UI (`rt.find`/`shows`) and the
+    /// on-disk `PlaylistStore`, never one alone.
+    #[test]
+    fn e2e_playlist_full_lifecycle_journey() {
+        use soul_player_host::TrackLocator;
+
+        let _g = config::use_test_config_dir();
+        let _ = std::fs::remove_dir_all(playlists::playlist_store_path());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+
+        // ---- 1. Create, via the sidebar nav and the real inline field ----
+        let s = populated_state();
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+
+        let track_a = rt.state.library[0].id;
+        let track_b = rt.state.library[1].id;
+        let track_c = rt.state.library[2].id;
+        let loc_a = rt
+            .state
+            .host
+            .locator_of(track_a)
+            .expect("a scanned track resolves a durable locator");
+        let loc_b = rt.state.host.locator_of(track_b).expect("track b resolves");
+        let loc_c = rt.state.host.locator_of(track_c).expect("track c resolves");
+
+        click_key(&mut rt, "nav-playlists");
+        assert!(matches!(rt.state.route, Route::Playlists));
+        rt.settle_all();
+        rt.frame(0.0);
+
+        click_key(&mut rt, "playlist-new-input");
+        rt.ime(rune::Ime::Commit("Summer Mix".to_string()));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+
+        let pid = rt
+            .state
+            .open_playlist
+            .expect("creating a playlist navigates straight into it");
+        assert!(matches!(rt.state.route, Route::Playlist));
+        assert_eq!(
+            playlists::PlaylistStore::load().get(pid).unwrap().name,
+            "Summer Mix",
+            "the new playlist persisted to disk"
+        );
+
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "playlist-back");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            shows(&rt, "Summer Mix"),
+            "the new playlist shows on the Playlists list"
+        );
+        assert!(rt.find(&format!("playlist-row-{pid}")).is_some());
+
+        // ---- 2. Add from two surfaces ----
+
+        // Surface A: a library track row's context menu. This harness can't
+        // drive a real OS right-click popup, so it opens the overlay the same
+        // way `views::add_to_playlist`'s own tests do, then drives the real
+        // pick row and Done button through the full app `view`.
+        click_key(&mut rt, "nav-library");
+        for &tid in &[track_a, track_b] {
+            rt.update(move |st: &mut State, _tx: &mut Tx| {
+                crate::open_add_to_playlist(st, tid);
+            });
+            rt.settle_all();
+            rt.frame(0.0);
+            click_key(&mut rt, &format!("add-to-playlist-pick-{pid}"));
+            click_key(&mut rt, "add-to-playlist-done");
+        }
+        assert_eq!(
+            playlists::PlaylistStore::load()
+                .get(pid)
+                .unwrap()
+                .entries
+                .len(),
+            2,
+            "both library-surface adds persisted"
+        );
+
+        // Surface B: the now-playing heart. Starts a third track "playing"
+        // (a fresh insert of the now-playing panel, hence the settle), opens
+        // the same membership dialogue from there, and ticks the same
+        // playlist.
+        rt.update(move |st: &mut State, _tx: &mut Tx| {
+            st.now_playing_id = Some(track_c);
+        });
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "np-heart");
+        assert_eq!(rt.state.add_to_playlist_for, Some(track_c));
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, &format!("add-to-playlist-pick-{pid}"));
+        click_key(&mut rt, "add-to-playlist-done");
+        assert_eq!(
+            playlists::PlaylistStore::load()
+                .get(pid)
+                .unwrap()
+                .entries
+                .len(),
+            3,
+            "the heart-surface add grew membership to three"
+        );
+
+        // ---- 3. Open + verify ----
+        click_key(&mut rt, "nav-playlists");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, &format!("playlist-row-{pid}"));
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find("playlist-row-0").is_some());
+        assert!(rt.find("playlist-row-1").is_some());
+        assert!(rt.find("playlist-row-2").is_some());
+        let entries_before_reorder: Vec<TrackLocator> = rt
+            .state
+            .playlists
+            .get(pid)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(
+            entries_before_reorder,
+            vec![loc_a.clone(), loc_b.clone(), loc_c.clone()],
+            "the three adds landed in the order they happened"
+        );
+
+        // ---- 4. Reorder: a drag, then a move button ----
+        let (gx, gy0) = rt.find("playlist-grip-0").expect("grip 0 renders");
+        let (_, gy2) = rt.find("playlist-grip-2").expect("grip 2 renders");
+        rt.pointer_down(gx, gy0);
+        rt.pointer_move(gx, gy2);
+        rt.frame(0.0);
+        rt.pointer_up(gx, gy2);
+        rt.frame(0.0);
+        let after_drag: Vec<TrackLocator> = rt
+            .state
+            .playlists
+            .get(pid)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(
+            after_drag,
+            vec![loc_b.clone(), loc_c.clone(), loc_a.clone()],
+            "dragging entry 0 onto entry 2 moves it to the end"
+        );
+
+        click_key(&mut rt, "playlist-down-0");
+        let reordered: Vec<TrackLocator> = playlists::PlaylistStore::load()
+            .get(pid)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(
+            reordered,
+            vec![loc_c.clone(), loc_b.clone(), loc_a.clone()],
+            "the move-down button swaps the leading pair, and it persists"
+        );
+
+        // ---- 5. Rename ----
+        click_key(&mut rt, "playlist-rename");
+        rt.ime(rune::Ime::Commit("  Festival Favorites  ".to_string()));
+        rt.frame(0.0);
+        rt.key(KeyEvent {
+            key: Key::Enter,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+        assert!(
+            shows(&rt, "Festival Favorites"),
+            "the renamed, trimmed name renders on the detail page"
+        );
+        assert_eq!(
+            playlists::PlaylistStore::load().get(pid).unwrap().name,
+            "Festival Favorites",
+            "the rename persisted"
+        );
+
+        click_key(&mut rt, "playlist-back");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            shows(&rt, "Festival Favorites"),
+            "the new name also renders on the Playlists list"
+        );
+        assert!(
+            !shows(&rt, "Summer Mix"),
+            "the old name no longer shows anywhere"
+        );
+
+        click_key(&mut rt, &format!("playlist-row-{pid}"));
+        rt.settle_all();
+        rt.frame(0.0);
+
+        // ---- 6. Custom cover: set, then remove ----
+        assert!(
+            rt.find("playlist-hero-image").is_none(),
+            "no custom cover yet"
+        );
+        click_key(&mut rt, "playlist-set-cover");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Set cover opens a file dialog");
+        assert_eq!(kind, FileDialogKind::Open);
+        let picked = write_temp_cover_png();
+        rt.resolve_file_dialog(Some(picked)).unwrap();
+        rt.frame(0.0);
+        assert!(
+            rt.find("playlist-hero-image").is_some(),
+            "the hero now renders the custom cover"
+        );
+        let cover_path = playlists::PlaylistStore::load()
+            .custom_cover_path(pid)
+            .expect("the picked image persisted as the playlist's custom cover");
+        assert!(cover_path.exists(), "the stored cover file exists on disk");
+
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "playlist-remove-cover");
+        assert!(
+            rt.find("playlist-hero-image").is_none(),
+            "the hero reverts to its default once the cover is removed"
+        );
+        assert!(
+            playlists::PlaylistStore::load()
+                .custom_cover_path(pid)
+                .is_none(),
+            "the store no longer reports a custom cover"
+        );
+        assert!(!cover_path.exists(), "the cover file is deleted from disk");
+
+        // ---- 7. Remove a track ----
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "playlist-remove-0");
+        let after_remove: Vec<TrackLocator> = playlists::PlaylistStore::load()
+            .get(pid)
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.locator.clone())
+            .collect();
+        assert_eq!(
+            after_remove,
+            vec![loc_b.clone(), loc_a.clone()],
+            "removing entry 0 drops the reordered leader and persists the rest, in order"
+        );
+
+        // ---- 8. PERSISTENCE RELOAD: a brand-new Runtime and State, as if
+        // the app had restarted, must read everything above straight off
+        // disk: name, order, membership, and the removed cover. ----
+        let s2 = populated_state();
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.frame(0.0);
+        rt2.frame(0.0);
+
+        click_key(&mut rt2, "nav-playlists");
+        rt2.settle_all();
+        rt2.frame(0.0);
+        assert!(
+            shows(&rt2, "Festival Favorites"),
+            "the renamed playlist survived the reload and shows on the list"
+        );
+        assert!(
+            !shows(&rt2, "Summer Mix"),
+            "the old name never resurfaces after a reload"
+        );
+        assert!(
+            rt2.find(&format!("playlist-cover-{pid}-custom")).is_none(),
+            "the list row's thumbnail does not show the removed cover either"
+        );
+
+        click_key(&mut rt2, &format!("playlist-row-{pid}"));
+        rt2.settle_all();
+        rt2.frame(0.0);
+        let reloaded = rt2
+            .state
+            .playlists
+            .get(pid)
+            .expect("the playlist reloads from disk");
+        assert_eq!(reloaded.name, "Festival Favorites");
+        let reloaded_locators: Vec<TrackLocator> =
+            reloaded.entries.iter().map(|e| e.locator.clone()).collect();
+        assert_eq!(
+            reloaded_locators,
+            vec![loc_b.clone(), loc_a.clone()],
+            "the reordered, minus-removed track set survived the reload, in order"
+        );
+        assert!(
+            rt2.state.playlists.custom_cover_path(pid).is_none(),
+            "the removed cover stayed removed across the reload"
+        );
+        assert!(
+            rt2.find("playlist-hero-image").is_none(),
+            "the hero falls back to the mosaic/placeholder, not a stale cover"
+        );
+        assert!(rt2.find("playlist-row-0").is_some());
+        assert!(rt2.find("playlist-row-1").is_some());
+        assert!(
+            rt2.find("playlist-row-2").is_none(),
+            "the removed track never resurfaces"
+        );
+
+        // ---- 9. Delete ----
+        click_key(&mut rt2, "playlist-delete");
+        rt2.settle_all();
+        rt2.frame(0.0);
+        click_key(&mut rt2, "playlist-delete-confirm");
+        assert!(
+            matches!(rt2.state.route, Route::Playlists),
+            "confirming delete returns to the list"
+        );
+        assert!(
+            rt2.find(&format!("playlist-row-{pid}")).is_none(),
+            "the deleted playlist no longer shows on the list"
+        );
+        assert!(
+            playlists::PlaylistStore::load().get(pid).is_none(),
+            "the delete persisted: a fresh load no longer has it"
+        );
+    }
+
     /// A Sources refresh clears any stale deletion warning (the next scan's own
     /// `TracksRemoved`, applied right after, re-sets it if there were deletions).
     #[test]
