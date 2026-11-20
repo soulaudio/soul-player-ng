@@ -33,6 +33,10 @@ pub mod store;
 // render tests resetting the shared on-disk store between runs.
 #[allow(unused_imports)]
 pub use cover::entries_fingerprint;
+// `select_cover` itself is now only reached internally (`choose_playlist_cover`,
+// which the views now call instead) and by its own tests in `cover.rs`; the
+// re-export stays for discoverability.
+#[allow(unused_imports)]
 pub use cover::{PlaylistCover, select_cover};
 pub use model::PlaylistId;
 #[allow(unused_imports)]

@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use rune::tok::motion;
 use rune::{
@@ -142,6 +143,11 @@ const PLAY_SIZE: f32 = 40.0;
 pub struct ArtCache {
     cache: Option<ImageCache>,
     images: RefCell<HashMap<u32, Image>>,
+    /// Memoized decodes keyed by an absolute file path rather than a track
+    /// id, for covers that live on disk independent of any track (a
+    /// playlist's custom cover image). Kept separate from `images` since the
+    /// two never collide and never need to invalidate each other.
+    path_images: RefCell<HashMap<PathBuf, Image>>,
 }
 
 impl ArtCache {
@@ -149,6 +155,7 @@ impl ArtCache {
         Self {
             cache: None,
             images: RefCell::new(HashMap::new()),
+            path_images: RefCell::new(HashMap::new()),
         }
     }
 
@@ -169,6 +176,63 @@ impl ArtCache {
         let image = cache.load_mime(cover.bytes, &cover.mime, DECODE_PX, scale);
         self.images.borrow_mut().insert(id, image.clone());
         Some(image)
+    }
+
+    /// Like [`Self::image_for`] but keyed by an absolute file path instead of
+    /// a track id, for a cover image that lives on disk on its own (a
+    /// playlist's custom cover). Reads the file once, memoizes the decode by
+    /// path, and returns `None`, never panicking, when the cache isn't wired
+    /// yet or the file can't be read.
+    fn image_for_path(&self, path: &Path, scale: f32) -> Option<Image> {
+        if let Some(image) = self.path_images.borrow().get(path) {
+            return Some(image.clone());
+        }
+        let cache = self.cache.as_ref()?;
+        let bytes = std::fs::read(path).ok()?;
+        let image = cache.load_mime(bytes, mime_from_ext(path), DECODE_PX, scale);
+        self.path_images
+            .borrow_mut()
+            .insert(path.to_path_buf(), image.clone());
+        Some(image)
+    }
+
+    /// Drop `path`'s memoized decode, if any, so the next [`Self::image_for_path`]
+    /// re-reads the file from disk instead of serving a stale cached image.
+    /// A playlist's custom cover always lives at the same `cover.<ext>` path
+    /// (`PlaylistStore::set_custom_cover` overwrites it in place), so without
+    /// this, replacing a cover with a different image of the same extension
+    /// would keep showing the old one until restart.
+    pub fn forget_path(&self, path: &Path) {
+        self.path_images.borrow_mut().remove(path);
+    }
+
+    /// Test-only: `path`'s currently memoized decode's content-addressed
+    /// [`rune::ImageId`] (`rune::Image::id`), if any. Lets a test assert
+    /// [`Self::forget_path`] actually ran at a call site by checking that a
+    /// re-read picks up a *different* id (new file bytes hash differently),
+    /// rather than comparing decoded pixels, which the tiny fixture images
+    /// tests use never produce (they're deliberately too small to decode).
+    #[cfg(test)]
+    pub(crate) fn path_image_id(&self, path: &Path) -> Option<rune::ImageId> {
+        self.path_images.borrow().get(path).map(Image::id)
+    }
+}
+
+/// Guess a cover image's MIME type from its file extension (lower-cased).
+/// Covers the extensions a playlist custom cover can be saved under
+/// (`playlists::store::CUSTOM_COVER_EXTENSIONS`); anything else defaults to
+/// JPEG, matching the backend's own embedded/external cover-art guesser.
+fn mime_from_ext(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/jpeg",
     }
 }
 
@@ -205,6 +269,29 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, corner: f32, p: &Palette, sc
     match s.art.image_for(id, &s.host, scale) {
         // Ready and error-free: show it. Pending or failed covers keep the
         // placeholder rather than a blank or broken texture.
+        Some(image) if image.is_ready() && image.error().is_none() => el()
+            .key("cover")
+            .size(size, size)
+            .radius(corner)
+            .fill(p.muted)
+            .pixels_fit(image.pixels(), SurfaceFit::Fit),
+        _ => cover_placeholder(size, corner, p),
+    }
+}
+
+/// A rounded cover box at `size` pt showing the decoded image at `path` (a
+/// playlist's custom cover file), or the placeholder when it hasn't decoded
+/// yet, the cache isn't wired, or the file can't be read. Mirrors [`cover`]
+/// but keyed by an on-disk path instead of a library track id.
+pub fn cover_from_path(
+    s: &State,
+    path: &Path,
+    size: f32,
+    corner: f32,
+    p: &Palette,
+    scale: f32,
+) -> El {
+    match s.art.image_for_path(path, scale) {
         Some(image) if image.is_ready() && image.error().is_none() => el()
             .key("cover")
             .size(size, size)

@@ -35,6 +35,12 @@ use crate::config;
 /// the art-presence gate in [`super::cover::select_cover`] differs).
 const MANIFEST_COVER_LIMIT: usize = 4;
 
+/// Accepted custom-cover image extensions, lowercased and without the dot.
+const CUSTOM_COVER_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
+
+/// Maximum accepted custom-cover source file size: 16 MiB.
+const CUSTOM_COVER_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
 /// The first [`MANIFEST_COVER_LIMIT`] distinct-album entries' locators, in
 /// playlist order; shares the dedupe rule [`super::cover::select_cover`]
 /// uses, so the list page's cover candidates are already album-distinct.
@@ -109,6 +115,7 @@ pub struct PlaylistSummary {
     pub name: String,
     pub count: usize,
     pub cover: Vec<TrackLocator>,
+    pub custom_cover: Option<PathBuf>,
 }
 
 /// The folder name a `(slug, id)` pair maps to: `<slug>-<id>`, or just the
@@ -156,6 +163,21 @@ fn write_playlist_file(dir: &Path, folder: &str, playlist: &Playlist) {
 fn read_manifest(dir: &Path) -> Option<Manifest> {
     let body = fs::read_to_string(dir.join("index.toml")).ok()?;
     toml::from_str(&body).ok()
+}
+
+/// Remove any `cover.<ext>` file sitting directly in `folder_dir`
+/// (best-effort; ignores I/O errors). Called before writing a fresh cover so
+/// a previous cover saved under a different extension is never orphaned.
+fn remove_existing_cover(folder_dir: &Path) {
+    let Ok(read) = fs::read_dir(folder_dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.is_file() && path.file_stem().and_then(|s| s.to_str()) == Some("cover") {
+            let _ = fs::remove_file(&path);
+        }
+    }
 }
 
 impl PlaylistStore {
@@ -362,9 +384,70 @@ impl PlaylistStore {
                     name: loaded.playlist.name.clone(),
                     count: loaded.playlist.entries.len(),
                     cover: manifest_cover(&loaded.playlist.entries),
+                    custom_cover: self.custom_cover_path(*id),
                 })
             })
             .collect()
+    }
+
+    /// Validate `src` (an accepted image extension, lowercased, and at most
+    /// [`CUSTOM_COVER_MAX_BYTES`]), then copy it into playlist `id`'s folder
+    /// as `cover.<ext>`, removing any prior `cover.*` first so a cover
+    /// replaced under a different extension doesn't orphan the old file.
+    /// Persists `custom_cover` on success. Returns `true` iff applied; never
+    /// panics (an invalid `src`, an unknown `id`, or an I/O failure just
+    /// yields `false`).
+    pub fn set_custom_cover(&mut self, id: PlaylistId, src: &Path) -> bool {
+        let Some(ext) = src
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+        else {
+            return false;
+        };
+        if !CUSTOM_COVER_EXTENSIONS.contains(&ext.as_str()) {
+            return false;
+        }
+        let Ok(metadata) = fs::metadata(src) else {
+            return false;
+        };
+        if !metadata.is_file() || metadata.len() > CUSTOM_COVER_MAX_BYTES {
+            return false;
+        }
+        let Some(loaded) = self.playlists.get(&id) else {
+            return false;
+        };
+        let folder_dir = playlist_store_path().join(&loaded.folder);
+        if fs::create_dir_all(&folder_dir).is_err() {
+            return false;
+        }
+        remove_existing_cover(&folder_dir);
+        let file_name = format!("cover.{ext}");
+        if fs::copy(src, folder_dir.join(&file_name)).is_err() {
+            return false;
+        }
+        self.mutate(id, |p| p.custom_cover = Some(file_name));
+        true
+    }
+
+    /// Delete playlist `id`'s cover file (best-effort) and clear
+    /// `custom_cover`. A no-op if `id` isn't loaded.
+    pub fn clear_custom_cover(&mut self, id: PlaylistId) {
+        if let Some(loaded) = self.playlists.get(&id) {
+            let folder_dir = playlist_store_path().join(&loaded.folder);
+            remove_existing_cover(&folder_dir);
+        }
+        self.mutate(id, |p| p.custom_cover = None);
+    }
+
+    /// The absolute path to playlist `id`'s current cover file, if
+    /// `custom_cover` is set AND that file still exists on disk (a
+    /// set-but-missing file, e.g. deleted out-of-band, resolves to `None`).
+    pub fn custom_cover_path(&self, id: PlaylistId) -> Option<PathBuf> {
+        let loaded = self.playlists.get(&id)?;
+        let name = loaded.playlist.custom_cover.as_ref()?;
+        let path = playlist_store_path().join(&loaded.folder).join(name);
+        path.is_file().then_some(path)
     }
 }
 
@@ -575,6 +658,88 @@ mod tests {
             .map(|e| e.snapshot.title.as_str())
             .collect();
         assert_eq!(titles, ["c", "a"]);
+    }
+
+    /// A temp directory unique to this call (process id + atomic counter),
+    /// so parallel tests in this binary never collide. Holds only the
+    /// *source* file a custom-cover test copies from; never the playlist
+    /// store itself.
+    fn temp_source_dir() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "soul_rune_playlist_cover_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Write `bytes` to `<fresh temp dir>/<name>` and return its path.
+    fn write_temp_file(name: &str, bytes: &[u8]) -> PathBuf {
+        let path = temp_source_dir().join(name);
+        fs::write(&path, bytes).unwrap();
+        path
+    }
+
+    /// Write a tiny but real PNG (just the 8-byte file signature; it never
+    /// needs to decode, only to exist as a `.png` file under the size cap)
+    /// to a fresh temp dir and return its path.
+    fn write_temp_png() -> PathBuf {
+        const PNG_SIGNATURE: [u8; 8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        write_temp_file("source.png", &PNG_SIGNATURE)
+    }
+
+    #[test]
+    fn set_custom_cover_copies_file_sets_field_and_persists() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let mut s = PlaylistStore::load();
+        let id = s.create("P");
+        let img = write_temp_png();
+        assert!(s.set_custom_cover(id, &img));
+
+        let p = PlaylistStore::load(); // fresh from disk
+        let cover = p.custom_cover_path(id).expect("cover path resolves");
+        assert!(
+            cover.exists()
+                && cover
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("cover.")
+        );
+        assert!(
+            p.list()
+                .iter()
+                .find(|s| s.id == id)
+                .unwrap()
+                .custom_cover
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn rejects_non_image_and_oversize() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let mut s = PlaylistStore::load();
+        let id = s.create("P");
+        assert!(!s.set_custom_cover(id, &write_temp_file("x.txt", b"nope")));
+        assert!(s.custom_cover_path(id).is_none());
+    }
+
+    #[test]
+    fn clear_removes_file_and_field() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let mut s = PlaylistStore::load();
+        let id = s.create("P");
+        s.set_custom_cover(id, &write_temp_png());
+        let path = s.custom_cover_path(id).unwrap();
+        s.clear_custom_cover(id);
+        assert!(!path.exists());
+        assert!(PlaylistStore::load().custom_cover_path(id).is_none());
     }
 
     #[test]
