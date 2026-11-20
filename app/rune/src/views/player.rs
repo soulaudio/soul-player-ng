@@ -195,6 +195,27 @@ impl ArtCache {
             .insert(path.to_path_buf(), image.clone());
         Some(image)
     }
+
+    /// Drop `path`'s memoized decode, if any, so the next [`Self::image_for_path`]
+    /// re-reads the file from disk instead of serving a stale cached image.
+    /// A playlist's custom cover always lives at the same `cover.<ext>` path
+    /// (`PlaylistStore::set_custom_cover` overwrites it in place), so without
+    /// this, replacing a cover with a different image of the same extension
+    /// would keep showing the old one until restart.
+    pub fn forget_path(&self, path: &Path) {
+        self.path_images.borrow_mut().remove(path);
+    }
+
+    /// Test-only: `path`'s currently memoized decode's content-addressed
+    /// [`rune::ImageId`] (`rune::Image::id`), if any. Lets a test assert
+    /// [`Self::forget_path`] actually ran at a call site by checking that a
+    /// re-read picks up a *different* id (new file bytes hash differently),
+    /// rather than comparing decoded pixels, which the tiny fixture images
+    /// tests use never produce (they're deliberately too small to decode).
+    #[cfg(test)]
+    pub(crate) fn path_image_id(&self, path: &Path) -> Option<rune::ImageId> {
+        self.path_images.borrow().get(path).map(Image::id)
+    }
 }
 
 /// Guess a cover image's MIME type from its file extension (lower-cased).
