@@ -8244,10 +8244,10 @@ mod tests {
     /// '- - -'" fix.
     #[test]
     fn freshly_connected_remote_shows_connecting_not_dash_placeholders() {
-        // Defends against the pre-existing global-locale test race (another
-        // test leaving rust_i18n on a non-English locale): this asserts the
-        // exact English string.
-        rust_i18n::set_locale("en");
+        // Holds the locale lock (see `use_test_locale`): this asserts the exact
+        // English "Connecting…" string, so it must not interleave with a test
+        // that flips the process-global locale (the i18n test race).
+        let _locale = config::use_test_locale("en");
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -8295,9 +8295,10 @@ mod tests {
     /// latency/version reading up as if nothing were happening.
     #[test]
     fn live_remote_mid_reconnect_shows_syncing_not_its_health_line() {
-        // See the matching note in `freshly_connected_remote_shows_connecting_
-        // not_dash_placeholders`: defends against the global-locale test race.
-        rust_i18n::set_locale("en");
+        // Holds the locale lock (see `use_test_locale`): asserts the exact
+        // English "Syncing…" string — same race guard as the matching note in
+        // `freshly_connected_remote_shows_connecting_not_dash_placeholders`.
+        let _locale = config::use_test_locale("en");
         let env = Env {
             system_dark: true,
             scale: 2.0,
