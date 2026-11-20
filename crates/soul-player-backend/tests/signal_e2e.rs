@@ -513,17 +513,19 @@ fn centre_folds_equally(file: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// END-TO-END channel-ORDER check for the lossy surround formats. Vorbis and Opus fix a
-/// channel order that puts the centre SECOND (`FL C FR …`), which a plain channel mask can't
-/// express; the deck folds them via an ordered layout. These committed 5.1 fixtures (centre-
-/// only tone) drive the full `ServicePlayer` and prove the centre reaches BOTH stereo sides.
-/// Opus is also covered in core's conformance suite, but Vorbis decodes only through the
-/// desktop `open_track`/`OwnedDecoder` path exercised here.
+/// END-TO-END channel-ORDER check for the surround formats whose order is NOT
+/// WAVEFORMATEXTENSIBLE. Vorbis and Opus put the centre SECOND (`FL C FR …`); AAC/ALAC put it
+/// FIRST (`C L R …`) — neither expressible as a plain channel mask, so the deck folds them via
+/// an ordered layout. These committed 5.1 fixtures (centre-only tone) drive the full
+/// `ServicePlayer` and prove the centre reaches BOTH stereo sides. Opus and ALAC are also in
+/// core's conformance suite, but Vorbis and multichannel ALAC decode through the desktop
+/// `open_track`/`OwnedDecoder` path exercised only here.
 #[test]
 fn surround_centre_folds_equally_through_the_player() {
     let run = || -> Result<(), String> {
         centre_folds_equally("tone-fc-5.1.ogg")?; // Vorbis (centre second)
         centre_folds_equally("tone-fc-5.1.opus")?; // Opus multistream (family-1 order)
+        centre_folds_equally("tone-fc-5.1.m4a")?; // ALAC (Apple Lossless, centre first)
         Ok(())
     };
     let res = std::thread::scope(|s| {
