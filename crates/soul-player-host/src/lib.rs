@@ -55,9 +55,9 @@ pub use soul_audio_playlist::{
     slugify,
 };
 pub use soul_player_backend::{
-    BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
-    SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath, SourceCodec, SourceFormat,
-    Tick, TrackLoudness, TrackView,
+    BrowseAxis, Command, Cover, Event, LoudnessAnalysisMode, PlayState, QueueState, RepeatMode,
+    ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath,
+    SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -546,6 +546,11 @@ struct Inner {
     /// also applies to the LIVE actor immediately (see
     /// [`set_replay_gain`](PlayerHandle::set_replay_gain)).
     replay_gain: Mutex<(ReplayGainMode, f32)>,
+    /// How the background loudness sweep runs (Off / Throttled / Full). Remembered so a
+    /// freshly-spawned actor is told the current mode (via `SetLoudnessAnalysisMode`) the
+    /// moment it starts, and a change applies to the live actor immediately. See
+    /// [`set_loudness_analysis_mode`](PlayerHandle::set_loudness_analysis_mode).
+    loudness_mode: Mutex<LoudnessAnalysisMode>,
     /// The app's persisted loudness cache (`(path, computed track_gain_db)`),
     /// supplied once at startup by [`seed_loudness`](PlayerHandle::seed_loudness).
     /// Banked so a lazily- (or re-) spawned actor is re-seeded on spawn — the
@@ -645,6 +650,7 @@ impl PlayerHandle {
                 output_config: Arc::new(Mutex::new(OutputConfig::default())),
                 exclusive_status: Arc::new(Mutex::new(ExclusiveStatus::Shared)),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
+                loudness_mode: Mutex::new(LoudnessAnalysisMode::default()),
                 loudness_seed: Mutex::new(Vec::new()),
                 loudness_map: Mutex::new(HashMap::new()),
                 recorder: Mutex::new(None),
@@ -1041,6 +1047,16 @@ impl PlayerHandle {
             .expect("indexing_mode mutex")
     }
 
+    /// The current background [`LoudnessAnalysisMode`] (for seeding the Settings UI / tests).
+    #[must_use]
+    pub fn loudness_analysis_mode(&self) -> LoudnessAnalysisMode {
+        *self
+            .inner
+            .loudness_mode
+            .lock()
+            .expect("loudness_mode mutex")
+    }
+
     /// Reconcile the configured-source set to exactly `roots` (deduped, preserving
     /// order), then [`rescan`](Self::rescan). The **enabled flag** of any path
     /// already configured is **preserved**; a newly-introduced path defaults to
@@ -1373,6 +1389,21 @@ impl PlayerHandle {
         // would open a device stream before the user has played anything).
         if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
             actor.send(Command::SetReplayGain { mode, preamp_db });
+        }
+    }
+
+    /// Set how the background loudness sweep runs (Off / Throttled / Full). Remembered so a
+    /// freshly-spawned actor is told the current mode on spawn (see
+    /// [`ensure_actor`](Self::ensure_actor)), and applied to a LIVE actor right away. Safe to
+    /// call before any folder is opened — it just records the choice (no actor is spawned).
+    pub fn set_loudness_analysis_mode(&self, mode: LoudnessAnalysisMode) {
+        *self
+            .inner
+            .loudness_mode
+            .lock()
+            .expect("loudness_mode mutex") = mode;
+        if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
+            actor.send(Command::SetLoudnessAnalysisMode(mode));
         }
     }
 
@@ -2055,6 +2086,11 @@ impl PlayerHandle {
             .lock()
             .expect("loudness seed mutex")
             .clone();
+        let loudness_mode = *self
+            .inner
+            .loudness_mode
+            .lock()
+            .expect("loudness_mode mutex");
         let actor = sink::build_actor(
             self.inner.mode,
             output_config,
@@ -2068,6 +2104,9 @@ impl PlayerHandle {
             mode: rg_mode,
             preamp_db: rg_preamp,
         });
+        // Tell the fresh actor the current sweep mode BEFORE any AnalyzeTracks below, so an
+        // Off mode suppresses the sweep from its first tick.
+        actor.send(Command::SetLoudnessAnalysisMode(loudness_mode));
         if !loudness_seed.is_empty() {
             actor.send(Command::SeedLoudness(loudness_seed));
         }
@@ -2077,7 +2116,7 @@ impl PlayerHandle {
         // device, so we never force-spawn it just to analyze; analysis rides an actor the
         // user brought up by playing, plus any later rescan.)
         let jobs = self.analysis_jobs();
-        if !jobs.is_empty() {
+        if loudness_mode.sweeps() && !jobs.is_empty() {
             actor.send(Command::AnalyzeTracks(jobs));
         }
         *guard = Some(actor);
@@ -2097,9 +2136,19 @@ impl PlayerHandle {
     }
 
     /// Enqueue the whole current library for background loudness analysis, iff an actor (and
-    /// thus the worker) is already running. A no-op otherwise — analysis starts when the user
-    /// next brings the actor up (see [`ensure_actor`](Self::ensure_actor)). Idempotent.
+    /// thus the worker) is already running AND the analysis mode is not Off. A no-op otherwise
+    /// — analysis starts when the user next brings the actor up (see
+    /// [`ensure_actor`](Self::ensure_actor)). Idempotent.
     fn start_library_analysis(&self) {
+        if !self
+            .inner
+            .loudness_mode
+            .lock()
+            .expect("loudness_mode mutex")
+            .sweeps()
+        {
+            return;
+        }
         let jobs = self.analysis_jobs();
         if jobs.is_empty() {
             return;
@@ -2214,6 +2263,27 @@ mod tests {
         assert_eq!(
             *h.inner.replay_gain.lock().unwrap(),
             (ReplayGainMode::Track, 6.0)
+        );
+    }
+
+    #[test]
+    fn set_loudness_analysis_mode_is_remembered_without_spawning() {
+        // Recording the mode must not spawn an actor (no device stream before playback).
+        let h = PlayerHandle::offline();
+        assert_eq!(
+            *h.inner.loudness_mode.lock().unwrap(),
+            LoudnessAnalysisMode::Throttled,
+            "defaults to the playback-yielding Throttled"
+        );
+        h.set_loudness_analysis_mode(LoudnessAnalysisMode::Off);
+        assert_eq!(
+            *h.inner.loudness_mode.lock().unwrap(),
+            LoudnessAnalysisMode::Off,
+            "the mode is remembered"
+        );
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "no actor is spawned just to set the mode"
         );
     }
 

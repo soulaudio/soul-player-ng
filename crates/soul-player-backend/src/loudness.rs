@@ -23,9 +23,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use crate::types::TrackLoudness;
 use soul_audio_core::Decoder;
@@ -61,6 +63,20 @@ struct CacheInner {
 pub struct LoudnessCache {
     inner: Arc<Mutex<CacheInner>>,
     jobs: Sender<Job>,
+    /// Playback-yield gate: while `true` the worker parks between decode chunks, so a
+    /// background sweep never competes with active playback (the dropout guard). Set by the
+    /// pump from the deck state + the analysis mode (see `LoudnessAnalysisMode::should_pause`).
+    paused: Arc<AtomicBool>,
+    /// Set on drop so a parked worker stops waiting and lets the join complete (the jobs
+    /// channel closing alone would not wake a worker parked mid-decode).
+    shutdown: Arc<AtomicBool>,
+}
+
+impl Drop for LoudnessCache {
+    fn drop(&mut self) {
+        // Release any parked worker so `analyzer.join()` can complete promptly.
+        self.shutdown.store(true, Ordering::Relaxed);
+    }
 }
 
 impl LoudnessCache {
@@ -74,20 +90,46 @@ impl LoudnessCache {
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
         let inner = Arc::new(Mutex::new(CacheInner::default()));
         let worker_inner = Arc::clone(&inner);
+        let paused = Arc::new(AtomicBool::new(false));
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let (worker_paused, worker_shutdown) = (Arc::clone(&paused), Arc::clone(&shutdown));
         // Same 64 MiB rationale as the pump/loader: the worker builds an
         // `OwnedDecoder` (the big `AnyDecoder`) and decodes the whole track.
         let worker = thread::Builder::new()
             .name("loudness-analyzer".into())
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || analysis_worker(&jobs_rx, &worker_inner, &results))
+            .spawn(move || {
+                analysis_worker(
+                    &jobs_rx,
+                    &worker_inner,
+                    &results,
+                    &worker_paused,
+                    &worker_shutdown,
+                )
+            })
             .expect("spawn loudness worker thread");
         (
             LoudnessCache {
                 inner,
                 jobs: jobs_tx,
+                paused,
+                shutdown,
             },
             worker,
         )
+    }
+
+    /// Pause (`true`) or resume (`false`) the background sweep worker: while paused it parks
+    /// between decode chunks and before each job, yielding CPU/disk to active playback. The
+    /// pump drives this from the deck state + the analysis mode. Idempotent.
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// Whether the sweep worker is currently gated off for playback-yield.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Relaxed)
     }
 
     /// The usable computed gain for `path`, if one is cached (`None` for either
@@ -157,9 +199,11 @@ fn analysis_worker(
     jobs: &Receiver<Job>,
     inner: &Arc<Mutex<CacheInner>>,
     results: &Sender<(PathBuf, TrackLoudness)>,
+    paused: &Arc<AtomicBool>,
+    shutdown: &Arc<AtomicBool>,
 ) {
     for (_id, path) in jobs {
-        let outcome = analyze_track(&path);
+        let outcome = analyze_track(&path, paused, shutdown);
         {
             let mut g = inner.lock().expect("loudness cache mutex");
             g.inflight.remove(&path);
@@ -172,6 +216,15 @@ fn analysis_worker(
                 break;
             }
         }
+    }
+}
+
+/// Block while the sweep is `paused`, polling every 100 ms, unless `shutdown` is set (so a
+/// shutting-down worker is never left parked and `analyzer.join()` returns promptly). A
+/// no-op when not paused.
+fn park_while_paused(paused: &AtomicBool, shutdown: &AtomicBool) {
+    while paused.load(Ordering::Relaxed) && !shutdown.load(Ordering::Relaxed) {
+        thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -188,7 +241,11 @@ fn analysis_worker(
 /// analyze it via that PCM form. The `is_dsd()` guard is a safety net for any
 /// decoder that would instead report a raw 1-bit stream, where the `24 - bits`
 /// canonical shift would be meaningless.
-fn analyze_track(path: &Path) -> Option<TrackLoudness> {
+fn analyze_track(
+    path: &Path,
+    paused: &Arc<AtomicBool>,
+    shutdown: &Arc<AtomicBool>,
+) -> Option<TrackLoudness> {
     let mut d = open_track(path).ok()?;
     let si = d.stream_info();
     if si.format.is_dsd() || si.channels == 0 || si.channels > 2 {
@@ -202,6 +259,13 @@ fn analyze_track(path: &Path) -> Option<TrackLoudness> {
     let mut buf = vec![0i32; 8192 * ch];
     let mut canon = vec![0i32; 8192 * ch];
     loop {
+        // Playback-yield: park (burning no CPU/disk) while the sweep is paused, so a
+        // full-library analysis never competes with active playback. Bail if shutting
+        // down so `analyzer.join()` does not block on a parked worker.
+        park_while_paused(paused, shutdown);
+        if shutdown.load(Ordering::Relaxed) {
+            return None;
+        }
         let n = d.decode_into(&mut buf).ok()?;
         if n == 0 {
             break;
@@ -235,6 +299,8 @@ mod tests {
         let cache = LoudnessCache {
             inner: Arc::new(Mutex::new(CacheInner::default())),
             jobs: jobs_tx,
+            paused: Arc::new(AtomicBool::new(false)),
+            shutdown: Arc::new(AtomicBool::new(false)),
         };
         (cache, jobs_rx)
     }
@@ -330,6 +396,29 @@ mod tests {
         assert!(rx.try_recv().is_err(), "seeding queues no jobs");
     }
 
+    #[test]
+    fn set_paused_toggles_the_playback_yield_gate() {
+        let (cache, _rx) = headless();
+        assert!(!cache.is_paused(), "a fresh cache is not paused");
+        cache.set_paused(true);
+        assert!(cache.is_paused(), "paused after set_paused(true)");
+        cache.set_paused(false);
+        assert!(!cache.is_paused(), "resumed after set_paused(false)");
+    }
+
+    /// The park must not block when there is nothing to wait for, and must release the
+    /// moment shutdown is set even while paused — otherwise `analyzer.join()` would hang on
+    /// a parked worker. (Both paths return promptly; the test completing proves they do.)
+    #[test]
+    fn park_returns_when_idle_or_shutting_down() {
+        let paused = AtomicBool::new(false);
+        let shutdown = AtomicBool::new(false);
+        park_while_paused(&paused, &shutdown); // not paused → immediate
+        paused.store(true, Ordering::Relaxed);
+        shutdown.store(true, Ordering::Relaxed);
+        park_while_paused(&paused, &shutdown); // paused but shutting down → immediate
+    }
+
     /// Analyzing a short committed real fixture yields a finite gain without
     /// panicking. The exact LUFS of a test tone isn't the point — that it decodes,
     /// canonicalizes, feeds the analyzer and produces a sane number is. Runs on a
@@ -342,7 +431,12 @@ mod tests {
         assert!(path.is_file(), "committed fixture {path:?} missing");
         let m = thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || analyze_track(&path))
+            .spawn(move || {
+                // Not paused, not shutting down: a plain full analysis.
+                let paused = Arc::new(AtomicBool::new(false));
+                let shutdown = Arc::new(AtomicBool::new(false));
+                analyze_track(&path, &paused, &shutdown)
+            })
             .expect("spawn big-stack thread")
             .join()
             .expect("analysis thread panicked");
@@ -373,7 +467,11 @@ mod tests {
         assert!(path.is_file(), "committed DSD fixture {path:?} missing");
         let out = thread::Builder::new()
             .stack_size(64 * 1024 * 1024)
-            .spawn(move || analyze_track(&path))
+            .spawn(move || {
+                let paused = Arc::new(AtomicBool::new(false));
+                let shutdown = Arc::new(AtomicBool::new(false));
+                analyze_track(&path, &paused, &shutdown)
+            })
             .expect("spawn big-stack thread")
             .join()
             .expect("analysis thread panicked");
