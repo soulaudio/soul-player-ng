@@ -199,6 +199,8 @@ pub fn project_tick<K: Sink, D: SeekableDecoder>(
         repeat: player.repeat().into(),
         volume,
         muted,
+        // Pure projection has no loudness cache; the pump overrides this from `pending()`.
+        analysis_pending: 0,
     }
 }
 
