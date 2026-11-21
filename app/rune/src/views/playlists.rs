@@ -1,7 +1,7 @@
 //! Playlists browse: every user-created playlist, as a scrolled list of rows
 //! (cover thumbnail, name, track count) plus an inline "New playlist" field.
-//! Mirrors the Genres list (`genres::genres_page`/`genre_row`) for structure,
-//! and `artists::album_row` for the cover-thumbnail-plus-text row shape.
+//! Mirrors `artists::album_row` for the cover-thumbnail-plus-text row shape
+//! (Genres is now a card-tile grid, not a row list, see `genres::genre_tile`).
 #![forbid(unsafe_code)]
 
 use std::path::Path;
