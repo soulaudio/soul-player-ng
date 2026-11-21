@@ -218,11 +218,14 @@ fn track_row(
             .color(p.text_secondary)
             .w(56.0),
     );
-    // Audiophile loudness columns (Integrated LUFS + the color-banded DR) appear only on a
-    // WIDE pane, so they never crowd out artist/album on a medium window. Each shows "·"
-    // until the background sweep analyzes the track.
+    // Audiophile loudness columns, mirroring the duration column (right-aligned, fixed
+    // width). DR is the headline indicator (narrow, color-banded) and shows at every
+    // width; Integrated LUFS is secondary and only joins on a WIDE pane, where there is
+    // room for it beside artist/album without crowding them. Each shows "·" until the
+    // background sweep analyzes the track.
+    r = r.child(dr_cell(t, p));
     if width == RowWidth::Wide {
-        r = r.child(lufs_cell(t, p)).child(dr_cell(t, p));
+        r = r.child(lufs_cell(t, p));
     }
     r
         // Add-to-queue (`+`): appends the track to the override queue, which

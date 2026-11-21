@@ -11350,12 +11350,12 @@ mod tests {
         }
     }
 
-    /// The loudness (Integrated LUFS) and DR columns are a wide-pane affordance: they
-    /// render on a wide window and drop on a narrow one so they never crowd out the
-    /// artist/album columns. This guards the overflow regression that first appeared
-    /// when the columns were added unconditionally to every non-compact row.
+    /// DR is the headline loudness indicator and renders at every width; Integrated LUFS
+    /// is secondary and joins only on a wide pane (where there is room beside artist/album).
+    /// This matches the design and guards the overflow regression that first appeared when
+    /// BOTH columns were added to every non-compact row.
     #[test]
-    fn loudness_columns_show_only_on_a_wide_pane() {
+    fn dr_shows_everywhere_but_lufs_only_on_a_wide_pane() {
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -11369,30 +11369,40 @@ mod tests {
         let tid = s.library.first().map(|t| t.id).expect("a scanned track");
 
         // Wide window: the second frame reads the first's committed pane width, so the
-        // wide tier is in play and the LUFS + DR cells render for the first row.
+        // wide tier is in play and the DR + LUFS cells both render for the first row.
         let mut wide = Runtime::new(s, view, (1400.0, 720.0), env);
         wide.frame(0.0);
         wide.frame(0.0);
         assert!(
-            wide.find(&format!("lufs-{tid}")).is_some(),
-            "the LUFS column shows on a wide pane"
-        );
-        assert!(
             wide.find(&format!("dr-{tid}")).is_some(),
             "the DR column shows on a wide pane"
         );
+        assert!(
+            wide.find(&format!("lufs-{tid}")).is_some(),
+            "the LUFS column shows on a wide pane"
+        );
 
-        // Narrow window: both loudness columns drop so artist/album keep their room.
-        let mut narrow = Runtime::new(populated(), view, (560.0, 720.0), env);
+        // Narrow but still a desktop window (>= the 640 mobile breakpoint, so the library
+        // renders rather than the mobile menu): the ~440pt pane is the compact tier, where
+        // DR still shows (the headline) but LUFS drops so the folded title/artist keep their
+        // room. A fresh scan, so read its own first id (scan-assigned ids need not match the
+        // wide state's).
+        let narrow_state = populated();
+        let narrow_tid = narrow_state
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("a scanned track");
+        let mut narrow = Runtime::new(narrow_state, view, (760.0, 720.0), env);
         narrow.frame(0.0);
         narrow.frame(0.0);
         assert!(
-            narrow.find(&format!("lufs-{tid}")).is_none(),
-            "the LUFS column is hidden on a narrow pane"
+            narrow.find(&format!("dr-{narrow_tid}")).is_some(),
+            "the DR column still shows on a narrow pane"
         );
         assert!(
-            narrow.find(&format!("dr-{tid}")).is_none(),
-            "the DR column is hidden on a narrow pane"
+            narrow.find(&format!("lufs-{narrow_tid}")).is_none(),
+            "the LUFS column is hidden on a narrow pane"
         );
     }
 
