@@ -328,6 +328,7 @@ mod tests {
             original_date: 0,
             release_date: 0,
             loudness: None,
+            format: None,
         }
     }
 
