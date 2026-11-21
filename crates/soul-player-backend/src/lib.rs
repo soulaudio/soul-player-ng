@@ -35,6 +35,6 @@ pub use soul_audio_catalog::BrowseAxis;
 pub use soul_audio_import::{SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress};
 pub use soul_audio_loudness::LoudnessMetrics;
 pub use types::{
-    Command, Event, PlayState, QueueState, RepeatMode, ReplayGainMode, SignalPath, SourceCodec,
-    SourceFormat, Tick, TrackLoudness, TrackView,
+    Command, Event, LoudnessAnalysisMode, PlayState, QueueState, RepeatMode, ReplayGainMode,
+    SignalPath, SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
 };

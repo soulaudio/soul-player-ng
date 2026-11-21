@@ -23,9 +23,9 @@ use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Titlebar, Tx, Waker, col, el, ro
 use parley_engine as _;
 use soul_player_host::{
     Band, BandKind, BrowseAxis, Command, DspUnit, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
-    IndexingMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN, RepeatMode, ReplayGainMode,
-    SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat, SourceKind, SourceStatus,
-    TrackLoudness, TrackView, WatchUpdate, default_bands,
+    IndexingMode, LoudnessAnalysisMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN,
+    RepeatMode, ReplayGainMode, SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat,
+    SourceKind, SourceStatus, TrackLoudness, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
     remote::{KeyringStore, TokenStore},
 };
@@ -456,6 +456,10 @@ struct State {
     /// The library indexing-speed mode (persisted), rendered by Settings → Sources.
     /// Drives how much parallelism the scanner uses; `Automatic` follows CPU load.
     indexing_mode: IndexingMode,
+    /// How the background loudness sweep runs (persisted): Off / Throttled / Full. Drives the
+    /// scan-time Tier-2 analysis that fills the library loudness/DR column; Throttled yields
+    /// to active playback so it never causes dropouts.
+    loudness_mode: LoudnessAnalysisMode,
     /// Live progress of a running library scan (from the host's `on_scan_progress`),
     /// rendered as the title-bar activity widget. `None` when no scan is in flight;
     /// set per tick while an off-UI-thread scan runs and cleared on the completing
@@ -758,6 +762,7 @@ impl State {
             scan_progress: None,
             scan_anim: 0.0,
             indexing_mode: IndexingMode::from_config(&config::load_indexing_mode()),
+            loudness_mode: LoudnessAnalysisMode::from_config(&config::load_loudness_analysis()),
             // Restore the persisted device choice (None = system default); the
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
@@ -988,6 +993,14 @@ pub(crate) fn set_indexing_mode(s: &mut State, mode: IndexingMode) {
     s.indexing_mode = mode;
     s.host.set_indexing_mode(mode);
     config::save_indexing_mode(mode.as_config());
+}
+
+/// Set + persist the background loudness-analysis mode and apply it to the host (Off stops
+/// the sweep; Throttled yields to playback; Full runs flat-out). Used by the Settings control.
+pub(crate) fn set_loudness_analysis_mode(s: &mut State, mode: LoudnessAnalysisMode) {
+    s.loudness_mode = mode;
+    s.host.set_loudness_analysis_mode(mode);
+    config::save_loudness_analysis(mode.as_config());
 }
 
 /// Switch the active Settings category (ephemeral — not persisted). Used by the
@@ -3488,6 +3501,11 @@ fn main() -> anyhow::Result<()> {
     // Restore the indexing-speed choice BEFORE the startup scan so it uses the
     // user's mode (default Automatic → adapts to CPU load).
     host.set_indexing_mode(IndexingMode::from_config(&config::load_indexing_mode()));
+    // Restore the background-loudness-analysis mode too, so the startup scan's Tier-2 sweep
+    // honours it (Off = no sweep) from the first spawned actor.
+    host.set_loudness_analysis_mode(LoudnessAnalysisMode::from_config(
+        &config::load_loudness_analysis(),
+    ));
     // The dev/e2e harness loads a single folder from the env; otherwise restore
     // the persisted watched-folder set so Sources survive a restart.
     //
@@ -5574,6 +5592,56 @@ mod tests {
                 && rt.find("indexing-max").is_some()
                 && rt.find("indexing-gentle").is_some(),
             "all three indexing-mode buttons render"
+        );
+    }
+
+    #[test]
+    fn set_loudness_analysis_mode_updates_state_host_and_persists() {
+        let _g = config::use_test_config_dir();
+        let mut s = populated_state();
+        set_loudness_analysis_mode(&mut s, LoudnessAnalysisMode::Off);
+        assert_eq!(
+            s.loudness_mode,
+            LoudnessAnalysisMode::Off,
+            "State reflects it"
+        );
+        assert_eq!(
+            s.host.loudness_analysis_mode(),
+            LoudnessAnalysisMode::Off,
+            "applied to the host (gates the sweep + worker pause)"
+        );
+        assert_eq!(config::load_loudness_analysis(), "off", "persisted");
+    }
+
+    /// The Sources page shows all three background-loudness-analysis buttons, and clicking
+    /// one applies the mode through to the state.
+    #[test]
+    fn loudness_analysis_section_renders_and_sets_the_mode() {
+        let _g = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::MusicData;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.find("loudness-off").is_some()
+                && rt.find("loudness-throttled").is_some()
+                && rt.find("loudness-full").is_some(),
+            "all three loudness-analysis buttons render"
+        );
+        click_key(&mut rt, "loudness-off");
+        assert_eq!(
+            rt.state.loudness_mode,
+            LoudnessAnalysisMode::Off,
+            "clicking Off applies the mode"
         );
     }
 

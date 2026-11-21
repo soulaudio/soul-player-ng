@@ -118,6 +118,9 @@ pub fn apply_command<K: Sink, D: SeekableDecoder>(
         Command::SeedLoudness(_) => Ok(()),
         // The background loudness sweep enqueues on the pump's cache; intercepted there.
         Command::AnalyzeTracks(_) => Ok(()),
+        // The analysis mode is pump state (gates the sweep + the worker pause); the pump
+        // records it before this call. No transport action.
+        Command::SetLoudnessAnalysisMode(_) => Ok(()),
     }
 }
 

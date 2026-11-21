@@ -39,12 +39,13 @@ use crate::{
     organize_dismiss, organize_ready, reconnect_remote_now, remove_dsp_unit, remove_eq_band,
     reorder_dsp_units, scan_in_background, set_album_year, set_dsp_unit_enabled,
     set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict, set_indexing_mode,
-    set_locale_pref, set_managed_dest, set_managed_strategy, set_managed_template, set_nav_visible,
-    set_output_device, set_replaygain_mode, set_replaygain_preamp, set_settings_tab,
-    set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
-    toggle_eq_bands_expanded, toggle_remote_enabled, unit_bands, unit_enabled, unit_preamp,
+    set_locale_pref, set_loudness_analysis_mode, set_managed_dest, set_managed_strategy,
+    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
+    set_replaygain_preamp, set_settings_tab, set_theme_pref, start_dsp_rename,
+    start_profile_rename, switch_profile, toggle_dsp_expanded, toggle_eq_bands_expanded,
+    toggle_remote_enabled, unit_bands, unit_enabled, unit_preamp,
 };
-use soul_player_host::IndexingMode;
+use soul_player_host::{IndexingMode, LoudnessAnalysisMode};
 
 /// Preamp slider bounds, in dB (a conventional ReplayGain preamp range).
 const RG_PREAMP_MIN: f32 = -15.0;
@@ -1462,6 +1463,73 @@ fn indexing_section(s: &State, p: &Palette) -> El {
         )
 }
 
+/// One background-loudness-analysis choice; mirrors [`indexing_mode_button`]. Selecting it
+/// applies + persists via [`set_loudness_analysis_mode`].
+fn loudness_mode_button(
+    label: String,
+    key: &str,
+    mode: LoudnessAnalysisMode,
+    active: bool,
+    p: &Palette,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if active { p.primary } else { p.muted })
+        .child(text(label).color(if active { p.bg } else { p.fg }))
+        .on_press(move |s: &mut State| set_loudness_analysis_mode(s, mode))
+}
+
+/// The "Background loudness analysis" control: a heading whose description is the selected
+/// mode's plain-language explanation, plus the three mode buttons. Governs the scan-time
+/// Tier-2 sweep that fills the library loudness/DR column. Throttled yields to active
+/// playback so the sweep never causes dropouts; Off is zero background CPU.
+fn loudness_analysis_section(s: &State, p: &Palette) -> El {
+    let mode = s.loudness_mode;
+    let desc = match mode {
+        LoudnessAnalysisMode::Off => t!("settings.loudnessOffDesc"),
+        LoudnessAnalysisMode::Throttled => t!("settings.loudnessThrottledDesc"),
+        LoudnessAnalysisMode::Full => t!("settings.loudnessFullDesc"),
+    };
+    col()
+        .gap(space::SM)
+        .child(heading(
+            t!("settings.loudnessAnalysis").to_string(),
+            desc.to_string(),
+            p,
+        ))
+        .child(
+            row()
+                .gap(space::XS)
+                .flex_wrap()
+                .child(loudness_mode_button(
+                    t!("settings.loudnessModeOff").to_string(),
+                    "loudness-off",
+                    LoudnessAnalysisMode::Off,
+                    mode == LoudnessAnalysisMode::Off,
+                    p,
+                ))
+                .child(loudness_mode_button(
+                    t!("settings.loudnessModeThrottled").to_string(),
+                    "loudness-throttled",
+                    LoudnessAnalysisMode::Throttled,
+                    mode == LoudnessAnalysisMode::Throttled,
+                    p,
+                ))
+                .child(loudness_mode_button(
+                    t!("settings.loudnessModeFull").to_string(),
+                    "loudness-full",
+                    LoudnessAnalysisMode::Full,
+                    mode == LoudnessAnalysisMode::Full,
+                    p,
+                )),
+        )
+}
+
 // ── Cards (one per settings group) ───────────────────────────────────────────
 
 /// Appearance: a System / Light / Dark theme override.
@@ -1650,6 +1718,8 @@ fn music_data_card(s: &State, p: &Palette) -> El {
     }
     // How hard the scanner may work when indexing these sources.
     c.child(indexing_section(s, p))
+        // How the scan-time loudness/DR sweep runs (Off / Throttled / Full).
+        .child(loudness_analysis_section(s, p))
 }
 
 // ── Managed Library (the write-path organizer: configure half) ───────────────

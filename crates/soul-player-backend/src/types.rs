@@ -130,6 +130,64 @@ pub enum Command {
     /// `(track_id, path)`; the pump's single-flight cache skips already-analyzed or
     /// in-flight paths, so mass-enqueuing a whole library is idempotent.
     AnalyzeTracks(Vec<(u32, PathBuf)>),
+    /// Set how the background loudness sweep runs (Off / Throttled / Full). Off stops the
+    /// pump enqueuing new sweep work; Throttled pauses the worker while a track plays (the
+    /// dropout guard); Full runs it flat-out. The playing track's lazy on-demand analysis is
+    /// unaffected.
+    SetLoudnessAnalysisMode(LoudnessAnalysisMode),
+}
+
+/// How aggressively the background loudness sweep (the scan-time Tier-2 analysis that fills
+/// the library loudness/DR column) runs, chosen in Settings. Mirrors Roon's "Background
+/// analysis speed": the forum lesson is that the sweep must yield to active playback so it
+/// can never cause audio dropouts, and that a real "Off" matters to the bit-perfect crowd.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum LoudnessAnalysisMode {
+    /// No background sweep at all — zero background CPU while listening. Lazy-on-play
+    /// analysis still fills the currently playing track (and its column).
+    Off,
+    /// Low-priority sweep that YIELDS to active playback (the worker pauses while a track
+    /// plays) so it can never cause dropouts. The default.
+    #[default]
+    Throttled,
+    /// Run the sweep flat-out, without yielding to playback, to finish as fast as possible.
+    Full,
+}
+
+impl LoudnessAnalysisMode {
+    /// Whether the background sweep should enqueue new work at all (false only for `Off`).
+    #[must_use]
+    pub fn sweeps(self) -> bool {
+        !matches!(self, Self::Off)
+    }
+
+    /// Whether the sweep worker should PAUSE right now, given whether a track is playing:
+    /// only `Throttled` yields to playback; `Full` runs regardless; `Off` never sweeps.
+    #[must_use]
+    pub fn should_pause(self, playing: bool) -> bool {
+        matches!(self, Self::Throttled) && playing
+    }
+
+    /// The persisted config token for this mode.
+    #[must_use]
+    pub fn as_config(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Throttled => "throttled",
+            Self::Full => "full",
+        }
+    }
+
+    /// Parse a persisted token back to a mode, defaulting to the playback-yielding
+    /// [`Throttled`](Self::Throttled) for anything unknown or missing.
+    #[must_use]
+    pub fn from_config(s: &str) -> Self {
+        match s {
+            "off" => Self::Off,
+            "full" => Self::Full,
+            _ => Self::Throttled,
+        }
+    }
 }
 
 /// How ReplayGain tags are applied during playback, chosen in Settings →
@@ -405,6 +463,33 @@ mod tests {
         for m in [RepeatMode::Off, RepeatMode::All, RepeatMode::One] {
             assert_eq!(RepeatMode::from(Repeat::from(m)), m);
         }
+    }
+
+    #[test]
+    fn loudness_analysis_mode_gates_sweep_and_playback_yield() {
+        use LoudnessAnalysisMode::{Full, Off, Throttled};
+        // Off never sweeps; Throttled and Full both do.
+        assert!(!Off.sweeps(), "Off runs no background sweep");
+        assert!(Throttled.sweeps());
+        assert!(Full.sweeps());
+        // Only Throttled yields to active playback.
+        assert!(
+            Throttled.should_pause(true),
+            "Throttled pauses while playing"
+        );
+        assert!(!Throttled.should_pause(false), "Throttled runs when idle");
+        assert!(
+            !Full.should_pause(true),
+            "Full runs flat-out, even while playing"
+        );
+        assert!(!Off.should_pause(true), "Off has nothing to pause");
+        // Default is the playback-yielding Throttled.
+        assert_eq!(LoudnessAnalysisMode::default(), Throttled);
+        // Config token roundtrips; an unknown/missing token falls back to Throttled.
+        for m in [Off, Throttled, Full] {
+            assert_eq!(LoudnessAnalysisMode::from_config(m.as_config()), m);
+        }
+        assert_eq!(LoudnessAnalysisMode::from_config("bogus"), Throttled);
     }
 
     #[test]
