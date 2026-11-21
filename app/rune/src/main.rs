@@ -2991,6 +2991,22 @@ fn scene_settings_about(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::About;
 }
+/// Settings → Appearance (the tab the sweep audits for theme + nav toggles).
+fn scene_settings_appearance(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Appearance;
+}
+/// Settings → Music Data with the add-source menu open (its scrim makes the page
+/// inert), for sweeping the modal's option buttons.
+fn scene_add_source_open(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+    s.open_dropdown = Some("add-source".to_string());
+}
+/// The crash-report dialog shown after a crashed session.
+fn scene_crash_dialog(s: &mut State) {
+    s.crashed_last_session = true;
+}
 /// German settings scenes: the longest-label locale we ship, for catching text
 /// overflow in `--snap`. `apply_locale` (not `set_locale_pref`) so the snapshot
 /// never writes the user's persisted language.
@@ -3245,6 +3261,82 @@ fn scene_organize_confirm(s: &mut State) {
     }));
 }
 
+/// Two user playlists (one populated, one empty) built entirely in memory, so
+/// the Playlists list + detail pages and the add-to-playlist overlay render
+/// their rows and controls without touching the user's on-disk store. Returns
+/// the populated playlist's id. Entries use synthetic local locators (the
+/// snapshot/scene host has no scanned library; rows render regardless).
+fn a11y_seed_playlists(s: &mut State) -> playlists::PlaylistId {
+    let entry = |title: &str, path: &str| playlists::PlaylistEntry {
+        locator: soul_player_host::TrackLocator::Local {
+            path: path.to_string(),
+        },
+        snapshot: soul_player_host::TrackSnapshot {
+            title: title.to_string(),
+            artist: "Test Artist".to_string(),
+            album: "Test Album".to_string(),
+            duration_secs: 212,
+            track_no: None,
+            disc_no: None,
+        },
+        mbid: None,
+    };
+    s.playlists = playlists::PlaylistStore::in_memory(vec![
+        (
+            "Evening Mix",
+            vec![
+                entry("Aria", "/music/aria.flac"),
+                entry("Bolero", "/music/bolero.flac"),
+            ],
+        ),
+        ("Empty Set", Vec::new()),
+    ]);
+    s.playlists.list()[0].id
+}
+
+/// The Playlists list page, with one populated and one empty playlist.
+fn scene_playlists(s: &mut State) {
+    a11y_seed_playlists(s);
+    s.route = Route::Playlists;
+}
+
+/// A playlist's detail page: hero, track rows, reorder grips, and the
+/// cover/rename/delete controls.
+fn scene_playlist_detail(s: &mut State) {
+    let pid = a11y_seed_playlists(s);
+    s.route = Route::Playlist;
+    s.open_playlist = Some(pid);
+}
+
+/// The add-to-playlist overlay (pick rows + the new-playlist field) over the
+/// now-playing track.
+fn scene_add_to_playlist_open(s: &mut State) {
+    a11y_seed_playlists(s);
+    open_add_to_playlist(s, 1);
+}
+
+/// The title-bar remote-health popover, over a seeded online remote server, so
+/// the indicator renders and the popover opens.
+fn scene_remote_health_open(s: &mut State) {
+    s.sources.push(soul_player_host::SourceStatus {
+        path: PathBuf::from("http://library.test"),
+        enabled: true,
+        available: true,
+        track_count: 128,
+        kind: soul_player_host::SourceKind::Remote {
+            url: "http://library.test".to_string(),
+        },
+        remote: Some(soul_player_host::RemoteHealth {
+            online: true,
+            latency_ms: Some(24),
+            server_version: Some("0.3.0".to_string()),
+            index_version: Some(7),
+            last_checked_unix: Some(1_700_000_000),
+        }),
+    });
+    s.remote_health_open = true;
+}
+
 fn main() -> anyhow::Result<()> {
     // Start file logging before anything else, so startup, every subsystem, and
     // any panic are recorded. The guard must outlive the process — binding it to
@@ -3345,6 +3437,9 @@ fn main() -> anyhow::Result<()> {
             ("settings-audio-eq", scene_settings_audio_eq),
             ("settings-audio-eq-off", scene_settings_audio_eq_off),
             ("settings-about", scene_settings_about),
+            ("settings-appearance", scene_settings_appearance),
+            ("add-source-open", scene_add_source_open),
+            ("crash-dialog", scene_crash_dialog),
             ("settings-music-de", scene_settings_music_de),
             ("settings-audio-de", scene_settings_audio_de),
             ("settings-appearance-de", scene_settings_appearance_de),
@@ -3375,6 +3470,10 @@ fn main() -> anyhow::Result<()> {
             ("signal-path", scene_signal_path),
             ("signal-path-open", scene_signal_path_open),
             ("organize-confirm", scene_organize_confirm),
+            ("playlists", scene_playlists),
+            ("playlist-detail", scene_playlist_detail),
+            ("add-to-playlist-open", scene_add_to_playlist_open),
+            ("remote-health-open", scene_remote_health_open),
         ],
         ..AppSpec::new(
             "Soul Player",
@@ -12227,6 +12326,116 @@ mod tests {
         focused_key(rt).as_deref() == Some(target)
     }
 
+    /// Tabbing through a surface visits controls in reading order: top-to-bottom
+    /// within a column, and columns left-to-right. The app is multi-pane (sidebar,
+    /// then content — Settings adds its category rail), so finishing one column and
+    /// dropping to the TOP of the next pane to the right is in-order; what must never
+    /// happen is focus jumping UP within the same (or a leftward) column — a control
+    /// wired far from its visual place.
+    #[test]
+    fn focus_order_follows_reading_order() {
+        const ROW_TOL: f32 = 36.0; // ~one row; same-row jitter stays "not above".
+        const COL_TOL: f32 = 120.0; // a step this far right is a new pane, which may reset y.
+        for (name, scene) in [
+            ("home", scene_home as fn(&mut State)),
+            ("settings-audio", scene_settings_audio),
+        ] {
+            let mut rt = a11y_surface(scene);
+            rt.on_key = Some(handle_key);
+            let mut prev: Option<[f32; 4]> = None;
+            let mut seen = std::collections::HashSet::new();
+            for _ in 0..60 {
+                key(&mut rt, Key::Tab);
+                let Some(k) = focused_key(&rt) else { continue };
+                if !seen.insert(k.clone()) {
+                    break; // wrapped around the focus ring
+                }
+                let r = el_info(&rt, &k).rect;
+                if let Some(p) = prev {
+                    // In order if it is not above the previous control, or it has
+                    // clearly moved into a pane to the right (where y may reset).
+                    let in_reading_order = r[1] >= p[1] - ROW_TOL || r[0] >= p[0] + COL_TOL;
+                    assert!(
+                        in_reading_order,
+                        "[{name}] focus jumped backward to {k} at {r:?} (prev {p:?})"
+                    );
+                }
+                prev = Some(r);
+            }
+            assert!(prev.is_some(), "[{name}] Tab reached at least one control");
+        }
+    }
+
+    /// Overlays are operable from the keyboard: Escape dismisses them, and while a
+    /// modal is open the page behind it is inert (so Tab can't leak behind it). The
+    /// language dropdown is deliberately non-modal, so for it we instead check its
+    /// options are focusable + labelled and that Escape closes it.
+    #[test]
+    fn dialogs_are_keyboard_operable() {
+        for (name, scene, dialog_key) in [
+            (
+                "organize-confirm",
+                scene_organize_confirm as fn(&mut State),
+                "organize-confirm",
+            ),
+            ("crash-dialog", scene_crash_dialog, "crash-dialog"),
+            (
+                "add-source-open",
+                scene_add_source_open,
+                "add-source-opt-local",
+            ),
+            (
+                "add-to-playlist-open",
+                scene_add_to_playlist_open,
+                "add-to-playlist-done",
+            ),
+        ] {
+            let mut rt = a11y_surface(scene);
+            rt.on_key = Some(handle_key);
+            assert!(rt.find(dialog_key).is_some(), "[{name}] dialog is open");
+            // A background control is not actionable while the dialog is up.
+            let bg_leaks = rt
+                .elements()
+                .into_iter()
+                .any(|e| e.key.as_deref() == Some("play-pause") && actionable(&e));
+            assert!(
+                !bg_leaks,
+                "[{name}] the background stays inert behind the dialog"
+            );
+            key(&mut rt, Key::Escape);
+            assert!(
+                rt.find(dialog_key).is_none(),
+                "[{name}] Escape closes the dialog"
+            );
+        }
+
+        // The language dropdown (non-modal, keyed "lang-picker").
+        let mut rt = a11y_surface(scene_settings_lang_open);
+        rt.on_key = Some(handle_key);
+        let items: Vec<_> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| {
+                e.role == "option"
+                    && e.key
+                        .as_deref()
+                        .is_some_and(|k| k.starts_with("lang-picker-opt-"))
+            })
+            .collect();
+        assert!(
+            items.iter().any(|e| e.focusable),
+            "the language dropdown has focusable options"
+        );
+        for e in &items {
+            assert!(a11y_name(e).is_some(), "{:?} is labelled", e.key);
+        }
+        key(&mut rt, Key::Escape);
+        assert!(
+            rt.state.open_dropdown.is_none(),
+            "Escape closes the dropdown"
+        );
+    }
+
     /// Keyboard reaches the primary nav and Space activates it: a nav item is a
     /// labeled, focusable button; Tab lands on it; Space routes to its page
     /// (without the Space=play shortcut swallowing the activation).
@@ -12312,31 +12521,90 @@ mod tests {
         );
     }
 
-    /// Every interactive control exposes keyboard a11y: focusable, with a role and
-    /// an accessible name. A broad audit across the sidebar, library, transport,
-    /// and each Settings tab — so a regression that drops `.focusable`/`.role`/
-    /// `.label` from a control is caught.
-    #[test]
-    fn interactive_controls_expose_keyboard_a11y() {
-        fn assert_a11y(rt: &Runtime<State>, k: &str) {
-            let e = el_info(rt, k);
-            assert!(e.focusable, "{k} is keyboard-focusable");
-            assert!(
-                !e.role.is_empty() && e.role != "none",
-                "{k} exposes an a11y role (got {:?})",
-                e.role
-            );
-            assert!(
-                e.label.as_deref().is_some_and(|l| !l.is_empty()),
-                "{k} carries an accessible label"
-            );
-        }
+    /// Controls that are focusable/role-bearing but legitimately carry no accessible
+    /// name. (surface, element key, why). This allow-list is the ONLY suppression —
+    /// every entry must be justified. Start empty; add only with a documented reason.
+    const A11Y_ALLOWLIST: &[(&str, &str, &str)] = &[];
+
+    /// Roles denoting an interactive control, which therefore require an accessible name.
+    fn interactive_role(role: &str) -> bool {
+        // `option` is the themed dropdown's item role (see `views/dropdown.rs`).
+        // `switch` is the ARIA toggle-switch role (see `shuffle_button` in
+        // `views/player.rs`), correctly distinct from `checkbox`.
+        matches!(
+            role,
+            "button"
+                | "link"
+                | "checkbox"
+                | "slider"
+                | "menuitem"
+                | "tab"
+                | "textbox"
+                | "option"
+                | "switch"
+        )
+    }
+
+    /// An element the user can operate right now: focusable or interactive-roled, and
+    /// actually present (not inert, not transparent). `elements()` includes opacity-0
+    /// nodes and `inert` ones, so both are filtered here.
+    fn actionable(e: &rune::ElementInfo) -> bool {
+        (e.focusable || interactive_role(e.role)) && !e.inert && e.opacity > 0.01
+    }
+
+    /// The accessible name: the explicit label, else the visible text (a track row
+    /// names itself by its text). Whitespace-only counts as empty.
+    fn a11y_name(e: &rune::ElementInfo) -> Option<String> {
+        e.label
+            .clone()
+            .or_else(|| e.text.clone())
+            .filter(|s| !s.trim().is_empty())
+    }
+
+    /// A fully-populated base state so controls (now-playing, track rows, transport)
+    /// actually render on every surface.
+    fn a11y_base() -> State {
         let mut s = State::new(PlayerHandle::recording());
         s.sidebar_collapsed = false;
         s.nav_hidden = Vec::new();
-        s.library = vec![album_track(1, "A")];
+        s.library = vec![album_track(1, "Aria"), album_track(2, "Bolero")];
         s.now_playing_id = Some(1);
         s.playing = true;
+        s
+    }
+
+    /// The surfaces the a11y sweep audits: each a scene fn applied over `a11y_base`.
+    #[allow(clippy::type_complexity)]
+    const A11Y_SURFACES: &[(&str, fn(&mut State))] = &[
+        ("home", scene_home),
+        ("albums", scene_albums),
+        ("album-detail", scene_album_detail),
+        ("artists", scene_artists),
+        ("artist-detail", scene_artist_detail),
+        ("genres", scene_genres),
+        ("queue", scene_queue),
+        ("collapsed", scene_collapsed),
+        ("mobile-content", scene_mobile_content),
+        ("settings-music", scene_settings_music),
+        ("settings-audio", scene_settings_audio),
+        ("settings-audio-eq", scene_settings_audio_eq),
+        ("settings-appearance", scene_settings_appearance),
+        ("settings-about", scene_settings_about),
+        ("settings-lang-open", scene_settings_lang_open),
+        ("add-source-open", scene_add_source_open),
+        ("organize-confirm", scene_organize_confirm),
+        ("signal-path-open", scene_signal_path_open),
+        ("crash-dialog", scene_crash_dialog),
+        ("playlists", scene_playlists),
+        ("playlist-detail", scene_playlist_detail),
+        ("add-to-playlist-open", scene_add_to_playlist_open),
+        ("remote-health-open", scene_remote_health_open),
+    ];
+
+    /// Render one a11y surface headlessly.
+    fn a11y_surface(scene: fn(&mut State)) -> Runtime<State> {
+        let mut s = a11y_base();
+        scene(&mut s);
         let mut rt = Runtime::new(
             s,
             view,
@@ -12347,59 +12615,144 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        // Sidebar nav + footer, library controls, transport, now-playing.
-        for k in [
-            "nav-home",
-            "nav-albums",
-            "nav-artists",
-            "nav-library",
-            "nav-settings",
-            "sort-artist",
-            "sort-folder",
-            "track-1",
-            "enqueue-1",
-            "play-pause",
-            "shuffle",
-            "repeat",
-            "volume-mute",
-            "now-playing-text",
-        ] {
-            assert_a11y(&rt, k);
+        rt
+    }
+
+    /// Every actionable control, on every surface, exposes an accessible name and a
+    /// valid interactive role. A dropped `.label()`/`.role()`/`.focusable()` fails here.
+    #[test]
+    fn all_actionable_controls_are_labelled() {
+        let mut violations: Vec<String> = Vec::new();
+        for (name, scene) in A11Y_SURFACES {
+            let rt = a11y_surface(*scene);
+            for e in rt.elements() {
+                if !actionable(&e) {
+                    continue;
+                }
+                let key = e.key.as_deref().unwrap_or("<no key>");
+                if A11Y_ALLOWLIST
+                    .iter()
+                    .any(|(s, k, _)| s == name && *k == key)
+                {
+                    continue;
+                }
+                if !interactive_role(e.role) {
+                    violations.push(format!(
+                        "[{name}] {key}: focusable but role={:?} is not interactive",
+                        e.role
+                    ));
+                }
+                if a11y_name(&e).is_none() {
+                    violations.push(format!(
+                        "[{name}] {key}: role={:?} has no accessible name",
+                        e.role
+                    ));
+                }
+            }
         }
-        // Settings — the category rail + the Appearance tab controls (a fresh
-        // Runtime routed to Settings, the pattern the other settings tests use).
-        let settings_rt = |tab: SettingsTab| {
-            let mut s = State::new(PlayerHandle::offline());
-            s.sidebar_collapsed = false;
-            s.route = Route::Settings;
-            s.settings_tab = tab;
-            let mut rt = Runtime::new(
-                s,
-                view,
-                (1100.0, 720.0),
-                Env {
-                    system_dark: true,
-                    scale: 2.0,
-                },
-            );
-            rt.frame(0.0);
-            rt
-        };
-        let appearance = settings_rt(SettingsTab::Appearance);
-        for k in [
-            "cat-appearance",
-            "cat-audio",
-            "cat-about",
-            "theme-dark",
-            "nav-toggle-home",
-            "nav-toggle-tracks",
-        ] {
-            assert_a11y(&appearance, k);
-        }
-        // The Music Data tab's source actions.
-        let music = settings_rt(SettingsTab::MusicData);
-        assert_a11y(&music, "add-source");
-        assert_a11y(&music, "rescan-sources");
+        assert!(
+            violations.is_empty(),
+            "a11y sweep found {} unlabelled/mis-roled controls:\n{}",
+            violations.len(),
+            violations.join("\n")
+        );
+    }
+
+    #[test]
+    fn the_new_a11y_scenes_render_their_surface() {
+        // Appearance tab shows its category rail.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        scene_settings_appearance(&mut s);
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("cat-appearance").is_some(),
+            "appearance scene shows the settings rail"
+        );
+
+        // Add-source menu open.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        scene_add_source_open(&mut s);
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(
+            rt.find("add-source-opt-local").is_some(),
+            "add-source menu is open"
+        );
+
+        // Crash dialog.
+        let mut s = State::new(PlayerHandle::offline());
+        s.sidebar_collapsed = false;
+        scene_crash_dialog(&mut s);
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        assert!(rt.find("crash-dialog").is_some(), "crash dialog is shown");
+
+        // Playlists list page.
+        let rt = a11y_surface(scene_playlists);
+        assert!(
+            rt.find("playlist-row-0").is_some(),
+            "playlists list shows playlist rows"
+        );
+        assert!(
+            rt.find("playlist-new-input").is_some(),
+            "and the inline new-playlist field"
+        );
+
+        // Playlist detail page.
+        let rt = a11y_surface(scene_playlist_detail);
+        assert!(
+            rt.find("playlist-rename").is_some(),
+            "playlist detail shows its hero controls"
+        );
+        assert!(
+            rt.find("playlist-grip-0").is_some(),
+            "and per-entry reorder grips"
+        );
+
+        // Add-to-playlist overlay.
+        let rt = a11y_surface(scene_add_to_playlist_open);
+        assert!(
+            rt.find("add-to-playlist-pick-0").is_some(),
+            "add-to-playlist overlay lists playlists to pick"
+        );
+        assert!(
+            rt.find("add-to-playlist-done").is_some(),
+            "and a done button"
+        );
+
+        // Remote-health popover.
+        let rt = a11y_surface(scene_remote_health_open);
+        assert!(
+            rt.find("remote-health-popover").is_some(),
+            "remote-health popover is open over a seeded remote"
+        );
     }
 
     #[test]

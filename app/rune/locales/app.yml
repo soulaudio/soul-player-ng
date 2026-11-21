@@ -820,6 +820,13 @@ settings.profileExport:
   zh: '导出配置文件'
   cs: 'Exportovat profil'
   ja: 'プロファイルをエクスポート'
+settings.profileSwitcher:
+  en: 'Switch profile'
+  de: 'Profil wechseln'
+  es: 'Cambiar perfil'
+  zh: '切换配置文件'
+  cs: 'Přepnout profil'
+  ja: 'プロファイルを切り替え'
 settings.addFolderDialog:
   en: 'Add a music folder'
   de: 'Musikordner hinzufügen'
@@ -1415,6 +1422,20 @@ settings.preamp:
   zh: '前置增益'
   cs: 'Předzesílení'
   ja: 'プリアンプ'
+settings.expand:
+  en: 'Expand'
+  de: 'Erweitern'
+  es: 'Expandir'
+  zh: '展开'
+  cs: 'Rozbalit'
+  ja: '展開'
+settings.collapse:
+  en: 'Collapse'
+  de: 'Einklappen'
+  es: 'Contraer'
+  zh: '收起'
+  cs: 'Sbalit'
+  ja: '折りたたむ'
 
 # Signal-path panel (the stage-by-stage decode->output chain). Non-English values
 # are initial translations for native-speaker review; "ReplayGain"/"DSP / EQ" are

@@ -39,11 +39,15 @@ pub fn is_open(s: &State, key: &str) -> bool {
 
 /// The in-place trigger: the current value and a chevron, styled as a select
 /// field. Pressing it toggles its [`panel`] (mounted at the root) open or shut.
-pub fn trigger(key: &str, current: String, p: &Palette) -> El {
+/// `name` is the control's accessible name (e.g. "Language") — kept distinct
+/// from `current`, the value shown (e.g. "English"), so a screen reader
+/// announces what the field is, not just what it happens to be set to.
+pub fn trigger(key: &str, current: String, name: impl Into<String>, p: &Palette) -> El {
     let key_owned = key.to_string();
     row()
         .key(key.to_string())
         .role("button")
+        .label(name.into())
         .focusable(true)
         .w_full()
         .center_y()
@@ -105,6 +109,7 @@ where
         let mut opt = row()
             .key(format!("{anchor_key}-opt-{id}"))
             .role("option")
+            .label(label.clone())
             .focusable(true)
             .focus_selected(selected_row)
             .w_full()
@@ -166,7 +171,14 @@ where
                 .on_wheel(|s: &mut State, _ev: WheelEvent, _tx| {
                     close_dropdown(s);
                     true
-                }),
+                })
+                // `on_press` implicitly promotes the default "group" role to
+                // "button"; put it back. A screen-reader user dismisses the panel
+                // with Escape (handled by the app's key handler), not by operating
+                // this invisible mouse-only catcher, so it shouldn't surface as a
+                // nameless button in the a11y tree. The press handler above still
+                // fires on click — role is metadata only, not a hit-test gate.
+                .role("group"),
         )
         .child(menu)
 }

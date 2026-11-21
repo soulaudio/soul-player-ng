@@ -197,7 +197,7 @@ fn category_nav(s: &State, p: &Palette) -> El {
 const ADD_SOURCE_MENU: &str = "add-source";
 
 /// `+ Add Source` — a compact primary action button that opens the [`add_source_menu`]
-/// **modal dialog** (Local folder, Remote server as a "coming soon" item, and Add music
+/// **modal dialog** (Local folder, Remote server, and Add music
 /// when a managed destination is set). A modal, not an anchored menu, so the choices
 /// read as a proper dialog and stay centered + legible at any card width. The visible
 /// text is a child, so the control carries an explicit a11y label. `ADD_SOURCE_MENU` is
@@ -242,6 +242,7 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
     let local = row()
         .key("add-source-opt-local")
         .role("option")
+        .label(t!("settings.addLocalFolder").to_string())
         .focusable(true)
         .w_full()
         .center_y()
@@ -278,6 +279,7 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
         .key("add-source-opt-remote")
         .role("option")
         .focusable(true)
+        .label(t!("settings.addRemoteServer").to_string())
         .w_full()
         .center_y()
         .gap(space::SM)
@@ -509,13 +511,14 @@ pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
 /// The **Add music…** menu row: it runs the managed-library organizer (the
 /// write-path copy/move) over a chosen set of files. It only works once a
 /// managed destination is configured, so without one it renders as a disabled
-/// hint (not focusable, dimmed, with a "Set a destination first" chip, like the
-/// Remote "coming soon" row); with a destination it is a focusable option that
-/// closes the menu and opens the organize modal (`organize_begin`).
+/// hint (not focusable, dimmed, with a "Set a destination first" chip); with a
+/// destination it is a focusable option that closes the menu and opens the
+/// organize modal (`organize_begin`).
 fn add_music_row(s: &State, p: &Palette) -> El {
     let base = row()
         .key("add-source-opt-organize")
         .role("option")
+        .label(t!("settings.addMusic").to_string())
         .w_full()
         .center_y()
         .gap(space::SM)
@@ -524,7 +527,6 @@ fn add_music_row(s: &State, p: &Palette) -> El {
         .radius(radius::SM);
     if s.managed_dest.is_some() {
         base.focusable(true)
-            .label(t!("settings.addMusic").to_string())
             .cursor(Cursor::Pointer)
             .hover(p.fg.alpha(0.06))
             .child(icon(&icons::MUSIC, 16.0).color(p.text_secondary))
@@ -1342,7 +1344,12 @@ fn current_language_label(s: &State) -> String {
 /// The language picker: the shared themed `dropdown` trigger (the original's
 /// `Select`). Its floating panel is mounted at the root by [`settings_overlays`].
 fn language_dropdown(s: &State, p: &Palette) -> El {
-    dropdown::trigger(LANG_PICKER, current_language_label(s), p)
+    dropdown::trigger(
+        LANG_PICKER,
+        current_language_label(s),
+        t!("settings.language").to_string(),
+        p,
+    )
 }
 
 /// One output-device choice; the active device is filled with the primary color.
@@ -1757,6 +1764,7 @@ fn managed_template_section(s: &State, p: &Palette) -> El {
         .child(dropdown::trigger(
             MANAGED_TEMPLATE,
             preset_label(&s.managed_template),
+            t!("settings.template").to_string(),
             p,
         ))
         .child(
@@ -2350,7 +2358,13 @@ fn profile_bar(s: &State, p: &Palette) -> El {
             .active()
             .map(|pr| pr.name.clone())
             .unwrap_or_default();
-        dropdown::trigger(PROFILE_PICKER, name, p).grow(1.0)
+        dropdown::trigger(
+            PROFILE_PICKER,
+            name,
+            t!("settings.profileSwitcher").to_string(),
+            p,
+        )
+        .grow(1.0)
     };
     let can_delete = s.profile_set.len() > 1;
     row()
@@ -2486,7 +2500,9 @@ fn eq_card(s: &State, p: &Palette, cx: &Cx<State>) -> El {
 
 /// A disclosure chevron sized for a card / section header (a 16 px `chevron-down`
 /// icon, bigger than a text glyph): points down when `expanded`, right when
-/// collapsed. Shared by the DSP card and the band-list headers.
+/// collapsed. Shared by the DSP card and the band-list headers. Its accessible
+/// name swaps between "Expand"/"Collapse" with `expanded`, since the chevron
+/// carries no text of its own (just the rotating icon).
 fn expand_chevron(
     expanded: bool,
     key: String,
@@ -2499,8 +2515,14 @@ fn expand_chevron(
     } else {
         caret.rotate(-std::f32::consts::FRAC_PI_2)
     };
+    let label = if expanded {
+        t!("settings.collapse").to_string()
+    } else {
+        t!("settings.expand").to_string()
+    };
     el().key(key)
         .role("button")
+        .label(label)
         .focusable(true)
         .cursor(Cursor::Pointer)
         .px(space::XXS)
@@ -2557,6 +2579,7 @@ fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let grip = el()
         .key(format!("dsp-grip-{i}"))
         .role("button")
+        .label(t!("queue.reorder").to_string())
         .size(space::MD, DSP_ROW_H)
         .center()
         .radius(radius::SM)
