@@ -197,7 +197,7 @@ fn category_nav(s: &State, p: &Palette) -> El {
 const ADD_SOURCE_MENU: &str = "add-source";
 
 /// `+ Add Source` — a compact primary action button that opens the [`add_source_menu`]
-/// **modal dialog** (Local folder, Remote server as a "coming soon" item, and Add music
+/// **modal dialog** (Local folder, Remote server, and Add music
 /// when a managed destination is set). A modal, not an anchored menu, so the choices
 /// read as a proper dialog and stay centered + legible at any card width. The visible
 /// text is a child, so the control carries an explicit a11y label. `ADD_SOURCE_MENU` is
@@ -511,9 +511,9 @@ pub fn remote_form_overlay(s: &State, p: &Palette) -> Option<El> {
 /// The **Add music…** menu row: it runs the managed-library organizer (the
 /// write-path copy/move) over a chosen set of files. It only works once a
 /// managed destination is configured, so without one it renders as a disabled
-/// hint (not focusable, dimmed, with a "Set a destination first" chip, like the
-/// Remote "coming soon" row); with a destination it is a focusable option that
-/// closes the menu and opens the organize modal (`organize_begin`).
+/// hint (not focusable, dimmed, with a "Set a destination first" chip); with a
+/// destination it is a focusable option that closes the menu and opens the
+/// organize modal (`organize_begin`).
 fn add_music_row(s: &State, p: &Palette) -> El {
     let base = row()
         .key("add-source-opt-organize")
