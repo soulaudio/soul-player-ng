@@ -3261,6 +3261,82 @@ fn scene_organize_confirm(s: &mut State) {
     }));
 }
 
+/// Two user playlists (one populated, one empty) built entirely in memory, so
+/// the Playlists list + detail pages and the add-to-playlist overlay render
+/// their rows and controls without touching the user's on-disk store. Returns
+/// the populated playlist's id. Entries use synthetic local locators (the
+/// snapshot/scene host has no scanned library; rows render regardless).
+fn a11y_seed_playlists(s: &mut State) -> playlists::PlaylistId {
+    let entry = |title: &str, path: &str| playlists::PlaylistEntry {
+        locator: soul_player_host::TrackLocator::Local {
+            path: path.to_string(),
+        },
+        snapshot: soul_player_host::TrackSnapshot {
+            title: title.to_string(),
+            artist: "Test Artist".to_string(),
+            album: "Test Album".to_string(),
+            duration_secs: 212,
+            track_no: None,
+            disc_no: None,
+        },
+        mbid: None,
+    };
+    s.playlists = playlists::PlaylistStore::in_memory(vec![
+        (
+            "Evening Mix",
+            vec![
+                entry("Aria", "/music/aria.flac"),
+                entry("Bolero", "/music/bolero.flac"),
+            ],
+        ),
+        ("Empty Set", Vec::new()),
+    ]);
+    s.playlists.list()[0].id
+}
+
+/// The Playlists list page, with one populated and one empty playlist.
+fn scene_playlists(s: &mut State) {
+    a11y_seed_playlists(s);
+    s.route = Route::Playlists;
+}
+
+/// A playlist's detail page: hero, track rows, reorder grips, and the
+/// cover/rename/delete controls.
+fn scene_playlist_detail(s: &mut State) {
+    let pid = a11y_seed_playlists(s);
+    s.route = Route::Playlist;
+    s.open_playlist = Some(pid);
+}
+
+/// The add-to-playlist overlay (pick rows + the new-playlist field) over the
+/// now-playing track.
+fn scene_add_to_playlist_open(s: &mut State) {
+    a11y_seed_playlists(s);
+    open_add_to_playlist(s, 1);
+}
+
+/// The title-bar remote-health popover, over a seeded online remote server, so
+/// the indicator renders and the popover opens.
+fn scene_remote_health_open(s: &mut State) {
+    s.sources.push(soul_player_host::SourceStatus {
+        path: PathBuf::from("http://library.test"),
+        enabled: true,
+        available: true,
+        track_count: 128,
+        kind: soul_player_host::SourceKind::Remote {
+            url: "http://library.test".to_string(),
+        },
+        remote: Some(soul_player_host::RemoteHealth {
+            online: true,
+            latency_ms: Some(24),
+            server_version: Some("0.3.0".to_string()),
+            index_version: Some(7),
+            last_checked_unix: Some(1_700_000_000),
+        }),
+    });
+    s.remote_health_open = true;
+}
+
 fn main() -> anyhow::Result<()> {
     // Start file logging before anything else, so startup, every subsystem, and
     // any panic are recorded. The guard must outlive the process — binding it to
@@ -3394,6 +3470,10 @@ fn main() -> anyhow::Result<()> {
             ("signal-path", scene_signal_path),
             ("signal-path-open", scene_signal_path_open),
             ("organize-confirm", scene_organize_confirm),
+            ("playlists", scene_playlists),
+            ("playlist-detail", scene_playlist_detail),
+            ("add-to-playlist-open", scene_add_to_playlist_open),
+            ("remote-health-open", scene_remote_health_open),
         ],
         ..AppSpec::new(
             "Soul Player",
@@ -12304,6 +12384,11 @@ mod tests {
                 scene_add_source_open,
                 "add-source-opt-local",
             ),
+            (
+                "add-to-playlist-open",
+                scene_add_to_playlist_open,
+                "add-to-playlist-done",
+            ),
         ] {
             let mut rt = a11y_surface(scene);
             rt.on_key = Some(handle_key);
@@ -12510,6 +12595,10 @@ mod tests {
         ("organize-confirm", scene_organize_confirm),
         ("signal-path-open", scene_signal_path_open),
         ("crash-dialog", scene_crash_dialog),
+        ("playlists", scene_playlists),
+        ("playlist-detail", scene_playlist_detail),
+        ("add-to-playlist-open", scene_add_to_playlist_open),
+        ("remote-health-open", scene_remote_health_open),
     ];
 
     /// Render one a11y surface headlessly.
@@ -12624,6 +12713,46 @@ mod tests {
         );
         rt.frame(0.0);
         assert!(rt.find("crash-dialog").is_some(), "crash dialog is shown");
+
+        // Playlists list page.
+        let rt = a11y_surface(scene_playlists);
+        assert!(
+            rt.find("playlist-row-0").is_some(),
+            "playlists list shows playlist rows"
+        );
+        assert!(
+            rt.find("playlist-new-input").is_some(),
+            "and the inline new-playlist field"
+        );
+
+        // Playlist detail page.
+        let rt = a11y_surface(scene_playlist_detail);
+        assert!(
+            rt.find("playlist-rename").is_some(),
+            "playlist detail shows its hero controls"
+        );
+        assert!(
+            rt.find("playlist-grip-0").is_some(),
+            "and per-entry reorder grips"
+        );
+
+        // Add-to-playlist overlay.
+        let rt = a11y_surface(scene_add_to_playlist_open);
+        assert!(
+            rt.find("add-to-playlist-pick-0").is_some(),
+            "add-to-playlist overlay lists playlists to pick"
+        );
+        assert!(
+            rt.find("add-to-playlist-done").is_some(),
+            "and a done button"
+        );
+
+        // Remote-health popover.
+        let rt = a11y_surface(scene_remote_health_open);
+        assert!(
+            rt.find("remote-health-popover").is_some(),
+            "remote-health popover is open over a seeded remote"
+        );
     }
 
     #[test]

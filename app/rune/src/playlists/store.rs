@@ -311,6 +311,28 @@ impl PlaylistStore {
         id
     }
 
+    /// Build a store entirely in memory from `(name, entries)` pairs, doing NO
+    /// disk I/O (it never reads or writes `playlist_store_path()`). For the
+    /// `--scene` snapshots and the a11y sweep, which must render playlist pages
+    /// without touching the user's real on-disk store.
+    pub(crate) fn in_memory(playlists: Vec<(&str, Vec<PlaylistEntry>)>) -> Self {
+        let mut store = Self::default();
+        for (name, entries) in playlists {
+            let id = store.next_id;
+            store.next_id += 1;
+            let folder = folder_name(&slugify(name), id);
+            let playlist = Playlist {
+                id,
+                name: name.to_string(),
+                custom_cover: None,
+                entries,
+            };
+            store.playlists.insert(id, Loaded { folder, playlist });
+            store.order.push(id);
+        }
+        store
+    }
+
     /// Rename playlist `id` (its folder is untouched; the id is what's
     /// durable). A no-op if `id` isn't loaded.
     pub fn rename(&mut self, id: PlaylistId, name: &str) {
