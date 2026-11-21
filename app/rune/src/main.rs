@@ -388,6 +388,9 @@ struct State {
     /// Set when a `TrackLoudnessAnalyzed` event arrives; the next Tick re-fetches the library
     /// so the loudness/DR column fills in, coalescing a sweep's event burst.
     loudness_dirty: bool,
+    /// The background loudness sweep's remaining work (from `Tick.analysis_pending`), shown as
+    /// an "Analyzing N tracks" line in the Settings loudness section while > 0.
+    analysis_pending: u32,
     /// The configured sources with their per-source status (from the host),
     /// rendered by Settings → Sources: each carries its path, enabled flag,
     /// current availability (an unreachable root shows "offline"), and track count.
@@ -744,6 +747,7 @@ impl State {
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             loudness_sort: None,
             loudness_dirty: false,
+            analysis_pending: 0,
             sources,
             remote_health_refreshing: false,
             remote_health_open: false,
@@ -869,6 +873,8 @@ impl State {
                 self.muted = t.muted;
                 self.shuffle = t.shuffle;
                 self.repeat = t.repeat;
+                // Background loudness sweep progress, for the Settings "Analyzing N" line.
+                self.analysis_pending = t.analysis_pending;
                 // Fresh loudness analysis arrived since the last tick: re-fetch the library
                 // so the loudness/DR column fills in. Coalesced here (≤ tick rate) so a
                 // full-library sweep doesn't re-project per track.
@@ -5643,6 +5649,55 @@ mod tests {
             rt.state.loudness_mode,
             LoudnessAnalysisMode::Off,
             "clicking Off applies the mode"
+        );
+    }
+
+    #[test]
+    fn tick_carries_the_analysis_pending_count() {
+        let mut s = State::new(PlayerHandle::offline());
+        assert_eq!(s.analysis_pending, 0, "starts with no pending analysis");
+        s.apply(&Event::Tick(soul_player_host::Tick {
+            now_playing_id: None,
+            position_secs: 0.0,
+            duration_secs: None,
+            state: PlayState::Stopped,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            volume: 1.0,
+            muted: false,
+            analysis_pending: 12,
+        }));
+        assert_eq!(s.analysis_pending, 12, "the tick's count reaches the state");
+    }
+
+    /// The "Analyzing N" line shows in the Settings loudness section while the sweep has work
+    /// left, and clears once it is caught up.
+    #[test]
+    fn analysis_pending_shows_then_clears_the_analyzing_line() {
+        let _g = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        apply_locale("en");
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::MusicData;
+        s.analysis_pending = 7;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.find("loudness-analyzing").is_some(),
+            "the Analyzing line shows while the sweep has work"
+        );
+        rt.update(|s: &mut State, _tx: &mut Tx| s.analysis_pending = 0);
+        rt.frame(0.0);
+        assert!(
+            rt.find("loudness-analyzing").is_none(),
+            "the Analyzing line clears once caught up"
         );
     }
 
@@ -11669,6 +11724,7 @@ mod tests {
             repeat: RepeatMode::Off,
             volume: 1.0,
             muted: false,
+            analysis_pending: 0,
         }));
         assert!(!s.loudness_dirty, "the next tick consumes the refresh flag");
     }

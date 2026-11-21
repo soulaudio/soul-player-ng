@@ -1495,7 +1495,7 @@ fn loudness_analysis_section(s: &State, p: &Palette) -> El {
         LoudnessAnalysisMode::Throttled => t!("settings.loudnessThrottledDesc"),
         LoudnessAnalysisMode::Full => t!("settings.loudnessFullDesc"),
     };
-    col()
+    let mut c = col()
         .gap(space::SM)
         .child(heading(
             t!("settings.loudnessAnalysis").to_string(),
@@ -1527,7 +1527,17 @@ fn loudness_analysis_section(s: &State, p: &Palette) -> El {
                     mode == LoudnessAnalysisMode::Full,
                     p,
                 )),
-        )
+        );
+    // Live sweep progress: how many tracks are still queued for analysis. Shown only while
+    // the sweep has work left; it fades out once the library is fully analyzed.
+    if s.analysis_pending > 0 {
+        c = c.child(
+            text(t!("settings.loudnessAnalyzing", count => s.analysis_pending).to_string())
+                .key("loudness-analyzing")
+                .color(p.text_secondary),
+        );
+    }
+    c
 }
 
 // ── Cards (one per settings group) ───────────────────────────────────────────

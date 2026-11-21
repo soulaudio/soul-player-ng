@@ -311,6 +311,10 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         // state, no-op in `apply_command`.
                         Command::AnalyzeTracks(entries) => {
                             if loudness_mode.sweeps() {
+                                // Each batch is a fresh sweep: supersede the previous one so a
+                                // rescan stops analyzing tracks it may have removed (the worker
+                                // skips the now-stale queued jobs), then enqueue the current set.
+                                loudness.clear_pending();
                                 for (id, path) in entries {
                                     loudness.enqueue(*id, path.clone());
                                 }
@@ -514,6 +518,9 @@ fn pump_thread<K, Mk, Pk, Ev>(
         // 4. Emit throttled state (immediately on change, else ~8 Hz).
         if changed || last_tick.elapsed() >= tick_every {
             let mut tick = project_tick(&player, vol.volume(), vol.muted());
+            // Surface the background loudness sweep's remaining work, for the "Analyzing N"
+            // progress indicator (0 when caught up / Off).
+            tick.analysis_pending = loudness.pending() as u32;
             // The deck's duration comes from the decoder; some containers
             // (Matroska, CAF-ALAC) can't report a length, so fall back to the
             // library's tag-derived duration — keeping the progress bar

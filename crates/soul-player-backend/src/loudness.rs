@@ -132,6 +132,30 @@ impl LoudnessCache {
         self.paused.load(Ordering::Relaxed)
     }
 
+    /// How many paths are currently queued or being analyzed — the background sweep's
+    /// remaining work, for the "Analyzing N" progress indicator. Drops to 0 when the
+    /// sweep is caught up.
+    #[must_use]
+    pub fn pending(&self) -> usize {
+        self.inner
+            .lock()
+            .expect("loudness cache mutex")
+            .inflight
+            .len()
+    }
+
+    /// Supersede the in-flight sweep: clear the queued/analyzing marks so a worker that later
+    /// pops a now-stale job skips it (see `analysis_worker`) instead of spending a decode on a
+    /// track a rescan may have removed. The job already mid-decode finishes (harmless); a fresh
+    /// [`enqueue`](Self::enqueue) of the current library re-marks the tracks that remain.
+    pub fn clear_pending(&self) {
+        self.inner
+            .lock()
+            .expect("loudness cache mutex")
+            .inflight
+            .clear();
+    }
+
     /// The usable computed gain for `path`, if one is cached (`None` for either
     /// "not analyzed yet" or "analyzed, no usable gain" — the pump treats both the
     /// same: play preamp-only, and [`enqueue`](Self::enqueue) decides whether a
@@ -203,6 +227,17 @@ fn analysis_worker(
     shutdown: &Arc<AtomicBool>,
 ) {
     for (_id, path) in jobs {
+        // Superseded by a later scan (`clear_pending` emptied the in-flight set): this job is
+        // no longer wanted, so skip the decode rather than spend it on a possibly-removed
+        // track. A fresh enqueue of the current library re-marks the tracks that remain.
+        if !inner
+            .lock()
+            .expect("loudness cache mutex")
+            .inflight
+            .contains(&path)
+        {
+            continue;
+        }
         let outcome = analyze_track(&path, paused, shutdown);
         {
             let mut g = inner.lock().expect("loudness cache mutex");
@@ -417,6 +452,29 @@ mod tests {
         paused.store(true, Ordering::Relaxed);
         shutdown.store(true, Ordering::Relaxed);
         park_while_paused(&paused, &shutdown); // paused but shutting down → immediate
+    }
+
+    #[test]
+    fn clear_pending_supersedes_the_queued_sweep() {
+        let (cache, rx) = headless();
+        let a = PathBuf::from("/music/a.flac");
+        let b = PathBuf::from("/music/b.flac");
+        assert!(cache.enqueue(1, a.clone()));
+        assert!(cache.enqueue(2, b.clone()));
+        let _ = (rx.try_recv(), rx.try_recv());
+        assert_eq!(cache.pending(), 2, "two tracks queued");
+
+        // A new scan supersedes: the in-flight marks clear (so a worker popping either stale
+        // job skips it), dropping the pending count to 0.
+        cache.clear_pending();
+        assert_eq!(cache.pending(), 0, "clear_pending empties the queue marks");
+
+        // A track that still exists re-enqueues cleanly (the stale mark no longer blocks it).
+        assert!(
+            cache.enqueue(1, a.clone()),
+            "a surviving track re-enqueues after supersede"
+        );
+        assert_eq!(cache.pending(), 1);
     }
 
     /// Analyzing a short committed real fixture yields a finite gain without

@@ -300,6 +300,10 @@ pub struct Tick {
     pub volume: f32,
     /// Whether the output is muted (silenced) while keeping `volume`.
     pub muted: bool,
+    /// Background loudness sweep's remaining work (queued + analyzing tracks), for the
+    /// "Analyzing N" progress indicator. 0 when the sweep is caught up or Off. The pure
+    /// `project_tick` leaves this 0; the pump fills it from its loudness cache.
+    pub analysis_pending: u32,
 }
 
 /// Up-Next + context position, emitted on queue mutation.
