@@ -584,6 +584,11 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     {
         meta = format!("{meta} · {}", t!("detail.reissued", year => ry));
     }
+    // The album's overall dynamic range (mean of its analyzed tracks' DR), once at least
+    // one track is analyzed — the same figure the grid card's DR badge carries.
+    if let Some(dr) = album.dr {
+        meta = format!("{meta} · DR{}", dr.round() as i32);
+    }
 
     let hero = detail_hero(
         s,
@@ -1032,6 +1037,50 @@ mod tests {
                 .iter()
                 .any(|e| e.key.as_deref() == Some("album-remote")),
             "a local album's header should show no badge"
+        );
+    }
+
+    /// The album detail header's meta line carries the album DR (mean of its analyzed
+    /// tracks) once at least one track is analyzed.
+    #[test]
+    fn album_detail_header_shows_the_album_dr_when_analyzed() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let dr_track = |id: u32, dr: f32| {
+            let mut t = atv(id, "Artist", "Analyzed Album");
+            t.loudness = Some(soul_player_host::TrackLoudness {
+                integrated_lufs: -14.0,
+                lra: 5.0,
+                true_peak_dbtp: -1.0,
+                plr: 8.0,
+                dr,
+            });
+            t
+        };
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![dr_track(1, 6.0), dr_track(2, 12.0)]; // mean = 9 → "DR9"
+        s.route = crate::Route::Album;
+        s.open_album = Some("Analyzed Album".into());
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("DR9")),
+            "the detail header meta includes the album DR; got {texts:?}"
         );
     }
 
