@@ -4,8 +4,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Cursor, Cx, El, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row,
-    text,
+    Color, Cursor, Cx, El, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon,
+    row, text,
 };
 use soul_player_host::{BrowseAxis, Command, TrackView};
 
@@ -56,6 +56,42 @@ fn dr_cell(t: &TrackView, p: &Palette) -> El {
         .font(type_::ITEM)
         .color(color)
         .w(44.0)
+}
+
+/// The FORMAT badge's codec-family color: lossless containers (FLAC/WAV/AIFF/
+/// ALAC/WV) get the palette's dedicated blue/teal accent, DSD (DSF/DFF) gets
+/// its dedicated purple/magenta accent, and everything else (MP3/AAC/OGG/OPUS/
+/// M4A/MP1/MP2/…) reads as the neutral "lossy" grey, mirroring the old app's
+/// FORMAT column, which colors M4A the same grey as MP3 (the container alone
+/// can't say whether it holds lossy AAC or lossless ALAC).
+fn format_family_color(format: &str, p: &Palette) -> Color {
+    match format {
+        "FLAC" | "WAV" | "AIFF" | "ALAC" | "WV" => p.format_lossless,
+        "DSF" | "DFF" => p.format_dsd,
+        _ => p.text_secondary,
+    }
+}
+
+/// A compact, color-coded pill for a track's codec/container label (`"FLAC"`,
+/// `"MP3"`, `"DSF"`, …): the Tracks table's FORMAT column, mirroring the old
+/// app's per-row format badge (see [`format_family_color`]). Kept subtle: a
+/// low-alpha tinted fill behind small, mono-leaning text in the same hue at
+/// full saturation, so it reads as a quiet tag rather than competing with the
+/// row's title. The caller wraps this in its own uniquely-keyed element (the
+/// same convention [`crate::views::player::cover`] uses) since the label alone
+/// repeats across rows.
+pub(crate) fn format_badge(format: &str, p: &Palette) -> El {
+    let c = format_family_color(format, p);
+    el().key("format-badge")
+        .px(space::XS)
+        .py(space::XXS)
+        .radius(radius::SM)
+        .fill(c.alpha(0.16))
+        .child(
+            text(format.to_string())
+                .font(type_::CAPTION.mono())
+                .color(c),
+        )
 }
 
 /// Case-insensitive substring match over the fields a user would search by.
@@ -211,6 +247,20 @@ fn track_row(
                     .grow(1.0)
                     .min_w(0.0),
             );
+    }
+    // The FORMAT badge, mirroring the old app's column order (artist/album,
+    // then FORMAT, then duration). Like Integrated LUFS, it only joins on a
+    // wide pane: the standard tier's artist/album/duration/DR already fill its
+    // width budget (a narrower sidebar panel, e.g. the Up Next queue, can pinch
+    // a `> 760` content pane back below that threshold).
+    if width == RowWidth::Wide
+        && let Some(fmt) = &t.format
+    {
+        r = r.child(
+            el().key(format!("format-badge-{}", t.id))
+                .w(52.0)
+                .child(format_badge(fmt, p)),
+        );
     }
     r = r.child(
         text(fmt_dur(t.duration_secs))
@@ -514,4 +564,100 @@ fn sort_bar(s: &State, p: &Palette) -> El {
             a == BrowseAxis::Folder,
             p,
         ))
+}
+
+#[cfg(test)]
+mod tests {
+    use rune::{Env, Runtime};
+
+    use super::*;
+
+    fn tv(id: u32, format: Option<&str>) -> TrackView {
+        TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some("A".into()),
+            album: Some("Alb".into()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote_source: None,
+            original_date: 0,
+            release_date: 0,
+            loudness: None,
+            format: format.map(str::to_string),
+        }
+    }
+
+    /// Lossless, lossy and DSD each get their own color, and the lossy bucket is
+    /// the neutral default everything else (unknown extensions included) falls
+    /// back to.
+    #[test]
+    fn format_family_color_groups_lossless_dsd_and_a_neutral_lossy_default() {
+        let p = crate::theme::palette(false);
+        assert_eq!(format_family_color("FLAC", &p), p.format_lossless);
+        assert_eq!(format_family_color("WAV", &p), p.format_lossless);
+        assert_eq!(format_family_color("AIFF", &p), p.format_lossless);
+        assert_eq!(format_family_color("ALAC", &p), p.format_lossless);
+        assert_eq!(format_family_color("WV", &p), p.format_lossless);
+        assert_eq!(format_family_color("DSF", &p), p.format_dsd);
+        assert_eq!(format_family_color("DFF", &p), p.format_dsd);
+        assert_eq!(format_family_color("MP3", &p), p.text_secondary);
+        assert_eq!(format_family_color("AAC", &p), p.text_secondary);
+        assert_eq!(format_family_color("OGG", &p), p.text_secondary);
+        assert_eq!(format_family_color("OPUS", &p), p.text_secondary);
+        // M4A can't say AAC vs ALAC from the container alone, so it stays
+        // grouped with the neutral default, matching the old app.
+        assert_eq!(format_family_color("M4A", &p), p.text_secondary);
+    }
+
+    /// End to end through the real Tracks table: a seeded library with a
+    /// lossless, a lossy, a DSD and an unknown-format track shows a FORMAT
+    /// badge for every track that carries one, with the label text present,
+    /// and no badge at all for the track with no known format.
+    #[test]
+    fn track_list_renders_a_format_badge_for_every_track_with_a_known_format() {
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            track_list(s, &p, cx, scale)
+        }
+
+        rust_i18n::set_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![
+            tv(1, Some("FLAC")),
+            tv(2, Some("MP3")),
+            tv(3, Some("DSF")),
+            tv(4, None),
+        ];
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1400.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("format-badge-1").is_some(),
+            "a lossless track shows its FORMAT badge"
+        );
+        assert!(
+            rt.find("format-badge-2").is_some(),
+            "a lossy track shows its FORMAT badge"
+        );
+        assert!(
+            rt.find("format-badge-3").is_some(),
+            "a DSD track shows its FORMAT badge"
+        );
+        assert!(
+            rt.find("format-badge-4").is_none(),
+            "a track with no known format shows no badge"
+        );
+
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(texts.iter().any(|t| t == "FLAC"), "FLAC label renders");
+        assert!(texts.iter().any(|t| t == "MP3"), "MP3 label renders");
+        assert!(texts.iter().any(|t| t == "DSF"), "DSF label renders");
+    }
 }

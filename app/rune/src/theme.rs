@@ -33,6 +33,15 @@ pub struct Palette {
     /// indicator's down state (every enabled remote offline). Paired with
     /// `online`/`warning` as the one semantic red in either palette.
     pub danger: Color,
+    /// The Tracks table FORMAT badge's lossless accent (FLAC/WAV/AIFF/ALAC/WV):
+    /// a blue/teal hue absent from the rest of the warm Day / cool Night brand
+    /// palette, dedicated so the badge reads as a distinct codec-family signal
+    /// (see `views::library::format_badge`), not the page's own primary/accent.
+    pub format_lossless: Color,
+    /// The Tracks table FORMAT badge's DSD accent (DSF/DFF): a purple/magenta
+    /// hue distinct from both `format_lossless` and `primary` (Night's `primary`
+    /// is lavender-adjacent, so this leans more magenta to stay distinguishable).
+    pub format_dsd: Color,
 }
 
 fn hex(s: &str) -> Color {
@@ -53,6 +62,8 @@ fn day() -> Palette {
         online: hex("#4f8a5b"),
         warning: hex("#b5811f"),
         danger: hex("#b23a32"),
+        format_lossless: hex("#3f7cab"),
+        format_dsd: hex("#8a4fa3"),
     }
 }
 
@@ -70,6 +81,8 @@ fn night() -> Palette {
         online: hex("#7fd99a"),
         warning: hex("#e3b655"),
         danger: hex("#e2726a"),
+        format_lossless: hex("#7fb8e8"),
+        format_dsd: hex("#c678dd"),
     }
 }
 

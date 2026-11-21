@@ -3120,6 +3120,7 @@ fn seed_demo_library(s: &mut State) {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             });
             id += 1;
         }
@@ -9982,6 +9983,7 @@ mod tests {
             original_date: 0,
             release_date: 0,
             loudness: None,
+            format: None,
         }
     }
 
@@ -9997,6 +9999,7 @@ mod tests {
             original_date: 0,
             release_date: 0,
             loudness: None,
+            format: None,
         }
     }
 
@@ -10012,6 +10015,7 @@ mod tests {
             original_date: 0,
             release_date: 0,
             loudness: None,
+            format: None,
         }
     }
 
@@ -10129,6 +10133,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -10141,6 +10146,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             },
         ];
         s.route = Route::Artist;
@@ -10461,6 +10467,7 @@ mod tests {
             original_date: 0,
             release_date: 0,
             loudness: None,
+            format: None,
         }
     }
 
@@ -10581,6 +10588,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -10593,6 +10601,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             },
         ];
         s.route = Route::Genre;
@@ -10968,6 +10977,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -10980,6 +10990,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             },
         ];
         s.route = Route::Album;
@@ -11214,6 +11225,7 @@ mod tests {
             original_date: 0,
             release_date: 0,
             loudness: None,
+            format: None,
         }];
         s.now_playing_id = Some(1);
         let env = Env {
@@ -11615,6 +11627,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -11627,6 +11640,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             },
         ];
         let env = Env {
@@ -12090,6 +12104,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             })
             .collect();
         let env = Env {
@@ -12171,6 +12186,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             })
             .collect();
         let env = Env {
@@ -12280,6 +12296,7 @@ mod tests {
                 original_date: 0,
                 release_date: 0,
                 loudness: None,
+                format: None,
             }
         }
         let mut s = State::new(PlayerHandle::offline());
@@ -12334,6 +12351,7 @@ mod tests {
             original_date: 0,
             release_date: 0,
             loudness: None,
+            format: None,
         }
     }
 
@@ -12553,6 +12571,7 @@ mod tests {
             original_date: 1973u32 << 9,
             release_date: 2015u32 << 9,
             loudness: None,
+            format: None,
         }];
         let env = Env {
             system_dark: true,

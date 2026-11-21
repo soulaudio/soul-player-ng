@@ -364,6 +364,10 @@ impl Library {
                     // The baked loudness (present once a scan has stamped it); the host
                     // overrides with fresher live analysis via `mark_loudness`.
                     loudness: t.loudness.map(Into::into),
+                    // Cheap: the file name is already being resolved for `locate`-style
+                    // lookups elsewhere; this is just an interned-string resolve plus an
+                    // extension match, no path join or IO.
+                    format: resolve(&cat, t.file_name).as_deref().and_then(format_label),
                 })
             })
             .collect()
@@ -445,6 +449,32 @@ fn album_dates(cat: &MultiCatalog, album: u32) -> (u32, u32) {
     cat.album(album)
         .map(|a| (a.original_date.0, a.release_date.0))
         .unwrap_or((0, 0))
+}
+
+/// An uppercased codec/container label for the Tracks table's FORMAT badge,
+/// derived from a resolved file name's extension (lower-cased before matching,
+/// so `.FLAC` and `.flac` agree). Aliases a handful of extensions to the label
+/// the old app shows (`m4a` -> `M4A`, `aif`/`aiff` -> `AIFF`, `ogg`/`oga` ->
+/// `OGG`); anything else known-audio just uppercases its own extension (`mp2` ->
+/// `MP2`). `None` when the name has no extension: the importer only ever hands
+/// this already-supported audio file names, so every real call resolves to
+/// `Some`.
+fn format_label(file_name: &str) -> Option<String> {
+    let ext = Path::new(file_name).extension()?.to_str()?.to_lowercase();
+    Some(match ext.as_str() {
+        "flac" => "FLAC".to_string(),
+        "mp3" => "MP3".to_string(),
+        "wav" => "WAV".to_string(),
+        "m4a" => "M4A".to_string(),
+        "aac" => "AAC".to_string(),
+        "ogg" | "oga" => "OGG".to_string(),
+        "opus" => "OPUS".to_string(),
+        "aif" | "aiff" => "AIFF".to_string(),
+        "dsf" => "DSF".to_string(),
+        "dff" => "DFF".to_string(),
+        "wv" => "WV".to_string(),
+        _ => ext.to_uppercase(),
+    })
 }
 
 /// Map the importer's `"Unknown Artist"` / `"Unknown Album"` placeholders back to
@@ -852,6 +882,61 @@ mod tests {
         // contiguous: Ambient, then both Rock tracks, then Unknown Genre.
         let genres: Vec<&str> = v.iter().map(|t| t.genre.as_deref().unwrap()).collect();
         assert_eq!(genres, vec!["Ambient", "Rock", "Rock", "Unknown Genre"]);
+    }
+
+    /// `format_label` maps a resolved file name's extension to the uppercase
+    /// label the Tracks table's FORMAT badge shows: known aliases normalize to
+    /// the old app's label, an unlisted-but-real extension just uppercases
+    /// itself, and a name with no extension carries no format at all.
+    #[test]
+    fn format_label_maps_extensions_to_uppercase_labels() {
+        assert_eq!(format_label("track.flac").as_deref(), Some("FLAC"));
+        assert_eq!(format_label("TRACK.FLAC").as_deref(), Some("FLAC"));
+        assert_eq!(format_label("track.mp3").as_deref(), Some("MP3"));
+        assert_eq!(format_label("track.wav").as_deref(), Some("WAV"));
+        assert_eq!(format_label("track.m4a").as_deref(), Some("M4A"));
+        assert_eq!(format_label("track.aac").as_deref(), Some("AAC"));
+        assert_eq!(format_label("track.ogg").as_deref(), Some("OGG"));
+        assert_eq!(format_label("track.oga").as_deref(), Some("OGG"));
+        assert_eq!(format_label("track.opus").as_deref(), Some("OPUS"));
+        assert_eq!(format_label("track.aif").as_deref(), Some("AIFF"));
+        assert_eq!(format_label("track.aiff").as_deref(), Some("AIFF"));
+        assert_eq!(format_label("track.dsf").as_deref(), Some("DSF"));
+        assert_eq!(format_label("track.dff").as_deref(), Some("DFF"));
+        assert_eq!(format_label("track.wv").as_deref(), Some("WV"));
+        assert_eq!(format_label("track.mp2").as_deref(), Some("MP2"));
+        // Unknown-but-real extension: falls back to the uppercased extension.
+        assert_eq!(format_label("track.xyz").as_deref(), Some("XYZ"));
+        // No extension at all: no format.
+        assert_eq!(format_label("track"), None);
+        assert_eq!(format_label("README"), None);
+    }
+
+    /// `views_by` derives each track's `format` from its resolved file name's
+    /// extension (the FORMAT badge data), scanned end to end through the real
+    /// import -> bake -> `IndexReader` -> projection chain (not just the pure
+    /// `format_label` helper above).
+    #[test]
+    fn views_by_populates_format_from_file_extension() {
+        let root = tmpdir("format");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::copy(fixture("tagged.flac"), root.join("b.flac")).unwrap();
+
+        let lib = Library::scan(&root).unwrap();
+        let views = lib.views_by(BrowseAxis::ArtistAlbumTrack);
+        assert_eq!(views.len(), 2);
+
+        let wav_view = views
+            .iter()
+            .find(|v| lib.path_of(v.id).unwrap().ends_with("a.wav"))
+            .expect("the wav track is present");
+        assert_eq!(wav_view.format.as_deref(), Some("WAV"));
+
+        let flac_view = views
+            .iter()
+            .find(|v| lib.path_of(v.id).unwrap().ends_with("b.flac"))
+            .expect("the flac track is present");
+        assert_eq!(flac_view.format.as_deref(), Some("FLAC"));
     }
 
     /// `views_by` projects the owning album's packed original/release dates onto

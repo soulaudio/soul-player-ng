@@ -291,6 +291,12 @@ pub struct TrackView {
     /// and refreshed from the host's live analysis map (`mark_loudness`); drives the
     /// library loudness/DR column and its sort.
     pub loudness: Option<TrackLoudness>,
+    /// An uppercased codec/container label derived from the file name's extension
+    /// (`"FLAC"`, `"MP3"`, `"WAV"`, `"M4A"`, …), for the Tracks table's color-coded
+    /// FORMAT badge. `None` when the name can't resolve or carries no extension.
+    /// Cheap: the backend projection (`Library::views_by`) derives this from the
+    /// already-resolved file name, no extra decode or path join.
+    pub format: Option<String>,
 }
 
 /// The current track's ORIGINAL source format, for the signal-path display.
