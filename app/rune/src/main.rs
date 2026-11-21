@@ -381,6 +381,9 @@ struct State {
     album_year: config::AlbumYearSource,
     /// Which baked axis the library list is ordered by.
     sort_axis: BrowseAxis,
+    /// Set when a `TrackLoudnessAnalyzed` event arrives; the next Tick re-fetches the library
+    /// so the loudness/DR column fills in, coalescing a sweep's event burst.
+    loudness_dirty: bool,
     /// The configured sources with their per-source status (from the host),
     /// rendered by Settings → Sources: each carries its path, enabled flag,
     /// current availability (an unreachable root shows "offline"), and track count.
@@ -731,6 +734,7 @@ impl State {
                 .unwrap_or(ThemePref::System),
             album_year: config::load_album_year(),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
+            loudness_dirty: false,
             sources,
             remote_health_refreshing: false,
             remote_health_open: false,
@@ -855,6 +859,13 @@ impl State {
                 self.muted = t.muted;
                 self.shuffle = t.shuffle;
                 self.repeat = t.repeat;
+                // Fresh loudness analysis arrived since the last tick: re-fetch the library
+                // so the loudness/DR column fills in. Coalesced here (≤ tick rate) so a
+                // full-library sweep doesn't re-project per track.
+                if self.loudness_dirty {
+                    self.library = self.host.views_by(self.sort_axis);
+                    self.loudness_dirty = false;
+                }
             }
             Event::Queue(q) => {
                 self.up_next = q.up_next_ids.clone();
@@ -865,9 +876,12 @@ impl State {
             Event::SignalPath(sp) => {
                 self.signal_path = *sp;
             }
-            // Persisted off-thread in the subscribe closure (see `main`); the
-            // hybrid-ReplayGain cache is silent — no UI state to fold in here.
-            Event::TrackLoudnessAnalyzed { .. } => {}
+            // Persisted off-thread in the subscribe closure (see `main`). For the library
+            // loudness/DR column, flag a refresh (coalesced on the next Tick, below) rather
+            // than re-projecting the whole library per analyzed track during a sweep.
+            Event::TrackLoudnessAnalyzed { .. } => {
+                self.loudness_dirty = true;
+            }
             // A rescan found deletions under an available source — stash the warning
             // for the Sources page (cleared on the next refresh by `apply_watch`).
             Event::TracksRemoved { root, count } => {
@@ -11385,6 +11399,105 @@ mod tests {
         for key in ["sort-artist", "sort-album", "sort-title", "sort-folder"] {
             assert!(rt.find(key).is_some(), "sort option {key} present");
         }
+    }
+
+    /// DR is the headline loudness indicator and renders at every width; Integrated LUFS
+    /// is secondary and joins only on a wide pane (where there is room beside artist/album).
+    /// This matches the design and guards the overflow regression that first appeared when
+    /// BOTH columns were added to every non-compact row.
+    #[test]
+    fn dr_shows_everywhere_but_lufs_only_on_a_wide_pane() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let populated = || {
+            let host = PlayerHandle::offline();
+            host.open_folder(&testdata_dir()).expect("scan testdata");
+            State::new(host)
+        };
+        let s = populated();
+        let tid = s.library.first().map(|t| t.id).expect("a scanned track");
+
+        // Wide window: the second frame reads the first's committed pane width, so the
+        // wide tier is in play and the DR + LUFS cells both render for the first row.
+        let mut wide = Runtime::new(s, view, (1400.0, 720.0), env);
+        wide.frame(0.0);
+        wide.frame(0.0);
+        assert!(
+            wide.find(&format!("dr-{tid}")).is_some(),
+            "the DR column shows on a wide pane"
+        );
+        assert!(
+            wide.find(&format!("lufs-{tid}")).is_some(),
+            "the LUFS column shows on a wide pane"
+        );
+
+        // Narrow but still a desktop window (>= the 640 mobile breakpoint, so the library
+        // renders rather than the mobile menu): the ~440pt pane is the compact tier, where
+        // DR still shows (the headline) but LUFS drops so the folded title/artist keep their
+        // room. A fresh scan, so read its own first id (scan-assigned ids need not match the
+        // wide state's).
+        let narrow_state = populated();
+        let narrow_tid = narrow_state
+            .library
+            .first()
+            .map(|t| t.id)
+            .expect("a scanned track");
+        let mut narrow = Runtime::new(narrow_state, view, (760.0, 720.0), env);
+        narrow.frame(0.0);
+        narrow.frame(0.0);
+        assert!(
+            narrow.find(&format!("dr-{narrow_tid}")).is_some(),
+            "the DR column still shows on a narrow pane"
+        );
+        assert!(
+            narrow.find(&format!("lufs-{narrow_tid}")).is_none(),
+            "the LUFS column is hidden on a narrow pane"
+        );
+    }
+
+    /// The library refreshes itself when background loudness analysis completes: a
+    /// `TrackLoudnessAnalyzed` event flags a pending refresh, and the next `Tick`
+    /// consumes it (re-projecting the library so the new readouts appear) and clears
+    /// the flag. This keeps a full-library sweep down to at most one re-project per
+    /// tick instead of per analyzed track.
+    #[test]
+    fn loudness_analysis_refreshes_the_library_on_the_next_tick() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        assert!(
+            !s.loudness_dirty,
+            "a fresh state has no pending loudness refresh"
+        );
+
+        s.apply(&Event::TrackLoudnessAnalyzed {
+            path: std::path::PathBuf::from("somewhere/track.flac"),
+            loudness: TrackLoudness {
+                integrated_lufs: -14.0,
+                lra: 6.0,
+                true_peak_dbtp: -1.0,
+                plr: 9.0,
+                dr: 12.0,
+            },
+        });
+        assert!(
+            s.loudness_dirty,
+            "a completed analysis flags the library for a refresh"
+        );
+
+        s.apply(&Event::Tick(soul_player_host::Tick {
+            now_playing_id: None,
+            position_secs: 0.0,
+            duration_secs: None,
+            state: PlayState::Stopped,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            volume: 1.0,
+            muted: false,
+        }));
+        assert!(!s.loudness_dirty, "the next tick consumes the refresh flag");
     }
 
     /// A populated library shows the search bar, and a matching query keeps the

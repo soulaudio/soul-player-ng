@@ -26,11 +26,54 @@ pub(crate) fn fmt_dur(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// The Integrated-LUFS cell for a track row: `-14.0`, or `·` until the track is analyzed
+/// (or if it is below the measurement gate / silent).
+fn lufs_cell(t: &TrackView, p: &Palette) -> El {
+    let label = match t.loudness {
+        Some(l) if l.integrated_lufs.is_finite() => format!("{:.1}", l.integrated_lufs),
+        _ => "·".to_string(),
+    };
+    text(label)
+        .key(format!("lufs-{}", t.id))
+        .font(type_::ITEM)
+        .color(p.text_secondary)
+        .w(64.0)
+}
+
+/// The DR cell for a track row: `DR12`, color-banded by [`crate::views::signal_path::dr_color`]
+/// (green dynamic, warm compressed), or `·` until analyzed. DR is an indicator, not a precise
+/// quality score (it is crest factor, not true dynamic range).
+fn dr_cell(t: &TrackView, p: &Palette) -> El {
+    let (label, color) = match t.loudness {
+        Some(l) => (
+            format!("DR{}", l.dr.round() as i32),
+            crate::views::signal_path::dr_color(l.dr, p),
+        ),
+        None => ("·".to_string(), p.text_secondary),
+    };
+    text(label)
+        .key(format!("dr-{}", t.id))
+        .font(type_::ITEM)
+        .color(color)
+        .w(44.0)
+}
+
 /// Case-insensitive substring match over the fields a user would search by.
 /// `q` is already lowercased by the caller.
 pub(crate) fn track_matches(t: &TrackView, q: &str) -> bool {
     let hit = |o: &Option<String>| o.as_deref().is_some_and(|v| v.to_lowercase().contains(q));
     hit(&t.title) || hit(&t.artist) || hit(&t.album)
+}
+
+/// How much horizontal room the track list has, in three tiers driven by the
+/// content pane's own width (see `track_list`). Each tier reveals one more
+/// column band: `Compact` folds artist under the title; `Standard` breaks out
+/// the artist/album columns; `Wide` additionally shows the loudness/DR columns.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowWidth {
+    Compact,
+    Standard,
+    Wide,
 }
 
 /// One track row. `ids` is the id list of the *currently visible* (possibly
@@ -42,9 +85,10 @@ fn track_row(
     t: &TrackView,
     ids: &[u32],
     index: usize,
-    compact: bool,
+    width: RowWidth,
     scale: f32,
 ) -> El {
+    let compact = width == RowWidth::Compact;
     let playing = s.now_playing_id == Some(t.id);
     let ids = ids.to_vec();
     let start = index as u32;
@@ -156,90 +200,102 @@ fn track_row(
                     .font(type_::ITEM)
                     .color(p.text_secondary)
                     .truncate()
-                    .grow(1.0),
+                    .grow(1.0)
+                    .min_w(0.0),
             )
             .child(
                 text(t.album.clone().unwrap_or_default())
                     .font(type_::ITEM)
                     .color(p.text_secondary)
                     .truncate()
-                    .grow(1.0),
+                    .grow(1.0)
+                    .min_w(0.0),
             );
     }
-    r.child(
+    r = r.child(
         text(fmt_dur(t.duration_secs))
             .font(type_::ITEM)
             .color(p.text_secondary)
             .w(56.0),
-    )
-    // Add-to-queue (`+`): appends the track to the override queue, which
-    // shows up in the "Up Next" sidebar. Nested in the clickable row, but
-    // Rune hit-tests to the innermost target, so pressing it enqueues
-    // without also starting playback.
-    .child(
-        el().key(format!("enqueue-{}", t.id))
-            .role("button")
-            .label(t!("library.addToQueue").to_string())
-            .focusable(true)
-            .padding(space::SNUG)
-            .radius(radius::SM)
-            .fill(p.muted)
-            .cursor(Cursor::Pointer)
-            .hover(p.fg.alpha(fx::HOVER))
-            .press(p.fg.alpha(fx::PRESS))
-            .child(icon(&icons::PLUS, 14.0).color(p.text_secondary))
-            .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
-    )
-    // Right-click: a context menu with the fuller per-track actions (Play,
-    // Play next, Add to queue, Add to playlist). Anchored at the click
-    // point. "Add to playlist" is a native menu ITEM opening the themed
-    // `views::add_to_playlist` overlay (not a `PopupMenu::picker`, which the
-    // arch test bans only for selection dropdowns). Where popup menus aren't
-    // supported, the inline + button remains the add-to-queue fallback.
-    .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
-        let play_ids = menu_ids.clone();
-        tx.popup_menu(
-            PopupMenu::new()
-                .item(PopupItem::new("play", t!("player.play").to_string()))
-                .item(PopupItem::new(
-                    "play-next",
-                    t!("library.playNext").to_string(),
-                ))
-                .item(PopupItem::new(
-                    "enqueue",
-                    t!("library.addToQueue").to_string(),
-                ))
-                .item(PopupItem::new(
-                    "add-to-playlist",
-                    t!("playlists.addTo").to_string(),
-                )),
-            press,
-            move |st: &mut State, picked, _tx: &mut Tx| match picked {
-                Some("play") => st.host.send(Command::PlayContext {
-                    ids: play_ids.clone(),
+    );
+    // Audiophile loudness columns, mirroring the duration column (right-aligned, fixed
+    // width). DR is the headline indicator (narrow, color-banded) and shows at every
+    // width; Integrated LUFS is secondary and only joins on a WIDE pane, where there is
+    // room for it beside artist/album without crowding them. Each shows "·" until the
+    // background sweep analyzes the track.
+    r = r.child(dr_cell(t, p));
+    if width == RowWidth::Wide {
+        r = r.child(lufs_cell(t, p));
+    }
+    r
+        // Add-to-queue (`+`): appends the track to the override queue, which
+        // shows up in the "Up Next" sidebar. Nested in the clickable row, but
+        // Rune hit-tests to the innermost target, so pressing it enqueues
+        // without also starting playback.
+        .child(
+            el().key(format!("enqueue-{}", t.id))
+                .role("button")
+                .label(t!("library.addToQueue").to_string())
+                .focusable(true)
+                .padding(space::SNUG)
+                .radius(radius::SM)
+                .fill(p.muted)
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
+                .child(icon(&icons::PLUS, 14.0).color(p.text_secondary))
+                .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
+        )
+        // Right-click: a context menu with the fuller per-track actions (Play,
+        // Play next, Add to queue, Add to playlist). Anchored at the click
+        // point. "Add to playlist" is a native menu ITEM opening the themed
+        // `views::add_to_playlist` overlay (not a `PopupMenu::picker`, which the
+        // arch test bans only for selection dropdowns). Where popup menus aren't
+        // supported, the inline + button remains the add-to-queue fallback.
+        .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
+            let play_ids = menu_ids.clone();
+            tx.popup_menu(
+                PopupMenu::new()
+                    .item(PopupItem::new("play", t!("player.play").to_string()))
+                    .item(PopupItem::new(
+                        "play-next",
+                        t!("library.playNext").to_string(),
+                    ))
+                    .item(PopupItem::new(
+                        "enqueue",
+                        t!("library.addToQueue").to_string(),
+                    ))
+                    .item(PopupItem::new(
+                        "add-to-playlist",
+                        t!("playlists.addTo").to_string(),
+                    )),
+                press,
+                move |st: &mut State, picked, _tx: &mut Tx| match picked {
+                    Some("play") => st.host.send(Command::PlayContext {
+                        ids: play_ids.clone(),
+                        start,
+                    }),
+                    Some("play-next") => st.host.send(Command::PlayNext(tid)),
+                    Some("enqueue") => st.host.send(Command::Enqueue(tid)),
+                    Some("add-to-playlist") => crate::open_add_to_playlist(st, tid),
+                    _ => {}
+                },
+            );
+        })
+        .on_press(move |st: &mut State| {
+            // Clicking the row plays that track, or toggles pause/resume when it is
+            // already the one playing — so re-clicking the current row pauses rather
+            // than restarting it.
+            let cmd = if st.now_playing_id == Some(tid) {
+                Command::TogglePlay
+            } else {
+                Command::PlayContext {
+                    ids: ids.clone(),
                     start,
-                }),
-                Some("play-next") => st.host.send(Command::PlayNext(tid)),
-                Some("enqueue") => st.host.send(Command::Enqueue(tid)),
-                Some("add-to-playlist") => crate::open_add_to_playlist(st, tid),
-                _ => {}
-            },
-        );
-    })
-    .on_press(move |st: &mut State| {
-        // Clicking the row plays that track, or toggles pause/resume when it is
-        // already the one playing — so re-clicking the current row pauses rather
-        // than restarting it.
-        let cmd = if st.now_playing_id == Some(tid) {
-            Command::TogglePlay
-        } else {
-            Command::PlayContext {
-                ids: ids.clone(),
-                start,
-            }
-        };
-        st.host.send(cmd);
-    })
+                }
+            };
+            st.host.send(cmd);
+        })
 }
 
 /// The search bar: shows the current filter and, while active, a cursor. Click
@@ -310,10 +366,23 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // from last frame's layout — not the window — so a wide sidebar also triggers
     // the compact rows. Below the old app's `sm` (640) the artist/album columns
     // collapse into a subtitle. First frame has no prior layout → assume standard.
-    let compact = cx
+    // Three width tiers (see `RowWidth`): below the old app's `sm` (640) the
+    // artist/album columns fold into a subtitle; the loudness/DR columns only appear
+    // on a genuinely wide pane (> 760) since a medium row is already full of
+    // artist/album/duration and they would overflow. First frame has no prior layout,
+    // so we fall back to `Standard` (no fold, no loudness).
+    let width = cx
         .layout_size("library-page")
-        .map(|[w, _]| w <= 640.0)
-        .unwrap_or(false);
+        .map(|[w, _]| {
+            if w <= 640.0 {
+                RowWidth::Compact
+            } else if w > 760.0 {
+                RowWidth::Wide
+            } else {
+                RowWidth::Standard
+            }
+        })
+        .unwrap_or(RowWidth::Standard);
     if s.library.is_empty() {
         // Cold launch with no SOUL_PLAYER_FOLDER: a usable entry point rather
         // than a blank list.
@@ -362,7 +431,7 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         // app's global volume/seek shortcuts; per-list arrow roving is a follow-up.)
         let mut list = col().key("tracks").role("list").gap(space::XXS);
         for (i, t) in visible.iter().enumerate() {
-            list = list.child(track_row(s, p, t, &ids, i, compact, scale));
+            list = list.child(track_row(s, p, t, &ids, i, width, scale));
         }
         scrollbar::attach(
             list.scroll(ScrollSpec {
