@@ -267,9 +267,13 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, corner: f32, p: &Palette, sc
         return cover_placeholder(size, corner, p);
     };
     match s.art.image_for(id, &s.host, scale) {
-        // Ready and error-free: show it. Pending or failed covers keep the
-        // placeholder rather than a blank or broken texture.
-        Some(image) if image.is_ready() && image.error().is_none() => el()
+        // Carry the pixels as soon as the image exists and has not errored, even
+        // while it is still decoding. Pending pixels draw nothing (the muted box
+        // reads as the placeholder until they land), but the element now owns the
+        // `Pixels` source, so rune subscribes its repaint waker and swaps in the
+        // cover the instant that specific decode finishes, with no dependence on
+        // a playback/scan tick. A missing or failed image keeps the note.
+        Some(image) if image.error().is_none() => el()
             .key("cover")
             .size(size, size)
             .radius(corner)
@@ -292,7 +296,9 @@ pub fn cover_from_path(
     scale: f32,
 ) -> El {
     match s.art.image_for_path(path, scale) {
-        Some(image) if image.is_ready() && image.error().is_none() => el()
+        // Same as [`cover`]: carry pixels while decoding so the element owns the
+        // source and repaints itself when the decode lands.
+        Some(image) if image.error().is_none() => el()
             .key("cover")
             .size(size, size)
             .radius(corner)

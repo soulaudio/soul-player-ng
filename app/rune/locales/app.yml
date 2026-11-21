@@ -131,6 +131,13 @@ album.playAll:
   zh: '全部播放'
   cs: 'Přehrát vše'
   ja: 'すべて再生'
+albums.searchPlaceholder:
+  en: 'Search albums'
+  de: 'Alben durchsuchen'
+  es: 'Buscar álbumes'
+  zh: '搜索专辑'
+  cs: 'Hledat alba'
+  ja: 'アルバムを検索'
 artist.eyebrow:
   en: 'Artist'
   de: 'Künstler'
@@ -236,6 +243,13 @@ artist.viewList:
   zh: '列表视图'
   cs: 'Seznam'
   ja: 'リスト表示'
+artists.searchPlaceholder:
+  en: 'Search artists'
+  de: 'Künstler durchsuchen'
+  es: 'Buscar artistas'
+  zh: '搜索艺术家'
+  cs: 'Hledat interprety'
+  ja: 'アーティストを検索'
 genre.searchPlaceholder:
   en: 'Search this genre'
   de: 'In diesem Genre suchen'
