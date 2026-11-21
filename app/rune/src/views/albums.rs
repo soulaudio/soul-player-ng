@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use rune::{
     Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
+    text_input,
 };
 use soul_player_host::{Command, TrackView};
 
@@ -77,6 +78,22 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
         );
     }
     albums
+}
+
+/// Narrow `albums` to those whose name or artist contains `query`, a
+/// case-insensitive substring match; `query` must already be lowercased (the
+/// caller lowercases the search box's text once rather than per-album). An
+/// empty query keeps every album, same convention as the genre-detail search.
+pub(crate) fn filter_albums(albums: Vec<Album>, query: &str) -> Vec<Album> {
+    if query.is_empty() {
+        return albums;
+    }
+    albums
+        .into_iter()
+        .filter(|a| {
+            a.name.to_lowercase().contains(query) || a.artist.to_lowercase().contains(query)
+        })
+        .collect()
 }
 
 /// The album's display year for the chosen source: the selected date, falling
@@ -187,15 +204,36 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
     )
 }
 
-/// The Albums page: a responsive grid of album cards, scrolled vertically.
+/// The Albums page: an always-visible search box above a responsive grid of
+/// album cards, scrolled vertically. Mirrors the original soul-player's
+/// per-page search (and the genre-detail page's own search box, which this
+/// copies the styling of).
 pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
-    let albums = group_albums(&s.library);
+    let q = s.album_search.text.to_lowercase();
+    let albums = filter_albums(group_albums(&s.library), &q);
     // Responsive grid (the old app's `grid-cols-2 sm:3 md:4 lg:5 xl:6 2xl:8`): fill
     // the content pane, adding columns as it widens. Read the pane's laid-out width
     // (minus the grid's own padding); the first frame has no prior layout, so fall
     // back to a sensible desktop width.
     let pane = cx.layout_size("albums").map(|[w, _]| w).unwrap_or(820.0);
     let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
+
+    let search = text_input(&s.album_search, type_::ITEM)
+        .key("albums-search")
+        .single_line()
+        .label(t!("albums.searchPlaceholder").to_string())
+        .w_full()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .color(p.fg)
+        .on_edit(|st: &mut State| &mut st.album_search);
+    let search_bar = row()
+        .key("albums-search-bar")
+        .px(space::PANE)
+        .pt(space::SM)
+        .child(search);
 
     let mut grid = row()
         .key("albums-grid")
@@ -208,23 +246,28 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     for (slot, a) in albums.iter().enumerate() {
         grid = grid.child(album_card(s, p, slot, a, card_w, scale));
     }
-    col().key("albums").grow(1.0).min_h(0.0).child(
-        // Scroll on the growing wrapper, NOT the grid itself. A flex-wrap grid that is
-        // the growing scroll element has flexbox stretch its wrapped lines to fill the
-        // height, spreading the rows apart whenever the library doesn't fill the window
-        // (worse the more you zoom — fewer rows fit). A natural-height grid inside a
-        // growing scroll viewport packs rows to the top (extra space falls below the
-        // last row) and still scrolls once the content is taller than the viewport.
-        col()
-            .key("albums-scroll")
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .scroll_edge_fade(24.0)
-            .grow(1.0)
-            .min_h(0.0)
-            .child(grid),
-    )
+    col()
+        .key("albums")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(search_bar)
+        .child(
+            // Scroll on the growing wrapper, NOT the grid itself. A flex-wrap grid that is
+            // the growing scroll element has flexbox stretch its wrapped lines to fill the
+            // height, spreading the rows apart whenever the library doesn't fill the window
+            // (worse the more you zoom, fewer rows fit). A natural-height grid inside a
+            // growing scroll viewport packs rows to the top (extra space falls below the
+            // last row) and still scrolls once the content is taller than the viewport.
+            col()
+                .key("albums-scroll")
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_edge_fade(24.0)
+                .grow(1.0)
+                .min_h(0.0)
+                .child(grid),
+        )
 }
 
 /// A back link — a `←` glyph. Returns to wherever this album was opened from
@@ -848,6 +891,115 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.contains("reissued")),
             "release-year subtitle already shows the year; the note would be redundant; got {texts:?}"
+        );
+    }
+
+    /// `filter_albums` keeps an album when the query substring-matches its
+    /// name OR its artist (case-insensitively), and keeps everything for an
+    /// empty query.
+    #[test]
+    fn filter_albums_matches_name_or_artist_case_insensitively() {
+        let albums = group_albums(&[
+            atv(1, "Pavement", "Crooked Rain"),
+            atv(2, "Can", "Tago Mago"),
+            atv(3, "Beck", "Mellow Gold"),
+        ]);
+        let by_name = filter_albums(albums.clone(), "mago");
+        assert_eq!(
+            by_name.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            vec!["Tago Mago"],
+            "a name substring match (lowercased query) keeps only that album"
+        );
+        let by_artist = filter_albums(albums.clone(), "beck");
+        assert_eq!(
+            by_artist
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Mellow Gold"],
+            "an artist substring match keeps that album even when the name doesn't match"
+        );
+        let empty_query = filter_albums(albums.clone(), "");
+        assert_eq!(empty_query.len(), 3, "an empty query keeps every album");
+        let no_match = filter_albums(albums, "zzz");
+        assert!(no_match.is_empty(), "no match keeps nothing");
+    }
+
+    /// End-to-end through the real Albums grid: the search box renders above
+    /// the grid, and typing a query that matches only one album's name or
+    /// artist narrows the grid down to it; clearing it shows every album again.
+    #[test]
+    fn albums_search_narrows_the_grid() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            albums_page(s, &p, cx, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![
+            atv(1, "Pavement", "Crooked Rain"),
+            atv(2, "Can", "Tago Mago"),
+        ];
+        s.route = crate::Route::Albums;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("albums-search").is_some(),
+            "the search box renders above the grid"
+        );
+        // Match by rendered text, not slot key: a filtered grid re-indexes its
+        // remaining cards from 0, so "album-0" exists regardless of which
+        // album survived, only the text proves it's the right one. Skip
+        // `exiting` elements: a removed card plays an exit transition and
+        // stays in `elements()` with its stale text until it settles.
+        let texts = |rt: &Runtime<State>| -> Vec<String> {
+            rt.elements()
+                .into_iter()
+                .filter(|e| !e.exiting)
+                .filter_map(|e| e.text)
+                .collect()
+        };
+        assert!(
+            texts(&rt).iter().any(|t| t == "Crooked Rain")
+                && texts(&rt).iter().any(|t| t == "Tago Mago"),
+            "both albums show with no query"
+        );
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.album_search = rune::TextEdit::new("tago"));
+        rt.frame(0.0);
+        assert!(
+            texts(&rt).iter().any(|t| t == "Tago Mago"),
+            "the name match stays"
+        );
+        assert!(
+            !texts(&rt).iter().any(|t| t == "Crooked Rain"),
+            "the non-match is filtered out of the grid"
+        );
+
+        // The query also matches by artist, not just album name.
+        rt.update(|st: &mut State, _tx: &mut Tx| st.album_search = rune::TextEdit::new("pavement"));
+        rt.frame(0.0);
+        assert!(
+            texts(&rt).iter().any(|t| t == "Crooked Rain"),
+            "an artist-name match keeps that album"
+        );
+        assert!(!texts(&rt).iter().any(|t| t == "Tago Mago"));
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.album_search = rune::TextEdit::new(""));
+        rt.frame(0.0);
+        assert!(
+            texts(&rt).iter().any(|t| t == "Crooked Rain")
+                && texts(&rt).iter().any(|t| t == "Tago Mago"),
+            "clearing the query shows every album again"
         );
     }
 }

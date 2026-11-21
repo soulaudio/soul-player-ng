@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text};
+use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text, text_input};
 use soul_player_host::TrackView;
 
 use crate::State;
@@ -69,6 +69,20 @@ pub(crate) fn group_artists(library: &[TrackView]) -> Vec<Artist> {
     artists
 }
 
+/// Narrow `artists` to those whose name contains `query`, a case-insensitive
+/// substring match; `query` must already be lowercased (the caller lowercases
+/// the search box's text once rather than per-artist). An empty query keeps
+/// every artist, same convention as the genre-detail search.
+pub(crate) fn filter_artists(artists: Vec<Artist>, query: &str) -> Vec<Artist> {
+    if query.is_empty() {
+        return artists;
+    }
+    artists
+        .into_iter()
+        .filter(|a| a.name.to_lowercase().contains(query))
+        .collect()
+}
+
 /// One artist card: a circular avatar with a hover play-overlay, the name, and a
 /// track count. Clicking the body opens the artist's detail page; the overlay
 /// plays the artist's tracks. Mirrors the album card (the original's MediaCard).
@@ -103,13 +117,34 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
     )
 }
 
-/// The Artists page: a responsive grid of artist cards, scrolled vertically.
+/// The Artists page: an always-visible search box above a responsive grid of
+/// artist cards, scrolled vertically. Mirrors the original soul-player's
+/// per-page search (and the genre-detail page's own search box, which this
+/// copies the styling of).
 pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
-    let artists = group_artists(&s.library);
+    let q = s.artist_search.text.to_lowercase();
+    let artists = filter_artists(group_artists(&s.library), &q);
     // Reuse the albums grid's responsive column rule; read this page's own pane
     // width (first frame has no prior layout → a sensible desktop fallback).
     let pane = cx.layout_size("artists").map(|[w, _]| w).unwrap_or(820.0);
     let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
+
+    let search = text_input(&s.artist_search, type_::ITEM)
+        .key("artists-search")
+        .single_line()
+        .label(t!("artists.searchPlaceholder").to_string())
+        .w_full()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .color(p.fg)
+        .on_edit(|st: &mut State| &mut st.artist_search);
+    let search_bar = row()
+        .key("artists-search-bar")
+        .px(space::PANE)
+        .pt(space::SM)
+        .child(search);
 
     let mut grid = row()
         .key("artists-grid")
@@ -120,21 +155,26 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     for (slot, a) in artists.iter().enumerate() {
         grid = grid.child(artist_card(s, p, slot, a, card_w, scale));
     }
-    col().key("artists").grow(1.0).min_h(0.0).child(
-        // Scroll on the growing wrapper, not the grid — see `albums_page`: a flex-wrap
-        // grid that is itself the growing scroll element stretches its wrapped rows
-        // down the viewport when they don't fill it. Natural-height grid, growing
-        // scroll viewport around it.
-        col()
-            .key("artists-scroll")
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .scroll_edge_fade(24.0)
-            .grow(1.0)
-            .min_h(0.0)
-            .child(grid),
-    )
+    col()
+        .key("artists")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(search_bar)
+        .child(
+            // Scroll on the growing wrapper, not the grid, see `albums_page`: a flex-wrap
+            // grid that is itself the growing scroll element stretches its wrapped rows
+            // down the viewport when they don't fill it. Natural-height grid, growing
+            // scroll viewport around it.
+            col()
+                .key("artists-scroll")
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_edge_fade(24.0)
+                .grow(1.0)
+                .min_h(0.0)
+                .child(grid),
+        )
 }
 
 /// A back link to the Artists grid — a `←` glyph.
@@ -429,6 +469,7 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Tx;
 
     fn tv(id: u32, artist: &str) -> TrackView {
         TrackView {
@@ -492,5 +533,83 @@ mod tests {
 
         let all_local = group_artists(&[tv(5, "Satie"), tv(6, "Satie")]);
         assert_eq!(all_local[0].remote_source, None, "all local -> no badge");
+    }
+
+    /// `filter_artists` keeps an artist when the query substring-matches its
+    /// name (case-insensitively), and keeps everyone for an empty query.
+    #[test]
+    fn filter_artists_matches_name_case_insensitively() {
+        let lib = [tv(1, "Bach"), tv(2, "Satie"), tv(3, "Beck")];
+        let matched = filter_artists(group_artists(&lib), "ba");
+        assert_eq!(
+            matched.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(),
+            vec!["Bach"],
+            "a lowercased substring query keeps only the matching artist"
+        );
+        let empty_query = filter_artists(group_artists(&lib), "");
+        assert_eq!(empty_query.len(), 3, "an empty query keeps every artist");
+        let no_match = filter_artists(group_artists(&lib), "zzz");
+        assert!(no_match.is_empty(), "no match keeps nobody");
+    }
+
+    /// End-to-end through the real Artists grid: the search box renders above
+    /// the grid, and typing a query that matches only one artist's name
+    /// narrows the grid down to it; clearing it shows every artist again.
+    #[test]
+    fn artists_search_narrows_the_grid() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            artists_page(s, &p, cx, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![tv(1, "Bach"), tv(2, "Satie")];
+        s.route = crate::Route::Artists;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("artists-search").is_some(),
+            "the search box renders above the grid"
+        );
+        // Match by rendered text, not slot key: a filtered grid re-indexes its
+        // remaining cards from 0, so "artist-0" exists regardless of which
+        // artist survived, only the text proves it's the right one. Skip
+        // `exiting` elements: a removed card plays an exit transition and
+        // stays in `elements()` with its stale text until it settles.
+        let texts = |rt: &Runtime<State>| -> Vec<String> {
+            rt.elements()
+                .into_iter()
+                .filter(|e| !e.exiting)
+                .filter_map(|e| e.text)
+                .collect()
+        };
+        assert!(
+            texts(&rt).iter().any(|t| t == "Bach") && texts(&rt).iter().any(|t| t == "Satie"),
+            "both artists show with no query"
+        );
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.artist_search = rune::TextEdit::new("bach"));
+        rt.frame(0.0);
+        assert!(texts(&rt).iter().any(|t| t == "Bach"), "the match stays");
+        assert!(
+            !texts(&rt).iter().any(|t| t == "Satie"),
+            "the non-match is filtered out of the grid"
+        );
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.artist_search = rune::TextEdit::new(""));
+        rt.frame(0.0);
+        assert!(
+            texts(&rt).iter().any(|t| t == "Bach") && texts(&rt).iter().any(|t| t == "Satie"),
+            "clearing the query shows every artist again"
+        );
     }
 }
