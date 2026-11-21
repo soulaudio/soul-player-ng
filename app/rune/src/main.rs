@@ -5253,6 +5253,97 @@ mod tests {
 
     /// A Sources refresh clears any stale deletion warning (the next scan's own
     /// `TracksRemoved`, applied right after, re-sets it if there were deletions).
+    /// e2e: a playlist track GREYS OUT ("unavailable", not playable) when its
+    /// source is disabled mid-session, stays in the playlist, and becomes
+    /// playable again when the source is re-enabled — the universal
+    /// disabled-state the Sources toggle drives, rendered through the real
+    /// playlist detail `view`. Complements `playlist_detail`'s static-ghost
+    /// greying test by exercising the DYNAMIC "lose access to a source" path end
+    /// to end, and pairs with the host-level
+    /// `a_local_track_locator_greys_out_when_its_source_is_disabled`.
+    #[test]
+    fn e2e_playlist_track_greys_when_its_source_is_disabled_then_returns() {
+        let _locale = config::use_test_locale("en");
+        let _g = config::use_test_config_dir();
+        let _ = std::fs::remove_dir_all(playlists::playlist_store_path());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+
+        // A playlist over two real library tracks.
+        let mut s = populated_state();
+        let pid = s.playlists.create("Availability");
+        let ids: Vec<u32> = s.library.iter().take(2).map(|t| t.id).collect();
+        assert_eq!(ids.len(), 2, "the testdata library has at least two tracks");
+        for &tid in &ids {
+            crate::views::add_to_playlist::add_track_to_playlist(&mut s, tid, pid);
+        }
+        s.route = Route::Playlist;
+        s.open_playlist = Some(pid);
+
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        // A row is "playable" when it renders as a button (vs the greyed,
+        // roleless `unavailable_row`). `playlist_detail`'s own helper is
+        // module-private, so inline the same check here.
+        let playable = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .is_some_and(|e| e.role == "button")
+        };
+
+        // Available: both rows are playable.
+        assert!(
+            playable(&rt, "playlist-row-0"),
+            "a track is playable while its source is enabled"
+        );
+        assert!(playable(&rt, "playlist-row-1"));
+
+        // Lose access: disable the source (the same call the Sources toggle fires).
+        scan_in_background(
+            &mut rt.state,
+            move |h| h.set_folder_enabled(&testdata_dir(), false),
+            apply_watch,
+        );
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        // Greyed: the entries stay in the playlist but are unavailable, not playable.
+        assert!(
+            !playable(&rt, "playlist-row-0"),
+            "a disabled source greys the track (no play affordance)"
+        );
+        assert!(
+            shows(&rt, t!("playlists.unavailable").as_ref()),
+            "the greyed row shows the Unavailable label"
+        );
+        assert_eq!(
+            rt.state.playlists.get(pid).unwrap().entries.len(),
+            2,
+            "greyed entries are NOT dropped from the playlist"
+        );
+
+        // Regain access: re-enable the source → playable again.
+        scan_in_background(
+            &mut rt.state,
+            move |h| h.set_folder_enabled(&testdata_dir(), true),
+            apply_watch,
+        );
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            playable(&rt, "playlist-row-0"),
+            "re-enabling the source restores playability"
+        );
+    }
+
     #[test]
     fn apply_watch_clears_the_removal_notice() {
         let mut s = populated_state();
