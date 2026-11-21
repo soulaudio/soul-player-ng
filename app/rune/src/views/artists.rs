@@ -15,7 +15,7 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::albums::{Album, albums_of_artist, detail_track_row};
-use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
+use crate::views::detail_page::{HeroArt, detail_actions, detail_hero};
 use crate::views::grid;
 use crate::views::icons;
 use crate::views::media_card::{CardSpec, media_card};
@@ -241,7 +241,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         artist.remote_source.clone(),
         None,
         meta,
-        play_all_pill("artist-play-all", artist.ids.clone(), p),
+        detail_actions("artist-play-all", artist.ids.clone(), p),
     );
 
     // Top Songs: the first five (or all, expanded), as album-art track rows.

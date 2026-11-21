@@ -166,3 +166,49 @@ pub(crate) fn play_all_pill(key: &str, ids: Vec<u32>, p: &Palette) -> El {
                 .child(text(t!("album.playAll").to_string()).color(p.bg)),
         )
 }
+
+/// The size of the circular [`enqueue_all_button`] (roughly the old app's
+/// secondary icon button, matched to sit comfortably beside the Play All pill).
+const ENQUEUE_ALL_BTN: f32 = 44.0;
+
+/// The secondary "add to queue" icon button beside Play All (the old app's
+/// muted circular button next to its Play button): enqueues every one of
+/// `ids`, in order, onto the override queue (the same queue the `+` button on
+/// a Tracks row sends a single track to), just for a whole
+/// album/artist/genre/playlist at once. `key` keeps each call site's stable
+/// key.
+pub(crate) fn enqueue_all_button(key: &str, ids: Vec<u32>, p: &Palette) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(t!("library.addToQueue").to_string())
+        .focusable(true)
+        .size(ENQUEUE_ALL_BTN, ENQUEUE_ALL_BTN)
+        .center()
+        .radius(radius::FULL)
+        .fill(p.muted)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(icon(&icons::LIST_PLUS, 18.0).color(p.text_secondary))
+        .on_press(move |st: &mut State| {
+            for &id in &ids {
+                st.host.send(Command::Enqueue(id));
+            }
+        })
+}
+
+/// Play All plus the secondary "add to queue" button beside it: the shared
+/// hero actions row for the album/artist/genre detail pages (the playlist
+/// page builds its own richer action row, since it also carries rename/
+/// delete/cover controls, but includes the same [`enqueue_all_button`]).
+/// `play_key` is the page's stable Play All key (`album-play-all`, …); the
+/// enqueue button shares one key (`detail-enqueue-all`) across pages, since
+/// only one detail page is ever on screen at a time.
+pub(crate) fn detail_actions(play_key: &str, ids: Vec<u32>, p: &Palette) -> El {
+    row()
+        .key(format!("{play_key}-actions"))
+        .gap(space::SM)
+        .center_y()
+        .child(play_all_pill(play_key, ids.clone(), p))
+        .child(enqueue_all_button("detail-enqueue-all", ids, p))
+}

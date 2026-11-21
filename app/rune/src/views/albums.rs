@@ -17,7 +17,7 @@ use soul_player_host::{Command, TrackView};
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
+use crate::views::detail_page::{HeroArt, detail_actions, detail_hero};
 use crate::views::grid;
 use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
@@ -508,6 +508,39 @@ pub(crate) fn detail_track_row(
     })
 }
 
+/// Uppercase column-header labels over the album-detail track table, mirroring
+/// [`detail_track_row`]'s columns exactly: a blank `#`-width spacer, TITLE
+/// (grow), FORMAT (over the codec-badge area) and DURATION. `detail_track_row`
+/// doesn't gate any of these by pane width, so neither does the header.
+fn detail_track_header(p: &Palette) -> El {
+    row()
+        .key("album-tracks-header")
+        .gap(space::MD)
+        .px(space::MD)
+        .py(space::XS)
+        .child(el().key("album-tracks-header-index").w(28.0))
+        .child(
+            text(t!("library.colTitle").to_uppercase())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .grow(1.0)
+                .truncate(),
+        )
+        .child(
+            el().key("album-tracks-header-format").w(52.0).child(
+                text(t!("library.colFormat").to_uppercase())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary),
+            ),
+        )
+        .child(
+            text(t!("library.colDuration").to_uppercase())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .w(56.0),
+        )
+}
+
 /// An album's detail page (the old app's AlbumPage): a back link, then the shared
 /// hero — square cover, "ALBUM" eyebrow, title, artist, "{n} tracks · {duration}"
 /// and a Play-All pill — over the album's numbered track list. The album is
@@ -572,7 +605,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         album.remote_source.clone(),
         album_subtitle(&album, s.album_year),
         meta,
-        play_all_pill("album-play-all", album.ids.clone(), p),
+        detail_actions("album-play-all", album.ids.clone(), p),
     );
 
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
@@ -605,6 +638,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                 .key("album-detail-content")
                 .padding(space::PANE)
                 .child(hero)
+                .child(detail_track_header(p))
                 .child(list)
                 .scroll(ScrollSpec {
                     stick_bottom: false,
@@ -618,6 +652,18 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Click the element with `key`: find its position, drive a full
+    /// move/down/up pointer gesture there, then re-render.
+    fn click(rt: &mut rune::Runtime<State>, key: &str) {
+        let (x, y) = rt
+            .find(key)
+            .unwrap_or_else(|| panic!("element {key} not found"));
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+    }
 
     fn atv(id: u32, artist: &str, album: &str) -> TrackView {
         TrackView {
@@ -1194,6 +1240,94 @@ mod tests {
         assert!(
             !s.albums_filters_open && s.album_genre_filter.is_empty(),
             "navigate_to clears the Albums filter state"
+        );
+    }
+
+    /// End-to-end through the real album-detail page: the column-header row
+    /// renders above the track list, with TITLE/FORMAT/DURATION labels.
+    #[test]
+    fn album_detail_header_shows_the_column_labels() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut t = atv(1, "Broke For Free", "Directionless EP");
+        t.format = Some("MP3".into());
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![t];
+        s.route = crate::Route::Album;
+        s.open_album = Some("Directionless EP".into());
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        assert!(
+            rt.find("album-tracks-header").is_some(),
+            "the header row renders above the track list"
+        );
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(texts.iter().any(|t| t == "TITLE"), "TITLE label renders");
+        assert!(texts.iter().any(|t| t == "FORMAT"), "FORMAT label renders");
+        assert!(
+            texts.iter().any(|t| t == "DURATION"),
+            "DURATION label renders"
+        );
+    }
+
+    /// Clicking the detail hero's secondary "add to queue" button enqueues
+    /// every one of the album's track ids, in order (the whole-album
+    /// counterpart to the per-track `+` button on a Tracks row).
+    #[test]
+    fn detail_enqueue_all_button_enqueues_every_track_in_order() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::recording());
+        s.library = vec![
+            atv(1, "Broke For Free", "Directionless EP"),
+            atv(2, "Broke For Free", "Directionless EP"),
+        ];
+        s.route = crate::Route::Album;
+        s.open_album = Some("Directionless EP".into());
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        click(&mut rt, "detail-enqueue-all");
+
+        let enqueued: Vec<u32> = rt
+            .state
+            .host
+            .recorded_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::Enqueue(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            enqueued,
+            vec![1, 2],
+            "every one of the album's track ids enqueues, in library order"
         );
     }
 }
