@@ -539,6 +539,20 @@ library.sortFolder:
   zh: '文件夹'
   cs: 'Složka'
   ja: 'フォルダ'
+library.sortDr:
+  en: 'DR'
+  de: 'DR'
+  es: 'DR'
+  zh: 'DR'
+  cs: 'DR'
+  ja: 'DR'
+library.sortLoudness:
+  en: 'Loudness'
+  de: 'Lautheit'
+  es: 'Sonoridad'
+  zh: '响度'
+  cs: 'Hlasitost'
+  ja: 'ラウドネス'
 library.searchPlaceholder:
   en: 'Type / to search'
   de: 'Zum Suchen / tippen'
