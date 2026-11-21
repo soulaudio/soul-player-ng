@@ -2555,7 +2555,7 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
         Route::Album => views::albums::album_detail(s, p, scale).grow(1.0),
         Route::Artists => views::artists::artists_page(s, p, cx, scale).grow(1.0),
         Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
-        Route::Genres => views::genres::genres_page(s, p).grow(1.0),
+        Route::Genres => views::genres::genres_page(s, p, cx).grow(1.0),
         Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
         Route::Playlists => views::playlists::page(s, p, scale).grow(1.0),
         Route::Playlist => views::playlist_detail::page(s, p, scale).grow(1.0),
@@ -10491,8 +10491,8 @@ mod tests {
         );
     }
 
-    /// Clicking a genre row opens that genre's detail page (and issues no
-    /// playback) — the library grouped by genre, first-seen order.
+    /// Clicking a genre tile opens that genre's detail page (and issues no
+    /// playback), the library grouped by genre, first-seen order.
     #[test]
     fn clicking_a_genre_opens_the_detail_page() {
         let mut s = State::new(PlayerHandle::recording());
@@ -10509,7 +10509,7 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        click(&mut rt, "genre-0"); // the first grouped genre (Rock)
+        click(&mut rt, "genre-tile-0"); // the first grouped genre (Rock)
         assert!(
             matches!(rt.state.route, Route::Genre),
             "the row opens the genre detail page"
