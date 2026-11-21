@@ -827,6 +827,13 @@ settings.loudnessFullDesc:
   zh: '尽可能快地分析整个音乐库，即使在播放时也是如此。最快完成，但占用更多 CPU。'
   cs: 'Analyzuje celou knihovnu co nejrychleji, i během přehrávání. Dokončí nejdříve, využívá více CPU.'
   ja: '再生中でもライブラリ全体をできるだけ速く解析します。最も早く完了しますが、CPU 使用量が増えます。'
+settings.loudnessAnalyzing:
+  en: 'Analyzing %{count} tracks…'
+  de: '%{count} Titel werden analysiert…'
+  es: 'Analizando %{count} pistas…'
+  zh: '正在分析 %{count} 首曲目…'
+  cs: 'Analyzuje se %{count} skladeb…'
+  ja: '%{count} 曲を解析中…'
 settings.rescan:
   en: 'Rescan'
   de: 'Neu einlesen'
