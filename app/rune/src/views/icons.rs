@@ -194,6 +194,14 @@ pub static GRIP: Icon = Icon {
 /// lucide `x` — the per-row remove-from-queue affordance.
 pub static X: Icon = stroke_icon!("x", r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#);
 
+/// lucide `list-plus`: the detail-hero "Add to queue" secondary button beside
+/// Play All (album/artist/genre/playlist detail pages), enqueuing every track
+/// in the group. Source: lucide.dev/icons/list-plus.
+pub static LIST_PLUS: Icon = stroke_icon!(
+    "list-plus",
+    r#"<path d="M11 12H3"/><path d="M16 6H3"/><path d="M16 18H3"/><path d="M18 9v6"/><path d="M21 12h-6"/>"#
+);
+
 // --- Windows caption glyphs ------------------------------------------------
 // Drawn over the (hidden) native `_ [] X` buttons, so they're tuned to match
 // Windows 11's own symbols: a ~10 px mark with a thin, square-capped stroke

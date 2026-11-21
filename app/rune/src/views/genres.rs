@@ -17,7 +17,7 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::albums::{detail_track_row, fmt_total_dur};
-use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
+use crate::views::detail_page::{HeroArt, detail_actions, detail_hero};
 use crate::views::grid;
 use crate::views::icons;
 use crate::views::player::{group_remote_source, remote_badge_for};
@@ -231,7 +231,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         genre.remote_source.clone(),
         None,
         meta,
-        play_all_pill("genre-play-all", genre.ids.clone(), p),
+        detail_actions("genre-play-all", genre.ids.clone(), p),
     );
 
     let q = s.genre_search.text.to_lowercase();
