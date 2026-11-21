@@ -26,7 +26,7 @@ use crate::driver::{
 };
 use crate::library::TrackSource;
 use crate::loudness::LoudnessCache;
-use crate::types::{Command, Event, PlayState, ReplayGainMode};
+use crate::types::{Command, Event, LoudnessAnalysisMode, PlayState, ReplayGainMode};
 
 /// Golden-ratio odd constant; advanced per shuffle to vary the permutation seed
 /// without an RNG dependency (deterministic across runs).
@@ -236,6 +236,9 @@ fn pump_thread<K, Mk, Pk, Ev>(
     //     at the RG gate below.
     let (loud_res_tx, loud_res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
     let (loudness, analyzer) = LoudnessCache::spawn(loud_res_tx);
+    // How the background loudness sweep runs (Settings): Off suppresses enqueues, Throttled
+    // pauses the worker while a track plays, Full runs flat-out. Re-evaluated each tick.
+    let mut loudness_mode = LoudnessAnalysisMode::default();
 
     let mut vol = VolumeState::new();
     let mut seed: u64 = SEED_STEP;
@@ -304,12 +307,18 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         // not a transport call — a no-op in `apply_command`.
                         Command::SeedLoudness(entries) => loudness.seed(entries),
                         // Background loudness sweep: enqueue each track (single-flight skips
-                        // already-analyzed / in-flight). Pump state, no-op in `apply_command`.
+                        // already-analyzed / in-flight), unless the analysis mode is Off. Pump
+                        // state, no-op in `apply_command`.
                         Command::AnalyzeTracks(entries) => {
-                            for (id, path) in entries {
-                                loudness.enqueue(*id, path.clone());
+                            if loudness_mode.sweeps() {
+                                for (id, path) in entries {
+                                    loudness.enqueue(*id, path.clone());
+                                }
                             }
                         }
+                        // The user changed the background-analysis mode; the playback-yield
+                        // pause is re-evaluated from it each tick (below).
+                        Command::SetLoudnessAnalysisMode(m) => loudness_mode = *m,
                         _ => {}
                     }
                     seed = seed.wrapping_add(SEED_STEP);
@@ -523,6 +532,11 @@ fn pump_thread<K, Mk, Pk, Ev>(
             if !output_live && tick.state == PlayState::Playing {
                 tick.state = PlayState::Paused;
             }
+            // Playback-yield (#1 forum lesson): pause the background loudness sweep while a
+            // track actually plays, but only under the Throttled mode (Full runs flat-out,
+            // Off never sweeps). Reads the just-finalized state, so a placeholder-silent deck
+            // (presented Paused above) correctly lets the sweep run.
+            loudness.set_paused(loudness_mode.should_pause(tick.state == PlayState::Playing));
             let cur_id = tick.now_playing_id;
             on_event(Event::Tick(tick));
             on_event(Event::Queue(project_queue(&player)));

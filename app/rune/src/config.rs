@@ -166,6 +166,9 @@ struct Config {
     /// Library "indexing speed": `auto` | `max` | `gentle`. Controls how much
     /// parallelism the scanner uses; `auto` follows live CPU load.
     indexing_mode: String,
+    /// Background loudness analysis mode: `off` | `throttled` | `full`. Controls the
+    /// scan-time Tier-2 loudness sweep that fills the library loudness/DR column.
+    loudness_analysis: String,
     /// Saved audio profiles — each a named snapshot of the whole DSP chain. The
     /// *active* profile's chain is the live one (and is mirrored into `eq_units`
     /// above for backward-compat). Empty in configs written before profiles existed
@@ -337,6 +340,7 @@ impl Default for Config {
             eq_preamp: 0.0,
             eq_bands: Vec::new(),
             indexing_mode: "auto".into(),
+            loudness_analysis: "throttled".into(),
             profiles: Vec::new(),
             active_profile: 0,
             window: None,
@@ -558,6 +562,21 @@ pub fn load_indexing_mode() -> String {
 pub fn save_indexing_mode(mode: &str) {
     let mut cfg = load();
     cfg.indexing_mode = mode.to_string();
+    save(&cfg);
+}
+
+/// The persisted background-loudness-analysis token (`off` | `throttled` | `full`);
+/// defaults to `throttled`. Map it through
+/// [`soul_player_host::LoudnessAnalysisMode::from_config`].
+pub fn load_loudness_analysis() -> String {
+    load().loudness_analysis
+}
+
+/// Persist the background-loudness-analysis token (from
+/// [`soul_player_host::LoudnessAnalysisMode::as_config`]).
+pub fn save_loudness_analysis(mode: &str) {
+    let mut cfg = load();
+    cfg.loudness_analysis = mode.to_string();
     save(&cfg);
 }
 
@@ -1252,6 +1271,7 @@ mod tests {
                 enabled: true,
             }],
             indexing_mode: "gentle".into(),
+            loudness_analysis: "full".into(),
             profiles: vec![ProfileCfg {
                 name: "Studio".into(),
                 chain: vec![DspUnitCfg {
