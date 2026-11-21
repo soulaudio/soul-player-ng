@@ -381,6 +381,10 @@ struct State {
     album_year: config::AlbumYearSource,
     /// Which baked axis the library list is ordered by.
     sort_axis: BrowseAxis,
+    /// An optional client-side loudness sort layered over `sort_axis` (DR or Integrated
+    /// LUFS). `None` = the plain baked-axis order. Loudness is joined from the live cache,
+    /// not a baked axis, so this sort runs in memory and is re-applied on each refresh.
+    loudness_sort: Option<LoudnessKey>,
     /// Set when a `TrackLoudnessAnalyzed` event arrives; the next Tick re-fetches the library
     /// so the loudness/DR column fills in, coalescing a sweep's event burst.
     loudness_dirty: bool,
@@ -734,6 +738,7 @@ impl State {
                 .unwrap_or(ThemePref::System),
             album_year: config::load_album_year(),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
+            loudness_sort: None,
             loudness_dirty: false,
             sources,
             remote_health_refreshing: false,
@@ -864,6 +869,11 @@ impl State {
                 // full-library sweep doesn't re-project per track.
                 if self.loudness_dirty {
                     self.library = self.host.views_by(self.sort_axis);
+                    // Re-apply an active loudness sort so freshly-analyzed tracks slot into
+                    // their place (and drop out of the un-analyzed tail) as values land.
+                    if let Some(key) = self.loudness_sort {
+                        sort_by_loudness(&mut self.library, key);
+                    }
                     self.loudness_dirty = false;
                 }
             }
@@ -2395,7 +2405,57 @@ pub(crate) fn organize_confirm(s: &mut State) {
 /// play-context order changes), so playback is undisturbed.
 pub(crate) fn set_sort(s: &mut State, axis: BrowseAxis) {
     s.sort_axis = axis;
+    s.loudness_sort = None;
     s.library = s.host.views_by(axis);
+}
+
+/// Which loudness metric the client-side library sort keys on. Unlike the baked
+/// `BrowseAxis` sorts, loudness is joined from the live cache (not a baked axis), so
+/// these re-order the current `Vec<TrackView>` in memory over the active base axis.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum LoudnessKey {
+    /// Dynamic-range indicator (crest factor), highest (most dynamic) first.
+    Dr,
+    /// Integrated loudness (LUFS), highest (loudest) first.
+    Loudness,
+}
+
+/// Stable in-place sort of `library` by a loudness metric, descending (highest value
+/// first). Un-analyzed tracks (no loudness, or a non-finite reading) keep their relative
+/// order and sort last, so the list stays stable while the background sweep fills values
+/// in.
+pub(crate) fn sort_by_loudness(library: &mut [TrackView], key: LoudnessKey) {
+    use std::cmp::Ordering;
+    // `sort_by` is stable, so the (None, None) == Equal arm leaves un-analyzed tracks in
+    // their original order at the tail, and analyzed ties keep the base axis order.
+    library.sort_by(|a, b| {
+        match (loudness_metric(a, key), loudness_metric(b, key)) {
+            (Some(x), Some(y)) => y.partial_cmp(&x).unwrap_or(Ordering::Equal), // descending
+            (Some(_), None) => Ordering::Less, // analyzed before un-analyzed
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    });
+}
+
+/// The sortable loudness value for a track, or `None` when the track is un-analyzed or the
+/// reading is non-finite (both sort last).
+fn loudness_metric(t: &TrackView, key: LoudnessKey) -> Option<f32> {
+    let l = t.loudness.as_ref()?;
+    let v = match key {
+        LoudnessKey::Dr => l.dr,
+        LoudnessKey::Loudness => l.integrated_lufs,
+    };
+    v.is_finite().then_some(v)
+}
+
+/// Pick the library's loudness sort: re-fetch the current base axis, then stable-sort it
+/// by `key` (un-analyzed last). Re-applied on each refresh (see the `loudness_dirty` tick)
+/// so values slot into place as analysis lands.
+pub(crate) fn set_loudness_sort(s: &mut State, key: LoudnessKey) {
+    s.loudness_sort = Some(key);
+    s.library = s.host.views_by(s.sort_axis);
+    sort_by_loudness(&mut s.library, key);
 }
 
 /// Set the output volume (0..1): clamp, update `State::volume` optimistically so
@@ -11413,6 +11473,39 @@ mod tests {
         }
     }
 
+    /// The sort bar also offers the two client-side loudness pills (DR, Loudness): they
+    /// render, clicking one records the loudness sort, and clicking a baked-axis pill
+    /// clears it again (the two are mutually exclusive).
+    #[test]
+    fn sort_bar_loudness_pills_set_and_clear_the_loudness_sort() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(State::new(host), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("sort-dr").is_some(), "the DR sort pill renders");
+        assert!(
+            rt.find("sort-loudness").is_some(),
+            "the Loudness sort pill renders"
+        );
+
+        click_key(&mut rt, "sort-dr");
+        assert_eq!(
+            rt.state.loudness_sort,
+            Some(LoudnessKey::Dr),
+            "clicking DR records the loudness sort"
+        );
+
+        click_key(&mut rt, "sort-title");
+        assert_eq!(
+            rt.state.loudness_sort, None,
+            "clicking a baked-axis pill clears the loudness sort"
+        );
+    }
+
     /// DR is the headline loudness indicator and renders at every width; Integrated LUFS
     /// is secondary and joins only on a wide pane (where there is room beside artist/album).
     /// This matches the design and guards the overflow regression that first appeared when
@@ -11510,6 +11603,88 @@ mod tests {
             muted: false,
         }));
         assert!(!s.loudness_dirty, "the next tick consumes the refresh flag");
+    }
+
+    /// Build a track with (or without) a loudness reading `(dr, integrated_lufs)`, for the
+    /// client-side loudness-sort tests.
+    fn tv_loud(id: u32, metrics: Option<(f32, f32)>) -> soul_player_host::TrackView {
+        soul_player_host::TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some("A".into()),
+            album: Some("Alb".into()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote_source: None,
+            original_date: 0,
+            release_date: 0,
+            loudness: metrics.map(|(dr, integrated_lufs)| TrackLoudness {
+                integrated_lufs,
+                lra: 5.0,
+                true_peak_dbtp: -1.0,
+                plr: 8.0,
+                dr,
+            }),
+        }
+    }
+
+    /// The client-side DR sort orders analyzed tracks by descending DR (most dynamic
+    /// first) and keeps un-analyzed tracks in their original order at the end.
+    #[test]
+    fn sort_by_loudness_orders_dr_desc_with_unanalyzed_last() {
+        let mut lib = vec![
+            tv_loud(1, Some((6.0, -14.0))),
+            tv_loud(2, None),
+            tv_loud(3, Some((14.0, -14.0))),
+            tv_loud(4, Some((10.0, -14.0))),
+            tv_loud(5, None),
+        ];
+        sort_by_loudness(&mut lib, LoudnessKey::Dr);
+        let ids: Vec<u32> = lib.iter().map(|t| t.id).collect();
+        assert_eq!(
+            ids,
+            vec![3, 4, 1, 2, 5],
+            "analyzed by descending DR, then un-analyzed in original order"
+        );
+    }
+
+    /// The Loudness sort keys on Integrated LUFS, loudest (highest value, closest to 0)
+    /// first; un-analyzed last.
+    #[test]
+    fn sort_by_loudness_orders_lufs_desc_with_unanalyzed_last() {
+        let mut lib = vec![
+            tv_loud(1, Some((10.0, -20.0))),
+            tv_loud(2, Some((10.0, -9.0))),
+            tv_loud(3, None),
+            tv_loud(4, Some((10.0, -14.0))),
+        ];
+        sort_by_loudness(&mut lib, LoudnessKey::Loudness);
+        let ids: Vec<u32> = lib.iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec![2, 4, 1, 3], "loudest first, un-analyzed last");
+    }
+
+    /// Picking a loudness sort records it (so the pill lights and the next tick re-applies
+    /// it); picking a baked axis sort then clears it.
+    #[test]
+    fn loudness_and_axis_sorts_are_mutually_exclusive() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        assert_eq!(s.loudness_sort, None, "no loudness sort by default");
+
+        set_loudness_sort(&mut s, LoudnessKey::Dr);
+        assert_eq!(
+            s.loudness_sort,
+            Some(LoudnessKey::Dr),
+            "the loudness sort is recorded"
+        );
+
+        set_sort(&mut s, BrowseAxis::Title);
+        assert_eq!(
+            s.loudness_sort, None,
+            "an axis sort clears the loudness sort"
+        );
+        assert_eq!(s.sort_axis, BrowseAxis::Title);
     }
 
     /// A populated library shows the search bar, and a matching query keeps the

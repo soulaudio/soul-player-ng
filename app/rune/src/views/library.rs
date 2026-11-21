@@ -504,8 +504,15 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .child(body)
 }
 
-/// One sort-order choice; the active axis is filled with the primary color.
-fn sort_button(label: String, key: &str, axis: BrowseAxis, active: bool, p: &Palette) -> El {
+/// Shared sort-bar pill styling: filled with the primary color when active, muted
+/// otherwise. `on_press` carries the specific choice (a baked axis or a loudness sort).
+fn sort_pill(
+    label: String,
+    key: &str,
+    active: bool,
+    p: &Palette,
+    on_press: impl Fn(&mut State) + 'static,
+) -> El {
     el().key(key.to_string())
         .role("button")
         .label(label.clone())
@@ -525,43 +532,85 @@ fn sort_button(label: String, key: &str, axis: BrowseAxis, active: bool, p: &Pal
             p.fg.alpha(fx::PRESS)
         })
         .child(text(label).color(if active { p.bg } else { p.fg }))
-        .on_press(move |s: &mut State| crate::set_sort(s, axis))
+        .on_press(move |s: &mut State| on_press(s))
 }
 
-/// The sort bar above the track list: switch which baked axis orders the library.
+/// One baked-axis sort choice; the active axis is filled with the primary color.
+fn sort_button(label: String, key: &str, axis: BrowseAxis, active: bool, p: &Palette) -> El {
+    sort_pill(label, key, active, p, move |s: &mut State| {
+        crate::set_sort(s, axis)
+    })
+}
+
+/// One client-side loudness sort choice (DR / Loudness), driving `set_loudness_sort`
+/// rather than a baked axis.
+fn loudness_sort_button(
+    label: String,
+    key: &str,
+    lkey: crate::LoudnessKey,
+    active: bool,
+    p: &Palette,
+) -> El {
+    sort_pill(label, key, active, p, move |s: &mut State| {
+        crate::set_loudness_sort(s, lkey)
+    })
+}
+
+/// The sort bar above the track list: switch which baked axis orders the library, or pick a
+/// client-side loudness sort (DR / Loudness). When a loudness sort is active the axis pills
+/// dim (the two are mutually exclusive). Wraps on a narrow pane so the extra pills stay
+/// reachable rather than overflowing.
 fn sort_bar(s: &State, p: &Palette) -> El {
     let a = s.sort_axis;
+    let ls = s.loudness_sort;
+    // An axis pill reads active only when no loudness sort is overriding it.
+    let axis_active = |ax: BrowseAxis| ls.is_none() && a == ax;
     row()
         .key("sort-bar")
         .gap(space::SM)
         .padding(space::SM)
+        .flex_wrap()
         .child(text(t!("library.sort").to_string()).color(p.text_secondary))
         .child(sort_button(
             t!("library.sortArtist").to_string(),
             "sort-artist",
             BrowseAxis::ArtistAlbumTrack,
-            a == BrowseAxis::ArtistAlbumTrack,
+            axis_active(BrowseAxis::ArtistAlbumTrack),
             p,
         ))
         .child(sort_button(
             t!("library.sortAlbum").to_string(),
             "sort-album",
             BrowseAxis::Album,
-            a == BrowseAxis::Album,
+            axis_active(BrowseAxis::Album),
             p,
         ))
         .child(sort_button(
             t!("library.sortTitle").to_string(),
             "sort-title",
             BrowseAxis::Title,
-            a == BrowseAxis::Title,
+            axis_active(BrowseAxis::Title),
             p,
         ))
         .child(sort_button(
             t!("library.sortFolder").to_string(),
             "sort-folder",
             BrowseAxis::Folder,
-            a == BrowseAxis::Folder,
+            axis_active(BrowseAxis::Folder),
+            p,
+        ))
+        .child(loudness_sort_button(
+            t!("library.sortDr").to_string(),
+            "sort-dr",
+            crate::LoudnessKey::Dr,
+            ls == Some(crate::LoudnessKey::Dr),
+            p,
+        ))
+        .child(loudness_sort_button(
+            t!("library.sortLoudness").to_string(),
+            "sort-loudness",
+            crate::LoudnessKey::Loudness,
+            ls == Some(crate::LoudnessKey::Loudness),
             p,
         ))
 }
