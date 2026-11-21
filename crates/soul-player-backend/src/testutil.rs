@@ -163,6 +163,11 @@ impl Sink for CapturingSink {
 /// Seekable (clamps to the total) so it satisfies `SeekableDecoder`.
 pub(crate) struct ConstDecoder {
     rate: u32,
+    /// If set, `stream_info().sample_rate` flips to this once the first frame has been
+    /// decoded — mimicking implicit HE-AAC (SBR), which reports the AAC core rate at
+    /// load and the 2× output rate only after decoding starts.
+    sbr_rate: Option<u32>,
+    confirmed: bool,
     channels: u16,
     total: u64,
     pos: u64,
@@ -173,6 +178,28 @@ impl ConstDecoder {
     pub(crate) fn new(rate: u32, channels: u16, frames: u64, value: i32) -> Self {
         Self {
             rate,
+            sbr_rate: None,
+            confirmed: false,
+            channels,
+            total: frames,
+            pos: 0,
+            value,
+        }
+    }
+
+    /// A decoder that mimics implicit HE-AAC (SBR): reports `core_rate` at load, then
+    /// flips `stream_info().sample_rate` to `sbr_rate` after the first `decode_into`.
+    pub(crate) fn new_sbr(
+        core_rate: u32,
+        sbr_rate: u32,
+        channels: u16,
+        frames: u64,
+        value: i32,
+    ) -> Self {
+        Self {
+            rate: core_rate,
+            sbr_rate: Some(sbr_rate),
+            confirmed: false,
             channels,
             total: frames,
             pos: 0,
@@ -184,12 +211,17 @@ impl ConstDecoder {
 impl Decoder for ConstDecoder {
     fn stream_info(&self) -> StreamInfo {
         StreamInfo {
-            sample_rate: self.rate,
+            sample_rate: if self.confirmed {
+                self.sbr_rate.unwrap_or(self.rate)
+            } else {
+                self.rate
+            },
             channels: self.channels,
             format: SampleFormat::Int { bits: 24 },
         }
     }
     fn decode_into(&mut self, out: &mut [i32]) -> Result<usize, DecodeError> {
+        self.confirmed = true; // decoding the first frame confirms the (SBR) output rate
         let ch = self.channels as u64;
         let remaining_frames = self.total.saturating_sub(self.pos);
         let want_frames = (out.len() as u64 / ch).min(remaining_frames);
@@ -209,5 +241,94 @@ impl SeekableDecoder for ConstDecoder {
     }
     fn total_frames(&self) -> Option<u64> {
         Some(self.total)
+    }
+}
+
+/// A [`Sink`] that carries an output IDENTITY — the selected device + exclusive mode —
+/// and counts the frames written to it, for testing LIVE output-config changes (where
+/// changing the device or exclusive mode rebuilds the sink mid-playback via
+/// `swap_sink`). It discards the audio but records that writes keep flowing after a
+/// swap, and reports `exclusive()` from its config so a test can see the mode changed.
+pub(crate) struct ConfigSink {
+    pub device: Option<String>,
+    pub exclusive: bool,
+    pub rate: u32,
+    pub channels: u16,
+    pub frames: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// When set, counts live "device holders": incremented on construction and
+    /// decremented on `Drop`. Lets a test prove release-then-acquire — the OLD sink
+    /// must be dropped (its device freed) BEFORE the new one opens. `None` = a
+    /// device-free placeholder (the parked sink), which never counts.
+    device_live: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+}
+
+impl ConfigSink {
+    pub(crate) fn new(
+        device: Option<String>,
+        exclusive: bool,
+        rate: u32,
+        channels: u16,
+        frames: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
+        Self {
+            device,
+            exclusive,
+            rate,
+            channels,
+            frames,
+            device_live: None,
+        }
+    }
+
+    /// Like [`ConfigSink::new`] but counts as a live device holder in `device_live`
+    /// (incremented now, decremented on `Drop`) — for release-then-acquire tests.
+    pub(crate) fn new_counting(
+        device: Option<String>,
+        exclusive: bool,
+        rate: u32,
+        channels: u16,
+        frames: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        device_live: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Self {
+        device_live.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self {
+            device,
+            exclusive,
+            rate,
+            channels,
+            frames,
+            device_live: Some(device_live),
+        }
+    }
+}
+
+impl Drop for ConfigSink {
+    fn drop(&mut self) {
+        if let Some(live) = &self.device_live {
+            live.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+impl Sink for ConfigSink {
+    fn stream_info(&self) -> StreamInfo {
+        StreamInfo {
+            sample_rate: self.rate,
+            channels: self.channels,
+            format: SampleFormat::Int { bits: 24 },
+        }
+    }
+    fn exclusive(&self) -> bool {
+        self.exclusive
+    }
+    fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
+        self.frames.fetch_add(
+            frames.len() / usize::from(self.channels.max(1)),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<(), SinkError> {
+        Ok(())
     }
 }

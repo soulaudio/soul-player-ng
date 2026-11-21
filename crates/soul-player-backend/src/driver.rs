@@ -362,19 +362,211 @@ pub fn maybe_switch_native_rate<K: Sink, D: SeekableDecoder>(
     {
         if let Err(e) = player.deck_mut().reopen_sink_at(want) {
             *tried = Some(want);
-            eprintln!("player: native-rate reopen to {want} Hz failed: {e:?}");
+            tracing::warn!(want_hz = want, error = ?e, "native-rate reopen failed");
             return;
         }
         // `reopen_sink_at` succeeds even when the device refused `want` and the sink
         // fell back to its previous rate, so check the rate we ACTUALLY landed on:
         // clear the latch only on a real switch, else latch `want` so we don't thrash.
         let landed = player.deck().decode_info().map(|d| d.device_rate);
-        *tried = if landed == Some(want) {
-            None
+        if landed == Some(want) {
+            tracing::info!(
+                rate_hz = want,
+                "native-rate switch: device reopened bit-perfect"
+            );
+            *tried = None;
         } else {
-            Some(want)
-        };
+            tracing::info!(
+                want_hz = want,
+                landed_hz = ?landed,
+                "native-rate switch: device refused rate, resampling instead"
+            );
+            *tried = Some(want);
+        }
     }
+}
+
+/// The desired output configuration — which device, whether to drive it exclusively
+/// (bit-perfect), and (exclusive only) whether to STOP rather than fall back to shared.
+/// The host updates this live; the pump applies it to the current track via
+/// [`maybe_apply_output_change`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OutputConfig {
+    /// The selected output device, or `None` for the system default.
+    pub device: Option<String>,
+    /// Drive the device exclusively (bypass the OS mixer, feed the DAC untouched).
+    pub exclusive: bool,
+    /// Exclusive-or-stop: don't fall back to shared on an exclusive failure.
+    pub strict: bool,
+}
+
+/// Whether a desired output change needs the sink **rebuilt**. A **device** or
+/// **exclusive-mode** change alters the hardware stream, so the sink must be swapped;
+/// a **strict-only** change does not (it only affects how a FUTURE exclusive-open
+/// handles a device refusal), so it's just recorded. Pure — the decision is unit-tested
+/// without a device.
+#[must_use]
+pub fn output_change_needs_rebuild(current: &OutputConfig, desired: &OutputConfig) -> bool {
+    current.device != desired.device || current.exclusive != desired.exclusive
+}
+
+/// The result of a live output-sink change, so the caller knows the deck's resulting
+/// state (a bare `Result` can't say whether a failure left a WORKING sink or a silent
+/// one). The caller latches `desired` on either failure variant (no per-block thrash).
+pub enum OutputSwap {
+    /// Now driving the desired device (`applied` was updated).
+    Applied,
+    /// The build failed but the deck was restored to a WORKING sink (the previous device,
+    /// or the shared stream was never dropped) — audio continues.
+    KeptCurrent(anyhow::Error),
+    /// The build failed and the deck is on the SILENT park placeholder (strict stop, or
+    /// even the restore couldn't open). The caller should treat the output as parked and
+    /// recover (retry on a timer, or on a config change).
+    Parked(anyhow::Error),
+}
+
+/// Apply a desired output config to the CURRENTLY playing track, live (not on the next
+/// track; best practice: foobar/Roon apply immediately, accepting the brief hardware
+/// reopen). If the device or exclusive mode changed, the swap order depends on whether
+/// EXCLUSIVE is involved on either side:
+///
+/// - **Exclusive involved** (the current sink is exclusive, OR the desired mode is
+///   exclusive) → release-then-acquire: `park` the deck on a device-free placeholder
+///   (DROPS the old sink, freeing its device), then `build` the new sink on the now-free
+///   device and swap it in. Exclusive WASAPI is one-client-per-device, so opening the
+///   exclusive stream while ANY stream (the old exclusive one, or our own still-live
+///   shared one) holds the same device intermittently fails with device-in-use. Freeing
+///   the device first makes the exclusive open deterministic.
+/// - **Shared to shared** (a plain device change, no exclusive) → build-then-swap:
+///   `build` the new sink FIRST, while the old shared stream is still alive, then swap it
+///   in (the old drops on swap). Shared mode allows multiple clients per device, so there
+///   is no contention, and this avoids dropping a working shared stream only to re-open
+///   on the same device, which some devices reject with "device no longer available".
+///
+/// `swap_sink` preserves playback position + ReplayGain. A strict-only change needs no
+/// rebuild and is just recorded ([`OutputSwap::Applied`]).
+///
+/// On a `build` failure the return says where the deck ended: [`OutputSwap::KeptCurrent`]
+/// (restored to a working sink, audio continues) or [`OutputSwap::Parked`] (silent — a
+/// strict stop, or the restore itself failed). `applied` is left unchanged on failure;
+/// the caller latches `desired` so it does not thrash the device every pump block.
+pub fn maybe_apply_output_change<K, D, FBuild, FPark>(
+    player: &mut ServicePlayer<K, D>,
+    desired: &OutputConfig,
+    applied: &mut OutputConfig,
+    build: FBuild,
+    park: FPark,
+) -> OutputSwap
+where
+    K: Sink,
+    D: SeekableDecoder,
+    FBuild: Fn(&OutputConfig) -> anyhow::Result<K>,
+    FPark: FnOnce() -> K,
+{
+    if !output_change_needs_rebuild(applied, desired) {
+        *applied = desired.clone();
+        return OutputSwap::Applied;
+    }
+    tracing::info!(from = ?applied, to = ?desired, "applying live output change");
+    // Release-then-acquire whenever EXCLUSIVE is involved on either side: the current
+    // sink is exclusive (it holds the device, one-client-per-device, so it must release
+    // before anything else opens), OR the DESIRED mode is exclusive (opening the exclusive
+    // stream while our OWN still-live shared stream holds the same device intermittently
+    // fails with AUDCLNT_E_DEVICE_IN_USE: WASAPI sometimes lets exclusive preempt shared
+    // and sometimes reports the device busy, which is exactly the flaky shared->exclusive
+    // toggle). Dropping the current sink first frees the device so the exclusive open is
+    // deterministic. A shared->shared device change still uses build-first below (no gap).
+    if player.deck().sink().exclusive() || desired.exclusive {
+        // Park on the device-free placeholder first (drops the old sink, frees the
+        // device), then build the new sink on the freed device and swap it in.
+        if let Err(e) = player.deck_mut().swap_sink(park()) {
+            // Parking itself failed (the current track can't map onto the placeholder) —
+            // the deck is untouched, still on its working sink.
+            return OutputSwap::KeptCurrent(anyhow::anyhow!("park sink for output change: {e:?}"));
+        }
+        // The deck is now PARKED (silent); the old device is released.
+        match build(desired) {
+            Ok(new_sink) => match player.deck_mut().swap_sink(new_sink) {
+                Ok(()) => {
+                    *applied = desired.clone();
+                    OutputSwap::Applied
+                }
+                Err(e) => OutputSwap::Parked(anyhow::anyhow!("swap_sink for output change: {e:?}")),
+            },
+            Err(e) => {
+                // The new device wouldn't open. Under STRICT (exclusive-or-stop) we must
+                // NOT fall back to the OS mixer or the old device: stay on the silent
+                // placeholder so the stop is real. Otherwise try to re-acquire the previous
+                // device so audio continues; if even THAT fails (e.g. another app now holds
+                // the device, or cpal reports it gone after the release), stay parked.
+                if desired.exclusive && desired.strict {
+                    return OutputSwap::Parked(e);
+                }
+                match build(applied) {
+                    Ok(old_sink) => {
+                        if player.deck_mut().swap_sink(old_sink).is_ok() {
+                            OutputSwap::KeptCurrent(e)
+                        } else {
+                            OutputSwap::Parked(e)
+                        }
+                    }
+                    Err(_) => OutputSwap::Parked(e),
+                }
+            }
+        }
+    } else {
+        // SHARED to SHARED (a plain device change, no exclusive). Build the new sink FIRST,
+        // while the old shared stream is still alive, then swap it in (the old sink drops on
+        // swap). Shared mode allows multiple clients per device, so the new open never
+        // contends; and crucially this does NOT drop a working shared stream only to
+        // immediately re-open on the same device, which some devices reject with "device no
+        // longer available" (the release-then-acquire park path triggered exactly that). On
+        // a build failure the old sink is untouched, so playback simply continues.
+        match build(desired) {
+            Ok(new_sink) => match player.deck_mut().swap_sink(new_sink) {
+                Ok(()) => {
+                    *applied = desired.clone();
+                    OutputSwap::Applied
+                }
+                Err(e) => {
+                    OutputSwap::KeptCurrent(anyhow::anyhow!("swap_sink for output change: {e:?}"))
+                }
+            },
+            Err(e) => OutputSwap::KeptCurrent(e),
+        }
+    }
+}
+
+/// Rebuild the output sink from scratch for `desired` and swap it onto the deck,
+/// **unconditionally** — used to recover from a parked (silent) sink after an earlier
+/// build failed (e.g. a strict exclusive open that couldn't acquire the device, or no
+/// device at all at startup). Unlike [`maybe_apply_output_change`] it does not compare
+/// against `applied` (the live sink is the device-free placeholder, which holds no
+/// device — so a plain build-then-swap is safe, nothing to release first) and it does
+/// not restore an old device on failure (there is none; the deck stays on the silent
+/// placeholder for the caller to retry).
+///
+/// # Errors
+/// Propagates `build` failures (e.g. strict exclusive still can't open) so the caller
+/// keeps the deck parked and may retry later or when the config changes.
+pub fn rebuild_output_sink<K, D, FBuild>(
+    player: &mut ServicePlayer<K, D>,
+    desired: &OutputConfig,
+    applied: &mut OutputConfig,
+    build: FBuild,
+) -> anyhow::Result<()>
+where
+    K: Sink,
+    D: SeekableDecoder,
+    FBuild: Fn(&OutputConfig) -> anyhow::Result<K>,
+{
+    let new_sink = build(desired)?;
+    player
+        .deck_mut()
+        .swap_sink(new_sink)
+        .map_err(|e| anyhow::anyhow!("swap_sink for output recovery: {e:?}"))?;
+    *applied = desired.clone();
+    Ok(())
 }
 
 #[cfg(test)]
@@ -725,6 +917,774 @@ mod tests {
         );
         assert!(after.exclusive, "still exclusive after the reopen");
         assert_eq!(tried, None, "a successful switch clears the retry latch");
+    }
+
+    /// Regression for "some tracks play ~2× slow / distorted on bit-perfect output":
+    /// an implicit HE-AAC (SBR) track reports its AAC core rate (24k) at load, then
+    /// flips to the 2× SBR rate (48k) after the first frame. On an exclusive device the
+    /// native-rate switch reopens to the live 48k — and the deck must rebuild its
+    /// resampler at the live rate too, else the stale 24k→48k resampler upsamples
+    /// already-48k content 2× (half speed). After the switch the path must be
+    /// bit-perfect (no resampling) at the live rate. With the stale-rate bug
+    /// `resampling` stays true even though `decoded == device`.
+    #[test]
+    fn an_sbr_rate_flip_stays_bit_perfect_on_exclusive() {
+        let mut p = exclusive_player(44_100); // exclusive device defaulting to 44.1k
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            // Core 24k → SBR 48k once the first frame is decoded.
+            p.provide(id, ConstDecoder::new_sbr(24_000, 48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        p.pump().unwrap(); // first decode confirms SBR → the decoder now reports 48k
+
+        let mut tried = None;
+        maybe_switch_native_rate(&mut p, &mut tried);
+
+        let sp = project_signal_path(&p).expect("loaded");
+        assert_eq!(sp.decoded_rate, 48_000, "the live (post-SBR) decode rate");
+        assert_eq!(sp.device_rate, 48_000, "reopened to the live rate");
+        assert!(
+            !sp.resampling,
+            "bit-perfect after the SBR flip — no stale resampler desyncing speed, got {sp:?}"
+        );
+        assert_eq!(tried, None, "a successful switch clears the retry latch");
+    }
+
+    /// Changing the output config (device or exclusive mode) must apply to the
+    /// CURRENTLY playing track — rebuild the sink in place (`swap_sink`, which keeps
+    /// playback position + ReplayGain) and keep playing — not wait for the next track.
+    /// Best practice (foobar/Roon): apply live, accept the brief hardware reopen; only
+    /// "applies next session" when nothing is playing.
+    #[test]
+    fn an_output_config_change_applies_live_and_keeps_playing() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // The pure decision: a device OR exclusive change needs a rebuild; strict alone
+        // does not (it only changes how a FUTURE exclusive-open handles a refusal).
+        let shared = OutputConfig {
+            device: None,
+            exclusive: false,
+            strict: false,
+        };
+        assert!(!output_change_needs_rebuild(&shared, &shared));
+        assert!(output_change_needs_rebuild(
+            &shared,
+            &OutputConfig {
+                exclusive: true,
+                ..shared.clone()
+            }
+        ));
+        assert!(output_change_needs_rebuild(
+            &shared,
+            &OutputConfig {
+                device: Some("DAC".into()),
+                ..shared.clone()
+            }
+        ));
+        assert!(!output_change_needs_rebuild(
+            &shared,
+            &OutputConfig {
+                strict: true,
+                ..shared.clone()
+            }
+        ));
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let frames_c = Arc::clone(&frames);
+        let build = move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+            Ok(ConfigSink::new(
+                cfg.device.clone(),
+                cfg.exclusive,
+                48_000,
+                2,
+                Arc::clone(&frames_c),
+            ))
+        };
+
+        let mut applied = shared.clone();
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq);
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        assert!(!p.deck().sink().exclusive, "starts shared");
+        let pos_before = project_tick(&p, 1.0, false).position_secs;
+        let written_before = frames.load(Ordering::Relaxed);
+        assert!(written_before > 0, "playing before the change");
+
+        // Flip to EXCLUSIVE live.
+        let desired = OutputConfig {
+            device: None,
+            exclusive: true,
+            strict: false,
+        };
+        let park = || ConfigSink::new(None, false, 48_000, 2, Arc::clone(&frames));
+        assert!(matches!(
+            maybe_apply_output_change(&mut p, &desired, &mut applied, &build, park),
+            OutputSwap::Applied
+        ));
+
+        assert!(
+            p.deck().sink().exclusive,
+            "exclusive applied LIVE to the current track, not next session"
+        );
+        assert_eq!(
+            p.deck().sink().device,
+            None,
+            "the exclusive flip didn't disturb the device selection"
+        );
+        assert_eq!(applied, desired, "applied config tracks the desired one");
+        let pos_after = project_tick(&p, 1.0, false).position_secs;
+        assert!(
+            pos_after >= pos_before,
+            "playback position preserved across the live swap (no restart): {pos_after} < {pos_before}"
+        );
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        assert!(
+            frames.load(Ordering::Relaxed) > written_before,
+            "playback keeps flowing through the rebuilt sink"
+        );
+    }
+
+    /// RELEASE-THEN-ACQUIRE (current sink is EXCLUSIVE): the OLD sink must be dropped
+    /// (its device freed) BEFORE the new sink is built — exclusive WASAPI is
+    /// one-client-per-device, so opening the new stream while the old still held the
+    /// same device fails with device-in-use. We count live "device holders"; the build
+    /// closure records how many are live the instant it runs. A correct release-first
+    /// swap sees ZERO.
+    #[test]
+    fn an_exclusive_output_change_releases_the_old_device_before_opening_the_new() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let device_live = Arc::new(AtomicUsize::new(0));
+        let live_at_build = Arc::new(AtomicUsize::new(usize::MAX));
+
+        let build = {
+            let frames = Arc::clone(&frames);
+            let device_live = Arc::clone(&device_live);
+            let live_at_build = Arc::clone(&live_at_build);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                // How many old devices are still live as we open the new one?
+                live_at_build.store(device_live.load(Ordering::Relaxed), Ordering::Relaxed);
+                Ok(ConfigSink::new_counting(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                    Arc::clone(&device_live),
+                ))
+            }
+        };
+        // The parked placeholder holds no device, so it never counts.
+        let park = {
+            let frames = Arc::clone(&frames);
+            move || ConfigSink::new(None, false, 48_000, 2, Arc::clone(&frames))
+        };
+
+        // Current sink is EXCLUSIVE — the case that needs release-then-acquire.
+        let mut applied = OutputConfig {
+            device: None,
+            exclusive: true,
+            strict: false,
+        };
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq); // device_live -> 1
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        assert_eq!(
+            device_live.load(Ordering::Relaxed),
+            1,
+            "one device open while playing"
+        );
+
+        // Switch the exclusive output to a different device — needs release-first.
+        live_at_build.store(usize::MAX, Ordering::Relaxed); // reset the probe
+        let desired = OutputConfig {
+            device: Some("DAC".into()),
+            exclusive: true,
+            strict: false,
+        };
+        assert!(matches!(
+            maybe_apply_output_change(&mut p, &desired, &mut applied, &build, park),
+            OutputSwap::Applied
+        ));
+
+        assert_eq!(
+            live_at_build.load(Ordering::Relaxed),
+            0,
+            "the old exclusive device must be RELEASED before the new sink opens"
+        );
+        assert_eq!(
+            device_live.load(Ordering::Relaxed),
+            1,
+            "exactly one device live after the swap (old released, new open)"
+        );
+        assert_eq!(
+            p.deck().sink().device,
+            Some("DAC".into()),
+            "the new exclusive sink is installed on the new device"
+        );
+    }
+
+    /// THE flaky shared->exclusive toggle fix: opening the exclusive stream while our OWN
+    /// shared stream still holds the device intermittently hits device-in-use. So a change
+    /// whose DESIRED mode is exclusive must ALSO release-then-acquire (drop the current
+    /// shared sink BEFORE building the exclusive one), even though the current sink isn't
+    /// exclusive. We assert ZERO live device holders at the instant the exclusive sink is
+    /// built — the old build-first path left the shared sink live (count 1) and raced.
+    #[test]
+    fn a_shared_to_exclusive_change_releases_the_shared_device_before_opening_exclusive() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let device_live = Arc::new(AtomicUsize::new(0));
+        let live_at_build = Arc::new(AtomicUsize::new(usize::MAX));
+
+        let build = {
+            let frames = Arc::clone(&frames);
+            let device_live = Arc::clone(&device_live);
+            let live_at_build = Arc::clone(&live_at_build);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                live_at_build.store(device_live.load(Ordering::Relaxed), Ordering::Relaxed);
+                Ok(ConfigSink::new_counting(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                    Arc::clone(&device_live),
+                ))
+            }
+        };
+        let park = {
+            let frames = Arc::clone(&frames);
+            move || ConfigSink::new(None, false, 48_000, 2, Arc::clone(&frames))
+        };
+
+        // Current sink is SHARED (exclusive = false).
+        let mut applied = OutputConfig {
+            device: None,
+            exclusive: false,
+            strict: false,
+        };
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq); // device_live -> 1
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        assert_eq!(
+            device_live.load(Ordering::Relaxed),
+            1,
+            "one shared device open while playing"
+        );
+
+        // Toggle to EXCLUSIVE on the same device: must free the shared device first.
+        live_at_build.store(usize::MAX, Ordering::Relaxed);
+        let desired = OutputConfig {
+            device: None,
+            exclusive: true,
+            strict: false,
+        };
+        assert!(matches!(
+            maybe_apply_output_change(&mut p, &desired, &mut applied, &build, park),
+            OutputSwap::Applied
+        ));
+
+        assert_eq!(
+            live_at_build.load(Ordering::Relaxed),
+            0,
+            "the shared device must be RELEASED before the exclusive stream opens (no device-in-use race)"
+        );
+        assert_eq!(
+            device_live.load(Ordering::Relaxed),
+            1,
+            "exactly one device live after the swap (shared released, exclusive open)"
+        );
+        assert!(
+            p.deck().sink().exclusive,
+            "now driving the device exclusively"
+        );
+    }
+
+    /// NO-GAP for SHARED (the "device no longer available" regression): when the current
+    /// sink is SHARED, a change must NOT drop the old stream before opening the new one —
+    /// some devices reject an immediate same-device re-open. The new sink opens WHILE the
+    /// old is still alive, so at build time the old device is still a live holder.
+    #[test]
+    fn a_shared_output_change_opens_the_new_before_dropping_the_old() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let device_live = Arc::new(AtomicUsize::new(0));
+        let live_at_build = Arc::new(AtomicUsize::new(usize::MAX));
+
+        let build = {
+            let frames = Arc::clone(&frames);
+            let device_live = Arc::clone(&device_live);
+            let live_at_build = Arc::clone(&live_at_build);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                live_at_build.store(device_live.load(Ordering::Relaxed), Ordering::Relaxed);
+                Ok(ConfigSink::new_counting(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                    Arc::clone(&device_live),
+                ))
+            }
+        };
+        // Park must NOT be used on the shared path; if it were, the old would drop first.
+        let park = {
+            let frames = Arc::clone(&frames);
+            move || ConfigSink::new(None, false, 48_000, 2, Arc::clone(&frames))
+        };
+
+        // Current sink is SHARED (exclusive = false).
+        let mut applied = OutputConfig {
+            device: None,
+            exclusive: false,
+            strict: false,
+        };
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq); // device_live -> 1
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+
+        // Switch to a different SHARED device.
+        live_at_build.store(usize::MAX, Ordering::Relaxed);
+        let desired = OutputConfig {
+            device: Some("Speakers".into()),
+            exclusive: false,
+            strict: false,
+        };
+        assert!(matches!(
+            maybe_apply_output_change(&mut p, &desired, &mut applied, &build, park),
+            OutputSwap::Applied
+        ));
+
+        assert_eq!(
+            live_at_build.load(Ordering::Relaxed),
+            1,
+            "the new shared sink opens while the OLD is still alive — no device-release gap"
+        );
+        assert_eq!(
+            device_live.load(Ordering::Relaxed),
+            1,
+            "old dropped after the swap — exactly one live device"
+        );
+        assert_eq!(
+            p.deck().sink().device,
+            Some("Speakers".into()),
+            "the new shared device is installed"
+        );
+    }
+
+    /// A FAILED output change must keep playback alive on the ORIGINAL device — not die
+    /// on the silent placeholder — and report the error so the pump can latch it (no
+    /// retry thrash).
+    #[test]
+    fn a_failed_output_change_restores_the_old_device_and_keeps_playing() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let fail_exclusive = Arc::new(AtomicBool::new(true));
+        let build = {
+            let frames = Arc::clone(&frames);
+            let fail_exclusive = Arc::clone(&fail_exclusive);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                if cfg.exclusive && fail_exclusive.load(Ordering::Relaxed) {
+                    anyhow::bail!("device in use (test)");
+                }
+                Ok(ConfigSink::new(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                ))
+            }
+        };
+        let park = {
+            let frames = Arc::clone(&frames);
+            move || ConfigSink::new(None, false, 48_000, 2, Arc::clone(&frames))
+        };
+
+        let shared = OutputConfig {
+            device: None,
+            exclusive: false,
+            strict: false,
+        };
+        let mut applied = shared.clone();
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq);
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        let written_before = frames.load(Ordering::Relaxed);
+
+        // Try to flip to exclusive — which can't open.
+        let desired = OutputConfig {
+            device: None,
+            exclusive: true,
+            strict: false,
+        };
+        let res = maybe_apply_output_change(&mut p, &desired, &mut applied, &build, park);
+        assert!(
+            matches!(res, OutputSwap::KeptCurrent(_)),
+            "a non-strict exclusive open failure keeps the current (shared) device playing"
+        );
+        assert!(
+            !p.deck().sink().exclusive,
+            "stayed on the original shared device"
+        );
+        assert_eq!(
+            applied, shared,
+            "applied is unchanged on failure (pump can latch desired)"
+        );
+
+        // Playback must keep flowing on the restored device.
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        assert!(
+            frames.load(Ordering::Relaxed) > written_before,
+            "playback continues on the restored original device"
+        );
+    }
+
+    /// STRICT (exclusive-or-stop): when a live change to strict exclusive can't open the
+    /// device, it must NOT keep the OS-mixer (shared) stream playing — it goes SILENT
+    /// (parks on the device-free placeholder) so the stop is real and the Settings card's
+    /// "Stopped" status is truthful. The non-strict case is the opposite (keeps playing),
+    /// covered by `a_failed_output_change_restores_the_old_device_and_keeps_playing`.
+    #[test]
+    fn a_strict_exclusive_change_that_fails_goes_silent_not_shared() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        // Exclusive never opens; the park placeholder is tagged so we can see the deck
+        // land on it (vs. keeping the old shared None-device sink).
+        let build = {
+            let frames = Arc::clone(&frames);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                if cfg.exclusive {
+                    anyhow::bail!("device has no exclusive format (test)");
+                }
+                Ok(ConfigSink::new(
+                    cfg.device.clone(),
+                    false,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                ))
+            }
+        };
+        let park = {
+            let frames = Arc::clone(&frames);
+            move || {
+                ConfigSink::new(
+                    Some("__silent__".into()),
+                    false,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                )
+            }
+        };
+
+        let mut applied = OutputConfig {
+            device: None,
+            exclusive: false,
+            strict: false,
+        };
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq); // starts shared
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+
+        // Flip to STRICT exclusive — which can't open.
+        let desired = OutputConfig {
+            device: None,
+            exclusive: true,
+            strict: true,
+        };
+        let res = maybe_apply_output_change(&mut p, &desired, &mut applied, &build, park);
+        assert!(
+            matches!(res, OutputSwap::Parked(_)),
+            "strict exclusive that can't open parks the deck (silent), reporting the reason"
+        );
+        assert_eq!(
+            p.deck().sink().device,
+            Some("__silent__".into()),
+            "strict stop goes SILENT (parks), rather than keeping the OS-mixer shared stream"
+        );
+        assert!(
+            !p.deck().sink().exclusive,
+            "the silent placeholder is not an exclusive device"
+        );
+    }
+
+    /// Recovery: a deck parked on the silent placeholder (a build failed) rebuilds to a
+    /// real device sink via `rebuild_output_sink` and keeps the playback position —
+    /// unlike `maybe_apply_output_change`, it force-builds even when `applied == desired`
+    /// (the live sink is the placeholder, not `applied`'s device).
+    #[test]
+    fn rebuild_output_sink_recovers_a_parked_deck() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicUsize;
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let build = {
+            let frames = Arc::clone(&frames);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                Ok(ConfigSink::new(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                ))
+            }
+        };
+
+        // Deck starts PARKED on the silent placeholder (as the pump does after an initial
+        // build failure).
+        let deck = Deck::new(
+            ConfigSink::new(
+                Some("__silent__".into()),
+                false,
+                48_000,
+                2,
+                Arc::clone(&frames),
+            ),
+            Quality::Hq,
+        );
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        let pos_before = project_tick(&p, 1.0, false).position_secs;
+        assert_eq!(
+            p.deck().sink().device,
+            Some("__silent__".into()),
+            "starts parked on the placeholder"
+        );
+
+        // Recover to the real default device.
+        let desired = OutputConfig {
+            device: Some("Speakers".into()),
+            exclusive: false,
+            strict: false,
+        };
+        let mut applied = OutputConfig::default();
+        rebuild_output_sink(&mut p, &desired, &mut applied, &build).unwrap();
+
+        assert_eq!(
+            p.deck().sink().device,
+            Some("Speakers".into()),
+            "recovered onto the real device"
+        );
+        assert_eq!(applied, desired, "applied tracks the recovered config");
+        assert!(
+            project_tick(&p, 1.0, false).position_secs >= pos_before,
+            "recovery preserves the playback position (no restart)"
+        );
+    }
+
+    /// `rebuild_output_sink` stays parked (and errors) until the build can succeed — the
+    /// transient-failure retry contract the pump leans on (device momentarily in use).
+    #[test]
+    fn rebuild_output_sink_stays_parked_until_the_build_succeeds() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let fail = Arc::new(AtomicBool::new(true));
+        let build = {
+            let frames = Arc::clone(&frames);
+            let fail = Arc::clone(&fail);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                if fail.load(Ordering::Relaxed) {
+                    anyhow::bail!("device in use (test)");
+                }
+                Ok(ConfigSink::new(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                ))
+            }
+        };
+
+        let deck = Deck::new(
+            ConfigSink::new(
+                Some("__silent__".into()),
+                false,
+                48_000,
+                2,
+                Arc::clone(&frames),
+            ),
+            Quality::Hq,
+        );
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        let desired = OutputConfig {
+            device: Some("DAC".into()),
+            exclusive: true,
+            strict: true,
+        };
+        let mut applied = OutputConfig::default();
+
+        // While the device is "in use", recovery fails and the deck stays silent.
+        assert!(rebuild_output_sink(&mut p, &desired, &mut applied, &build).is_err());
+        assert_eq!(
+            p.deck().sink().device,
+            Some("__silent__".into()),
+            "still parked while the build fails"
+        );
+
+        // The blocker clears → the next retry recovers.
+        fail.store(false, Ordering::Relaxed);
+        rebuild_output_sink(&mut p, &desired, &mut applied, &build).unwrap();
+        assert_eq!(
+            p.deck().sink().device,
+            Some("DAC".into()),
+            "recovered once the device freed"
+        );
+        assert!(
+            p.deck().sink().exclusive,
+            "recovered as the requested exclusive device"
+        );
     }
 
     #[test]

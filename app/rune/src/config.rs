@@ -51,13 +51,42 @@ pub(crate) fn use_test_config_dir() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
+/// A process-wide lock serialising every test whose assertions depend on the
+/// GLOBAL i18n locale. `rust_i18n::set_locale` sets a single process-wide
+/// locale, so a test that sweeps non-"en" locales (the per-locale layout
+/// overflow tests) running concurrently with one asserting a specific
+/// localised string (e.g. a "Streams from …" tooltip) lets the sweeper flip
+/// the locale mid-frame of the asserting test — the i18n test flake. Any test
+/// that sets a non-default locale OR asserts localised text must hold this.
+#[cfg(test)]
+static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Isolate a test from the shared global locale: acquire the process-wide
+/// [`LOCALE_TEST_LOCK`] and set `locale`, returning the guard. Bind it for the
+/// test's duration (`let _locale = config::use_test_locale("en");`) so no
+/// concurrent locale-sensitive test can observe or clobber the locale while it
+/// renders and asserts. A sweeper may set further locales while holding the
+/// guard. Poisoning is ignored (one failing test must not cascade). Acquire
+/// this BEFORE [`use_test_config_dir`] when a test needs both, so the two locks
+/// are always taken in the same order (no deadlock).
+#[cfg(test)]
+pub(crate) fn use_test_locale(locale: &str) -> std::sync::MutexGuard<'static, ()> {
+    let guard = LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    rust_i18n::set_locale(locale);
+    guard
+}
+
 /// The app's config directory. In a **test build this is ALWAYS a throwaway
 /// temp directory** (never the user's real config) — tests share it, so a test
 /// that persists a setting must not let another's write leak into its
 /// assertions (set the relevant `State` field explicitly instead of trusting a
 /// loaded value). In production it is `<os-config>/soul-player`.
+///
+/// `pub(crate)`: the playlist store (`playlists::store`) falls back to
+/// `<this>/playlists` when no managed-library root is configured, so it needs
+/// the same test/production split every other per-setting path here gets.
 #[cfg(test)]
-fn soul_player_dir() -> Option<PathBuf> {
+pub(crate) fn soul_player_dir() -> Option<PathBuf> {
     Some(
         TEST_CONFIG_DIR
             .get_or_init(|| {
@@ -68,7 +97,7 @@ fn soul_player_dir() -> Option<PathBuf> {
 }
 
 #[cfg(not(test))]
-fn soul_player_dir() -> Option<PathBuf> {
+pub(crate) fn soul_player_dir() -> Option<PathBuf> {
     Some(dirs::config_dir()?.join("soul-player"))
 }
 
@@ -84,12 +113,27 @@ fn config_path() -> Option<PathBuf> {
 struct Config {
     /// Watched music folders (stored as strings — `PathBuf` isn't TOML-native).
     sources: Vec<String>,
+    /// Persisted remote-source server base URLs (no trailing slash), so a
+    /// restart can reconnect them. The OAuth refresh token itself is never
+    /// stored here — it lives in the OS keychain, keyed by the same URL (see
+    /// `soul_player_host::remote::KeyringStore`). A config written before
+    /// remote sources existed loads this as empty (struct-level
+    /// `#[serde(default)]`).
+    remotes: Vec<String>,
+    /// Server URLs (a subset of `remotes`) the user has disabled. Absent in
+    /// old configs → everything enabled — the same "store the *disabled*
+    /// subset" convention `sources_disabled` uses for local folders, so a
+    /// remote added before this field existed loads enabled.
+    #[serde(default)]
+    remotes_disabled: Vec<String>,
     /// Theme preference: `system` | `light` | `dark`.
     theme: String,
     /// Resizable sidebar width (clamped to the legal range on load).
     sidebar_width: f32,
     /// Whether the sidebar is collapsed to its rail.
     sidebar_collapsed: bool,
+    /// Content-pane zoom factor (Ctrl +/-/0), 1.0 = 100%. Clamped on load.
+    ui_zoom: f32,
     /// UI language preference: `system` | `en` | `de` | `es` | `zh` | `cs`.
     locale: String,
     /// Primary nav items the user has hidden (by id: `home`/`albums`/`artists`/
@@ -133,6 +177,24 @@ struct Config {
     /// install → the window opens at its default placement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     window: Option<WindowGeometry>,
+    /// Which date the UI treats as an album's "year" (display + discography
+    /// sort): the original first-release date, or this particular release's
+    /// own date. `#[serde(default)]` so a config written before this setting
+    /// existed loads as `Original` (the field-level default below mirrors the
+    /// struct-level one for clarity).
+    #[serde(default)]
+    album_year_source: AlbumYearSource,
+}
+
+/// Which date an album's "year" is read from: the track's original
+/// first-release date, or the specific release/reissue it was sourced from.
+/// Persisted; defaults to `Original` (the long-standing, expected behaviour).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AlbumYearSource {
+    #[default]
+    Original,
+    Release,
 }
 
 /// A persisted window rectangle (outer position + content size) and maximized
@@ -258,9 +320,12 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             sources: Vec::new(),
+            remotes: Vec::new(),
+            remotes_disabled: Vec::new(),
             theme: "system".into(),
             sidebar_width: DEFAULT_WIDTH,
             sidebar_collapsed: false,
+            ui_zoom: 1.0,
             locale: "system".into(),
             nav_hidden: Vec::new(),
             sources_disabled: Vec::new(),
@@ -275,6 +340,7 @@ impl Default for Config {
             profiles: Vec::new(),
             active_profile: 0,
             window: None,
+            album_year_source: AlbumYearSource::Original,
         }
     }
 }
@@ -394,6 +460,69 @@ pub fn save_sources_enabled(entries: &[(PathBuf, bool)]) {
     save(&cfg);
 }
 
+/// The saved remote-source server URLs (empty if none), in the order they
+/// were added. Reload these at startup and reconnect each one (silently,
+/// via the stored keychain refresh token) so remote sources survive a
+/// restart — see `soul_player_host::PlayerHandle::reconnect_remote_source`.
+pub fn load_remotes() -> Vec<String> {
+    load().remotes
+}
+
+/// Persist `url` as an added remote source (load-modify-write): appended
+/// only if not already present, so re-adding (or a startup reconnect that
+/// re-saves) dedupes rather than growing the list. The refresh token itself
+/// is never written here — only the OS keychain holds it.
+pub fn save_remote(url: &str) {
+    let mut cfg = load();
+    if !cfg.remotes.iter().any(|u| u == url) {
+        cfg.remotes.push(url.to_string());
+    }
+    save(&cfg);
+}
+
+/// Drop `url` from the persisted remote sources (load-modify-write); a no-op
+/// if it wasn't there. Paired with
+/// [`PlayerHandle::remove_remote_source`](soul_player_host::PlayerHandle::remove_remote_source)
+/// and deleting its OS keychain refresh token so a removed remote leaves
+/// nothing behind — see the Settings → Sources Disconnect control
+/// (`disconnect_remote_source`, Inc 6).
+pub fn remove_remote(url: &str) {
+    let mut cfg = load();
+    cfg.remotes.retain(|u| u != url);
+    // Drop any stored enabled/disabled flag too, so a later re-add of this
+    // same url starts fresh (enabled) rather than inheriting a stale toggle —
+    // mirrors `PlayerHandle::remove_remote_source` clearing its own
+    // `Inner::remote_enabled` entry on the host side.
+    cfg.remotes_disabled.retain(|u| u != url);
+    save(&cfg);
+}
+
+/// Server URLs (a subset of `remotes`) the user has disabled — the remote
+/// counterpart of [`load_sources_with_enabled`]'s disabled half, kept as its
+/// own flat list (rather than paired with `remotes`) since `remotes` is
+/// otherwise mutated one url at a time ([`save_remote`]/[`remove_remote`]).
+/// Checked once at startup (`reconnect_remotes_on_startup`) to re-apply each
+/// remote's enabled flag on the freshly reconnected host — a fresh launch's
+/// `PlayerHandle` starts every remote enabled until told otherwise.
+pub fn load_remotes_disabled() -> Vec<String> {
+    load().remotes_disabled
+}
+
+/// Persist `url`'s enabled flag (load-modify-write) — named to match
+/// [`soul_player_host::PlayerHandle::set_remote_enabled`] on the host side:
+/// added to the disabled set when `enabled` is `false`, dropped when `true`.
+/// Independent of `remotes` (applies even to a url not yet in that list), so
+/// toggling never races a concurrent add/remove of the url itself.
+pub fn set_remote_enabled(url: &str, enabled: bool) {
+    let mut cfg = load();
+    if enabled {
+        cfg.remotes_disabled.retain(|u| u != url);
+    } else if !cfg.remotes_disabled.iter().any(|u| u == url) {
+        cfg.remotes_disabled.push(url.to_string());
+    }
+    save(&cfg);
+}
+
 /// The saved theme preference ("system"/"light"/"dark").
 pub fn load_theme_pref() -> Option<String> {
     Some(load().theme)
@@ -403,6 +532,18 @@ pub fn load_theme_pref() -> Option<String> {
 pub fn save_theme_pref(pref: &str) {
     let mut cfg = load();
     cfg.theme = pref.to_string();
+    save(&cfg);
+}
+
+/// The saved album-year source (which date the UI shows/sorts by). Default Original.
+pub fn load_album_year() -> AlbumYearSource {
+    load().album_year_source
+}
+
+/// Persist the album-year source.
+pub fn save_album_year(src: AlbumYearSource) {
+    let mut cfg = load();
+    cfg.album_year_source = src;
     save(&cfg);
 }
 
@@ -483,6 +624,18 @@ pub fn save_sidebar(width: f32, collapsed: bool) {
     let mut cfg = load();
     cfg.sidebar_width = width;
     cfg.sidebar_collapsed = collapsed;
+    save(&cfg);
+}
+
+/// The persisted content-pane zoom (1.0 if unset). The caller sanitizes/clamps it.
+pub fn load_ui_zoom() -> f32 {
+    load().ui_zoom
+}
+
+/// Persist the content-pane zoom factor.
+pub fn save_ui_zoom(zoom: f32) {
+    let mut cfg = load();
+    cfg.ui_zoom = zoom;
     save(&cfg);
 }
 
@@ -1064,9 +1217,12 @@ mod tests {
     fn config_toml_roundtrips() {
         let cfg = Config {
             sources: vec!["/music/a".into(), "/music/b".into()],
+            remotes: vec!["http://server-a".into(), "http://server-b".into()],
+            remotes_disabled: vec!["http://server-b".into()],
             theme: "dark".into(),
             sidebar_width: 300.0,
             sidebar_collapsed: true,
+            ui_zoom: 1.3,
             locale: "de".into(),
             nav_hidden: vec!["home".into()],
             sources_disabled: Vec::new(),
@@ -1114,14 +1270,18 @@ mod tests {
                 h: 800,
                 maximized: true,
             }),
+            album_year_source: AlbumYearSource::Release,
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
         assert_eq!(back.sources, cfg.sources);
+        assert_eq!(back.remotes, cfg.remotes);
+        assert_eq!(back.remotes_disabled, cfg.remotes_disabled);
         assert_eq!(back.theme, "dark");
         assert_eq!(back.window, cfg.window);
         assert_eq!(back.sidebar_width, 300.0);
         assert!(back.sidebar_collapsed);
+        assert_eq!(back.ui_zoom, 1.3);
         assert_eq!(back.locale, "de");
         assert!(back.eq_enabled);
         assert_eq!(back.eq_preamp, -3.0);
@@ -1133,6 +1293,15 @@ mod tests {
         assert_eq!(back.managed_library_strategy, "move");
         assert_eq!(back.profiles, cfg.profiles);
         assert_eq!(back.active_profile, 0);
+        assert_eq!(back.album_year_source, AlbumYearSource::Release);
+    }
+
+    #[test]
+    fn album_year_source_round_trips_and_defaults_to_original() {
+        let _g = use_test_config_dir();
+        assert_eq!(load_album_year(), AlbumYearSource::Original); // default
+        save_album_year(AlbumYearSource::Release);
+        assert_eq!(load_album_year(), AlbumYearSource::Release);
     }
 
     #[test]
@@ -1313,6 +1482,87 @@ mod tests {
             load_sources_with_enabled(),
             vec![(PathBuf::from("/a"), true), (PathBuf::from("/b"), true)]
         );
+    }
+
+    #[test]
+    fn remotes_roundtrip_dedupe_and_remove() {
+        let _config_guard = use_test_config_dir();
+        // Drain to a known-empty starting point: `remotes` is additive
+        // (save_remote appends, never overwrites), so — unlike the other
+        // settings here, which fully replace their field — a sibling test
+        // sharing this process-wide config file could otherwise leave a
+        // stray url behind that would break the exact-equality assertions
+        // below.
+        for url in load_remotes() {
+            remove_remote(&url);
+        }
+        save_remote("http://a");
+        save_remote("http://b");
+        assert_eq!(
+            load_remotes(),
+            vec!["http://a".to_string(), "http://b".to_string()]
+        );
+
+        // Re-saving an already-present url dedupes rather than duplicating.
+        save_remote("http://a");
+        assert_eq!(
+            load_remotes(),
+            vec!["http://a".to_string(), "http://b".to_string()],
+            "re-adding the same url must not duplicate it"
+        );
+
+        remove_remote("http://a");
+        assert_eq!(
+            load_remotes(),
+            vec!["http://b".to_string()],
+            "removing a url drops only that one"
+        );
+
+        // Removing something never added is a no-op, not an error.
+        remove_remote("http://never-added");
+        assert_eq!(load_remotes(), vec!["http://b".to_string()]);
+    }
+
+    #[test]
+    fn remotes_disabled_roundtrips_and_old_config_is_all_enabled() {
+        let _config_guard = use_test_config_dir();
+        for url in load_remotes() {
+            remove_remote(&url);
+        }
+        save_remote("http://a");
+        save_remote("http://b");
+
+        // Fresh config, nothing toggled yet: everything enabled.
+        assert!(load_remotes_disabled().is_empty());
+
+        set_remote_enabled("http://a", false);
+        assert_eq!(
+            load_remotes_disabled(),
+            vec!["http://a".to_string()],
+            "disabling a remote adds it to the disabled set"
+        );
+
+        // Re-disabling dedupes rather than duplicating.
+        set_remote_enabled("http://a", false);
+        assert_eq!(load_remotes_disabled(), vec!["http://a".to_string()]);
+
+        set_remote_enabled("http://a", true);
+        assert!(
+            load_remotes_disabled().is_empty(),
+            "re-enabling drops it from the disabled set"
+        );
+
+        // Removing a remote drops any stored disabled flag for it too.
+        set_remote_enabled("http://b", false);
+        remove_remote("http://b");
+        assert!(
+            load_remotes_disabled().is_empty(),
+            "removing a remote clears its disabled flag"
+        );
+
+        for url in load_remotes() {
+            remove_remote(&url);
+        }
     }
 
     #[test]

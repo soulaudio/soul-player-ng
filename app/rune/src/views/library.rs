@@ -13,7 +13,7 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::icons;
-use crate::views::player::cover;
+use crate::views::player::{cover, remote_badge};
 use crate::views::scrollbar;
 
 thread_local! {
@@ -28,7 +28,7 @@ pub(crate) fn fmt_dur(secs: f64) -> String {
 
 /// Case-insensitive substring match over the fields a user would search by.
 /// `q` is already lowercased by the caller.
-fn track_matches(t: &TrackView, q: &str) -> bool {
+pub(crate) fn track_matches(t: &TrackView, q: &str) -> bool {
     let hit = |o: &Option<String>| o.as_deref().is_some_and(|v| v.to_lowercase().contains(q));
     hit(&t.title) || hit(&t.artist) || hit(&t.album)
 }
@@ -142,6 +142,11 @@ fn track_row(
             .w(28.0),
         )
         .child(title_col);
+    // A subtle cloud badge for a track streaming from a remote source;
+    // nothing renders for a local track, the unremarked default.
+    if let Some(host) = &t.remote_source {
+        r = r.child(remote_badge(t.id, host, p));
+    }
     // The standard layout keeps the artist and album as their own columns; the
     // compact layout dropped them above (artist moved under the title).
     if !compact {
@@ -186,8 +191,11 @@ fn track_row(
             .on_press(move |st: &mut State| st.host.send(Command::Enqueue(tid))),
     )
     // Right-click: a context menu with the fuller per-track actions (Play,
-    // Play next, Add to queue). Anchored at the click point. Where popup
-    // menus aren't supported, the inline + button remains the fallback.
+    // Play next, Add to queue, Add to playlist). Anchored at the click
+    // point. "Add to playlist" is a native menu ITEM opening the themed
+    // `views::add_to_playlist` overlay (not a `PopupMenu::picker`, which the
+    // arch test bans only for selection dropdowns). Where popup menus aren't
+    // supported, the inline + button remains the add-to-queue fallback.
     .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
         let play_ids = menu_ids.clone();
         tx.popup_menu(
@@ -200,6 +208,10 @@ fn track_row(
                 .item(PopupItem::new(
                     "enqueue",
                     t!("library.addToQueue").to_string(),
+                ))
+                .item(PopupItem::new(
+                    "add-to-playlist",
+                    t!("playlists.addTo").to_string(),
                 )),
             press,
             move |st: &mut State, picked, _tx: &mut Tx| match picked {
@@ -209,6 +221,7 @@ fn track_row(
                 }),
                 Some("play-next") => st.host.send(Command::PlayNext(tid)),
                 Some("enqueue") => st.host.send(Command::Enqueue(tid)),
+                Some("add-to-playlist") => crate::open_add_to_playlist(st, tid),
                 _ => {}
             },
         );

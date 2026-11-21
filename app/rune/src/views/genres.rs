@@ -9,20 +9,25 @@
 
 use std::collections::HashMap;
 
-use rune::{Cursor, El, ScrollSpec, col, el, icon, row, text};
-use soul_player_host::{Command, TrackView};
+use rune::{Cursor, El, ScrollSpec, col, el, row, text, text_input};
+use soul_player_host::TrackView;
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::albums::detail_track_row;
+use crate::views::albums::{detail_track_row, fmt_total_dur};
+use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
 use crate::views::icons;
+use crate::views::player::{group_remote_source, remote_badge_for};
 
-/// One grouped genre: its display name and every track id (in library order) for
-/// Play All / the detail list.
+/// One grouped genre: its display name, every track id (in library order) for
+/// Play All / the detail list, and whether every one of its tracks streams from
+/// the same remote host (`None` for a local or mixed-source genre — see
+/// [`group_remote_source`]).
 pub(crate) struct Genre {
     name: String,
     ids: Vec<u32>,
+    remote_source: Option<String>,
 }
 
 /// Group the flat library by genre, preserving first-seen (library) order so the
@@ -42,10 +47,23 @@ pub(crate) fn group_genres(library: &[TrackView]) -> Vec<Genre> {
             genres.push(Genre {
                 name,
                 ids: Vec::new(),
+                remote_source: None, // resolved below, once every member track is known
             });
             genres.len() - 1
         });
         genres[i].ids.push(t.id);
+    }
+    // See `group_albums`' matching second pass: a track id -> remote_source map
+    // avoids an O(n²) `library.iter().find` per id.
+    let remote_by_id: HashMap<u32, &Option<String>> =
+        library.iter().map(|t| (t.id, &t.remote_source)).collect();
+    for genre in &mut genres {
+        genre.remote_source = group_remote_source(
+            genre
+                .ids
+                .iter()
+                .filter_map(|id| remote_by_id.get(id).copied()),
+        );
     }
     genres
 }
@@ -55,7 +73,7 @@ pub(crate) fn group_genres(library: &[TrackView]) -> Vec<Genre> {
 /// list entry rather than a card.
 fn genre_row(p: &Palette, slot: usize, g: &Genre) -> El {
     let name = g.name.clone();
-    row()
+    let mut r = row()
         .key(format!("genre-{slot}"))
         .role("button")
         .label(g.name.clone())
@@ -75,17 +93,28 @@ fn genre_row(p: &Palette, slot: usize, g: &Genre) -> El {
                 .color(p.fg)
                 .truncate()
                 .grow(1.0),
-        )
-        .child(
-            text(t!("genre.trackCount", count => g.ids.len()).to_string())
-                .font(type_::ITEM)
-                .color(p.text_secondary),
-        )
-        .on_press(move |st: &mut State| {
-            st.route = crate::Route::Genre;
-            st.open_genre = Some(name.clone());
-            st.mobile_show_content = true;
-        })
+        );
+    // A subtle cloud badge when every track in this genre streams from the same
+    // remote host; nothing renders for a local/mixed genre, same unremarked
+    // default as the album/artist cards and the track rows.
+    if let Some(host) = &g.remote_source {
+        r = r.child(remote_badge_for(&format!("genre-remote-{slot}"), host, p));
+    }
+    r.child(
+        text(t!("genre.trackCount", count => g.ids.len()).to_string())
+            .font(type_::ITEM)
+            .color(p.text_secondary),
+    )
+    .on_press(move |st: &mut State| {
+        crate::navigate_to(
+            st,
+            crate::Route::Genre,
+            None,
+            None,
+            Some(name.clone()),
+            None,
+        );
+    })
 }
 
 /// The Genres page: a vertical list of genre rows (name + count), scrolled.
@@ -122,14 +151,15 @@ fn back_button(p: &Palette) -> El {
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(|st: &mut State| st.route = crate::Route::Genres)
+        .on_press(crate::go_back)
 }
 
-/// A genre's detail page: a back link, a header (a "GENRE" eyebrow, the name, a
-/// track count and a Play All — no cover, since genres carry none), then the
-/// genre's track list. The genre is `State::open_genre`, re-derived from the
-/// current library; if it has vanished we just offer the way back.
-pub fn genre_detail(s: &State, p: &Palette) -> El {
+/// A genre's detail page: a back link, the shared hero using a muted music-note
+/// tile in place of artwork ("GENRE" eyebrow, name, "{n} tracks · {duration}",
+/// Play All), then the genre's track list. The genre is `State::open_genre`,
+/// re-derived from the current library; if it has vanished we just offer the way
+/// back.
+pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
     let genres = group_genres(&s.library);
     let Some(genre) = s
         .open_genre
@@ -144,67 +174,78 @@ pub fn genre_detail(s: &State, p: &Palette) -> El {
             .child(back_button(p));
     };
 
-    let play_ids = genre.ids.clone();
-    let header = col()
-        .key("genre-header")
-        .gap(space::XS)
-        .pb(space::SECTION)
-        .child(
-            text(t!("genre.eyebrow").to_uppercase())
-                .font(type_::SECTION)
-                .color(p.text_secondary),
-        )
-        .child(
-            text(genre.name.clone())
-                .font(type_::DISPLAY)
-                .color(p.fg)
-                .truncate(),
-        )
-        .child(
-            text(t!("genre.trackCount", count => genre.ids.len()).to_string())
-                .font(type_::CAPTION)
-                .color(p.text_secondary),
-        )
-        .child(
-            // The same "Play All" pill as the artist/album pages — plays the
-            // genre's tracks from the top.
-            el().key("genre-play-all")
-                .role("button")
-                .label(t!("album.playAll").to_string())
-                .focusable(true)
-                .px(space::XL)
-                .py(space::MD)
-                .radius(radius::FULL)
-                .fill(p.primary)
-                .cursor(Cursor::Pointer)
-                .hover(p.bg.alpha(fx::HOVER_FILL))
-                .press(p.bg.alpha(fx::PRESS_FILL))
-                .on_press(move |st: &mut State| {
-                    st.host.send(Command::PlayContext {
-                        ids: play_ids.clone(),
-                        start: 0,
-                    })
-                })
-                .child(
-                    row()
-                        .gap(space::SM)
-                        .center_y()
-                        .child(icon(&icons::PLAY, 20.0).color(p.bg))
-                        .child(text(t!("album.playAll").to_string()).color(p.bg)),
-                ),
-        );
+    let total: f64 = genre
+        .ids
+        .iter()
+        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .map(|t| t.duration_secs)
+        .sum();
+    let meta = t!(
+        "detail.tracksAndDuration",
+        count => genre.ids.len(),
+        dur => fmt_total_dur(total)
+    )
+    .to_string();
 
+    let hero = detail_hero(
+        s,
+        p,
+        scale,
+        "genre",
+        HeroArt::Icon(&icons::MUSIC),
+        t!("genre.eyebrow").to_uppercase(),
+        genre.name.clone(),
+        genre.remote_source.clone(),
+        None,
+        meta,
+        play_all_pill("genre-play-all", genre.ids.clone(), p),
+    );
+
+    let q = s.genre_search.text.to_lowercase();
+    let shown: Vec<u32> = genre
+        .ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            q.is_empty()
+                || s.library
+                    .iter()
+                    .find(|t| t.id == *id)
+                    .is_some_and(|t| crate::views::library::track_matches(t, &q))
+        })
+        .collect();
+    let search = text_input(&s.genre_search, type_::ITEM)
+        .key("genre-search")
+        .single_line()
+        .label(t!("genre.searchPlaceholder").to_string())
+        .w_full()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .color(p.fg)
+        .on_edit(|st: &mut State| &mut st.genre_search);
     let mut list = col().key("genre-tracks").role("list").gap(space::XXS);
-    for (i, &id) in genre.ids.iter().enumerate() {
-        if let Some(t) = s.library.iter().find(|t| t.id == id) {
-            list = list.child(detail_track_row(
-                s.now_playing_id,
-                s.playing,
-                p,
-                &genre.ids,
-                i,
-                t,
-            ));
+    if shown.is_empty() {
+        list = list.child(
+            text(t!("genre.noMatches").to_string())
+                .font(type_::ITEM)
+                .color(p.text_secondary)
+                .px(space::MD)
+                .py(space::SM),
+        );
+    } else {
+        for (i, &id) in shown.iter().enumerate() {
+            if let Some(t) = s.library.iter().find(|t| t.id == id) {
+                list = list.child(detail_track_row(
+                    s.now_playing_id,
+                    s.playing,
+                    p,
+                    &shown,
+                    i,
+                    t,
+                ));
+            }
         }
     }
 
@@ -212,18 +253,13 @@ pub fn genre_detail(s: &State, p: &Palette) -> El {
         .key("genre-detail")
         .grow(1.0)
         .min_h(0.0)
-        .child(
-            row()
-                .key("genre-detail-top")
-                .px(space::PANE)
-                .pt(space::SM)
-                .child(back_button(p)),
-        )
+        .child(row_top(p))
         .child(
             col()
                 .key("genre-detail-content")
                 .padding(space::PANE)
-                .child(header)
+                .child(hero)
+                .child(search)
                 .child(list)
                 .scroll(ScrollSpec {
                     stick_bottom: false,
@@ -232,6 +268,15 @@ pub fn genre_detail(s: &State, p: &Palette) -> El {
                 .grow(1.0)
                 .min_h(0.0),
         )
+}
+
+/// The back-link bar above the genre detail content.
+fn row_top(p: &Palette) -> El {
+    row()
+        .key("genre-detail-top")
+        .px(space::PANE)
+        .pt(space::SM)
+        .child(back_button(p))
 }
 
 #[cfg(test)]
@@ -246,6 +291,9 @@ mod tests {
             album: Some("Alb".into()),
             genre: genre.map(|g| g.to_string()),
             duration_secs: 1.0,
+            remote_source: None,
+            original_date: 0,
+            release_date: 0,
         }
     }
 
@@ -266,5 +314,34 @@ mod tests {
         assert_eq!(genres[1].ids, vec![2]);
         // A None/blank genre falls under the shared Unknown bucket.
         assert_eq!(genres[2].ids, vec![4]);
+    }
+
+    /// A genre's `remote_source` is the unanimous host across every one of its
+    /// tracks; a mix of remote and local has no consensus and must show no
+    /// badge.
+    #[test]
+    fn group_genres_resolves_remote_source_consensus() {
+        let mut remote1 = tv(1, Some("Rock"));
+        remote1.remote_source = Some("h".to_string());
+        let mut remote2 = tv(2, Some("Rock"));
+        remote2.remote_source = Some("h".to_string());
+        let all_remote = group_genres(&[remote1, remote2]);
+        assert_eq!(
+            all_remote[0].remote_source,
+            Some("h".to_string()),
+            "every track shares the same host"
+        );
+
+        let mut remote = tv(3, Some("Jazz"));
+        remote.remote_source = Some("h".to_string());
+        let local = tv(4, Some("Jazz"));
+        let mixed = group_genres(&[remote, local]);
+        assert_eq!(
+            mixed[0].remote_source, None,
+            "a local track in the mix breaks consensus"
+        );
+
+        let all_local = group_genres(&[tv(5, Some("Jazz")), tv(6, Some("Jazz"))]);
+        assert_eq!(all_local[0].remote_source, None, "all local -> no badge");
     }
 }

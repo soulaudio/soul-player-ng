@@ -23,8 +23,8 @@ pub(crate) mod testutil;
 pub use actor::AudioPlayer;
 pub use art::{Cover, cover_bytes};
 pub use driver::{
-    RgInfo, ServicePlayer, VolumeState, apply_command, project_queue, project_signal_path,
-    project_tick,
+    OutputConfig, RgInfo, ServicePlayer, VolumeState, apply_command, project_queue,
+    project_signal_path, project_tick,
 };
 pub use fingerprint::{Fingerprint, fingerprint_file, fingerprint_pcm};
 pub use identify::{AcousticId, IdentifyCache};

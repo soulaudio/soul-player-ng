@@ -7,6 +7,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use rune::tok::motion;
 use rune::{
@@ -142,6 +143,11 @@ const PLAY_SIZE: f32 = 40.0;
 pub struct ArtCache {
     cache: Option<ImageCache>,
     images: RefCell<HashMap<u32, Image>>,
+    /// Memoized decodes keyed by an absolute file path rather than a track
+    /// id, for covers that live on disk independent of any track (a
+    /// playlist's custom cover image). Kept separate from `images` since the
+    /// two never collide and never need to invalidate each other.
+    path_images: RefCell<HashMap<PathBuf, Image>>,
 }
 
 impl ArtCache {
@@ -149,6 +155,7 @@ impl ArtCache {
         Self {
             cache: None,
             images: RefCell::new(HashMap::new()),
+            path_images: RefCell::new(HashMap::new()),
         }
     }
 
@@ -169,6 +176,63 @@ impl ArtCache {
         let image = cache.load_mime(cover.bytes, &cover.mime, DECODE_PX, scale);
         self.images.borrow_mut().insert(id, image.clone());
         Some(image)
+    }
+
+    /// Like [`Self::image_for`] but keyed by an absolute file path instead of
+    /// a track id, for a cover image that lives on disk on its own (a
+    /// playlist's custom cover). Reads the file once, memoizes the decode by
+    /// path, and returns `None`, never panicking, when the cache isn't wired
+    /// yet or the file can't be read.
+    fn image_for_path(&self, path: &Path, scale: f32) -> Option<Image> {
+        if let Some(image) = self.path_images.borrow().get(path) {
+            return Some(image.clone());
+        }
+        let cache = self.cache.as_ref()?;
+        let bytes = std::fs::read(path).ok()?;
+        let image = cache.load_mime(bytes, mime_from_ext(path), DECODE_PX, scale);
+        self.path_images
+            .borrow_mut()
+            .insert(path.to_path_buf(), image.clone());
+        Some(image)
+    }
+
+    /// Drop `path`'s memoized decode, if any, so the next [`Self::image_for_path`]
+    /// re-reads the file from disk instead of serving a stale cached image.
+    /// A playlist's custom cover always lives at the same `cover.<ext>` path
+    /// (`PlaylistStore::set_custom_cover` overwrites it in place), so without
+    /// this, replacing a cover with a different image of the same extension
+    /// would keep showing the old one until restart.
+    pub fn forget_path(&self, path: &Path) {
+        self.path_images.borrow_mut().remove(path);
+    }
+
+    /// Test-only: `path`'s currently memoized decode's content-addressed
+    /// [`rune::ImageId`] (`rune::Image::id`), if any. Lets a test assert
+    /// [`Self::forget_path`] actually ran at a call site by checking that a
+    /// re-read picks up a *different* id (new file bytes hash differently),
+    /// rather than comparing decoded pixels, which the tiny fixture images
+    /// tests use never produce (they're deliberately too small to decode).
+    #[cfg(test)]
+    pub(crate) fn path_image_id(&self, path: &Path) -> Option<rune::ImageId> {
+        self.path_images.borrow().get(path).map(Image::id)
+    }
+}
+
+/// Guess a cover image's MIME type from its file extension (lower-cased).
+/// Covers the extensions a playlist custom cover can be saved under
+/// (`playlists::store::CUSTOM_COVER_EXTENSIONS`); anything else defaults to
+/// JPEG, matching the backend's own embedded/external cover-art guesser.
+fn mime_from_ext(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/jpeg",
     }
 }
 
@@ -215,6 +279,85 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, corner: f32, p: &Palette, sc
     }
 }
 
+/// A rounded cover box at `size` pt showing the decoded image at `path` (a
+/// playlist's custom cover file), or the placeholder when it hasn't decoded
+/// yet, the cache isn't wired, or the file can't be read. Mirrors [`cover`]
+/// but keyed by an on-disk path instead of a library track id.
+pub fn cover_from_path(
+    s: &State,
+    path: &Path,
+    size: f32,
+    corner: f32,
+    p: &Palette,
+    scale: f32,
+) -> El {
+    match s.art.image_for_path(path, scale) {
+        Some(image) if image.is_ready() && image.error().is_none() => el()
+            .key("cover")
+            .size(size, size)
+            .radius(corner)
+            .fill(p.muted)
+            .pixels_fit(image.pixels(), SurfaceFit::Fit),
+        _ => cover_placeholder(size, corner, p),
+    }
+}
+
+/// Side of the inline "remote" badge icon marking a track whose source is a
+/// remote server (`TrackView::remote_source`) — small enough to read as a
+/// marker next to a title, not a second glyph competing for attention.
+const REMOTE_BADGE_PX: f32 = 12.0;
+
+/// A subtle cloud glyph marking a track that streams from a remote source
+/// rather than sitting on local disk (`TrackView::remote_source`). Shared by
+/// the main track list (`views::library::track_row`), the album/artist/genre
+/// detail rows (`views::albums::detail_track_row`), and the now-playing
+/// title line below — nothing renders for a local track, since local is the
+/// unremarked default.
+///
+/// `host` names WHICH remote server the track streams from (`remote_source`'s
+/// `Some` payload) — it drives the hover tooltip ([`El::help`], shown after
+/// the system's hover delay) so the badge is more than a bare flag: resting
+/// the pointer on the cloud answers "remote from where". The accessible
+/// label stays the generic "Remote track" (assistive tech reads it
+/// immediately, with no hover); the host-naming tooltip is additive.
+pub(crate) fn remote_badge(track_id: u32, host: &str, p: &Palette) -> El {
+    remote_badge_for(&format!("track-remote-{track_id}"), host, p)
+}
+
+/// [`remote_badge`]'s key-generic form: the same cloud glyph + "streams from
+/// {host}" tooltip, but keyed by whatever stable identity the caller has in
+/// hand rather than a track id. A grid card or a detail-page header has no
+/// single track id to key by (a card represents a whole album/artist/genre),
+/// so callers build their own stable key (e.g. `"{card_key}-remote"`,
+/// `"{prefix}-remote"`) and pass it straight through.
+pub(crate) fn remote_badge_for(key: &str, host: &str, p: &Palette) -> El {
+    el().key(key.to_string())
+        .role("img")
+        .label(t!("library.remoteTrack").to_string())
+        .help(t!("library.streamsFrom", host => host).to_string())
+        .child(icon(&icons::CLOUD, REMOTE_BADGE_PX).color(p.text_secondary))
+}
+
+/// A grouped card's (album/artist/genre) remote-source consensus: `Some(host)`
+/// only when every track folded into the group shares that same `Some(host)`
+/// `remote_source`; `None` the instant a local track (`None`) or a second,
+/// differing host appears, and `None` for an empty group. Mirrors the
+/// grouping functions' own "first-seen wins, mismatch locks to Unknown" style,
+/// but for source-ness a mismatch locks to "no badge" rather than falling back
+/// to a placeholder value — a mixed/local card is the unremarked default, same
+/// as a single local track. Shared by every grouping fn (`group_albums`,
+/// `group_artists`, `group_genres`) so the grid cards and the detail-page
+/// header (which just reads the already-grouped struct's field) agree.
+pub(crate) fn group_remote_source<'a, I>(sources: I) -> Option<String>
+where
+    I: IntoIterator<Item = &'a Option<String>>,
+{
+    let mut iter = sources.into_iter();
+    let first = iter.next()?.clone()?;
+    iter.all(|s| s.as_deref() == Some(first.as_str()))
+        .then_some(first)
+}
+
 fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) -> El {
     let Some(track) = now else {
         // Empty state, as the old app's NowPlayingPanel: a larger muted cover and
@@ -236,6 +379,21 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .unwrap_or_else(|| t!("library.unknown").to_string());
     let artist = track.artist.clone().unwrap_or_default();
     let album = track.album.clone();
+    let title_el = text(title).font(type_::TITLE).color(p.fg).truncate();
+    // A local track (the overwhelming default) keeps the plain title text
+    // unchanged; only a remote one gains the badge row, so the common case
+    // never pays for an extra wrapper.
+    let title_row: El = if let Some(host) = &track.remote_source {
+        row()
+            .key("now-playing-title")
+            .gap(space::XXS)
+            .center_y()
+            .min_w(0.0)
+            .child(title_el.grow(1.0))
+            .child(remote_badge(track.id, host, p))
+    } else {
+        title_el
+    };
     // Title/artist open the track's album detail page (the old app's TrackInfo
     // navigates to the album on click) — only when the track has an album.
     let mut text_col = col()
@@ -244,7 +402,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .align(Align::Start)
         .grow(1.0)
         .min_w(0.0)
-        .child(text(title).font(type_::TITLE).color(p.fg).truncate())
+        .child(title_row)
         .child(
             text(artist)
                 .font(type_::CAPTION)
@@ -277,23 +435,35 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
             .cursor(Cursor::Pointer)
             .on_press(move |st: &mut State| {
                 if let Some(a) = &album {
-                    st.route = crate::Route::Album;
-                    st.open_album = Some(a.clone());
-                    // On mobile this panel lives on the menu screen; opening the
-                    // album flips to the content pane.
-                    st.mobile_show_content = true;
+                    crate::navigate_to(st, crate::Route::Album, Some(a.clone()), None, None, None);
                 }
             });
     }
+    let track_id = track.id;
     row()
         .key("now-playing")
         .gap(space::COZY)
         .center_y()
         .child(cover(s, Some(track.id), COVER_SIZE, radius::MD, p, scale).key("np-cover"))
         .child(text_col)
-        // A muted heart on the right (old app's `Heart` button); decorative
-        // here — favourites aren't a feature of this focused build.
-        .child(icon(&icons::HEART, 16.0).color(p.text_secondary))
+        // A heart on the right (old app's `Heart` button): there is no
+        // favourites/liked concept in this build, so it isn't a toggle with a
+        // filled/liked state; pressing it opens the add/remove-playlist
+        // membership manager for the current track (mirrors `transport_button`'s
+        // interactive-icon-button shape).
+        .child(
+            el().key("np-heart")
+                .role("button")
+                .label(t!("player.addToPlaylist").to_string())
+                .focusable(true)
+                .padding(space::XXS)
+                .radius(radius::SM)
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
+                .on_press(move |st: &mut State| crate::open_add_to_playlist(st, track_id))
+                .child(icon(&icons::HEART, 16.0).color(p.text_secondary)),
+        )
 }
 
 /// The seek slider now fills whatever's left of the row after the two fixed
@@ -641,11 +811,14 @@ pub fn player_panel(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
-    use rune::{Mods, WheelEvent};
+    use rune::{Cx, El, Env, Mods, Runtime, Tx, WheelEvent};
     use soul_player_host::PlayerHandle;
 
-    use super::{ArtCache, wheel_volume_delta};
+    use super::{ArtCache, group_remote_source, player_panel, wheel_volume_delta};
+    use crate::State;
+    use crate::config;
 
     /// A notched mouse wheel steps the researched 5% per notch, up on scroll-up
     /// (dy < 0) and down on scroll-down, regardless of the notch's magnitude.
@@ -759,6 +932,43 @@ mod tests {
         assert_eq!(wheel_volume_delta(&WheelEvent::new(0.0, 0.0)), 0.0);
     }
 
+    /// Every track sharing one host is a consensus; a local track or a
+    /// differing host breaks it; an empty group has no consensus either.
+    #[test]
+    fn group_remote_source_requires_unanimous_agreement() {
+        let h = |s: &str| Some(s.to_string());
+        assert_eq!(
+            group_remote_source([&h("a"), &h("a"), &h("a")]),
+            Some("a".to_string()),
+            "all remote, same host -> that host"
+        );
+        assert_eq!(
+            group_remote_source([&h("a")]),
+            Some("a".to_string()),
+            "a single remote track is trivially unanimous -> that host"
+        );
+        assert_eq!(
+            group_remote_source([&h("a"), &None, &h("a")]),
+            None,
+            "one local track breaks consensus"
+        );
+        assert_eq!(
+            group_remote_source([&h("a"), &h("b")]),
+            None,
+            "two different hosts break consensus"
+        );
+        assert_eq!(
+            group_remote_source([&None, &None]),
+            None,
+            "all local -> no badge"
+        );
+        assert_eq!(
+            group_remote_source(std::iter::empty()),
+            None,
+            "an empty group has no consensus"
+        );
+    }
+
     fn testdata_dir() -> PathBuf {
         // app/rune -> repo-root/testdata
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata")
@@ -794,5 +1004,108 @@ mod tests {
         // decode (the per-id memo `image_for` exists for).
         let again = art.image_for(id, &host, 2.0).expect("memoized lookup");
         assert_eq!(again.id(), image.id());
+    }
+
+    fn env() -> Env {
+        Env {
+            system_dark: true,
+            scale: 2.0,
+        }
+    }
+
+    /// Render just the now-playing panel (the same "skip the app shell"
+    /// pattern other view tests use), reading the active theme/scale off
+    /// `cx` the same way `main.rs`'s own `view` does.
+    fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+        let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+        let scale = cx.env().scale;
+        player_panel(s, &p, cx, scale)
+    }
+
+    /// A minimal valid stereo PCM WAV (silence), just enough for the importer
+    /// to scan it into one cached track. Mirrors `add_to_playlist.rs`'s own
+    /// `tiny_wav`.
+    fn tiny_wav() -> Vec<u8> {
+        let (rate, frames, channels, bits): (u32, u32, u16, u16) = (48_000, 4_800, 2, 16);
+        let block_align = channels * bits / 8;
+        let data_len = frames * u32::from(block_align);
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data_len).to_le_bytes());
+        v.extend_from_slice(b"WAVE");
+        v.extend_from_slice(b"fmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&channels.to_le_bytes());
+        v.extend_from_slice(&rate.to_le_bytes());
+        v.extend_from_slice(&(rate * u32::from(block_align)).to_le_bytes());
+        v.extend_from_slice(&block_align.to_le_bytes());
+        v.extend_from_slice(&bits.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&data_len.to_le_bytes());
+        v.resize(v.len() + data_len as usize, 0);
+        v
+    }
+
+    /// A `Runtime<State>` backed by a real scanned temp library holding one
+    /// file per `names`, rendering just the now-playing panel. Each call gets
+    /// its own temp dir (a process-wide atomic counter alongside the process
+    /// id), so two tests in this binary never collide. Caller must hold
+    /// `config::use_test_config_dir()` for the duration (`State::new` loads
+    /// the on-disk playlist store).
+    fn runtime_over_library(names: &[&str]) -> Runtime<State> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "soul_rune_player_heart_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in names {
+            std::fs::write(dir.join(name), tiny_wav()).unwrap();
+        }
+        let host = PlayerHandle::offline();
+        host.open_folder(&dir).expect("scan the temp library");
+        let s = State::new(host);
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env());
+        rt.frame(0.0);
+        rt
+    }
+
+    /// A `Runtime<State>` over an empty library with nothing playing.
+    fn empty_runtime() -> Runtime<State> {
+        let s = State::new(PlayerHandle::offline());
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env());
+        rt.frame(0.0);
+        rt
+    }
+
+    /// Whether an element keyed `key` is in the last rendered frame.
+    fn has_element(rt: &Runtime<State>, key: &str) -> bool {
+        rt.find(key).is_some()
+    }
+
+    /// When a track is playing, the now-playing panel renders the heart button
+    /// (keyed `np-heart`) that opens the add/remove-playlist membership manager.
+    /// The click-through itself is covered in `main.rs` against the full app;
+    /// this panel-only test harness does not route pointer events to the panel's
+    /// buttons, so here we only assert the heart is present when it should be.
+    #[test]
+    fn now_playing_heart_renders_when_a_track_is_playing() {
+        let _g = config::use_test_config_dir();
+        let mut rt = runtime_over_library(&["a.wav"]);
+        let tid = rt.state.library[0].id;
+        rt.update(move |st: &mut State, _tx: &mut Tx| st.now_playing_id = Some(tid));
+        rt.frame(0.0);
+        assert!(has_element(&rt, "np-heart"));
+    }
+
+    /// With nothing playing, the now-playing panel shows its empty state and
+    /// omits the heart entirely (there is no track to add to a playlist).
+    #[test]
+    fn no_heart_when_nothing_is_playing() {
+        let rt = empty_runtime();
+        assert!(!has_element(&rt, "np-heart"));
     }
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/soul-player-backend"]
+members = ["crates/soul-player-backend", "crates/soul-server"]
 
 [workspace.package]
 edition = "2024"

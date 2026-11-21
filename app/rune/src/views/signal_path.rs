@@ -2,15 +2,15 @@
 //! chain shown stage by stage — Source → Decode → ReplayGain → Resample →
 //! Output — opened by pressing the now-playing signal-path line. ReplayGain
 //! toggles inline (the one stage that is a real on/off today); exclusive /
-//! bit-perfect output is live (lit when the stream bypasses the OS mixer), and a
-//! DSP/EQ chain is still surfaced as **"soon"** so the whole pipeline is visible
-//! even before that stage is projected here. Rendered as a themed
+//! bit-perfect output is live (lit when the stream bypasses the OS mixer), and the
+//! DSP/EQ stage is live too — lit when the active chain shapes the signal, dim
+//! **"Bypassed"** when the path stays bit-exact through it. Rendered as a themed
 //! overlay anchored to the `"signal-path"` line and `modal` (dismiss on an
 //! outside press / Escape), the same mechanism as [`crate::views::dropdown`].
 #![forbid(unsafe_code)]
 
 use rune::{Align, Color, Cursor, El, Icon, Side, col, el, icon, row, text};
-use soul_player_host::{ReplayGainMode, SignalPath, SourceCodec, SourceFormat};
+use soul_player_host::{DspUnit, ReplayGainMode, SignalPath, SourceCodec, SourceFormat};
 
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
@@ -84,18 +84,50 @@ pub(crate) fn resample_value(sp: &SignalPath) -> String {
     }
 }
 
-/// Output stage: device rate + bit depth the device receives.
-fn output_value(sp: &SignalPath) -> String {
-    format!("{} kHz · {}-bit", khz(sp.device_rate), sp.output_bits)
+/// The OS audio API the output goes through. Exclusive and shared both use this API;
+/// only the mode differs. Per-platform and `const` (resolved for the build target). The
+/// exclusive path is implemented only on Windows (WASAPI) today, but the shared path
+/// names its API on every platform, so the output stage always states the backend. It's
+/// a technical identifier (like the codec names), not translated.
+pub(crate) const fn output_api() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "WASAPI"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "CoreAudio"
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        "ALSA"
+    }
 }
 
-/// Exclusive stage: when the stream is exclusive, the bit-perfect device format
-/// (the DAC receives exactly this — no OS mixer); otherwise "shared".
+/// Output stage: the backend API plus the device rate and bit depth it receives.
+fn output_value(sp: &SignalPath) -> String {
+    format!(
+        "{} · {} kHz · {}-bit",
+        output_api(),
+        khz(sp.device_rate),
+        sp.output_bits
+    )
+}
+
+/// Exclusive stage: name the backend API and the mode. When exclusive, the bit-perfect
+/// device format the DAC receives (no OS mixer); otherwise the shared path through the OS
+/// mixer. So the user can always see WHICH backend drives the output and whether it is
+/// bit-perfect ("WASAPI exclusive, 96 kHz, 24-bit") or shared ("WASAPI shared").
 pub(crate) fn exclusive_value(sp: &SignalPath) -> String {
     if sp.exclusive {
-        format!("{} kHz · {}-bit", khz(sp.device_rate), sp.output_bits)
+        format!(
+            "{} exclusive · {} kHz · {}-bit",
+            output_api(),
+            khz(sp.device_rate),
+            sp.output_bits
+        )
     } else {
-        t!("player.signalPath.shared").to_string()
+        format!("{} shared", output_api())
     }
 }
 
@@ -108,23 +140,29 @@ fn replay_gain_value(mode: ReplayGainMode, gain_db: f32) -> String {
     }
 }
 
-/// A non-interactive "soon" chip marking a stage/toggle that isn't built yet.
-fn soon_chip(p: &Palette) -> El {
-    text(t!("player.signalPath.soon").to_string())
-        .font(type_::LABEL)
-        .color(p.text_secondary)
-        .px(space::SM)
-        .py(space::XXS)
-        .radius(radius::SM)
-        .fill(p.muted)
+/// DSP/EQ stage value: **"Active"** when any unit in the chain would actually alter
+/// the signal, else **"Bypassed"**. Keys off [`DspUnit::affects`], so an enabled-but-
+/// flat EQ — or a disabled unit — honestly reads as a bit-exact passthrough.
+pub(crate) fn dsp_value(units: &[DspUnit]) -> String {
+    if dsp_active(units) {
+        t!("player.signalPath.dspActive").to_string()
+    } else {
+        t!("player.signalPath.dspBypassed").to_string()
+    }
+}
+
+/// Whether the DSP/EQ chain is shaping the signal (any unit
+/// [`affects`](DspUnit::affects) it) — drives the stage's lit/accent vs dim/clean look.
+pub(crate) fn dsp_active(units: &[DspUnit]) -> bool {
+    units.iter().any(DspUnit::affects)
 }
 
 /// One **stage card** in the signal-path pipeline. Each pipeline stage is its own
 /// card (foobar/Roon style: Decoder → ReplayGain → DSP → Output), with a Roon-like
 /// quality dot — `primary` for a clean/lossless pass, `accent` for a stage that
 /// *enhances/processes* the signal (ReplayGain on, a resample) — a stage icon, the
-/// name, its value, and an optional trailing control (the ReplayGain toggle, or a
-/// "soon" chip). Dim cards are not-yet-built stages. `key` is stable for tests.
+/// name, its value, and an optional trailing control (e.g. the ReplayGain toggle).
+/// A dim card is an inactive stage (bypassed / shared). `key` is stable for tests.
 #[allow(clippy::too_many_arguments)]
 fn stage_card(
     key: &str,
@@ -229,7 +267,8 @@ fn rg_toggle(mode: ReplayGainMode, p: &Palette) -> El {
 
 /// The pipeline stage rows (the reusable body shared by the now-playing popover
 /// and the Settings → Audio card): the live chain when a track is playing, then
-/// the not-yet-built Exclusive output & DSP/EQ stages surfaced as "soon".
+/// the Exclusive output and DSP/EQ stages — both live, lit when active and dim when
+/// the path stays bit-exact (shared / bypassed).
 pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
     let mut rows = col().key("signal-path-stages").w_full().gap(space::XS);
     if let Some(sp) = s.signal_path {
@@ -308,6 +347,9 @@ pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
     // Exclusive (bit-perfect) output — live: lit when the current stream bypasses
     // the OS mixer (the device gets exactly these samples), dim "shared" otherwise.
     let excl_live = s.signal_path.filter(|x| x.exclusive);
+    // DSP/EQ is host/app-owned live state (the active chain), not per-track — read it
+    // straight from the app's `dsp_units` rather than the backend SignalPath.
+    let dsp_on = dsp_active(&s.dsp_units);
     rows.child(stage_card(
         "sp-row-exclusive",
         &icons::SETTINGS,
@@ -321,15 +363,16 @@ pub(crate) fn pipeline_rows(s: &State, p: &Palette) -> El {
         p,
     ))
     .child(connector(true, p))
-    // DSP/EQ projection into this compact panel isn't wired yet — still "soon".
+    // DSP/EQ: lit + accent when the active chain shapes the signal, dim "Bypassed"
+    // when the path is bit-exact through it (empty chain, or every unit flat/disabled).
     .child(stage_card(
         "sp-row-dsp",
         &icons::SETTINGS,
         t!("player.signalPath.dsp").to_string(),
-        String::new(),
-        Some(soon_chip(p)),
-        p.primary,
-        true,
+        dsp_value(&s.dsp_units),
+        None,
+        if dsp_on { p.accent } else { p.primary },
+        !dsp_on,
         p,
     ))
 }
@@ -461,6 +504,8 @@ pub fn overlay(s: &State, p: &Palette) -> Option<El> {
 
 #[cfg(test)]
 mod tests {
+    use soul_player_host::EqUnit;
+
     use super::*;
 
     fn sp(
@@ -497,7 +542,10 @@ mod tests {
         assert_eq!(source_value(&dsd), "DSD64 · 2.82 MHz");
         assert_eq!(decode_value(&dsd), "44.1 kHz · 24-bit · 2 ch");
         assert_eq!(resample_value(&dsd), "44.1 → 48 kHz");
-        assert_eq!(output_value(&dsd), "48 kHz · 24-bit");
+        assert_eq!(
+            output_value(&dsd),
+            format!("{} · 48 kHz · 24-bit", output_api())
+        );
 
         let flac = sp(
             SourceFormat::Pcm { bits: 16 },
@@ -523,17 +571,79 @@ mod tests {
             96_000,
             false,
         );
-        // Shared (the default): the OS-mixer path reads as "Shared", not a format.
-        assert_eq!(
-            exclusive_value(&base),
-            t!("player.signalPath.shared").to_string()
-        );
-        // Exclusive: the device receives exactly this bit-perfect format.
+        // Shared (the default): names the backend + mode, e.g. "WASAPI shared". The API is
+        // platform-specific, so assert the shape, not the hardcoded name (CI runs on
+        // Linux/macOS too).
+        assert_eq!(exclusive_value(&base), format!("{} shared", output_api()));
+        // Exclusive: names the backend + the bit-perfect format the device receives.
         let excl = SignalPath {
             exclusive: true,
             ..base
         };
-        assert_eq!(exclusive_value(&excl), "96 kHz · 24-bit");
+        assert_eq!(
+            exclusive_value(&excl),
+            format!("{} exclusive · 96 kHz · 24-bit", output_api())
+        );
+    }
+
+    /// An EQ unit that actually shapes the signal (a boosted preamp is enough —
+    /// independent of the band layout).
+    fn affecting_eq() -> DspUnit {
+        DspUnit::Eq(EqUnit {
+            preamp_db: 6.0,
+            enabled: true,
+            ..EqUnit::default()
+        })
+    }
+
+    /// The DSP/EQ stage reads as **bypassed** whenever the chain can't alter the
+    /// signal: empty, every unit disabled, or every unit flat. An enabled-but-flat
+    /// EQ is an honest bit-exact passthrough (`DspUnit::affects`), and a boosted
+    /// unit that is disabled is still a passthrough.
+    #[test]
+    fn dsp_stage_is_bypassed_for_empty_disabled_or_flat_chains() {
+        let bypassed = t!("player.signalPath.dspBypassed").to_string();
+
+        assert!(!dsp_active(&[]));
+        assert_eq!(dsp_value(&[]), bypassed);
+
+        // A default EQ unit is flat → alters nothing.
+        let flat = [DspUnit::Eq(EqUnit::default())];
+        assert!(!dsp_active(&flat));
+        assert_eq!(dsp_value(&flat), bypassed);
+
+        // A boosted unit that is disabled is a passthrough — the boost is bypassed.
+        let disabled = [DspUnit::Eq(EqUnit {
+            preamp_db: 6.0,
+            enabled: false,
+            ..EqUnit::default()
+        })];
+        assert!(!dsp_active(&disabled));
+        assert_eq!(dsp_value(&disabled), bypassed);
+    }
+
+    /// A unit that shapes the signal lights the stage; flat / disabled units next to
+    /// it don't change that reading.
+    #[test]
+    fn dsp_stage_is_active_when_a_unit_shapes_the_signal() {
+        let active = t!("player.signalPath.dspActive").to_string();
+
+        let one = [affecting_eq()];
+        assert!(dsp_active(&one));
+        assert_eq!(dsp_value(&one), active);
+
+        // An affecting unit beside a flat one and a disabled one still reads active.
+        let mixed = [
+            affecting_eq(),
+            DspUnit::Eq(EqUnit::default()),
+            DspUnit::Eq(EqUnit {
+                preamp_db: 6.0,
+                enabled: false,
+                ..EqUnit::default()
+            }),
+        ];
+        assert!(dsp_active(&mixed));
+        assert_eq!(dsp_value(&mixed), active);
     }
 
     /// The Source stage names the real codec on an otherwise-identical PCM stream:

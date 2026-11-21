@@ -12,13 +12,13 @@
 //! buttons) — see the note on `bar` for why hover-to-reveal can't work here.
 #![forbid(unsafe_code)]
 
-use rune::{Cx, El, Icon, el, icon, row, text};
-use soul_player_host::{ScanPhase, ScanProgress};
+use rune::{Align, Cursor, Cx, El, Icon, Side, col, el, icon, row, text};
+use soul_player_host::{ScanPhase, ScanProgress, SourceKind, SourceStatus};
 
-use crate::State;
 use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
-use crate::views::icons;
+use crate::views::{icons, settings};
+use crate::{State, close_remote_health_popover, set_settings_tab, toggle_remote_health_popover};
 
 /// Title-bar band height, in points.
 pub(crate) const HEIGHT: f32 = 32.0;
@@ -31,6 +31,56 @@ pub(crate) const TRAFFIC_LIGHTS: (f32, f32) = (19.0, (HEIGHT - 12.0) / 2.0);
 /// Caption-glyph icon size, in points. The glyphs' marks fill ~16 of their 24-unit
 /// viewbox, so this lands them near the native ~10 pt Windows 11 symbol.
 const GLYPH_SIZE: f32 = 15.0;
+
+/// Aggregate health across every ENABLED remote source — the title-bar
+/// indicator's at-a-glance color, computed by [`remote_health_summary`].
+/// Disabled remotes never factor in (see that function); online/offline is
+/// read straight off each [`SourceStatus::remote`]'s last probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RemoteSummary {
+    /// Every enabled remote answered its last health probe.
+    Healthy,
+    /// At least one enabled remote is online and at least one is offline.
+    Partial,
+    /// Every enabled remote is offline (including "never probed yet").
+    Down,
+}
+
+/// The title-bar remote-health indicator's aggregate status, over `sources`'
+/// ENABLED remotes only — a disabled remote says nothing about session
+/// health (the user turned it off on purpose), so it neither counts toward
+/// nor against the color. Local sources are ignored entirely (they have no
+/// "online" concept). Returns `None` when there are no enabled remotes at
+/// all — including when there are only disabled ones, or none configured —
+/// telling the caller to HIDE the indicator rather than show a trivial
+/// all-or-nothing badge for zero remotes.
+///
+/// Pure (no clock, no I/O): a plain fold over `sources`, so it's exactly as
+/// fresh as whatever snapshot the caller passes (`State::sources`, kept
+/// current by the periodic poller and on-demand refreshes) and trivially
+/// unit-testable without a `Runtime` or a network call.
+pub(crate) fn remote_health_summary(sources: &[SourceStatus]) -> Option<RemoteSummary> {
+    let mut enabled = 0usize;
+    let mut online = 0usize;
+    for status in sources {
+        if !status.enabled || !matches!(status.kind, SourceKind::Remote { .. }) {
+            continue;
+        }
+        enabled += 1;
+        if status.remote.as_ref().is_some_and(|h| h.online) {
+            online += 1;
+        }
+    }
+    if enabled == 0 {
+        None
+    } else if online == enabled {
+        Some(RemoteSummary::Healthy)
+    } else if online == 0 {
+        Some(RemoteSummary::Down)
+    } else {
+        Some(RemoteSummary::Partial)
+    }
+}
 
 /// The window title-bar band over the content: `HEIGHT` tall, draggable. On Windows
 /// it carries our own always-visible `_ [] X` glyphs at the trailing edge; the open
@@ -59,19 +109,27 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
         .unwrap_or(1100.0);
 
     // The flexible header slot. While a scan runs it carries the right-aligned
-    // activity widget — a leading grow spacer pushes it to the trailing edge, just
-    // left of the window controls; otherwise it's the empty draggable gap.
+    // activity widget; whenever at least one remote source is ENABLED it also
+    // carries the remote-health indicator — the two coexist (gap between them) —
+    // a leading grow spacer pushes whichever are present to the trailing edge,
+    // just left of the window controls; otherwise it's the empty draggable gap.
+    let remote_summary = remote_health_summary(&s.sources);
     let mut content = row()
         .key("titlebar-content")
         .grow(1.0)
         .min_w(0.0)
         .h_full()
-        .items_center();
-    if let Some(prog) = &s.scan_progress {
-        content = content
-            .child(el().grow(1.0))
-            .child(scan_activity(prog, s.scan_anim, p, band_w))
-            .pr(space::SM);
+        .items_center()
+        .gap(space::SM);
+    if s.scan_progress.is_some() || remote_summary.is_some() {
+        content = content.child(el().grow(1.0));
+        if let Some(prog) = &s.scan_progress {
+            content = content.child(scan_activity(prog, s.scan_anim, p, band_w));
+        }
+        if let Some(summary) = remote_summary {
+            content = content.child(remote_health_indicator(summary, p));
+        }
+        content = content.pr(space::SM);
     }
 
     let strip = row()
@@ -105,6 +163,212 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
     } else {
         strip
     }
+}
+
+/// Remote-health indicator icon size and status-dot size, in points — sized
+/// alongside the scan widget's own `SCAN_ICON` so the two read as peers in
+/// the same strip.
+const HEALTH_ICON: f32 = 14.0;
+const HEALTH_DOT: f32 = 8.0;
+/// Gap between the remote-health indicator and its opened popover.
+const HEALTH_POPOVER_GAP: f32 = 6.0;
+
+/// The title-bar remote-health indicator: a cloud glyph (the "remote" icon)
+/// plus a small status dot colored by `summary` — green/amber/red for
+/// healthy/partial/down. Pressing it opens [`overlay`]'s popover.
+///
+/// This is a CLICK target, not a hover tooltip, even though hover itself
+/// would technically fire here (unlike the always-visible caption glyphs
+/// above, this sits in the ordinary draggable client area, not over a real
+/// OS non-client control — a child with its own `on_press` inside a
+/// `.window_drag()` region keeps its press rather than moving the window).
+/// Two things rule hover out anyway: the content is a multi-row list (per
+/// remote: host, dot, latency, version, last-checked) that Rune's built-in
+/// `El::help` tooltip can't render — it draws plain text only; and on macOS
+/// `El::help` shows as AppKit's OWN tooltip, outside Rune's scene tree, so a
+/// headless `Runtime::elements()` test could never see its content there —
+/// unlike a click-opened, Rune-drawn popover, which renders (and is
+/// testable) identically on every platform the rune UI head ships on.
+fn remote_health_indicator(summary: RemoteSummary, p: &Palette) -> El {
+    let (color, label) = match summary {
+        RemoteSummary::Healthy => (p.online, t!("titlebar.remoteHealthy")),
+        RemoteSummary::Partial => (p.warning, t!("titlebar.remotePartial")),
+        RemoteSummary::Down => (p.danger, t!("titlebar.remoteDown")),
+    };
+    row()
+        .key("remote-health-indicator")
+        .role("button")
+        .label(label.to_string())
+        .focusable(true)
+        .cursor(Cursor::Pointer)
+        .h_full()
+        .items_center()
+        .gap(space::XXS)
+        .px(space::XS)
+        .radius(radius::SM)
+        .hover(p.fg.alpha(0.06))
+        .on_press(toggle_remote_health_popover)
+        .child(icon(&icons::CLOUD, HEALTH_ICON).color(p.text_secondary))
+        .child(
+            el().key("remote-health-dot")
+                .size(HEALTH_DOT, HEALTH_DOT)
+                .radius(HEALTH_DOT * 0.5)
+                .fill(color),
+        )
+}
+
+/// One remote's row in the health popover: host, a status word + dot, and
+/// the same latency/version/last-checked telemetry Settings → Sources shows
+/// — reusing its formatters (`settings::display_host`/`latency_text`/
+/// `relative_time`) rather than re-deriving them, so the two views can never
+/// drift on how a latency or a relative time reads.
+fn health_popover_row(i: usize, status: &SourceStatus, p: &Palette) -> El {
+    let SourceKind::Remote { url } = &status.kind else {
+        // `health_popover_rows` only ever calls this with a Remote source.
+        return el().key(format!("remote-health-row-{i}"));
+    };
+    let host = settings::display_host(url);
+    let online = status.enabled && status.remote.as_ref().is_some_and(|h| h.online);
+    let status_word = if !status.enabled {
+        t!("titlebar.remoteDisabled").to_string()
+    } else if online {
+        t!("settings.remoteOnline").to_string()
+    } else {
+        t!("settings.offline").to_string()
+    };
+    let latency = status.remote.as_ref().and_then(|h| h.latency_ms);
+    let version = status
+        .remote
+        .as_ref()
+        .and_then(|h| h.server_version.clone())
+        .unwrap_or_else(|| "—".to_string());
+    let checked = status.remote.as_ref().and_then(|h| h.last_checked_unix);
+    let dot_color = if online { p.online } else { p.text_secondary };
+
+    col()
+        .key(format!("remote-health-row-{i}"))
+        .role("group")
+        .label(format!("{host}: {status_word}"))
+        .w_full()
+        .gap(space::XXS)
+        .py(space::XS)
+        .child(
+            row()
+                .gap(space::SM)
+                .items_center()
+                .child(
+                    el().key(format!("remote-health-row-dot-{i}"))
+                        .size(HEALTH_DOT, HEALTH_DOT)
+                        .radius(HEALTH_DOT * 0.5)
+                        .fill(dot_color),
+                )
+                .child(
+                    text(host)
+                        .font(type_::ITEM)
+                        .color(p.fg)
+                        .grow(1.0)
+                        .truncate(),
+                )
+                .child(text(status_word).font(type_::CAPTION).color(dot_color)),
+        )
+        .child(
+            row()
+                .gap(space::SM)
+                .flex_wrap()
+                .child(
+                    text(settings::latency_text(latency))
+                        .key(format!("remote-health-row-latency-{i}"))
+                        .font(type_::LABEL.mono())
+                        .color(p.text_secondary),
+                )
+                .child(
+                    text(version)
+                        .font(type_::LABEL.mono())
+                        .color(p.text_secondary),
+                )
+                .child(
+                    text(settings::relative_time(settings::now_unix(), checked))
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary),
+                ),
+        )
+}
+
+/// Every remote in `s.sources`, in order — the popover lists ALL of them
+/// (enabled or not), unlike the aggregate indicator which only counts enabled
+/// ones, so a disabled remote never silently disappears from view.
+fn health_popover_rows(s: &State, p: &Palette) -> Vec<El> {
+    s.sources
+        .iter()
+        .filter(|st| matches!(st.kind, SourceKind::Remote { .. }))
+        .enumerate()
+        .map(|(i, st)| health_popover_row(i, st, p))
+        .collect()
+}
+
+/// The remote-health popover, mounted at the window root (via
+/// [`crate::view`]'s overlay layer) and anchored under the indicator —
+/// mirrors [`crate::views::signal_path::overlay`]'s shape (anchored + modal,
+/// toggled by a `State` flag). `None` when closed, or if every remote
+/// vanished from `s.sources` while it was open (nothing left to list).
+pub fn overlay(s: &State, p: &Palette) -> Option<El> {
+    if !s.remote_health_open {
+        return None;
+    }
+    let rows = health_popover_rows(s, p);
+    if rows.is_empty() {
+        return None;
+    }
+    let mut panel = col()
+        .key("remote-health-popover")
+        .role("group")
+        .label(t!("titlebar.remoteSources").to_string())
+        .anchored_fit(
+            "remote-health-indicator",
+            Side::Bottom,
+            Align::End,
+            HEALTH_POPOVER_GAP,
+        )
+        .focus_group()
+        .focus_return("remote-health-indicator".to_string())
+        .fill(p.card)
+        .radius(radius::MD)
+        .border_sides([1.0, 1.0, 1.0, 1.0], p.border)
+        .padding(space::MD)
+        .gap(space::XXS)
+        .min_w(260.0)
+        .modal(true, close_remote_health_popover)
+        .child(
+            text(t!("titlebar.remoteSources").to_string())
+                .font(type_::SECTION)
+                .color(p.text_secondary),
+        );
+    for row_el in rows {
+        panel = panel.child(row_el);
+    }
+    Some(
+        panel.child(
+            row()
+                .key("remote-health-open-settings")
+                .role("button")
+                .focusable(true)
+                .label(t!("titlebar.openSourcesSettings").to_string())
+                .cursor(Cursor::Pointer)
+                .items_center()
+                .gap(space::XS)
+                .py(space::XS)
+                .child(
+                    text(t!("titlebar.openSourcesSettings").to_string())
+                        .font(type_::LABEL)
+                        .color(p.primary),
+                )
+                .on_press(|s: &mut State| {
+                    s.route = crate::Route::Settings;
+                    set_settings_tab(s, crate::SettingsTab::MusicData);
+                    close_remote_health_popover(s);
+                }),
+        ),
+    )
 }
 
 /// One caption glyph cell: `width` wide, full height, glyph centred. Always
@@ -221,4 +485,117 @@ fn group_thousands(n: usize) -> String {
         out.push(b as char);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use soul_player_host::RemoteHealth;
+
+    use super::*;
+
+    /// A remote `SourceStatus` with just the two fields [`remote_health_summary`]
+    /// reads (`enabled`, and the probe's `online`) — everything else is a
+    /// placeholder, since the pure summary never looks at it.
+    fn remote(enabled: bool, online: bool) -> SourceStatus {
+        SourceStatus {
+            path: PathBuf::from("http://remote.test"),
+            enabled,
+            available: online,
+            track_count: 0,
+            kind: SourceKind::Remote {
+                url: "http://remote.test".to_string(),
+            },
+            remote: Some(RemoteHealth {
+                online,
+                latency_ms: online.then_some(10),
+                server_version: None,
+                index_version: None,
+                last_checked_unix: None,
+            }),
+        }
+    }
+
+    fn local() -> SourceStatus {
+        SourceStatus {
+            path: PathBuf::from("/music"),
+            enabled: true,
+            available: true,
+            track_count: 3,
+            kind: SourceKind::Local {
+                path: PathBuf::from("/music"),
+            },
+            remote: None,
+        }
+    }
+
+    #[test]
+    fn no_remotes_at_all_summarizes_to_none() {
+        assert_eq!(remote_health_summary(&[]), None);
+        assert_eq!(remote_health_summary(&[local()]), None);
+    }
+
+    #[test]
+    fn every_enabled_remote_online_is_healthy() {
+        let sources = vec![remote(true, true), remote(true, true)];
+        assert_eq!(
+            remote_health_summary(&sources),
+            Some(RemoteSummary::Healthy)
+        );
+    }
+
+    #[test]
+    fn a_mix_of_online_and_offline_enabled_remotes_is_partial() {
+        let sources = vec![remote(true, true), remote(true, false)];
+        assert_eq!(
+            remote_health_summary(&sources),
+            Some(RemoteSummary::Partial)
+        );
+    }
+
+    #[test]
+    fn every_enabled_remote_offline_is_down() {
+        let sources = vec![remote(true, false), remote(true, false)];
+        assert_eq!(remote_health_summary(&sources), Some(RemoteSummary::Down));
+    }
+
+    #[test]
+    fn disabled_remotes_are_excluded_from_both_the_count_and_the_color() {
+        // One enabled-and-online, one DISABLED-and-offline: the disabled one must
+        // not drag an otherwise-healthy summary down to Partial, nor count toward
+        // "there are enabled remotes" on its own.
+        let sources = vec![remote(true, true), remote(false, false)];
+        assert_eq!(
+            remote_health_summary(&sources),
+            Some(RemoteSummary::Healthy)
+        );
+
+        // Every remote disabled: zero ENABLED remotes, even though the list isn't
+        // empty — the indicator must hide, not show a trivial "down" for sources
+        // the user intentionally turned off.
+        let all_disabled = vec![remote(false, true), remote(false, false)];
+        assert_eq!(remote_health_summary(&all_disabled), None);
+    }
+
+    #[test]
+    fn local_sources_never_affect_the_remote_summary() {
+        let sources = vec![local(), remote(true, false)];
+        assert_eq!(remote_health_summary(&sources), Some(RemoteSummary::Down));
+    }
+
+    /// The summary is a pure fold over whatever snapshot it's given — calling it
+    /// again with a DIFFERENT snapshot (as the periodic poller's refreshed
+    /// `sources()` would produce) reflects that snapshot immediately, with no
+    /// memory of the previous call. Simulates a remote flipping
+    /// online → offline → online across three successive poller refreshes.
+    #[test]
+    fn reflects_each_fresh_snapshot_independently_across_simulated_poller_refreshes() {
+        let online = vec![remote(true, true)];
+        let offline = vec![remote(true, false)];
+
+        assert_eq!(remote_health_summary(&online), Some(RemoteSummary::Healthy));
+        assert_eq!(remote_health_summary(&offline), Some(RemoteSummary::Down));
+        assert_eq!(remote_health_summary(&online), Some(RemoteSummary::Healthy));
+    }
 }

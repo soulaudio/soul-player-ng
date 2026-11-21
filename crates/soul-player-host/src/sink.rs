@@ -10,7 +10,8 @@ use soul_audio_core::{SampleFormat, Sink, SinkError, StreamInfo};
 use soul_audio_desktop::sink::CpalSink;
 #[cfg(windows)]
 use soul_audio_desktop::{WasapiExclusiveSink, default_output_config};
-use soul_player_backend::{AudioPlayer, Event, Library};
+use soul_player_backend::library::TrackSource;
+use soul_player_backend::{AudioPlayer, Event, OutputConfig};
 
 use crate::analyzer::SpectrumShared;
 use crate::eq::{DspShared, DspSink};
@@ -60,13 +61,33 @@ pub enum ExclusiveStatus {
 /// stream — `soul-audio-desktop`'s `wasapi-exclusive` feature is always enabled on
 /// Windows (see Cargo.toml), so `cfg(windows)` gates the exclusive arm. One concrete
 /// type so the pump's
-/// `FnOnce` factory returns a single `Sink` impl whichever mode wins — the engine
+/// `Fn` factory returns a single `Sink` impl whichever mode wins — the engine
 /// never sees which it got (it reads truth back through [`Sink::exclusive`] /
 /// [`Sink::stream_info`]).
 enum DeviceSink {
     Shared(CpalSink),
     #[cfg(windows)]
     Exclusive(WasapiExclusiveSink),
+    /// A device-FREE placeholder: owns no hardware and discards writes. Used to PARK
+    /// the deck during a live output change — swapping this in drops the real sink,
+    /// which releases its device, so the new sink can acquire it (exclusive WASAPI is
+    /// one-client-per-device). The pump swaps it out in the same step, so it's never
+    /// actually written to; it reports a sane rate/channels only so `Deck::swap_sink`
+    /// can rebuild the resampler without failing.
+    Silent {
+        rate: u32,
+        channels: u16,
+    },
+}
+
+impl DeviceSink {
+    /// A standard-rate device-free placeholder for parking (see [`DeviceSink::Silent`]).
+    fn silent() -> Self {
+        DeviceSink::Silent {
+            rate: 48_000,
+            channels: 2,
+        }
+    }
 }
 
 impl Sink for DeviceSink {
@@ -75,6 +96,11 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.stream_info(),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.stream_info(),
+            DeviceSink::Silent { rate, channels } => StreamInfo {
+                sample_rate: *rate,
+                channels: *channels,
+                format: SampleFormat::Int { bits: 24 },
+            },
         }
     }
 
@@ -83,6 +109,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.exclusive(),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.exclusive(),
+            DeviceSink::Silent { .. } => false,
         }
     }
 
@@ -91,6 +118,9 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.write(frames),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.write(frames),
+            // Device-free placeholder: discard (never actually reached — the pump
+            // swaps it out before pumping).
+            DeviceSink::Silent { .. } => Ok(()),
         }
     }
 
@@ -99,6 +129,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.flush(),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.flush(),
+            DeviceSink::Silent { .. } => Ok(()),
         }
     }
 
@@ -107,6 +138,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.discard(),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.discard(),
+            DeviceSink::Silent { .. } => Ok(()),
         }
     }
 
@@ -115,6 +147,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.set_volume(volume),
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.set_volume(volume),
+            DeviceSink::Silent { .. } => {}
         }
     }
 
@@ -125,6 +158,11 @@ impl Sink for DeviceSink {
             // The exclusive sink releases + re-acquires the device at the new rate.
             #[cfg(windows)]
             DeviceSink::Exclusive(s) => s.reopen(rate),
+            // Placeholder adopts the requested rate (no device to reopen).
+            DeviceSink::Silent { rate: r, .. } => {
+                *r = rate;
+                Ok(())
+            }
         }
     }
 }
@@ -132,53 +170,88 @@ impl Sink for DeviceSink {
 /// Spawn the backend actor over the sink `mode` selects. The sink factory runs on
 /// the pump thread, so a `!Send` device sink is fine.
 ///
-/// `output_device` names the device the `Device` arm should open (one of
-/// [`soul_audio_desktop::output_device_names`]); `None` means the system default.
-/// `exclusive` asks for a bit-perfect WASAPI exclusive stream; `strict` makes that
-/// **exclusive-or-stop** (no fall-back to shared — the actor doesn't start if
-/// exclusive can't open). All are ignored by `Offline` (the `NullSink` has no device
-/// to pick). The outcome is recorded in `status`.
-#[allow(clippy::too_many_arguments)]
+/// `output_config` is the host's shared, live-mutable desired output (device /
+/// exclusive / strict): the `Device` factory reads it to open the sink, and the pump
+/// re-reads it every block so a device/exclusive change applies to the current track
+/// (it's ignored by `Offline`, whose `NullSink` has no device). The exclusive outcome
+/// is recorded in `status`.
+///
+/// `lib` is a trait object (not a concrete `Library`) so a remote-aware
+/// aggregate ([`crate::remote::RemoteLibrary`]) can be spawned with it too —
+/// the same reason [`AudioPlayer::spawn`]'s own parameter is `Arc<dyn
+/// TrackSource>`.
 pub(crate) fn build_actor(
     mode: SinkMode,
-    output_device: Option<String>,
-    exclusive: bool,
-    strict: bool,
+    output_config: Arc<Mutex<OutputConfig>>,
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
-    lib: Arc<Library>,
+    lib: Arc<dyn TrackSource>,
     on_event: impl Fn(Event) + Send + 'static,
 ) -> AudioPlayer {
     match mode {
         // Offline/headless has no audible output, so the EQ/analyzer are moot there.
-        SinkMode::Offline => AudioPlayer::spawn(|| Ok(NullSink::new(48_000, 2)), lib, on_event),
+        SinkMode::Offline => AudioPlayer::spawn(
+            |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
+            output_config,
+            lib,
+            on_event,
+        ),
         SinkMode::Device => AudioPlayer::spawn(
-            device_sink_factory(output_device, exclusive, strict, status, dsp, spectrum),
+            device_sink_factory(status, dsp.clone(), spectrum.clone()),
+            device_park_factory(dsp, spectrum),
+            output_config,
             lib,
             on_event,
         ),
     }
 }
 
-/// Build the pump-thread make-sink closure for the real device: try exclusive first
-/// when asked (bit-perfect, Windows only, at the device's native rate), else — or on
-/// an exclusive failure in non-strict mode — open the named shared device (falling
-/// back to the system default if it is gone), then wrap it in the [`DspSink`] so the
-/// DSP chain runs at the device rate. Called ONCE for the initial sink; per-track
-/// native-rate switching reopens this sink in place (`Sink::reopen`), so it's an
-/// `FnOnce`.
+/// Build the pump-thread PARK closure: a device-FREE [`DeviceSink::Silent`] wrapped in
+/// a [`DspSink`] (same concrete `K` as [`device_sink_factory`] produces). The pump
+/// swaps this in to drop the real sink — releasing its device — before opening the new
+/// one on a live output change. It owns no hardware, so it never contends for the
+/// device. `dsp` / `spectrum` are cloned into it only to match the sink type; the
+/// placeholder is swapped out before any audio flows.
+fn device_park_factory(
+    dsp: DspShared,
+    spectrum: SpectrumShared,
+) -> impl Fn() -> DspSink<DeviceSink> + Send + 'static {
+    move || DspSink::new(DeviceSink::silent(), dsp.clone(), spectrum.clone())
+}
+
+/// Build the pump-thread make-sink closure for the real device: for the given
+/// [`OutputConfig`], try exclusive first when asked (bit-perfect, Windows only, at the
+/// device's native rate), else — or on an exclusive failure in non-strict mode — open
+/// the named shared device (falling back to the system default if it is gone), then
+/// wrap it in the [`DspSink`] so the DSP chain runs at the device rate. It's an `Fn`,
+/// not `FnOnce`: the pump calls it for the initial sink AND again on each live
+/// device/exclusive change (per-track native-rate switching still reopens the sink in
+/// place via `Sink::reopen`). `dsp` / `spectrum` are `Arc`s cloned into each sink so
+/// the one shared DSP chain + analyzer survive a rebuild.
 fn device_sink_factory(
-    output_device: Option<String>,
-    exclusive: bool,
-    strict: bool,
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
-) -> impl FnOnce() -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
-    move || {
-        let device = open_device_sink(output_device, exclusive, strict, &status)?;
-        Ok(DspSink::new(device, dsp, spectrum))
+) -> impl Fn(&OutputConfig) -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
+    move |cfg: &OutputConfig| {
+        let device = open_device_sink(cfg.device.clone(), cfg.exclusive, cfg.strict, &status)?;
+        // Event log (once per sink build): what the device sink ACTUALLY opened as — the
+        // requested vs resolved exclusive mode, rate, channels, format, and the exclusive
+        // outcome. Makes the output pipeline visible in the logs without per-block noise.
+        let si = device.stream_info();
+        tracing::info!(
+            requested_exclusive = cfg.exclusive,
+            requested_device = ?cfg.device,
+            got_exclusive = device.exclusive(),
+            rate = si.sample_rate,
+            channels = si.channels,
+            format = ?si.format,
+            status = ?status.lock().ok().map(|s| format!("{s:?}")),
+            "device sink opened"
+        );
+        Ok(DspSink::new(device, dsp.clone(), spectrum.clone()))
     }
 }
 
@@ -275,5 +348,51 @@ impl Sink for NullSink {
     }
     fn flush(&mut self) -> Result<(), SinkError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    /// REAL-DEVICE guard for the shared-sink live switch: the create-then-drop order
+    /// [`crate`]'s `maybe_apply_output_change` uses for a SHARED sink must not glitch the
+    /// device. We open a second shared device sink WHILE the first is still alive (shared
+    /// mode allows multiple clients per device), then drop the first — the new sink must
+    /// keep accepting audio. This is the exact sequence that failed with cpal
+    /// "the requested device is no longer available" when the old release-first code
+    /// dropped the shared stream before re-opening it on the same device. Writes SILENCE
+    /// only (inaudible). Ignored — needs a real output device:
+    ///   `cargo test -p soul-player-host shared_device -- --ignored --nocapture`
+    #[test]
+    #[ignore = "needs a real output device; run with --ignored"]
+    fn shared_device_create_then_drop_keeps_the_new_sink_working() {
+        let status = Arc::new(Mutex::new(ExclusiveStatus::Shared));
+        let mut old = match open_device_sink(None, false, false, &status) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("no usable output device ({e:#}) — skipping");
+                return;
+            }
+        };
+        let si = old.stream_info();
+        let silence = vec![0i32; si.channels as usize * 2048];
+        old.write(&silence).expect("old shared sink plays silence");
+
+        // Build the NEW sink FIRST, while the old is still alive (the fix's order).
+        let mut new = open_device_sink(None, false, false, &status)
+            .expect("open a second shared sink while the first is still alive");
+        new.write(&silence)
+            .expect("new sink plays while the old is alive");
+
+        // Drop the old sink; the new one must keep working — no device-unavailable gap.
+        drop(old);
+        for i in 0..16 {
+            new.write(&silence).unwrap_or_else(|e| {
+                panic!("new sink failed after the old was dropped (block {i}): {e:?}")
+            });
+        }
+        new.flush().expect("new sink flush");
+        println!("OK: shared create-then-drop on the real device kept the new sink working");
     }
 }

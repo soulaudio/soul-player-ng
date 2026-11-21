@@ -9,6 +9,13 @@ use soul_audio_core::DeckState;
 use soul_audio_loudness::LoudnessMetrics;
 use soul_audio_queue::Repeat;
 
+/// A durable reference to a track, and a point-in-time metadata snapshot
+/// carried alongside it in a playlist entry: the shared no_std playlist
+/// model (`soul-audio-playlist`), re-exported here so every existing
+/// importer of `crate::types::{TrackLocator, TrackSnapshot}` keeps resolving
+/// to the SAME types the backend, host and app all agree on.
+pub use soul_audio_playlist::{TrackLocator, TrackSnapshot};
+
 /// Per-track loudness & dynamic-range metrics for the UI readouts and ReplayGain —
 /// the serde-able DTO mirror of the core analyzer's [`LoudnessMetrics`]. All in
 /// standard units: `integrated_lufs`/`true_peak_dbtp` absolute, `lra`/`plr` in LU,
@@ -234,6 +241,21 @@ pub struct TrackView {
     /// is a real, browse-able "Unknown Genre" group that keys the Genre axis.
     pub genre: Option<String>,
     pub duration_secs: f64,
+    /// `None` when this track sits on local disk; `Some(host)` when it
+    /// streams from a remote source, naming the remote server (a
+    /// human-readable host/label, e.g. `listen.home.lan:8080`) so the UI can
+    /// show WHICH server a track streams from (not just that it's remote).
+    /// The backend/local catalog projection always sets this `None`; the
+    /// host's remote-aware aggregate (`soul-player-host`) sets `Some(host)`
+    /// for a track whose compound id falls in a remote server's block — see
+    /// `soul_player_host::PlayerHandle::views`.
+    pub remote_source: Option<String>,
+    /// The album's ORIGINAL-release date, packed `(year<<9)|(month<<5)|day`
+    /// (`0` = unknown) — mirrors `soul_audio_catalog::PackedDate`. The audiophile
+    /// canonical year; the UI prefers it, falling back to `release_date`.
+    pub original_date: u32,
+    /// The album's main release/reissue date, same packing. Unknown = `0`.
+    pub release_date: u32,
 }
 
 /// The current track's ORIGINAL source format, for the signal-path display.

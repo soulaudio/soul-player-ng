@@ -1,36 +1,42 @@
 //! Albums grid + an album's detail page, mirroring the old app's
 //! AlbumsPage/MediaCard and AlbumPage. Each card is a square cover + title +
-//! artist; the hover play button plays/pauses the album, the card body opens its
-//! detail page. `TrackView` carries no year, so (unlike the original's "artist •
-//! year") the card shows the artist alone.
+//! an "Artist · year" subtitle (the old app's "artist • year"), the year read
+//! from `State.album_year`'s selected date with a fallback to the other one;
+//! the hover play button plays/pauses the album, the card body opens its
+//! detail page.
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
 
-use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text};
+use rune::{
+    Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
+};
 use soul_player_host::{Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::icons;
+use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
+use crate::views::grid;
 use crate::views::library::fmt_dur;
-use crate::views::player::cover;
-
-/// The hover play-overlay button — the old app's `w-14 h-14 rounded-xl` (56 px).
-const PLAY_BTN: f32 = 56.0;
-/// Smallest album-card width before the responsive grid drops a column. Tuned so
-/// the column count tracks the old app's `grid-cols-2..8` breakpoints and cards
-/// land ~144 px at a desktop width (its `lg` tier).
-const MIN_CARD: f32 = 130.0;
+use crate::views::media_card::{CardSpec, media_card};
+use crate::views::player::{group_remote_source, remote_badge};
 
 /// One grouped album: display name, its artist, a track id to draw the cover
-/// from, and every track id (in library order) to play on click.
+/// from, every track id (in library order) to play on click, the album's
+/// original/release dates (packed `(year<<9)|(month<<5)|day`, `0` = unknown;
+/// see [`album_year`]), and whether every one of its tracks streams from the
+/// same remote host (`None` for a local or mixed-source album — see
+/// [`group_remote_source`]).
+#[derive(Clone)]
 pub(crate) struct Album {
     pub(crate) name: String,
     pub(crate) artist: String,
     pub(crate) cover_id: u32,
     pub(crate) ids: Vec<u32>,
+    pub(crate) original_date: u32,
+    pub(crate) release_date: u32,
+    pub(crate) remote_source: Option<String>,
 }
 
 /// Group the flat library into albums, preserving first-seen (library) order so
@@ -49,140 +55,136 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
                 artist: t.artist.clone().unwrap_or_default(),
                 cover_id: t.id,
                 ids: Vec::new(),
+                original_date: t.original_date,
+                release_date: t.release_date,
+                remote_source: None, // resolved below, once every member track is known
             });
             albums.len() - 1
         });
         albums[i].ids.push(t.id);
     }
+    // A second pass: each album's remote-source consensus needs every one of its
+    // member tracks, which aren't all known until the loop above finishes. A
+    // `track id -> remote_source` map avoids an O(n²) `library.iter().find` per id.
+    let remote_by_id: HashMap<u32, &Option<String>> =
+        library.iter().map(|t| (t.id, &t.remote_source)).collect();
+    for album in &mut albums {
+        album.remote_source = group_remote_source(
+            album
+                .ids
+                .iter()
+                .filter_map(|id| remote_by_id.get(id).copied()),
+        );
+    }
     albums
 }
 
-/// The command an album card's play action issues, mirroring the old app's
-/// MediaCard `handlePlayPause`: if a track of this album is the one playing,
-/// toggle pause/resume; otherwise start the album from the top. Pure, so the
-/// view and its test share exactly one rule. "Active" = the now-playing track
-/// belongs to this album.
-fn album_play_command(now_playing: Option<u32>, ids: &[u32]) -> Command {
-    if now_playing.is_some_and(|id| ids.contains(&id)) {
-        Command::TogglePlay
+/// The album's display year for the chosen source: the selected date, falling
+/// back to the other when the selected one is unknown; `None` if both are
+/// unknown. Packed `u32` → year via `>> 9`; `0` = unknown.
+pub(crate) fn album_year(a: &Album, src: crate::config::AlbumYearSource) -> Option<u16> {
+    use crate::config::AlbumYearSource::Original;
+    let (first, second) = if src == Original {
+        (a.original_date, a.release_date)
     } else {
-        Command::PlayContext {
-            ids: ids.to_vec(),
-            start: 0,
-        }
+        (a.release_date, a.original_date)
+    };
+    let d = if first != 0 { first } else { second };
+    (d != 0).then_some((d >> 9) as u16)
+}
+
+/// The card/detail subtitle: "Artist · year" when both are known, the artist
+/// alone when the year is unknown, the year alone when the artist is empty, or
+/// `None` when neither is available (the card renders no second line).
+fn album_subtitle(a: &Album, src: crate::config::AlbumYearSource) -> Option<String> {
+    match (a.artist.is_empty(), album_year(a, src)) {
+        (true, Some(y)) => Some(y.to_string()),
+        (true, None) => None,
+        (false, Some(y)) => Some(format!("{} · {y}", a.artist)),
+        (false, None) => Some(a.artist.clone()),
     }
 }
 
-/// One album card: a square cover, the title, and the artist. Clicking plays the
-/// album, or toggles pause/resume if it is already the playing context.
-fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
-    let ids = a.ids.clone();
-    let name = a.name.clone();
-    // When this album is the active, playing context the overlay shows a pause
-    // glyph and its press toggles — the old app's MediaCard behaviour.
-    let show_pause = s.now_playing_id.is_some_and(|id| a.ids.contains(&id)) && s.playing;
-    col()
-        .key(format!("album-{slot}"))
-        .role("button")
-        .label(a.name.clone())
-        .focusable(true)
-        .w(card_w)
-        // No wrapper background or inset — the old app's MediaCard is `pb-2` with a
-        // `mb-2` cover; the cover + the hover play-overlay are the affordance, not a
-        // background pill.
-        .gap(space::SM)
-        .pb(space::SM)
-        .cursor(Cursor::Pointer)
-        .hover_group()
-        .child(
-            // Cover + a play button that fades in on card hover (old app's
-            // `opacity-0 group-hover:opacity-100` MediaCard overlay). ONLY the
-            // button plays/pauses; clicking the cover elsewhere (or the title)
-            // opens the album's detail page — the old app's MediaCard split of
-            // button = play, body = navigate.
-            el().key("cover-area")
-                .size(card_w, card_w)
-                // The old app's MediaCard cover carries a `shadow` (Rune has no
-                // group-driven shadow/scale, so the hover `shadow-md`/`scale-105`
-                // lift isn't reproduced — the base shadow is).
-                .radius(radius::MD)
-                .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
-                .child(cover(s, Some(a.cover_id), card_w, radius::MD, p, scale))
-                .child(
-                    el().key("play-overlay")
-                        .size(card_w, card_w)
-                        .absolute(0.0, 0.0)
-                        .center()
-                        .group_opacity(0.0, 1.0)
-                        .child(
-                            // Old app's `w-14 h-14 rounded-xl bg-black/50` button,
-                            // darkening to ~black/70 on direct hover (its
-                            // `hover:bg-black/70`). Carries the play/pause press.
-                            el().key("play-btn")
-                                .role("button")
-                                .label(t!("player.play").to_string())
-                                .focusable(true)
-                                .size(PLAY_BTN, PLAY_BTN)
-                                .radius(radius::LG)
-                                .fill(Color::BLACK.alpha(0.5))
-                                .hover(Color::BLACK.alpha(0.3))
-                                .cursor(Cursor::Pointer)
-                                .center()
-                                .on_press(move |st: &mut State| {
-                                    st.host.send(album_play_command(st.now_playing_id, &ids))
-                                })
-                                .child(
-                                    icon(
-                                        if show_pause {
-                                            &icons::PAUSE
-                                        } else {
-                                            &icons::PLAY
-                                        },
-                                        32.0,
-                                    )
-                                    .color(Color::WHITE),
-                                ),
-                        ),
-                ),
-        )
-        .child(
-            col()
-                .key("album-text")
-                .gap(space::XXS)
-                .min_w(0.0)
-                .child(
-                    // Title dims to 0.8 on card hover (old app's
-                    // `group-hover:opacity-[var(--hover-text-opacity)]`).
-                    text(a.name.clone())
-                        .font(type_::CARD_TITLE)
-                        .color(p.fg)
-                        .truncate()
-                        .group_opacity(1.0, 0.8),
-                )
-                .child(
-                    text(a.artist.clone())
-                        .font(type_::ITEM)
-                        .color(p.text_secondary)
-                        .truncate(),
-                ),
-        )
-        // The card body opens the album's detail page (the play button above owns
-        // play/pause). The old app's MediaCard navigates on body click.
-        .on_press(move |st: &mut State| {
-            st.route = crate::Route::Album;
-            st.open_album = Some(name.clone());
-        })
+/// Sum of track seconds as a coarse human total — "1 h 23 min" or "45 min"
+/// (detail headers show totals, not mm:ss). Rounds to whole minutes. Pure.
+pub(crate) fn fmt_total_dur(total_secs: f64) -> String {
+    let mins = (total_secs.max(0.0) / 60.0).round() as u64;
+    let (h, m) = (mins / 60, mins % 60);
+    if h > 0 {
+        t!("detail.durationHm", hours => h, mins => m).to_string()
+    } else {
+        t!("detail.durationM", mins => m).to_string()
+    }
 }
 
-/// Columns and per-card width for a content pane `pane_w` points wide: fill the
-/// pane, dropping a column below [`MIN_CARD`]. Fed the pane width (window minus the
-/// sidebar), the column count tracks the old app's `grid-cols-2..8` viewport
-/// breakpoints. Pure, so the grid and its test share exactly one rule.
-pub(crate) fn grid_layout(pane_w: f32) -> (usize, f32) {
-    let avail = (pane_w - 2.0 * space::PANE).max(MIN_CARD);
-    let cols = (((avail + space::GUTTER) / (MIN_CARD + space::GUTTER)).floor() as usize).max(1);
-    let card_w = ((avail - (cols as f32 - 1.0) * space::GUTTER) / cols as f32).floor();
-    (cols, card_w)
+/// The albums of a single artist: filter the library to that artist (matching
+/// `group_artists`' empty→"Unknown" bucketing), fold by album in first-seen
+/// order, then re-sort chronologically by the selected date source — the
+/// artist page's Discography. Unknown dates (`0`) sort last; the sort is
+/// stable, so equal/unknown years keep their first-seen order.
+pub(crate) fn albums_of_artist(
+    library: &[TrackView],
+    artist: &str,
+    src: crate::config::AlbumYearSource,
+) -> Vec<Album> {
+    let subset: Vec<TrackView> = library
+        .iter()
+        .filter(|t| {
+            let a = t
+                .artist
+                .clone()
+                .filter(|a| !a.is_empty())
+                .unwrap_or_else(|| t!("library.unknown").to_string());
+            a == artist
+        })
+        .cloned()
+        .collect();
+    let mut albums = group_albums(&subset);
+    // Chronological by the SELECTED date; unknown (0) sorts last. Stable
+    // keeps the first-seen order among equal/unknown years.
+    let key = |a: &Album| -> u32 {
+        let (first, second) = if src == crate::config::AlbumYearSource::Original {
+            (a.original_date, a.release_date)
+        } else {
+            (a.release_date, a.original_date)
+        };
+        let d = if first != 0 { first } else { second };
+        if d == 0 { u32::MAX } else { d }
+    };
+    albums.sort_by_key(key);
+    albums
+}
+
+/// One album card: a square cover with a hover play-overlay, the title, and the
+/// artist. Clicking the body opens the album's detail page; the overlay plays.
+fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
+    let name = a.name.clone();
+    media_card(
+        s,
+        p,
+        CardSpec {
+            key: format!("album-{slot}"),
+            label: a.name.clone(),
+            title: a.name.clone(),
+            subtitle: album_subtitle(a, s.album_year),
+            cover_id: a.cover_id,
+            circular: false,
+            play_ids: a.ids.clone(),
+            remote_source: a.remote_source.clone(),
+        },
+        card_w,
+        scale,
+        move |st: &mut State| {
+            crate::navigate_to(
+                st,
+                crate::Route::Album,
+                Some(name.clone()),
+                None,
+                None,
+                None,
+            );
+        },
+    )
 }
 
 /// The Albums page: a responsive grid of album cards, scrolled vertically.
@@ -193,32 +195,40 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // (minus the grid's own padding); the first frame has no prior layout, so fall
     // back to a sensible desktop width.
     let pane = cx.layout_size("albums").map(|[w, _]| w).unwrap_or(820.0);
-    let card_w = grid_layout(pane).1;
+    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
     let mut grid = row()
         .key("albums-grid")
         .role("grid")
         .flex_wrap()
-        .gap(space::GUTTER)
+        // Rows a touch tighter than columns: each card's caption adds visual
+        // whitespace below the tile, so an even gap reads as too much between rows.
+        .gaps(space::MD, space::GUTTER)
         .padding(space::PANE);
     for (slot, a) in albums.iter().enumerate() {
         grid = grid.child(album_card(s, p, slot, a, card_w, scale));
     }
     col().key("albums").grow(1.0).min_h(0.0).child(
-        grid.scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .scroll_edge_fade(24.0)
-        .grow(1.0)
-        .min_h(0.0),
+        // Scroll on the growing wrapper, NOT the grid itself. A flex-wrap grid that is
+        // the growing scroll element has flexbox stretch its wrapped lines to fill the
+        // height, spreading the rows apart whenever the library doesn't fill the window
+        // (worse the more you zoom — fewer rows fit). A natural-height grid inside a
+        // growing scroll viewport packs rows to the top (extra space falls below the
+        // last row) and still scrolls once the content is taller than the viewport.
+        col()
+            .key("albums-scroll")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0)
+            .child(grid),
     )
 }
 
-/// Large cover on the album detail page (the old app's `w-44`).
-const DETAIL_COVER: f32 = 176.0;
-
-/// A back link to the Albums grid — a `←` glyph. Our focused shell keeps no page
-/// history, so it simply returns to the grid.
+/// A back link — a `←` glyph. Returns to wherever this album was opened from
+/// (the back-stack), falling back to the Albums grid if reached without one.
 fn back_button(p: &Palette) -> El {
     el().key("album-back")
         .role("button")
@@ -231,7 +241,7 @@ fn back_button(p: &Palette) -> El {
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
         .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(|st: &mut State| st.route = crate::Route::Albums)
+        .on_press(crate::go_back)
 }
 
 /// One row on the album detail page: the track number (or a ⏸/▶ state glyph when
@@ -269,33 +279,77 @@ pub(crate) fn detail_track_row(
         // The now-playing row keeps an accent wash (old app's `bg-accent/20`).
         r = r.fill(p.accent.alpha(0.2));
     }
-    r.child(
-        text(if playing {
-            (if is_playing { "⏸" } else { "▶" }).to_string()
-        } else {
-            format!("{}", i + 1)
-        })
-        .font(type_::ITEM)
-        .color(if playing { p.accent } else { p.text_secondary })
-        .w(28.0),
-    )
-    .child(
-        text(
-            t.title
-                .clone()
-                .unwrap_or_else(|| t!("library.unknown").to_string()),
+    r = r
+        .child(
+            text(if playing {
+                (if is_playing { "⏸" } else { "▶" }).to_string()
+            } else {
+                format!("{}", i + 1)
+            })
+            .font(type_::ITEM)
+            .color(if playing { p.accent } else { p.text_secondary })
+            .w(28.0),
         )
-        .font(type_::ITEM)
-        .color(if playing { p.accent } else { p.fg })
-        .truncate()
-        .grow(1.0),
-    )
-    .child(
+        .child(
+            text(
+                t.title
+                    .clone()
+                    .unwrap_or_else(|| t!("library.unknown").to_string()),
+            )
+            .font(type_::ITEM)
+            .color(if playing { p.accent } else { p.fg })
+            .truncate()
+            .grow(1.0),
+        );
+    // A subtle cloud badge for a track streaming from a remote source;
+    // nothing renders for a local track, the unremarked default.
+    if let Some(host) = &t.remote_source {
+        r = r.child(remote_badge(t.id, host, p));
+    }
+    // Right-click opens the same track actions as a library row (the add-to-
+    // playlist item opens the themed `views::add_to_playlist` overlay), so a
+    // track is reachable from every detail page (album/artist/genre/playlist),
+    // not just the library. `menu_ids` clones the play context for the menu's
+    // "Play" action; the row's own `on_press` still owns `ids`.
+    let menu_ids = ids.clone();
+    r.child(
         text(fmt_dur(t.duration_secs))
             .font(type_::ITEM)
             .color(p.text_secondary)
             .w(56.0),
     )
+    .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
+        // Clone per invocation so this outer handler stays `Fn` (the inner
+        // `move` callback would otherwise move `menu_ids` out of it).
+        let play_ids = menu_ids.clone();
+        tx.popup_menu(
+            PopupMenu::new()
+                .item(PopupItem::new("play", t!("player.play").to_string()))
+                .item(PopupItem::new(
+                    "play-next",
+                    t!("library.playNext").to_string(),
+                ))
+                .item(PopupItem::new(
+                    "enqueue",
+                    t!("library.addToQueue").to_string(),
+                ))
+                .item(PopupItem::new(
+                    "add-to-playlist",
+                    t!("playlists.addTo").to_string(),
+                )),
+            press,
+            move |st: &mut State, picked, _tx: &mut Tx| match picked {
+                Some("play") => st.host.send(Command::PlayContext {
+                    ids: play_ids.clone(),
+                    start,
+                }),
+                Some("play-next") => st.host.send(Command::PlayNext(tid)),
+                Some("enqueue") => st.host.send(Command::Enqueue(tid)),
+                Some("add-to-playlist") => crate::open_add_to_playlist(st, tid),
+                _ => {}
+            },
+        );
+    })
     .on_press(move |st: &mut State| {
         let cmd = if st.now_playing_id == Some(tid) {
             Command::TogglePlay
@@ -309,11 +363,11 @@ pub(crate) fn detail_track_row(
     })
 }
 
-/// An album's detail page (the old app's AlbumPage): a back link, then a header
-/// — large cover, an "ALBUM" eyebrow, title, artist, track count and a Play
-/// button — over the album's track list. The album is `State::open_album`,
-/// re-derived from the current library; if it has vanished we just offer the
-/// way back.
+/// An album's detail page (the old app's AlbumPage): a back link, then the shared
+/// hero — square cover, "ALBUM" eyebrow, title, artist, "{n} tracks · {duration}"
+/// and a Play-All pill — over the album's numbered track list. The album is
+/// `State::open_album`, re-derived from the current library; if it has vanished we
+/// just offer the way back.
 pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     let albums = group_albums(&s.library);
     let Some(album) = s
@@ -329,86 +383,52 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             .child(back_button(p));
     };
 
-    let play_ids = album.ids.clone();
-    // Header stacks (cover over info) when the pane is too narrow for them side
-    // by side (the old app's `flex-col sm:flex-row`).
-    let header = row()
-        .key("album-header")
-        .flex_wrap()
-        .gap(space::XL)
-        .pb(space::SECTION)
-        .child(
-            // Large cover with a `shadow-lg`, as the old app's AlbumPage.
-            el().key("album-cover")
-                .radius(radius::MD)
-                .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
-                .child(cover(
-                    s,
-                    Some(album.cover_id),
-                    DETAIL_COVER,
-                    radius::MD,
-                    p,
-                    scale,
-                )),
-        )
-        .child(
-            col()
-                .key("album-meta")
-                .gap(space::XS)
-                .grow(1.0)
-                .min_w(0.0)
-                .center_y()
-                .child(
-                    text(t!("album.eyebrow").to_uppercase())
-                        .font(type_::SECTION)
-                        .color(p.text_secondary),
-                )
-                .child(
-                    text(album.name.clone())
-                        .font(type_::DISPLAY)
-                        .color(p.fg)
-                        .truncate(),
-                )
-                .child(
-                    text(album.artist.clone())
-                        .font(type_::CARD_TITLE)
-                        .color(p.text_secondary)
-                        .truncate(),
-                )
-                .child(
-                    text(t!("album.trackCount", count => album.ids.len()).to_string())
-                        .font(type_::CAPTION)
-                        .color(p.text_secondary),
-                )
-                .child(
-                    // The old app's "Play All" pill (`rounded-full px-6 py-3`,
-                    // filled Play icon) — plays the whole album from the top.
-                    el().key("album-play-all")
-                        .role("button")
-                        .label(t!("album.playAll").to_string())
-                        .focusable(true)
-                        .px(space::XL)
-                        .py(space::MD)
-                        .radius(radius::FULL)
-                        .fill(p.primary)
-                        .cursor(Cursor::Pointer)
-                        .hover(p.bg.alpha(fx::HOVER_FILL))
-                        .press(p.bg.alpha(fx::PRESS_FILL))
-                        .on_press(move |st: &mut State| {
-                            st.host.send(Command::PlayContext {
-                                ids: play_ids.clone(),
-                                start: 0,
-                            })
-                        })
-                        .child(
-                            row()
-                                .gap(space::SM)
-                                .center_y()
-                                .child(icon(&icons::PLAY, 20.0).color(p.bg))
-                                .child(text(t!("album.playAll").to_string()).color(p.bg)),
-                        ),
-                ),
-        );
+    let total: f64 = album
+        .ids
+        .iter()
+        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .map(|t| t.duration_secs)
+        .sum();
+    let mut meta = t!(
+        "detail.tracksAndDuration",
+        count => album.ids.len(),
+        dur => fmt_total_dur(total)
+    )
+    .to_string();
+    // A reissue note, but only when it genuinely supplements the year already
+    // shown in the subtitle above — e.g. a 2015 remaster of a 1973 album.
+    // Compare YEARS (not full packed dates): mixed-precision tags are common
+    // (a MusicBrainz original date with only a year, alongside a locally
+    // tagged release date with a full day) and must not trigger a redundant
+    // "reissued 1973" next to a subtitle that already reads "1973". The note
+    // only fires when the subtitle is currently showing the original year —
+    // in Release mode, or when the original is unknown and the subtitle falls
+    // back to the release year, the release year is already on screen.
+    let orig_year = (album.original_date != 0).then_some((album.original_date >> 9) as u16);
+    let rel_year = (album.release_date != 0).then_some((album.release_date >> 9) as u16);
+    if let (Some(oy), Some(ry)) = (orig_year, rel_year)
+        && oy != ry
+        && album_year(&album, s.album_year) == Some(oy)
+    {
+        meta = format!("{meta} · {}", t!("detail.reissued", year => ry));
+    }
+
+    let hero = detail_hero(
+        s,
+        p,
+        scale,
+        "album",
+        HeroArt::Cover {
+            id: album.cover_id,
+            circular: false,
+        },
+        t!("album.eyebrow").to_uppercase(),
+        album.name.clone(),
+        album.remote_source.clone(),
+        album_subtitle(&album, s.album_year),
+        meta,
+        play_all_pill("album-play-all", album.ids.clone(), p),
+    );
 
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
     for (i, &id) in album.ids.iter().enumerate() {
@@ -439,7 +459,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             col()
                 .key("album-detail-content")
                 .padding(space::PANE)
-                .child(header)
+                .child(hero)
                 .child(list)
                 .scroll(ScrollSpec {
                     stick_bottom: false,
@@ -454,46 +474,379 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
 mod tests {
     use super::*;
 
+    fn atv(id: u32, artist: &str, album: &str) -> TrackView {
+        TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some(artist.to_string()),
+            album: Some(album.to_string()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote_source: None,
+            original_date: 0,
+            release_date: 0,
+        }
+    }
+
+    /// An album's `remote_source` is the unanimous host across every one of
+    /// its tracks; a mix of remote and local has no consensus and must show
+    /// no badge.
     #[test]
-    fn an_active_album_toggles_play_pause_otherwise_plays_from_the_start() {
-        // The old app's MediaCard play button toggles pause/resume when its own
-        // context is the active one, and starts the entity otherwise. We judge
-        // "active" by the now-playing track belonging to this album.
+    fn group_albums_resolves_remote_source_consensus() {
+        let mut remote1 = atv(1, "Bach", "Cello Suites");
+        remote1.remote_source = Some("h".to_string());
+        let mut remote2 = atv(2, "Bach", "Cello Suites");
+        remote2.remote_source = Some("h".to_string());
+        let all_remote = group_albums(&[remote1, remote2]);
         assert_eq!(
-            album_play_command(Some(6), &[5, 6, 7]),
-            Command::TogglePlay,
-            "a track of this album is playing → toggle"
+            all_remote[0].remote_source,
+            Some("h".to_string()),
+            "every track shares the same host"
         );
+
+        let mut remote = atv(3, "Bach", "Goldberg");
+        remote.remote_source = Some("h".to_string());
+        let local = atv(4, "Bach", "Goldberg");
+        let mixed = group_albums(&[remote, local]);
         assert_eq!(
-            album_play_command(Some(9), &[5, 6, 7]),
-            Command::PlayContext {
-                ids: vec![5, 6, 7],
-                start: 0
-            },
-            "a different album is playing → play this one from the top"
+            mixed[0].remote_source, None,
+            "a local track in the mix breaks consensus"
         );
-        assert_eq!(
-            album_play_command(None, &[5, 6, 7]),
-            Command::PlayContext {
-                ids: vec![5, 6, 7],
-                start: 0
-            },
-            "nothing playing → play from the top"
-        );
+
+        let all_local = group_albums(&[atv(5, "Bach", "Partitas"), atv(6, "Bach", "Partitas")]);
+        assert_eq!(all_local[0].remote_source, None, "all local -> no badge");
     }
 
     #[test]
-    fn grid_fills_the_pane_with_more_columns_as_it_widens() {
-        // Fed the content-pane width (window minus the ~294 pt sidebar), the column
-        // count tracks the old app's grid-cols-2..8 viewport breakpoints, and cards
-        // land ~144 pt at a desktop width (its `lg` tier).
-        assert_eq!(grid_layout(606.0).0, 4, "md-ish pane → 4 columns");
-        let (cols, card) = grid_layout(820.0);
-        assert_eq!(cols, 5, "lg pane → 5 columns");
-        assert!((card - 144.0).abs() <= 2.0, "lg cards ~144 pt, got {card}");
-        assert_eq!(grid_layout(1306.0).0, 8, "2xl pane → 8 columns");
-        // Never fewer than one column; the card never shrinks below the minimum.
-        assert_eq!(grid_layout(200.0).0, 1);
-        assert!(grid_layout(820.0).1 >= MIN_CARD);
+    fn total_duration_rounds_to_whole_minutes_and_formats_hours() {
+        rust_i18n::set_locale("en");
+        assert_eq!(fmt_total_dur(45.0 * 60.0), "45 min");
+        assert_eq!(fmt_total_dur(83.0 * 60.0), "1 h 23 min");
+        assert_eq!(fmt_total_dur(0.0), "0 min");
+        assert_eq!(fmt_total_dur(29.0), "0 min", "under 30 s rounds down");
+        assert_eq!(fmt_total_dur(31.0), "1 min", "over 30 s rounds up");
+    }
+
+    #[test]
+    fn album_year_prefers_selected_source_with_fallback() {
+        use crate::config::AlbumYearSource::*;
+        let a = Album {
+            name: "x".into(),
+            artist: "y".into(),
+            cover_id: 0,
+            ids: vec![],
+            original_date: 1973u32 << 9,
+            release_date: 2015u32 << 9,
+            remote_source: None,
+        };
+        assert_eq!(album_year(&a, Original), Some(1973));
+        assert_eq!(album_year(&a, Release), Some(2015));
+        // fallback: release known, original unknown, Original selected → release
+        let b = Album {
+            original_date: 0,
+            release_date: 2015u32 << 9,
+            ..a.clone()
+        };
+        assert_eq!(album_year(&b, Original), Some(2015));
+        // both unknown → None
+        let c = Album {
+            original_date: 0,
+            release_date: 0,
+            ..a.clone()
+        };
+        assert_eq!(album_year(&c, Original), None);
+    }
+
+    #[test]
+    fn albums_of_artist_folds_only_that_artists_albums_first_seen() {
+        rust_i18n::set_locale("en");
+        let lib = vec![
+            atv(1, "Bach", "Cello Suites"),
+            atv(2, "Satie", "Gymnopedies"),
+            atv(3, "Bach", "Cello Suites"),
+            atv(4, "Bach", "Goldberg"),
+        ];
+        let albums = albums_of_artist(&lib, "Bach", crate::config::AlbumYearSource::Original);
+        assert_eq!(albums.len(), 2, "only Bach's two albums");
+        assert_eq!(albums[0].name, "Cello Suites");
+        assert_eq!(
+            albums[0].ids,
+            vec![1, 3],
+            "both Cello Suites tracks fold in"
+        );
+        assert_eq!(albums[1].name, "Goldberg");
+        assert_eq!(albums[1].ids, vec![4]);
+    }
+
+    /// The Discography must re-sort by whichever date is currently selected:
+    /// A is earlier by original date, B is earlier by release date, so the two
+    /// toggle positions must disagree on the order.
+    #[test]
+    fn discography_sorts_by_the_selected_date() {
+        use crate::config::AlbumYearSource::*;
+        rust_i18n::set_locale("en");
+        let mut a = atv(1, "Artist", "A");
+        a.original_date = 1990u32 << 9;
+        a.release_date = 2010u32 << 9;
+        let mut b = atv(2, "Artist", "B");
+        b.original_date = 1980u32 << 9;
+        b.release_date = 2020u32 << 9;
+        let lib = vec![a, b];
+
+        let by_original = albums_of_artist(&lib, "Artist", Original);
+        assert_eq!(
+            by_original
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["B", "A"],
+            "1980 < 1990"
+        );
+
+        let by_release = albums_of_artist(&lib, "Artist", Release);
+        assert_eq!(
+            by_release
+                .iter()
+                .map(|a| a.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["A", "B"],
+            "2010 < 2020"
+        );
+    }
+
+    /// End-to-end through the real Albums grid: a seeded 1973 album's card
+    /// shows "Artist · 1973"; an album with no known year falls back to the
+    /// artist alone — never a stray "· 0".
+    #[test]
+    fn album_card_renders_the_year_or_falls_back_to_the_artist_alone() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            albums_page(s, &p, cx, scale)
+        }
+
+        rust_i18n::set_locale("en");
+        let mut dated = atv(1, "Pavement", "Crooked Rain");
+        dated.original_date = 1973u32 << 9;
+        let undated = atv(2, "NoYear", "Mystery");
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![dated, undated];
+        s.route = crate::Route::Albums;
+        // Pin the source rather than trust the ambient persisted config.
+        s.album_year = crate::config::AlbumYearSource::Original;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(
+            texts.iter().any(|t| t == "Pavement · 1973"),
+            "a known year renders as \"Artist · year\"; got {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "NoYear"),
+            "an unknown year falls back to the artist alone; got {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("· 0")),
+            "never render a bare zero year; got {texts:?}"
+        );
+    }
+
+    /// End-to-end through the real Albums grid: a remote album's card shows
+    /// the same cloud badge + "streams from" tooltip the track rows and
+    /// now-playing line already show, keyed off the card rather than a track
+    /// id; a local album's card shows none.
+    #[test]
+    fn album_card_shows_the_remote_badge_for_a_remote_album() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            albums_page(s, &p, cx, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut remote_track = atv(1, "Remote Artist", "Remote Album");
+        remote_track.remote_source = Some("listen.home.lan".into());
+        let local_track = atv(2, "Local Artist", "Local Album");
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![remote_track, local_track];
+        s.route = crate::Route::Albums;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let badge_visible = |rt: &Runtime<State>, key: &str| {
+            rt.elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some(key) && e.opacity > 0.01)
+        };
+        assert!(
+            badge_visible(&rt, "album-0-remote"),
+            "the remote album's card should show the cloud badge"
+        );
+        assert!(
+            !badge_visible(&rt, "album-1-remote"),
+            "the local album's card should show no badge"
+        );
+        let help = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("album-0-remote"))
+            .and_then(|e| e.help);
+        assert_eq!(
+            help.as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the card badge's tooltip should name the source host"
+        );
+    }
+
+    /// A remote album's detail-page header shows the same cloud badge +
+    /// tooltip next to the title; a local album's header shows none.
+    #[test]
+    fn album_detail_header_shows_the_remote_badge_for_a_remote_album() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        fn render(s: State) -> Runtime<State> {
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            rt
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+
+        let mut remote_track = atv(1, "Artist", "Remote Album");
+        remote_track.remote_source = Some("listen.home.lan".into());
+        let mut remote_state = State::new(soul_player_host::PlayerHandle::offline());
+        remote_state.library = vec![remote_track];
+        remote_state.route = crate::Route::Album;
+        remote_state.open_album = Some("Remote Album".into());
+        let remote_rt = render(remote_state);
+        let badge = remote_rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("album-remote"));
+        assert!(
+            badge.is_some(),
+            "a remote album's header should show the cloud badge"
+        );
+        assert_eq!(
+            badge.and_then(|e| e.help).as_deref(),
+            Some("Streams from listen.home.lan"),
+            "the header badge's tooltip should name the source host"
+        );
+
+        let local_track = atv(2, "Artist", "Local Album");
+        let mut local_state = State::new(soul_player_host::PlayerHandle::offline());
+        local_state.library = vec![local_track];
+        local_state.route = crate::Route::Album;
+        local_state.open_album = Some("Local Album".into());
+        let local_rt = render(local_state);
+        assert!(
+            !local_rt
+                .elements()
+                .iter()
+                .any(|e| e.key.as_deref() == Some("album-remote")),
+            "a local album's header should show no badge"
+        );
+    }
+
+    /// The album detail's "reissued" note must compare YEARS, not full packed
+    /// dates, and must only fire when it adds information beyond the subtitle
+    /// already shown. Renders the real detail page through a local test-only
+    /// view fn (same pattern as the albums-grid render test above).
+    #[test]
+    fn reissue_note_only_fires_when_it_adds_a_year_beyond_the_subtitle() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        fn detail_texts(s: State) -> Vec<String> {
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            rt.elements().into_iter().filter_map(|e| e.text).collect()
+        }
+
+        fn seeded(
+            album_name: &str,
+            original_date: u32,
+            release_date: u32,
+            src: crate::config::AlbumYearSource,
+        ) -> State {
+            let mut t = atv(1, "Can", album_name);
+            t.original_date = original_date;
+            t.release_date = release_date;
+            let mut s = State::new(soul_player_host::PlayerHandle::offline());
+            s.library = vec![t];
+            s.route = crate::Route::Album;
+            s.open_album = Some(album_name.to_string());
+            s.album_year = src;
+            s
+        }
+
+        rust_i18n::set_locale("en");
+        use crate::config::AlbumYearSource::{Original, Release};
+
+        // The bug case: same year, different precision (a year-only
+        // MusicBrainz original alongside a fully-dated local release). Must
+        // NOT show a redundant "reissued 1973" next to a "1973" subtitle.
+        let texts = detail_texts(seeded(
+            "Future Days",
+            1973u32 << 9,
+            (1973u32 << 9) | (6 << 5) | 15,
+            Original,
+        ));
+        assert!(
+            !texts.iter().any(|t| t.contains("reissued")),
+            "same-year mixed precision must not show a redundant reissue note; got {texts:?}"
+        );
+
+        // A genuine reissue: different years, Original selected (subtitle
+        // shows 1973) → the release year is new information.
+        let texts = detail_texts(seeded("Tago Mago", 1973u32 << 9, 2015u32 << 9, Original));
+        assert!(
+            texts.iter().any(|t| t.contains("reissued 2015")),
+            "a genuine reissue year must be noted; got {texts:?}"
+        );
+
+        // Same dates, but Release selected: the subtitle already shows 2015,
+        // so a "reissued 2015" note would be redundant.
+        let texts = detail_texts(seeded("Tago Mago", 1973u32 << 9, 2015u32 << 9, Release));
+        assert!(
+            !texts.iter().any(|t| t.contains("reissued")),
+            "release-year subtitle already shows the year; the note would be redundant; got {texts:?}"
+        );
     }
 }

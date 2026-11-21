@@ -19,6 +19,20 @@ pub struct Palette {
     pub muted: Color,
     pub border: Color,
     pub text_secondary: Color,
+    /// A remote source's online-health dot (Settings → Sources). The one
+    /// semantic "good/connected" color in either palette — everything else
+    /// here is a neutral/brand hue, but online/offline needs a color that
+    /// reads as a status signal independent of the warm Day / cool Night hues.
+    pub online: Color,
+    /// "Some, but not all" status color — the title-bar remote-health
+    /// indicator's partial state (a mix of online and offline remotes), and
+    /// any future amber/caution reading. Independent of `accent` (Night's own
+    /// accent happens to be amber-ish too, but for a brand hue, not a status).
+    pub warning: Color,
+    /// "Bad/unreachable" status color — the title-bar remote-health
+    /// indicator's down state (every enabled remote offline). Paired with
+    /// `online`/`warning` as the one semantic red in either palette.
+    pub danger: Color,
 }
 
 fn hex(s: &str) -> Color {
@@ -36,6 +50,9 @@ fn day() -> Palette {
         muted: hex("#f0eeea"),
         border: hex("#e5e1dc"),
         text_secondary: hex("#6b6157"),
+        online: hex("#4f8a5b"),
+        warning: hex("#b5811f"),
+        danger: hex("#b23a32"),
     }
 }
 
@@ -50,6 +67,9 @@ fn night() -> Palette {
         muted: hex("#221f2d"),
         border: hex("#2a2735"),
         text_secondary: hex("#9a94ab"),
+        online: hex("#7fd99a"),
+        warning: hex("#e3b655"),
+        danger: hex("#e2726a"),
     }
 }
 

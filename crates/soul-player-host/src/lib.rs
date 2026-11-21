@@ -5,6 +5,12 @@
 
 pub mod analyzer;
 pub mod eq;
+// Public (not just `mod`) so the crate's own integration tests
+// (`tests/remote_e2e.rs`, a separate crate) can drive the exact same
+// login/fetch_index/RemoteLibrary/DownloadCache path
+// `add_remote_source` uses below, rather than re-implementing the wire
+// protocol a second time just to prove a downloaded track decodes.
+pub mod remote;
 mod sink;
 
 use std::collections::HashMap;
@@ -16,8 +22,11 @@ use std::time::Duration;
 
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
-use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, cover_bytes};
+use soul_player_backend::library::TrackSource;
+use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, OutputConfig, cover_bytes};
 use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
+
+use remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer, TokenStore};
 
 pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
 pub use eq::{
@@ -34,6 +43,17 @@ pub use soul_audio_dsp::format;
 /// path-template tree), re-exported so a UI head calls it through the one host
 /// contract rather than taking its own core git dependency.
 pub use soul_audio_organize as organize;
+/// The shared no_std playlist model (durable locator + metadata snapshot,
+/// editable ordered playlist, cover selection), re-exported so a UI head
+/// reaches them through the one host contract rather than taking its own
+/// core git dependency. `soul-player-backend` depends on this same crate
+/// (see `types.rs`), so this is the one `TrackLocator`/`Playlist` identity
+/// shared by backend, host and app.
+pub use soul_audio_playlist::{
+    Playlist, PlaylistCover, PlaylistEntry, PlaylistId, TrackLocator, TrackSnapshot,
+    choose_playlist_cover, entries_fingerprint, first_distinct_album_indices, select_cover,
+    slugify,
+};
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, PlayState, QueueState, RepeatMode, ReplayGainMode,
     SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath, SourceCodec, SourceFormat,
@@ -52,6 +72,9 @@ type ScanProgressSubscriber = Box<dyn Fn(Option<ScanProgress>) + Send>;
 /// Deletions from one rescan: `(root, removed file paths)` for each root that lost
 /// files since its prior cache.
 type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
+/// Remote sources added so far: each authenticated server alongside its
+/// last-fetched per-root index blobs (see [`Inner::remotes`]).
+type RemoteSources = Vec<(Arc<RemoteServer>, Vec<Vec<u8>>)>;
 
 /// Debounce window for the live filesystem watcher: filesystem events for one
 /// logical change (an editor's write-rename, an album copy's many files) are
@@ -119,6 +142,31 @@ fn path_under(path: &Path, root: &Path) -> bool {
     }
 }
 
+/// Where [`PlayerHandle::add_remote_source`]'s [`DownloadCache`] keeps
+/// downloaded remote track originals: a dedicated subdirectory of the OS
+/// cache dir (falling back to the system temp dir if that's unavailable —
+/// headless CI, an exotic platform `dirs` doesn't recognize), so it survives
+/// across launches but is understood by the OS as reclaimable, unlike the
+/// config dir the app's settings live in.
+fn remote_cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("soul-player")
+        .join("remote-cache")
+}
+
+/// Seconds since the Unix epoch, for timestamping a [`RemoteHealth`] probe
+/// (see [`PlayerHandle::refresh_remote_health`]). Falls back to 0 on a clock
+/// set before the epoch rather than panicking — a timestamp this method
+/// produces is only ever used for display/ordering, never safety-critical.
+fn now_unix() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// The configured roots that contain at least one of `paths` — the set a watcher
 /// burst actually touched, so only these need re-reading (the rest are reused). An
 /// empty result means no root was affected.
@@ -134,7 +182,52 @@ fn affected_roots(paths: &[PathBuf], roots: &[PathBuf]) -> std::collections::Has
     set
 }
 
-/// The per-source status of one configured folder, as of the last scan.
+/// What kind of source a [`SourceStatus`] describes — a local folder root, or
+/// a remote `soul-server` identified by its base URL. Lets a UI head render
+/// the two kinds distinctly (a Local/Remote badge) without inferring it from
+/// `path` (a remote's `path` is a synthetic stand-in, not a real filesystem
+/// location — see [`SourceStatus::path`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceKind {
+    /// A watched local folder, by its root path.
+    Local {
+        /// The configured root path.
+        path: PathBuf,
+    },
+    /// A remote `soul-server`, by its base URL (no trailing slash).
+    Remote {
+        /// The server's base URL, as given to
+        /// [`PlayerHandle::add_remote_source_with_tokens`].
+        url: String,
+    },
+}
+
+/// Point-in-time health of a remote source, as last measured by
+/// [`remote::probe_health`] (via [`PlayerHandle::refresh_remote_health`]).
+/// Never an error value — an unreachable server is `online: false` with the
+/// rest `None`, not a missing [`RemoteHealth`] — so a UI can always render
+/// *something* (an offline row) rather than a gap.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteHealth {
+    /// Whether the most recent `/v0/ping` succeeded.
+    pub online: bool,
+    /// Round-trip latency of that ping, in milliseconds — `None` when
+    /// offline (there is nothing to time).
+    pub latency_ms: Option<u64>,
+    /// The server's own crate version, as echoed by `/v0/ping` — `None`
+    /// when offline.
+    pub server_version: Option<String>,
+    /// The server's current catalog index version, as echoed by
+    /// `/v0/ping` — `None` when offline. A change since the last sync is a
+    /// cheap signal that a re-sync would pick up fresh tracks.
+    pub index_version: Option<u64>,
+    /// Unix timestamp of this probe, whether it succeeded or not — `None`
+    /// only for a remote that has never been probed.
+    pub last_checked_unix: Option<u64>,
+}
+
+/// The per-source status of one configured folder or remote server, as of
+/// the last scan / health probe.
 ///
 /// A source is kept in the configured set regardless of its state — disabling it
 /// or losing its root to a transient outage never drops it (the "don't wipe the
@@ -145,16 +238,31 @@ fn affected_roots(paths: &[PathBuf], roots: &[PathBuf]) -> std::collections::Has
 /// it is re-enabled or its root returns.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceStatus {
-    /// The configured root path (as given by the caller, deduped in order).
+    /// The configured root path, for a local source (as given by the
+    /// caller, deduped in order). For a remote source this is a synthetic
+    /// stand-in (the server's URL) kept only for callers that haven't moved
+    /// to matching on [`kind`](Self::kind) yet — never a real filesystem
+    /// path to read.
     pub path: PathBuf,
-    /// Whether the user has this source enabled (disabled sources are skipped).
+    /// Whether the user has this source enabled (disabled sources are skipped
+    /// in the aggregate — their tracks leave `views()` — but kept listed
+    /// here). A local root toggles via
+    /// [`set_folder_enabled`](PlayerHandle::set_folder_enabled); a remote via
+    /// [`set_remote_enabled`](PlayerHandle::set_remote_enabled).
     pub enabled: bool,
     /// Whether the root was a readable directory on the last scan (missing /
-    /// unmounted / unreadable roots are `false`, but stay in the set).
+    /// unmounted / unreadable roots are `false`, but stay in the set). For a
+    /// remote source this mirrors [`RemoteHealth::online`].
     pub available: bool,
     /// Tracks this source contributed to the aggregated library — 0 when the
     /// source is disabled or unavailable.
     pub track_count: usize,
+    /// Whether this is a local folder or a remote server, and its identity.
+    pub kind: SourceKind,
+    /// The remote's last-probed health — `Some` for every [`SourceKind::Remote`]
+    /// (never probed yet is still `Some`, with every field but the timestamp
+    /// `None`), always `None` for a [`SourceKind::Local`].
+    pub remote: Option<RemoteHealth>,
 }
 
 /// The result of changing the configured-source set: the aggregated track views
@@ -357,6 +465,44 @@ struct Inner {
     /// Kept in lock-step with `caches`: refreshed for re-scanned roots, pruned for
     /// de-configured ones.
     source_bytes: Mutex<HashMap<PathBuf, Vec<u8>>>,
+    /// Remote sources added via [`add_remote_source`](PlayerHandle::add_remote_source),
+    /// each authenticated server alongside its last-fetched per-root index
+    /// blobs — the v0 remote state: not threaded through `folders` /
+    /// `caches` / `source_bytes` (a plain rescan never touches it), just
+    /// replayed in order into a fresh [`RemoteLibrary`] on every add.
+    remotes: Mutex<RemoteSources>,
+    /// Per-remote enabled flag, keyed by server base URL (trailing slash
+    /// trimmed, matching `remotes`' own key). Absent ⇒ enabled — a remote
+    /// added before this flag existed, or never explicitly toggled,
+    /// defaults to on (the same "absent from the disabled set ⇒ enabled"
+    /// convention `app/rune`'s `sources_disabled` config uses). A disabled
+    /// remote stays in `remotes` (and keeps listing in
+    /// [`sources`](PlayerHandle::sources)) — only its blobs are excluded
+    /// from the aggregate [`rebuild_remote_library`](PlayerHandle::rebuild_remote_library)
+    /// builds, so its tracks leave [`views`](PlayerHandle::views) without
+    /// disconnecting it. Cleared on [`remove_remote_source`](PlayerHandle::remove_remote_source)
+    /// so a later re-add doesn't inherit a stale flag for that url.
+    remote_enabled: Mutex<HashMap<String, bool>>,
+    /// The remote-aware aggregate built from `remotes` plus the local
+    /// `source_bytes` snapshot at the time of the last
+    /// [`add_remote_source`](PlayerHandle::add_remote_source) call, or `None`
+    /// when no remote has ever been added. When `Some`, this — not the plain
+    /// `library` above — is what the actor resolves ids against; `library`
+    /// still holds `remote_library`'s own aggregate `Library` so
+    /// [`views`](PlayerHandle::views)/[`art`](PlayerHandle::art)/etc. see the
+    /// union unchanged. Cleared by a plain [`set_library`](Self::set_library)
+    /// (e.g. a subsequent local rescan), whose fresh `Library` has a source
+    /// layout this aggregate's compound ids no longer match — see
+    /// `set_library`.
+    remote_library: Mutex<Option<Arc<RemoteLibrary>>>,
+    /// The last [`RemoteHealth`] probed for each retained remote, keyed by
+    /// server base URL. Written only by
+    /// [`refresh_remote_health`](PlayerHandle::refresh_remote_health) (the
+    /// one place that does the blocking network probe); read by
+    /// [`sources`](PlayerHandle::sources), which must stay non-blocking — a
+    /// remote with no entry yet (never probed) reports as offline/unknown
+    /// rather than panicking or blocking.
+    remote_health: Mutex<HashMap<String, RemoteHealth>>,
     /// Subscribers for a background (watcher-triggered) rescan's [`WatchUpdate`], so
     /// the UI refreshes its library/sources when files change on disk while the app
     /// is open. Registered via [`on_watch_update`](PlayerHandle::on_watch_update);
@@ -379,20 +525,16 @@ struct Inner {
     /// the user's persisted choice ([`set_indexing_mode`](PlayerHandle::set_indexing_mode),
     /// whose own default is `Automatic`) — which also keeps the test suite fast.
     indexing_mode: Mutex<IndexingMode>,
-    /// The chosen output device name (one of [`output_devices`](PlayerHandle::output_devices)),
-    /// or `None` for the system default. Read when the actor is (re)spawned and
-    /// passed to the sink factory; a change applies to the NEXT spawn, not the
-    /// live stream (see [`set_output_device`](PlayerHandle::set_output_device)).
-    output_device: Mutex<Option<String>>,
-    /// Whether the user asked for bit-perfect **exclusive** output. Read when the
-    /// actor is (re)spawned and passed to the sink factory; a change applies to the
-    /// NEXT spawn, not the live stream (like the output device). The factory records
-    /// what the request actually resolved to in [`exclusive_status`](Inner::exclusive_status).
-    exclusive: Mutex<bool>,
-    /// **Strict** exclusive (exclusive-or-stop): when on with `exclusive`, the next
-    /// session does NOT fall back to shared if exclusive can't open — playback simply
-    /// doesn't start (the purist stance). Applies to the next spawn, like `exclusive`.
-    exclusive_strict: Mutex<bool>,
+    /// The desired output config — device (one of
+    /// [`output_devices`](PlayerHandle::output_devices)), exclusive mode, and strict —
+    /// shared with the running pump so a change made while playing applies to the
+    /// CURRENT track (live), not just the next session. Written by
+    /// [`set_output_device`](PlayerHandle::set_output_device),
+    /// [`set_exclusive`](PlayerHandle::set_exclusive), and
+    /// [`set_exclusive_strict`](PlayerHandle::set_exclusive_strict); the pump reads it
+    /// each block and rebuilds the sink in place when the device or exclusive mode
+    /// differs. Persists across respawns (it lives here, not in the actor).
+    output_config: Arc<Mutex<OutputConfig>>,
     /// What the last exclusive-output request resolved to (active / fell back to
     /// shared with a reason / unavailable under strict / shared by choice). Written by
     /// the sink factory on the pump thread at spawn, read by the UI to show the truth
@@ -487,13 +629,15 @@ impl PlayerHandle {
                 last_sources: Mutex::new(Vec::new()),
                 caches: Mutex::new(HashMap::new()),
                 source_bytes: Mutex::new(HashMap::new()),
+                remotes: Mutex::new(Vec::new()),
+                remote_enabled: Mutex::new(HashMap::new()),
+                remote_library: Mutex::new(None),
+                remote_health: Mutex::new(HashMap::new()),
                 watch_subscribers: Mutex::new(Vec::new()),
                 scan_progress_subscribers: Mutex::new(Vec::new()),
                 watcher: Mutex::new(None),
                 indexing_mode: Mutex::new(IndexingMode::Maximum),
-                output_device: Mutex::new(None),
-                exclusive: Mutex::new(false),
-                exclusive_strict: Mutex::new(false),
+                output_config: Arc::new(Mutex::new(OutputConfig::default())),
                 exclusive_status: Arc::new(Mutex::new(ExclusiveStatus::Shared)),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
@@ -722,12 +866,11 @@ impl PlayerHandle {
             bytes.retain(|p, _| configured.contains(p));
         }
         let lib = Arc::new(library);
-        let views = lib.views();
         let counts = lib.source_counts(); // (root, n) for the scanned roots only
         self.set_library(lib);
         // Status for the FULL configured set — disabled / unavailable sources are
         // listed too, with 0 tracks, so the caller can render and re-enable them.
-        let sources: Vec<SourceStatus> = cfg
+        let local_sources: Vec<SourceStatus> = cfg
             .iter()
             .map(|f| {
                 let available = f.path.is_dir();
@@ -745,12 +888,41 @@ impl PlayerHandle {
                     enabled: f.enabled,
                     available,
                     track_count,
+                    kind: SourceKind::Local {
+                        path: f.path.clone(),
+                    },
+                    remote: None,
                 }
             })
             .collect();
         // Cache the computed status (with real counts) so `sources()` — the
         // startup UI seed — reports true counts, not a 0 placeholder.
-        *self.inner.last_sources.lock().expect("last_sources mutex") = sources.clone();
+        *self.inner.last_sources.lock().expect("last_sources mutex") = local_sources.clone();
+        // `set_library` above just cleared `Inner::remote_library` (a fresh local
+        // `Library`'s compound ids don't match the old aggregate — see its own doc
+        // comment), so a folder reconcile (e.g. Rescan) must rebuild the
+        // remote-aware aggregate from the FRESH local bytes just cached above plus
+        // every still-retained remote, exactly like `add_remote_source` does.
+        // Without this, a rescan silently drops every remote track from `views`
+        // (the WatchUpdate reverts to local-only) and zeroes each remote's
+        // `track_count` (`remote_statuses` reads `remote_library`'s per-source
+        // counts, which were just nulled) even though the remote itself is still
+        // connected — the "rescan shows 0 tracks on the remote" bug. Harmless when
+        // there are no remotes: `rebuild_remote_library` then rebuilds an aggregate
+        // equal to the plain local library.
+        self.rebuild_remote_library();
+        // The aggregate (local ∪ retained, enabled remotes) now active in
+        // `self.inner.library` — not the local-only `lib` above — so a connected
+        // remote's tracks stay in the WatchUpdate; `views()` also stamps
+        // `remote_source` on them.
+        let views = self.views();
+        // A folder reconcile (e.g. Rescan) must STILL report the retained REMOTE
+        // sources with their live health — otherwise the WatchUpdate drops them
+        // and the UI shows a connected remote as offline. Append them exactly as
+        // `sources()` does; `last_sources` stays local-only above so `sources()`
+        // never double-counts the remotes.
+        let mut sources = local_sources;
+        sources.extend(self.remote_statuses());
         Ok((WatchUpdate { views, sources }, removed))
     }
 
@@ -914,6 +1086,11 @@ impl PlayerHandle {
     /// seeding UI state at startup). Falls back to a count-0 listing of the
     /// configured set (with live `is_dir` availability) only before the first scan
     /// — e.g. if the most recent scan errored.
+    ///
+    /// Also appends a [`SourceStatus`] for every retained remote (see
+    /// [`remote_statuses`](Self::remote_statuses)) — remotes aren't part of
+    /// the cached local listing above, so they're folded in on every call
+    /// regardless of which branch produced the local half.
     pub fn sources(&self) -> Vec<SourceStatus> {
         let cached = self
             .inner
@@ -921,21 +1098,133 @@ impl PlayerHandle {
             .lock()
             .expect("last_sources mutex")
             .clone();
-        if !cached.is_empty() {
-            return cached;
-        }
-        self.inner
-            .folders
+        let mut out = if !cached.is_empty() {
+            cached
+        } else {
+            self.inner
+                .folders
+                .lock()
+                .expect("folders mutex")
+                .iter()
+                .map(|f| SourceStatus {
+                    path: f.path.clone(),
+                    enabled: f.enabled,
+                    available: f.path.is_dir(),
+                    track_count: 0,
+                    kind: SourceKind::Local {
+                        path: f.path.clone(),
+                    },
+                    remote: None,
+                })
+                .collect()
+        };
+        out.extend(self.remote_statuses());
+        out
+    }
+
+    /// A [`SourceStatus`] for every remote retained in `Inner::remotes`,
+    /// using only the CACHED
+    /// [`RemoteHealth`] from the last [`refresh_remote_health`](Self::refresh_remote_health)
+    /// call (never probes the network itself, so [`sources`](Self::sources)
+    /// stays non-blocking). A remote that hasn't been probed yet reports an
+    /// "unknown" health (offline, no latency/version, no timestamp) rather
+    /// than panicking or blocking on a probe. `track_count` is summed from
+    /// the live remote-aggregate's per-source counts for that server's
+    /// sentinel roots (`remote:{url}#i`, see [`RemoteLibrary::build`]) — 0
+    /// if no remote aggregate has been built yet.
+    fn remote_statuses(&self) -> Vec<SourceStatus> {
+        let servers: Vec<Arc<RemoteServer>> = self
+            .inner
+            .remotes
             .lock()
-            .expect("folders mutex")
+            .expect("remotes mutex")
             .iter()
-            .map(|f| SourceStatus {
-                path: f.path.clone(),
-                enabled: f.enabled,
-                available: f.path.is_dir(),
-                track_count: 0,
+            .map(|(server, _blobs)| Arc::clone(server))
+            .collect();
+        if servers.is_empty() {
+            return Vec::new();
+        }
+        let source_counts = self
+            .inner
+            .remote_library
+            .lock()
+            .expect("remote_library mutex")
+            .as_ref()
+            .map(|lib| lib.library().source_counts());
+        let health_cache = self
+            .inner
+            .remote_health
+            .lock()
+            .expect("remote_health mutex");
+        servers
+            .into_iter()
+            .map(|server| {
+                // Each of this server's blobs was given a sentinel root
+                // `remote:{url}#i` by `RemoteLibrary::build` — sum every
+                // source whose root falls in that server's namespace.
+                let prefix = format!("remote:{}#", server.url);
+                let track_count = source_counts
+                    .as_ref()
+                    .map(|counts| {
+                        counts
+                            .iter()
+                            .filter(|(root, _)| root.to_string_lossy().starts_with(&prefix))
+                            .map(|(_, n)| *n)
+                            .sum()
+                    })
+                    .unwrap_or(0);
+                let health = health_cache
+                    .get(&server.url)
+                    .cloned()
+                    .unwrap_or(RemoteHealth {
+                        online: false,
+                        latency_ms: None,
+                        server_version: None,
+                        index_version: None,
+                        last_checked_unix: None,
+                    });
+                SourceStatus {
+                    path: PathBuf::from(&server.url),
+                    enabled: self.remote_is_enabled(&server.url),
+                    available: health.online,
+                    track_count,
+                    kind: SourceKind::Remote {
+                        url: server.url.clone(),
+                    },
+                    remote: Some(health),
+                }
             })
             .collect()
+    }
+
+    /// Probe every retained remote's health over the network (one blocking
+    /// `GET /v0/ping` per remote via [`remote::probe_health`]), cache the
+    /// result, and return the refreshed [`sources`](Self::sources). THIS is
+    /// the one entry point that does network I/O for remote health —
+    /// `sources()` itself never blocks. Callers (the Inc-2 periodic poller,
+    /// a manual "refresh" action) are expected to run this off the UI
+    /// thread, the same way a library rescan is.
+    pub fn refresh_remote_health(&self) -> Vec<SourceStatus> {
+        let servers: Vec<Arc<RemoteServer>> = self
+            .inner
+            .remotes
+            .lock()
+            .expect("remotes mutex")
+            .iter()
+            .map(|(server, _blobs)| Arc::clone(server))
+            .collect();
+        let now = now_unix();
+        {
+            let mut cache = self
+                .inner
+                .remote_health
+                .lock()
+                .expect("remote_health mutex");
+            for server in &servers {
+                cache.insert(server.url.clone(), remote::probe_health(server, now));
+            }
+        }
+        self.sources()
     }
 
     /// The configured source paths, in order, including any currently disabled or
@@ -950,19 +1239,23 @@ impl PlayerHandle {
             .collect()
     }
 
-    /// Choose the output device the next playback session opens, by name (one of
-    /// [`output_devices`](Self::output_devices)); `None` (or an empty string,
-    /// normalized to `None`) means the system default. If the named device is gone
-    /// when the sink is built, playback falls back to the system default.
+    /// Choose the output device, by name (one of [`output_devices`](Self::output_devices));
+    /// `None` (or an empty string, normalized to `None`) means the system default. If
+    /// the named device is gone when the sink is built, playback falls back to the
+    /// system default.
     ///
-    /// This applies to the **next** actor spawn — the next `open_folder` /
-    /// `set_folders`-then-play. A live device switch mid-playback (respawning the
-    /// running actor onto the new device) is a deliberate follow-up, not done here:
-    /// the current stream keeps playing on its original device until the next
-    /// session starts.
+    /// Applies **live**: if a track is playing, the pump rebuilds the sink onto the new
+    /// device on the current track (position + ReplayGain preserved), accepting the
+    /// brief hardware reopen — the field consensus (foobar / Roon) is to switch
+    /// immediately. If nothing is playing, the choice takes effect when playback next
+    /// starts.
     pub fn set_output_device(&self, name: Option<String>) {
         let name = name.filter(|n| !n.is_empty());
-        *self.inner.output_device.lock().expect("device mutex") = name;
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .device = name;
     }
 
     /// The available output device names on this host, for a device picker. Empty
@@ -981,13 +1274,17 @@ impl PlayerHandle {
 
     /// Ask for bit-perfect **exclusive** output (WASAPI exclusive mode on Windows),
     /// or shared mode. Like [`set_output_device`](Self::set_output_device), this
-    /// applies to the **next** playback session — the current stream keeps its mode
-    /// until the next actor spawn. If the device can't do exclusive at its native
+    /// applies **live** — if a track is playing, the pump reopens the device in the
+    /// new mode on the current track. If the device can't do exclusive at its native
     /// format (in use, 16-bit-only, Bluetooth) or this build/platform has no
-    /// exclusive backend, the next session falls back to shared automatically; read
+    /// exclusive backend, it falls back to shared automatically (unless strict); read
     /// the outcome from [`exclusive_status`](Self::exclusive_status).
     pub fn set_exclusive(&self, on: bool) {
-        *self.inner.exclusive.lock().expect("exclusive mutex") = on;
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .exclusive = on;
     }
 
     /// Whether exclusive output is currently requested (for seeding the Settings
@@ -996,22 +1293,36 @@ impl PlayerHandle {
     /// [`exclusive_status`](Self::exclusive_status).
     #[must_use]
     pub fn exclusive_requested(&self) -> bool {
-        *self.inner.exclusive.lock().expect("exclusive mutex")
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .exclusive
     }
 
     /// Set **strict** exclusive (exclusive-or-stop): when on together with
-    /// [`set_exclusive`](Self::set_exclusive), the next session will NOT fall back to
-    /// shared if exclusive can't open — playback simply doesn't start, and
+    /// [`set_exclusive`](Self::set_exclusive), an exclusive-open failure will NOT fall
+    /// back to shared — playback simply doesn't start, and
     /// [`exclusive_status`](Self::exclusive_status) reports
-    /// [`ExclusiveStatus::Unavailable`]. Applies to the next spawn, like the toggle.
+    /// [`ExclusiveStatus::Unavailable`]. Strict-only changes don't rebuild the live
+    /// sink (they only affect how a future exclusive-open handles a device refusal);
+    /// they take effect with the next device/exclusive change or spawn.
     pub fn set_exclusive_strict(&self, on: bool) {
-        *self.inner.exclusive_strict.lock().expect("strict mutex") = on;
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .strict = on;
     }
 
     /// Whether strict exclusive is requested (for seeding the Settings toggle).
     #[must_use]
     pub fn exclusive_strict(&self) -> bool {
-        *self.inner.exclusive_strict.lock().expect("strict mutex")
+        self.inner
+            .output_config
+            .lock()
+            .expect("output config mutex")
+            .strict
     }
 
     /// What the most recent device spawn's exclusive request resolved to (active at
@@ -1249,27 +1560,70 @@ impl PlayerHandle {
         }
     }
 
-    /// Current library views (empty until a folder is opened).
+    /// Current library views (empty until a folder is opened). Stamps
+    /// [`TrackView::remote_source`] for every track belonging to a retained
+    /// remote source (see [`remote_source_of`](Self::remote_source_of)) — the
+    /// backend projection itself always returns `remote_source: None`.
     pub fn views(&self) -> Vec<TrackView> {
-        self.inner
+        let mut views = self
+            .inner
             .library
             .lock()
             .expect("library mutex")
             .as_ref()
             .map(|l| l.views())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.mark_remote(&mut views);
+        views
     }
 
     /// Current library views in a chosen browse order (Title / ArtistAlbumTrack /
-    /// Album / Folder) — the baked axis tables, no re-sort.
+    /// Album / Folder) — the baked axis tables, no re-sort. Stamps
+    /// [`TrackView::remote_source`] the same way [`views`](Self::views) does.
     pub fn views_by(&self, axis: BrowseAxis) -> Vec<TrackView> {
-        self.inner
+        let mut views = self
+            .inner
             .library
             .lock()
             .expect("library mutex")
             .as_ref()
             .map(|l| l.views_by(axis))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        self.mark_remote(&mut views);
+        views
+    }
+
+    /// Sets [`TrackView::remote_source`] on every view whose compound id
+    /// belongs to a retained remote source, using
+    /// [`remote_source_of`](Self::remote_source_of) for each — the shared
+    /// tail of [`views`](Self::views)/[`views_by`](Self::views_by).
+    fn mark_remote(&self, views: &mut [TrackView]) {
+        for view in views {
+            view.remote_source = self.remote_source_of(view.id);
+        }
+    }
+
+    /// `Some(host)` naming the remote server aggregate track `track_id`
+    /// belongs to, if it belongs to one of the retained remote servers in
+    /// [`Inner::remotes`] — the SAME sentinel-root convention
+    /// [`remote_statuses`](Self::remote_statuses)' `track_count` sum relies
+    /// on (`remote:{url}#i`, set by [`RemoteLibrary::build`]): locate the
+    /// id's aggregate source, then check whether that source's root falls in
+    /// any remote server's namespace, returning that server's
+    /// [`remote::host_label`] if so. `None` for a local id, an id with no
+    /// current library, or an id that doesn't resolve.
+    fn remote_source_of(&self, track_id: u32) -> Option<String> {
+        let lib = self.inner.library.lock().expect("library mutex").clone()?;
+        let located = lib.locate(track_id)?;
+        let (root, _) = lib.source_counts().into_iter().nth(located.source)?;
+        let root = root.to_string_lossy();
+        self.inner
+            .remotes
+            .lock()
+            .expect("remotes mutex")
+            .iter()
+            .find(|(server, _blobs)| root.starts_with(&format!("remote:{}#", server.url)))
+            .map(|(server, _blobs)| remote::host_label(&server.url))
     }
 
     /// Raw cover art for a track id (bytes + mime), or `None`.
@@ -1277,6 +1631,27 @@ impl PlayerHandle {
         let lib = self.inner.library.lock().expect("library mutex").clone()?;
         let path = lib.path_of(id)?.to_owned();
         cover_bytes(&path)
+    }
+
+    /// A durable [`TrackLocator`] for track `id`, or `None` if no library is
+    /// open yet or the id doesn't resolve. Delegates to
+    /// [`Library::locator_of`]; playlists store this instead of the volatile
+    /// id.
+    pub fn locator_of(&self, id: u32) -> Option<TrackLocator> {
+        let lib = self.inner.library.lock().expect("library mutex").clone()?;
+        lib.locator_of(id)
+    }
+
+    /// Resolve durable locators back to current track ids against whatever
+    /// library is open. Delegates to [`Library::resolve_locators`]; `None`
+    /// for each entry (no library open, or that locator doesn't resolve)
+    /// rather than erroring.
+    pub fn resolve_locators(&self, locs: &[TrackLocator]) -> Vec<Option<u32>> {
+        let lib = self.inner.library.lock().expect("library mutex").clone();
+        match lib {
+            Some(lib) => lib.resolve_locators(locs),
+            None => vec![None; locs.len()],
+        }
     }
 
     /// Fire one transport/queue command (fire-and-forget). No-op until a folder
@@ -1311,13 +1686,252 @@ impl PlayerHandle {
     /// Locks library then player, never both at once, to avoid a lock-order
     /// inversion with `ensure_actor` (which snapshots library before locking
     /// player).
+    ///
+    /// Also drops any active [`remote_library`](Inner::remote_library): a
+    /// plain library swap (a local rescan, `open_folder`, …) hands back a
+    /// fresh `Library` whose source layout the old remote aggregate's
+    /// compound ids no longer match — keeping it would resolve remote ids
+    /// against the wrong source. [`add_remote_source`](Self::add_remote_source)
+    /// rebuilds the remote aggregate from this fresh library's generation of
+    /// local bytes, so remote sources survive an explicit re-add, just not a
+    /// bare rescan yet (v0 — see
+    /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)'s
+    /// doc comment).
     fn set_library(&self, lib: Arc<Library>) {
         {
             *self.inner.library.lock().expect("library mutex") = Some(Arc::clone(&lib));
         }
+        *self
+            .inner
+            .remote_library
+            .lock()
+            .expect("remote_library mutex") = None;
         if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
             actor.set_library(lib);
         }
+    }
+
+    /// Swap in a remote-aware aggregate: like [`set_library`](Self::set_library)
+    /// but the actor resolves ids through `remote_lib` (an `Arc<dyn
+    /// TrackSource>`, so remote ids download on demand) while
+    /// [`views`](Self::views)/[`art`](Self::art)/etc. keep reading
+    /// `remote_lib`'s own aggregate [`Library`] — the same one the actor's
+    /// ids are compound-addressed against, so browsing and playback always
+    /// agree. Locks library then `remote_library` then player, in that order
+    /// (the same discipline as `set_library`), so it can never invert with
+    /// `ensure_actor`.
+    fn set_remote_library(&self, remote_lib: Arc<RemoteLibrary>) {
+        let browse = remote_lib.library();
+        {
+            *self.inner.library.lock().expect("library mutex") = Some(browse);
+        }
+        {
+            *self
+                .inner
+                .remote_library
+                .lock()
+                .expect("remote_library mutex") = Some(Arc::clone(&remote_lib));
+        }
+        if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
+            let ts: Arc<dyn TrackSource> = remote_lib;
+            actor.set_library(ts);
+        }
+    }
+
+    /// Log into a soul-server via the OAuth2.1 Authorization-Code+PKCE
+    /// browser flow ([`remote::login`]), durably store the issued refresh
+    /// token in the OS keychain ([`remote::KeyringStore`]) so a later
+    /// session can skip the interactive login, then fetch the catalog index
+    /// and fold it into the live library — see
+    /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)
+    /// for the shared tail (and for tests/E2E, which drive that entry point
+    /// directly to skip the browser and the real OS keychain).
+    pub fn add_remote_source(&self, url: &str) -> anyhow::Result<()> {
+        let tokens = remote::login(url)?;
+        remote::KeyringStore.save_refresh(url, &tokens.refresh)?;
+        self.add_remote_source_with_tokens(url, tokens)
+    }
+
+    /// Like [`add_remote_source`](Self::add_remote_source), but takes an
+    /// already-obtained [`remote::Tokens`] pair instead of driving the
+    /// browser login itself, and never touches the OS keychain — the entry
+    /// point for tests/E2E (against an in-process AS) and for a caller
+    /// (a head, or a refresh-token-backed relogin) that already has tokens
+    /// in hand.
+    ///
+    /// v0: rebuilds the aggregate from the host's already-scanned LOCAL
+    /// `(root, bytes)` cache plus every remote added so far (this one
+    /// included) — a dedicated rebuild path rather than threading remote
+    /// sources through `set_sources`/`WatchUpdate`/`SourceStatus` the way
+    /// local sources are. A follow-up: fold remotes into that machinery (a
+    /// remote `SourceStatus`, surviving a plain rescan without re-adding).
+    pub fn add_remote_source_with_tokens(
+        &self,
+        url: &str,
+        tokens: remote::Tokens,
+    ) -> anyhow::Result<()> {
+        let normalized = url.trim_end_matches('/').to_string();
+        let server = Arc::new(RemoteServer {
+            url: normalized.clone(),
+            access_token: tokens.access,
+        });
+        let blobs = remote::fetch_index(&server)?;
+
+        {
+            let mut remotes = self.inner.remotes.lock().expect("remotes mutex");
+            // No duplicate sources: re-adding or reconnecting a URL already in
+            // the set REPLACES its entry (fresh token + freshly-fetched index)
+            // rather than appending a second row for the same server.
+            remotes.retain(|(existing, _blobs)| existing.url != normalized);
+            remotes.push((server, blobs));
+        }
+
+        self.rebuild_remote_library();
+        Ok(())
+    }
+
+    /// Drop a remote source added via [`add_remote_source`](Self::add_remote_source)
+    /// / [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens) (or
+    /// reconnected via [`reconnect_remote_source`](Self::reconnect_remote_source)):
+    /// removes it from `Inner::remotes` (and its cached health), then rebuilds the
+    /// aggregate so it immediately drops out of [`views`](Self::views)/[`sources`](Self::sources).
+    /// `url` is matched the same way [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)
+    /// normalizes it (trailing slash trimmed), so passing either form removes the
+    /// same entry. A no-op if `url` isn't a currently-added remote.
+    pub fn remove_remote_source(&self, url: &str) {
+        let url = url.trim_end_matches('/');
+        self.inner
+            .remotes
+            .lock()
+            .expect("remotes mutex")
+            .retain(|(server, _blobs)| server.url != url);
+        self.inner
+            .remote_health
+            .lock()
+            .expect("remote_health mutex")
+            .remove(url);
+        // Drop any stored enabled/disabled flag too, so a later re-add of this
+        // same url starts fresh (enabled) rather than inheriting a stale toggle.
+        self.inner
+            .remote_enabled
+            .lock()
+            .expect("remote_enabled mutex")
+            .remove(url);
+        self.rebuild_remote_library();
+    }
+
+    /// Whether the retained remote at `url` is enabled — `true` unless it has
+    /// been explicitly disabled via [`set_remote_enabled`](Self::set_remote_enabled)
+    /// (see `Inner::remote_enabled`'s "absent ⇒ enabled" convention).
+    fn remote_is_enabled(&self, url: &str) -> bool {
+        self.inner
+            .remote_enabled
+            .lock()
+            .expect("remote_enabled mutex")
+            .get(url)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Turn a retained remote source on or off, mirroring
+    /// [`set_folder_enabled`](Self::set_folder_enabled) for a local root: the
+    /// remote stays in `Inner::remotes` (and keeps listing in
+    /// [`sources`](Self::sources), reporting the new `enabled` with
+    /// `track_count` 0 while off) but, disabled, its blobs are excluded from
+    /// the aggregate [`rebuild_remote_library`](Self::rebuild_remote_library)
+    /// builds — so its tracks leave [`views`](Self::views) without
+    /// disconnecting it (no network call, no keychain change; re-enabling
+    /// brings its tracks straight back from the already-fetched blobs). A
+    /// no-op if `url` isn't currently retained. `url` is matched the same way
+    /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)
+    /// normalizes it (trailing slash trimmed).
+    pub fn set_remote_enabled(&self, url: &str, enabled: bool) -> anyhow::Result<()> {
+        let url = url.trim_end_matches('/');
+        self.inner
+            .remote_enabled
+            .lock()
+            .expect("remote_enabled mutex")
+            .insert(url.to_string(), enabled);
+        self.rebuild_remote_library();
+        Ok(())
+    }
+
+    /// Silently re-authenticate a previously-added remote using its stored
+    /// refresh token, so a restarted app can reconnect without the interactive
+    /// browser login: looks up `store.load_refresh(url)` (erroring with "no
+    /// stored credential" if there is none), redeems it via
+    /// [`remote::refresh`] for a fresh access/refresh pair, persists the
+    /// ROTATED refresh token back to `store` (the server rotates it on every
+    /// use — the caller must never keep the old one), then reuses
+    /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)'s
+    /// tail to fetch the catalog index and rebuild the aggregate.
+    ///
+    /// `store` is an injected [`remote::TokenStore`] (the app passes
+    /// [`remote::KeyringStore`] in production; tests pass a
+    /// [`remote::MemStore`]) rather than a hardcoded keychain lookup, so this
+    /// is testable without touching the real OS keychain.
+    ///
+    /// A failure here (offline, expired/revoked refresh token, server down)
+    /// is returned as an `Err` and otherwise has NO side effect: nothing is
+    /// added to `Inner::remotes`, and the caller's persisted config entry is
+    /// untouched — a transient failure must never drop a remote the user
+    /// configured, only leave it unreconnected until the next retry.
+    pub fn reconnect_remote_source(
+        &self,
+        url: &str,
+        store: &dyn remote::TokenStore,
+    ) -> anyhow::Result<()> {
+        let Some(stored_refresh) = store.load_refresh(url) else {
+            anyhow::bail!("no stored credential for {url}");
+        };
+        let tokens = remote::refresh(url, &stored_refresh)?;
+        // Rotation: the server issued a NEW refresh token with this call, so the
+        // old one (just used) is no longer valid — persist the fresh one before
+        // doing anything else, so a crash between here and the index fetch below
+        // still leaves a usable credential for the next attempt.
+        store.save_refresh(url, &tokens.refresh)?;
+        self.add_remote_source_with_tokens(url, tokens)
+    }
+
+    /// Rebuild the remote-aware aggregate from the current local
+    /// `source_bytes` cache (in configured-source order) plus every ENABLED
+    /// remote in `self.inner.remotes`, and swap it in via
+    /// [`set_remote_library`](Self::set_remote_library) — the shared tail of
+    /// [`add_remote_source`](Self::add_remote_source),
+    /// [`remove_remote_source`](Self::remove_remote_source),
+    /// [`set_remote_enabled`](Self::set_remote_enabled), and
+    /// [`reconnect_remote_source`](Self::reconnect_remote_source).
+    fn rebuild_remote_library(&self) {
+        let folders = self.inner.folders.lock().expect("folders mutex").clone();
+        let bytes = self.inner.source_bytes.lock().expect("source_bytes mutex");
+        // Configured-source order (not the `HashMap`'s arbitrary one) so the
+        // aggregate's local source indices are stable and match what a plain
+        // rescan would have produced.
+        let local: Vec<(PathBuf, Vec<u8>)> = folders
+            .iter()
+            // Same gate as a plain rescan (enabled + reachable), so the aggregate's
+            // local sources match what a rescan would produce — a disabled/offline
+            // folder with stale cached bytes must not leak back in.
+            .filter(|f| f.enabled && f.path.is_dir())
+            .filter_map(|f| bytes.get(&f.path).cloned().map(|b| (f.path.clone(), b)))
+            .collect();
+        drop(bytes);
+
+        let remotes = self.inner.remotes.lock().expect("remotes mutex").clone();
+        // A disabled remote stays retained (so it keeps listing in `sources()`,
+        // and reconnects on restart) but is excluded here, the same way a
+        // disabled local folder is excluded above — its blobs just don't
+        // contribute sources to the rebuilt aggregate, so its tracks drop out
+        // of `views()` until it's re-enabled.
+        let remotes: RemoteSources = remotes
+            .into_iter()
+            .filter(|(server, _blobs)| self.remote_is_enabled(&server.url))
+            .collect();
+        let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
+            dir: remote_cache_dir(),
+        });
+        let remote_lib = Arc::new(RemoteLibrary::build(local, remotes, fetch));
+        self.set_remote_library(remote_lib);
     }
 
     /// Lazily spawn the actor once a library exists. Snapshots the library WITHOUT
@@ -1327,6 +1941,21 @@ impl PlayerHandle {
         let lib = { self.inner.library.lock().expect("library mutex").clone() };
         let Some(lib) = lib else {
             return; // no folder opened yet
+        };
+        // A remote-aware aggregate (if one is active) is what the actor must
+        // resolve ids against, not the plain `lib` snapshot above — same
+        // precedence as `set_remote_library`/`set_library`. Snapshot it here
+        // (library-then-player order, matching `set_library`/
+        // `set_remote_library`) rather than under `guard`.
+        let remote_lib = self
+            .inner
+            .remote_library
+            .lock()
+            .expect("remote_library mutex")
+            .clone();
+        let ts: Arc<dyn TrackSource> = match remote_lib {
+            Some(remote_lib) => remote_lib,
+            None => lib,
         };
         let mut guard = self.inner.player.lock().expect("player mutex");
         if guard.is_some() {
@@ -1343,19 +1972,13 @@ impl PlayerHandle {
                 sub(ev.clone());
             }
         };
-        // Snapshot the chosen device for this spawn — the `Device` arm opens it (or
-        // falls back to the system default); a later `set_output_device` only takes
-        // effect on the NEXT spawn, never this live stream.
-        let device = self
-            .inner
-            .output_device
-            .lock()
-            .expect("device mutex")
-            .clone();
-        // Snapshot the exclusive-output request the same way (applies to this spawn
-        // only); share the status cell so the factory can record what it resolved to.
-        let exclusive = *self.inner.exclusive.lock().expect("exclusive mutex");
-        let strict = *self.inner.exclusive_strict.lock().expect("strict mutex");
+        // Share the desired output config (device / exclusive / strict) with the pump.
+        // It's the SAME cell `set_output_device` / `set_exclusive` /
+        // `set_exclusive_strict` write, so a change made while this actor runs is
+        // applied to the current track live by the pump — not deferred to the next
+        // spawn. Share the status cell too, so the factory records what exclusive
+        // resolved to.
+        let output_config = Arc::clone(&self.inner.output_config);
         let exclusive_status = Arc::clone(&self.inner.exclusive_status);
         // Snapshot the ReplayGain choice the same way, then tell the fresh actor so
         // the session starts already normalized. Lock ordering: this holds `guard`
@@ -1372,13 +1995,11 @@ impl PlayerHandle {
             .clone();
         let actor = sink::build_actor(
             self.inner.mode,
-            device,
-            exclusive,
-            strict,
+            output_config,
             exclusive_status,
             self.inner.dsp.clone(),
             self.inner.spectrum.clone(),
-            lib,
+            ts,
             forward,
         );
         actor.send(Command::SetReplayGain {
@@ -1563,6 +2184,41 @@ mod tests {
         let views = h.open_folder(dir.path()).expect("open_folder");
         assert_eq!(views.len(), 2, "both wavs scanned");
         assert_eq!(h.views().len(), 2, "views() reflects the opened library");
+    }
+
+    #[test]
+    fn locator_of_and_resolve_locators_round_trip_through_the_handle() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.wav"), wav(48_000, 96_000)).unwrap();
+        std::fs::write(dir.path().join("b.wav"), wav(48_000, 96_000)).unwrap();
+
+        let h = PlayerHandle::offline();
+        h.open_folder(dir.path()).expect("open_folder");
+        let id = h.views()[0].id;
+
+        let loc = h.locator_of(id).expect("locator for a scanned track");
+        match &loc {
+            TrackLocator::Local { path } => {
+                assert!(path.ends_with("a.wav") || path.ends_with("b.wav"))
+            }
+            TrackLocator::Remote { .. } => panic!("a local scan must yield a Local locator"),
+        }
+
+        let resolved = h.resolve_locators(&[loc]);
+        assert_eq!(
+            resolved,
+            vec![Some(id)],
+            "locator resolves back to the same id"
+        );
+
+        // An id with no library yet (or a path that was never scanned) falls
+        // through to None on both ends of the round trip.
+        let empty = PlayerHandle::offline();
+        assert_eq!(empty.locator_of(id), None);
+        let missing = TrackLocator::Local {
+            path: "D:/nope/gone.flac".into(),
+        };
+        assert_eq!(h.resolve_locators(&[missing]), vec![None]);
     }
 
     #[test]
@@ -2359,6 +3015,20 @@ mod tests {
         assert!(!sa.enabled, "the source is now disabled");
         assert_eq!(sa.track_count, 0, "a disabled source contributes no tracks");
         assert_eq!(h.sources().len(), 1, "the source is kept in the set");
+    }
+
+    #[test]
+    fn set_remote_enabled_on_an_unconfigured_url_is_a_noop() {
+        // Mirrors `set_folder_enabled`'s no-op-on-absent shape: toggling a url
+        // that was never added via `add_remote_source*` touches nothing and
+        // never panics (the full add -> disable -> re-enable round trip, with
+        // a real connected remote, is `remote_e2e`'s
+        // `remote_disable_drops_its_tracks_and_reenable_restores_them`).
+        let h = PlayerHandle::offline();
+        h.set_remote_enabled("http://never-added.example", false)
+            .expect("toggling an unconfigured remote must not error");
+        assert!(h.sources().is_empty());
+        assert!(h.views().is_empty());
     }
 
     #[test]

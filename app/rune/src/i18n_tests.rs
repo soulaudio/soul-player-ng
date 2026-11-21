@@ -61,6 +61,55 @@ fn every_key_is_translated_in_all_shipped_locales() {
     );
 }
 
+/// Task 11's feature-scoped regression guard for the Playlists feature:
+/// every `playlists.*` key (and `nav.playlists`) that `en` defines must carry
+/// a non-empty value in every other shipped locale too. Redundant with
+/// `every_key_is_translated_in_all_shipped_locales` above (which already
+/// covers every key in the file, playlists included), but a narrower,
+/// feature-named failure is easier to spot than a page of unrelated keys
+/// when only the Playlists locale work regresses.
+///
+/// Also covers `player.addToPlaylist` (the now-playing heart's label/tooltip
+/// that opens this feature's add/remove-membership dialogue): it lives
+/// outside the `playlists.*` namespace, so the glob below wouldn't otherwise
+/// catch it.
+#[test]
+fn playlists_keys_are_translated_in_all_shipped_locales() {
+    let map = parse_locales(include_str!("../locales/app.yml"));
+    let playlist_keys: Vec<&String> = map
+        .keys()
+        .filter(|k| {
+            *k == "nav.playlists" || *k == "player.addToPlaylist" || k.starts_with("playlists.")
+        })
+        .collect();
+    assert!(
+        playlist_keys.len() >= 16,
+        "expected the playlists.* + nav.playlists + player.addToPlaylist keys in app.yml, found only {}: {:?}",
+        playlist_keys.len(),
+        playlist_keys
+    );
+
+    let mut missing = Vec::new();
+    for key in &playlist_keys {
+        let present = &map[key.as_str()];
+        assert!(
+            present.iter().any(|l| l == "en"),
+            "{key} has no English value to compare the other locales against"
+        );
+        for &locale in crate::LOCALES {
+            if !present.iter().any(|l| l == locale) {
+                missing.push(format!("  {key} → {locale}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "{} missing playlists translation(s) in locales/app.yml:\n{}",
+        missing.len(),
+        missing.join("\n"),
+    );
+}
+
 /// Whether `s` contains a run of 3+ ASCII letters — i.e. a word, as opposed to a
 /// glyph ("✕", "▶"), a lowercase-hyphenated element key ("sort-artist"), or a
 /// two-letter locale code. Those never need localizing; words do.
@@ -90,6 +139,22 @@ fn views_have_no_hardcoded_ui_strings() {
         ("library.rs", include_str!("views/library.rs")),
         ("settings.rs", include_str!("views/settings.rs")),
         ("queue.rs", include_str!("views/queue.rs")),
+        ("home.rs", include_str!("views/home.rs")),
+        ("albums.rs", include_str!("views/albums.rs")),
+        ("artists.rs", include_str!("views/artists.rs")),
+        ("genres.rs", include_str!("views/genres.rs")),
+        ("playlists.rs", include_str!("views/playlists.rs")),
+        (
+            "playlist_detail.rs",
+            include_str!("views/playlist_detail.rs"),
+        ),
+        (
+            "add_to_playlist.rs",
+            include_str!("views/add_to_playlist.rs"),
+        ),
+        ("media_card.rs", include_str!("views/media_card.rs")),
+        ("detail_page.rs", include_str!("views/detail_page.rs")),
+        ("grid.rs", include_str!("views/grid.rs")),
     ];
     let mut offenders = Vec::new();
     for (name, src) in sources {
