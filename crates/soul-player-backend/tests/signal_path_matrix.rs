@@ -2,7 +2,7 @@
 //! through the real `ServicePlayer` → `Deck` (no audio device), asserting
 //! `project_signal_path` reports the correct chain for each **format × device
 //! rate**. This is the in-depth counterpart to the DSD-only `dsd_playback_e2e`:
-//! it proves the signal path is right across PCM (WAV/FLAC/ALAC/AIFF/MP3/AAC/
+//! it proves the signal path is right across PCM (WAV/FLAC/ALAC/AIFF/MP3/
 //! MP2/Opus/MP1) and every DSD family (DSD64/128/256/512), at both a 44.1 kHz
 //! device (so same-rate fixtures are sample-rate-exact) and a 48 kHz device (so
 //! 44.1/32 kHz fixtures — and all DSD, which decodes to 44.1 kHz — resample).
@@ -72,7 +72,10 @@ const CASES: &[Case] = &[
     Case { file: "tone.m4a",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Alac }, // ALAC
     Case { file: "tone.aif",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Aiff }, // AIFF PCM
     Case { file: "tone.mp3",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Mp3 },
-    Case { file: "tone.aac",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Aac }, // ADTS
+    // AAC (ADTS/MP4) intentionally absent — dropped from shipped products for licensing
+    // (Via LA $15k + $0.98/unit). Its decoder sits behind soul-audio-core's default-off
+    // `aac` feature, so the player returns Unsupported for AAC. Guard: architecture.rs::
+    // aac_decoder_feature_never_enabled; see soul-listener/docs/research/2026-11-18-licensing-ip-and-workarounds.md §5.
     Case { file: "tone.mp2",        dsd_rate_hz: None,               decoded_rate: 44_100, codec: SourceCodec::Mp3 }, // MPEG Layer II via MP3 path
     Case { file: "tone.opus",       dsd_rate_hz: None,               decoded_rate: 48_000, codec: SourceCodec::Opus },
     Case { file: "tone.mp1",        dsd_rate_hz: None,               decoded_rate: 32_000, codec: SourceCodec::Mp3 }, // MPEG Layer I via MP3 path
