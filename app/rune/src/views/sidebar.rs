@@ -176,6 +176,8 @@ fn nav_item(
                 s.genre_search = rune::TextEdit::new("");
                 s.album_search = rune::TextEdit::new("");
                 s.artist_search = rune::TextEdit::new("");
+                s.albums_filters_open = false;
+                s.album_genre_filter.clear();
                 s.playlist_new_buf = rune::TextEdit::new("");
                 s.route = route;
                 s.mobile_show_content = true;
