@@ -47,9 +47,17 @@ impl CoreIndex {
             .map(std::num::NonZeroUsize::get)
             .unwrap_or(4);
         let target = AtomicUsize::new(threads);
-        let IncrementalBuild { library, bytes, .. } =
-            Library::scan_many_incremental(&roots, &priors, threads, &target, &mut |_| {})
-                .context("scanning configured roots")?;
+        // The server has no loudness analysis (no playback actor), so bake without it.
+        let no_loudness = std::collections::HashMap::new();
+        let IncrementalBuild { library, bytes, .. } = Library::scan_many_incremental(
+            &roots,
+            &priors,
+            threads,
+            &target,
+            &mut |_| {},
+            &no_loudness,
+        )
+        .context("scanning configured roots")?;
         Ok(Self {
             library,
             source_bytes: bytes,

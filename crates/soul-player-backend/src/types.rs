@@ -41,6 +41,32 @@ impl From<LoudnessMetrics> for TrackLoudness {
     }
 }
 
+// The baked `.soulidx` loudness record ([`soul_audio_catalog::LoudnessRec`]) mirrors these
+// fields 1:1 — `into()` both ways bridges the DTO and the on-disk record for the bake + readback.
+impl From<soul_audio_catalog::LoudnessRec> for TrackLoudness {
+    fn from(r: soul_audio_catalog::LoudnessRec) -> Self {
+        Self {
+            integrated_lufs: r.integrated_lufs,
+            lra: r.lra,
+            true_peak_dbtp: r.true_peak_dbtp,
+            plr: r.plr,
+            dr: r.dr,
+        }
+    }
+}
+
+impl From<TrackLoudness> for soul_audio_catalog::LoudnessRec {
+    fn from(m: TrackLoudness) -> Self {
+        Self {
+            integrated_lufs: m.integrated_lufs,
+            lra: m.lra,
+            true_peak_dbtp: m.true_peak_dbtp,
+            plr: m.plr,
+            dr: m.dr,
+        }
+    }
+}
+
 /// A command from the UI to the player actor.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
@@ -99,6 +125,11 @@ pub enum Command {
     /// The pump inserts them into the cache; see the hybrid ReplayGain path in
     /// `crate::loudness`.
     SeedLoudness(Vec<(PathBuf, TrackLoudness)>),
+    /// Enqueue a batch of tracks for background loudness analysis (the scan-time
+    /// Tier-2 sweep that populates the library loudness/DR column). Each entry is
+    /// `(track_id, path)`; the pump's single-flight cache skips already-analyzed or
+    /// in-flight paths, so mass-enqueuing a whole library is idempotent.
+    AnalyzeTracks(Vec<(u32, PathBuf)>),
 }
 
 /// How ReplayGain tags are applied during playback, chosen in Settings →
@@ -256,6 +287,10 @@ pub struct TrackView {
     pub original_date: u32,
     /// The album's main release/reissue date, same packing. Unknown = `0`.
     pub release_date: u32,
+    /// Per-track loudness/DR, `None` until analyzed. Sourced from the baked record
+    /// and refreshed from the host's live analysis map (`mark_loudness`); drives the
+    /// library loudness/DR column and its sort.
+    pub loudness: Option<TrackLoudness>,
 }
 
 /// The current track's ORIGINAL source format, for the signal-path display.
@@ -410,6 +445,24 @@ mod tests {
         ]);
         let json = serde_json::to_string(&cmd).unwrap();
         assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn analyze_tracks_command_serde_roundtrips() {
+        let cmd = Command::AnalyzeTracks(vec![
+            (0, PathBuf::from("/music/a.flac")),
+            (7, PathBuf::from("/music/b.wav")),
+        ]);
+        let json = serde_json::to_string(&cmd).unwrap();
+        assert_eq!(serde_json::from_str::<Command>(&json).unwrap(), cmd);
+    }
+
+    #[test]
+    fn loudness_rec_and_track_loudness_convert_both_ways() {
+        let m = loudness(-14.0);
+        let rec: soul_audio_catalog::LoudnessRec = m.into();
+        let back: TrackLoudness = rec.into();
+        assert_eq!(back, m);
     }
 
     #[test]

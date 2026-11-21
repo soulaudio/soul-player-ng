@@ -552,6 +552,11 @@ struct Inner {
     /// hybrid-ReplayGain cache for previously-untagged tracks survives the actor's
     /// lazy start just like the ReplayGain choice does.
     loudness_seed: Mutex<Vec<(PathBuf, TrackLoudness)>>,
+    /// The live per-track loudness map, keyed by absolute path: seeded at startup and
+    /// accumulated from every `Event::TrackLoudnessAnalyzed` the actor emits (snooped in
+    /// the event forwarder). Joined onto the `TrackView` list (`mark_loudness`) for the
+    /// library loudness/DR column, and stamped into the baked `.soulidx` on a scan.
+    loudness_map: Mutex<HashMap<PathBuf, TrackLoudness>>,
     /// Test-support: when `Some`, [`send`](PlayerHandle::send) records commands
     /// here instead of driving the actor, so a head's command wiring can be
     /// asserted headlessly. `None` (the default) in every real handle.
@@ -641,6 +646,7 @@ impl PlayerHandle {
                 exclusive_status: Arc::new(Mutex::new(ExclusiveStatus::Shared)),
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_seed: Mutex::new(Vec::new()),
+                loudness_map: Mutex::new(HashMap::new()),
                 recorder: Mutex::new(None),
                 dsp: Arc::new(Mutex::new(DspChain::default())),
                 spectrum: Arc::new(Mutex::new(SpectrumFrame::default())),
@@ -795,10 +801,23 @@ impl PlayerHandle {
         let target = Arc::new(AtomicUsize::new(mode.resolve_threads().min(ceiling)));
         let sampler = matches!(mode, IndexingMode::Automatic)
             .then(|| LoadSampler::spawn(Arc::clone(&target), ceiling));
-        let build =
-            Library::scan_many_incremental(&rescan_roots, &priors, ceiling, &target, &mut |p| {
-                self.broadcast_scan_progress(Some(p))
-            });
+        // Snapshot the live loudness map so the bake stamps any known per-track loudness
+        // into the `.soulidx` (DAP + rebake-persistent column); fresh sweep results fill in
+        // afterwards via the live map on the next rebake.
+        let loud_snapshot = self
+            .inner
+            .loudness_map
+            .lock()
+            .expect("loudness map mutex")
+            .clone();
+        let build = Library::scan_many_incremental(
+            &rescan_roots,
+            &priors,
+            ceiling,
+            &target,
+            &mut |p| self.broadcast_scan_progress(Some(p)),
+            &loud_snapshot,
+        );
         // Terminal tick: the scan is over (whether it succeeded or errored), so retire
         // any progress indicator. Emitted on this same ordered stream *after* every
         // `Some` tick, so the UI's show→hide can't be left stuck.
@@ -923,6 +942,9 @@ impl PlayerHandle {
         // never double-counts the remotes.
         let mut sources = local_sources;
         sources.extend(self.remote_statuses());
+        // The library changed; (re)enqueue it for background loudness analysis so new tracks
+        // get a loudness/DR value. No-op if no actor is running yet (single-flight when it is).
+        self.start_library_analysis();
         Ok((WatchUpdate { views, sources }, removed))
     }
 
@@ -1398,6 +1420,14 @@ impl PlayerHandle {
     /// away if one is already running. Like [`set_replay_gain`](Self::set_replay_gain),
     /// it never spawns an actor just to seed.
     pub fn seed_loudness(&self, entries: Vec<(PathBuf, TrackLoudness)>) {
+        // Mirror the seed into the live map so the column + bake have prior-session loudness
+        // immediately, before any fresh analysis.
+        {
+            let mut map = self.inner.loudness_map.lock().expect("loudness map mutex");
+            for (path, m) in &entries {
+                map.insert(path.clone(), *m);
+            }
+        }
         *self
             .inner
             .loudness_seed
@@ -1574,6 +1604,7 @@ impl PlayerHandle {
             .map(|l| l.views())
             .unwrap_or_default();
         self.mark_remote(&mut views);
+        self.mark_loudness(&mut views);
         views
     }
 
@@ -1590,6 +1621,7 @@ impl PlayerHandle {
             .map(|l| l.views_by(axis))
             .unwrap_or_default();
         self.mark_remote(&mut views);
+        self.mark_loudness(&mut views);
         views
     }
 
@@ -1600,6 +1632,27 @@ impl PlayerHandle {
     fn mark_remote(&self, views: &mut [TrackView]) {
         for view in views {
             view.remote_source = self.remote_source_of(view.id);
+        }
+    }
+
+    /// Overrides [`TrackView::loudness`] from the host's live analysis map (seeded +
+    /// accumulated from `Event::TrackLoudnessAnalyzed`), keyed by the track's path. This is
+    /// fresher than the baked value `Library::views_by` emits, so a track analyzed this
+    /// session lights up its column cell without waiting for a rebake. One library lock for
+    /// the whole batch (like [`resolve_locators`](Self::resolve_locators)).
+    fn mark_loudness(&self, views: &mut [TrackView]) {
+        let map = self.inner.loudness_map.lock().expect("loudness map mutex");
+        if map.is_empty() {
+            return;
+        }
+        let guard = self.inner.library.lock().expect("library mutex");
+        let Some(lib) = guard.as_ref() else { return };
+        for view in views {
+            if let Some(path) = lib.path_of(view.id) {
+                if let Some(m) = map.get(&path) {
+                    view.loudness = Some(*m);
+                }
+            }
         }
     }
 
@@ -1968,6 +2021,15 @@ impl PlayerHandle {
         let weak = Arc::downgrade(&self.inner);
         let forward = move |ev: Event| {
             let Some(inner) = weak.upgrade() else { return };
+            // Snoop analysis results into the live loudness map (for the library column +
+            // the next scan's bake) before fanning the event out to the app's subscribers.
+            if let Event::TrackLoudnessAnalyzed { path, loudness } = &ev {
+                inner
+                    .loudness_map
+                    .lock()
+                    .expect("loudness map mutex")
+                    .insert(path.clone(), *loudness);
+            }
             for sub in inner.subscribers.lock().expect("subscribers mutex").iter() {
                 sub(ev.clone());
             }
@@ -2009,7 +2071,42 @@ impl PlayerHandle {
         if !loudness_seed.is_empty() {
             actor.send(Command::SeedLoudness(loudness_seed));
         }
+        // Kick off the background loudness sweep for the current library now that the
+        // worker (in this actor) exists: single-flight skips already-analyzed/seeded paths,
+        // so the column fills in over time without re-analyzing. (The actor owns the audio
+        // device, so we never force-spawn it just to analyze; analysis rides an actor the
+        // user brought up by playing, plus any later rescan.)
+        let jobs = self.analysis_jobs();
+        if !jobs.is_empty() {
+            actor.send(Command::AnalyzeTracks(jobs));
+        }
         *guard = Some(actor);
+    }
+
+    /// `(track_id, absolute_path)` for every track in the current library — the batch the
+    /// background loudness sweep enqueues. Empty if no library is loaded.
+    fn analysis_jobs(&self) -> Vec<(u32, PathBuf)> {
+        let guard = self.inner.library.lock().expect("library mutex");
+        let Some(lib) = guard.as_ref() else {
+            return Vec::new();
+        };
+        lib.views()
+            .iter()
+            .filter_map(|v| lib.path_of(v.id).map(|p| (v.id, p)))
+            .collect()
+    }
+
+    /// Enqueue the whole current library for background loudness analysis, iff an actor (and
+    /// thus the worker) is already running. A no-op otherwise — analysis starts when the user
+    /// next brings the actor up (see [`ensure_actor`](Self::ensure_actor)). Idempotent.
+    fn start_library_analysis(&self) {
+        let jobs = self.analysis_jobs();
+        if jobs.is_empty() {
+            return;
+        }
+        if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
+            actor.send(Command::AnalyzeTracks(jobs));
+        }
     }
 }
 
@@ -2117,6 +2214,25 @@ mod tests {
         assert_eq!(
             *h.inner.replay_gain.lock().unwrap(),
             (ReplayGainMode::Track, 6.0)
+        );
+    }
+
+    #[test]
+    fn seed_loudness_populates_the_live_map() {
+        // The seed mirrors into the live loudness map (not only the seed buffer), so the
+        // library loudness/DR column + the next scan's bake see prior-session loudness
+        // immediately, without spawning an actor (no device stream before playback).
+        let h = PlayerHandle::offline();
+        let p = PathBuf::from("/music/a.flac");
+        h.seed_loudness(vec![(p.clone(), test_loudness(-14.0))]);
+        assert_eq!(
+            h.inner.loudness_map.lock().unwrap().get(&p),
+            Some(&test_loudness(-14.0)),
+            "seed landed in the live map"
+        );
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "seeding does not spawn an actor"
         );
     }
 
