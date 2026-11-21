@@ -681,3 +681,59 @@ fn rescan_keeps_a_connected_remotes_tracks_and_live_health() {
         "handle.views() must still include the remote's tracks after the rescan"
     );
 }
+
+/// e2e: a remote track composes with the playlist durable-locator model and the
+/// per-track source badge, end to end through the FULL OAuth login + HTTP sync.
+/// Its locator (what a playlist entry stores) round-trips to the current id
+/// while online (so the entry survives a reconnect), and resolves to None — the
+/// playlist UI's greyed "unavailable" row — when the remote is disabled,
+/// returning on re-enable. The integration-level counterpart to the host-unit
+/// locator tests and the app-level greying e2e: the same universal
+/// disabled-state, for a remote source, over the wire.
+#[test]
+fn remote_track_composes_with_a_playlist_locator_and_greys_when_disabled() {
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    let server = start_server(FIXTURES);
+    let handle = PlayerHandle::offline();
+    let tokens = oauth_login(&server.url, "e2e", "pw");
+    handle
+        .add_remote_source_with_tokens(&server.url, tokens)
+        .expect("add + sync the remote source over the wire");
+
+    // Every synced track carries its source host (the per-track cloud badge data).
+    let views = handle.views();
+    assert_eq!(views.len(), FIXTURES.len(), "one view per synced fixture");
+    assert!(
+        views.iter().all(|v| v.remote_source.is_some()),
+        "every synced remote track carries its source host for the badge"
+    );
+
+    // A remote track's durable locator (what a playlist entry stores) round-trips.
+    let remote_id = views[0].id;
+    let locator = handle
+        .locator_of(remote_id)
+        .expect("a remote track yields a durable playlist locator");
+    assert_eq!(
+        handle.resolve_locators(std::slice::from_ref(&locator)),
+        vec![Some(remote_id)],
+        "the remote locator round-trips while the source is online"
+    );
+
+    // Disabling the remote greys its playlist entry (resolve -> None); re-enable restores it.
+    handle
+        .set_remote_enabled(&server.url, false)
+        .expect("disable the remote");
+    assert_eq!(
+        handle.resolve_locators(std::slice::from_ref(&locator)),
+        vec![None],
+        "a disabled remote's playlist entry resolves to None (greyed/unavailable)"
+    );
+    handle
+        .set_remote_enabled(&server.url, true)
+        .expect("re-enable the remote");
+    assert_eq!(
+        handle.resolve_locators(std::slice::from_ref(&locator)),
+        vec![Some(remote_id)],
+        "re-enabling the remote restores resolution"
+    );
+}
