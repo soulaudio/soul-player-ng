@@ -43,9 +43,9 @@ pub(crate) struct NavDef {
     pub(crate) route: Route,
 }
 
-/// The primary nav, in the original's order (Home, Albums, Artists, Tracks).
-/// Settings stays in the footer gear, not here. Each item is individually
-/// show/hide-able via Settings → Navigation (`State::nav_visible`).
+/// The primary nav, in the original's order (Home, Albums, Artists, Playlists,
+/// Genres, Tracks). Settings stays in the footer gear, not here. Each item is
+/// individually show/hide-able via Settings → Navigation (`State::nav_visible`).
 pub(crate) const NAV_DEFS: &[NavDef] = &[
     NavDef {
         id: "home",
@@ -63,14 +63,14 @@ pub(crate) const NAV_DEFS: &[NavDef] = &[
         route: Route::Artists,
     },
     NavDef {
-        id: "genres",
-        key: "nav-genres",
-        route: Route::Genres,
-    },
-    NavDef {
         id: "playlists",
         key: "nav-playlists",
         route: Route::Playlists,
+    },
+    NavDef {
+        id: "genres",
+        key: "nav-genres",
+        route: Route::Genres,
     },
     NavDef {
         id: "tracks",
@@ -415,6 +415,24 @@ pub fn resize_handle(collapsed: bool, p: &Palette) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The original app's sidebar orders Playlists before Genres (home, albums,
+    /// artists, playlists, genres, tracks): a prior -ng pass had them swapped.
+    #[test]
+    fn nav_defs_orders_playlists_before_genres() {
+        let ids: Vec<&str> = NAV_DEFS.iter().map(|d| d.id).collect();
+        let playlists_pos = ids.iter().position(|&id| id == "playlists").unwrap();
+        let genres_pos = ids.iter().position(|&id| id == "genres").unwrap();
+        assert!(
+            playlists_pos < genres_pos,
+            "playlists ({playlists_pos}) must come before genres ({genres_pos}): {ids:?}"
+        );
+        assert_eq!(
+            ids,
+            vec!["home", "albums", "artists", "playlists", "genres", "tracks"],
+            "full nav order matches the original app"
+        );
+    }
 
     #[test]
     fn resize_widens_and_clamps_to_range() {

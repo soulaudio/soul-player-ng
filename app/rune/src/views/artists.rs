@@ -83,11 +83,13 @@ pub(crate) fn filter_artists(artists: Vec<Artist>, query: &str) -> Vec<Artist> {
         .collect()
 }
 
-/// One artist card: a circular avatar with a hover play-overlay, the name, and a
-/// track count. Clicking the body opens the artist's detail page; the overlay
-/// plays the artist's tracks. Mirrors the album card (the original's MediaCard).
+/// One artist card: a circular avatar with a hover play-overlay, the name, and
+/// an "{n} albums · {n} tracks" subtitle (the original's MediaCard). Clicking
+/// the body opens the artist's detail page; the overlay plays the artist's
+/// tracks.
 fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, scale: f32) -> El {
     let name = a.name.clone();
+    let album_count = albums_of_artist(&s.library, &a.name, s.album_year).len();
     media_card(
         s,
         p,
@@ -95,7 +97,14 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
             key: format!("artist-{slot}"),
             label: a.name.clone(),
             title: a.name.clone(),
-            subtitle: Some(t!("artist.trackCount", count => a.ids.len()).to_string()),
+            subtitle: Some(
+                t!(
+                    "detail.albumsAndTracks",
+                    albums => album_count,
+                    tracks => a.ids.len()
+                )
+                .to_string(),
+            ),
             cover_id: a.cover_id,
             circular: true,
             play_ids: a.ids.clone(),
@@ -486,6 +495,23 @@ mod tests {
         }
     }
 
+    /// Like `tv`, but on a named album, so an artist can be spread across
+    /// several albums for the "{n} albums · {n} tracks" subtitle test.
+    fn tv_album(id: u32, artist: &str, album: &str) -> TrackView {
+        TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some(artist.to_string()),
+            album: Some(album.to_string()),
+            genre: Some("Rock".into()),
+            duration_secs: 1.0,
+            remote_source: None,
+            original_date: 0,
+            release_date: 0,
+            loudness: None,
+        }
+    }
+
     #[test]
     fn group_artists_folds_by_artist_in_first_seen_order() {
         let lib = vec![
@@ -610,6 +636,57 @@ mod tests {
         assert!(
             texts(&rt).iter().any(|t| t == "Bach") && texts(&rt).iter().any(|t| t == "Satie"),
             "clearing the query shows every artist again"
+        );
+    }
+
+    /// The old app's artist card subtitle is "{n} albums · {n} tracks", not a
+    /// bare track count: an artist spread across two albums shows both counts.
+    #[test]
+    fn artist_card_subtitle_shows_album_and_track_counts() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            artists_page(s, &p, cx, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        // Bach: 8 tracks across 2 albums. Satie: a lone 1-track, 1-album artist,
+        // so the two artists' subtitles can't be confused for one another.
+        s.library = vec![
+            tv_album(1, "Bach", "Album One"),
+            tv_album(2, "Bach", "Album One"),
+            tv_album(3, "Bach", "Album One"),
+            tv_album(4, "Bach", "Album One"),
+            tv_album(5, "Bach", "Album Two"),
+            tv_album(6, "Bach", "Album Two"),
+            tv_album(7, "Bach", "Album Two"),
+            tv_album(8, "Bach", "Album Two"),
+            tv_album(9, "Satie", "Solo"),
+        ];
+        s.route = crate::Route::Artists;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let texts: Vec<String> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| !e.exiting)
+            .filter_map(|e| e.text)
+            .collect();
+        assert!(
+            texts.iter().any(|t| t == "2 albums · 8 tracks"),
+            "Bach's card shows both its album and track counts, got: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "1 albums · 1 tracks"),
+            "Satie's card shows its own counts too, got: {texts:?}"
         );
     }
 }

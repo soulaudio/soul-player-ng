@@ -1,15 +1,16 @@
-//! Genres browse: a list of genre buckets (name + track count) that drills into
-//! a genre's tracks. Genres carry no cover art, so this mirrors the **Artists**
-//! interaction (a list of names that opens a detail page with Play All) rather
-//! than the album-art grid. Groups the flat library by genre; the backend's
+//! Genres browse: a responsive grid of card tiles (name + track count) that
+//! drills into a genre's tracks. Genres carry no cover art, so each tile is a
+//! flat card on the muted surface rather than the album-art square, matching
+//! the original's genre card grid. Groups the flat library by genre; the backend's
 //! `BrowseAxis::Genre` order already clusters a genre's tracks together, and the
 //! importer's "Unknown Genre" is a real, keep-able bucket. Reuses albums'
-//! `detail_track_row` so the detail list stays consistent with the other pages.
+//! `detail_track_row` so the detail list stays consistent with the other pages,
+//! and `grid::responsive_grid` so the tile grid columns the same as Albums/Artists.
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
 
-use rune::{Cursor, El, ScrollSpec, col, el, row, text, text_input};
+use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text, text_input};
 use soul_player_host::TrackView;
 
 use crate::State;
@@ -17,6 +18,7 @@ use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::albums::{detail_track_row, fmt_total_dur};
 use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
+use crate::views::grid;
 use crate::views::icons;
 use crate::views::player::{group_remote_source, remote_badge_for};
 
@@ -68,73 +70,104 @@ pub(crate) fn group_genres(library: &[TrackView]) -> Vec<Genre> {
     genres
 }
 
-/// One genre row: the genre name and its track count. Clicking the row opens the
-/// genre's detail page (its track list + Play All) — no cover, so it reads as a
-/// list entry rather than a card.
-fn genre_row(p: &Palette, slot: usize, g: &Genre) -> El {
+/// One genre tile: the genre name (bold) and its track count beneath, on a
+/// card background (the original's genre card grid; genres carry no cover
+/// art, so the tile is a flat card rather than an album-art square). Clicking
+/// it opens the genre's detail page (its track list + Play All).
+fn genre_tile(p: &Palette, slot: usize, g: &Genre, card_w: f32) -> El {
     let name = g.name.clone();
-    let mut r = row()
-        .key(format!("genre-{slot}"))
-        .role("button")
-        .label(g.name.clone())
-        .focusable(true)
-        .w_full()
-        .gap(space::MD)
-        .center_y()
-        .px(space::MD)
-        .py(space::SM)
-        .radius(radius::SM)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(
-            text(g.name.clone())
-                .font(type_::ITEM)
-                .color(p.fg)
-                .truncate()
-                .grow(1.0),
-        );
+    let title = text(g.name.clone())
+        .font(type_::ITEM_STRONG)
+        .color(p.fg)
+        .truncate();
     // A subtle cloud badge when every track in this genre streams from the same
     // remote host; nothing renders for a local/mixed genre, same unremarked
     // default as the album/artist cards and the track rows.
-    if let Some(host) = &g.remote_source {
-        r = r.child(remote_badge_for(&format!("genre-remote-{slot}"), host, p));
-    }
-    r.child(
-        text(t!("genre.trackCount", count => g.ids.len()).to_string())
-            .font(type_::ITEM)
-            .color(p.text_secondary),
-    )
-    .on_press(move |st: &mut State| {
-        crate::navigate_to(
-            st,
-            crate::Route::Genre,
-            None,
-            None,
-            Some(name.clone()),
-            None,
-        );
-    })
+    let title_row: El = if let Some(host) = &g.remote_source {
+        row()
+            .key(format!("genre-tile-title-{slot}"))
+            .gap(space::XS)
+            .center_y()
+            .min_w(0.0)
+            .child(title.grow(1.0))
+            .child(remote_badge_for(
+                &format!("genre-tile-remote-{slot}"),
+                host,
+                p,
+            ))
+    } else {
+        title
+    };
+
+    col()
+        .key(format!("genre-tile-{slot}"))
+        .role("button")
+        .label(g.name.clone())
+        .focusable(true)
+        // A flex item like the album/artist cards: wrap at MIN_CARD (the same
+        // threshold `responsive_grid` counts columns by), then grow to fill the
+        // row, capped so a partial last row stays aligned with the rows above.
+        .min_w(grid::MIN_CARD)
+        .max_w(card_w + grid::FILL_SLOP)
+        .grow(1.0)
+        .fill(p.card)
+        .radius(radius::MD)
+        .padding(space::MD)
+        .gap(space::XXS)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(title_row)
+        .child(
+            text(t!("genre.trackCount", count => g.ids.len()).to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .on_press(move |st: &mut State| {
+            crate::navigate_to(
+                st,
+                crate::Route::Genre,
+                None,
+                None,
+                Some(name.clone()),
+                None,
+            );
+        })
 }
 
-/// The Genres page: a vertical list of genre rows (name + count), scrolled.
-pub fn genres_page(s: &State, p: &Palette) -> El {
+/// The Genres page: a responsive grid of genre card tiles, scrolled vertically.
+/// Mirrors the Albums/Artists grid (`grid::responsive_grid`), just without
+/// cover art.
+pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let genres = group_genres(&s.library);
-    let mut list = col()
-        .key("genres-list")
-        .role("list")
-        .gap(space::XXS)
+    // Read this page's own pane width (first frame has no prior layout → a
+    // sensible desktop fallback), same rule the Albums/Artists grids use.
+    let pane = cx.layout_size("genres").map(|[w, _]| w).unwrap_or(820.0);
+    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
+
+    let mut tiles = row()
+        .key("genres-grid")
+        .role("grid")
+        .flex_wrap()
+        .gaps(space::MD, space::GUTTER)
         .padding(space::PANE);
     for (slot, g) in genres.iter().enumerate() {
-        list = list.child(genre_row(p, slot, g));
+        tiles = tiles.child(genre_tile(p, slot, g, card_w));
     }
     col().key("genres").grow(1.0).min_h(0.0).child(
-        list.scroll(ScrollSpec {
-            stick_bottom: false,
-        })
-        .scroll_edge_fade(24.0)
-        .grow(1.0)
-        .min_h(0.0),
+        // Scroll on the growing wrapper, not the grid itself, see `albums_page`: a
+        // flex-wrap grid that is itself the growing scroll element stretches its
+        // wrapped rows down the viewport when they don't fill it. Natural-height
+        // grid, growing scroll viewport around it.
+        col()
+            .key("genres-scroll")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0)
+            .child(tiles),
     )
 }
 
@@ -344,5 +377,70 @@ mod tests {
 
         let all_local = group_genres(&[tv(5, Some("Jazz")), tv(6, Some("Jazz"))]);
         assert_eq!(all_local[0].remote_source, None, "all local -> no badge");
+    }
+
+    /// The Genres list renders as a card-tile grid (the original's look), not a
+    /// plain text list: each genre is a focusable, labelled `genre-tile-*`
+    /// element showing its name and "{n} tracks" count. The a11y sweep
+    /// (`all_actionable_controls_are_labelled`) depends on every tile carrying
+    /// a role + label, so this guards that directly too.
+    #[test]
+    fn genres_page_renders_a_card_tile_grid() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            genres_page(s, &p, cx)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![
+            tv(1, Some("Rock")),
+            tv(2, Some("Rock")),
+            tv(3, Some("Jazz")),
+        ];
+        s.route = crate::Route::Genres;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let tiles: Vec<_> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("genre-tile-"))
+            })
+            .collect();
+        // Two genres → two tiles, each focusable with a button role and an
+        // accessible name (its genre name), exactly what the a11y sweep checks.
+        let rock = tiles
+            .iter()
+            .find(|e| e.label.as_deref() == Some("Rock"))
+            .expect("a focusable, labelled Rock tile renders");
+        assert!(rock.focusable, "the tile is keyboard-focusable");
+        assert_eq!(rock.role, "button", "the tile carries an interactive role");
+        assert!(
+            tiles.iter().any(|e| e.label.as_deref() == Some("Jazz")),
+            "a Jazz tile renders too"
+        );
+
+        // The name (bold title) and the "{n} tracks" count both render as text.
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(texts.iter().any(|t| t == "Rock"), "the genre name renders");
+        assert!(
+            texts.iter().any(|t| t == "2 tracks"),
+            "Rock's track count renders, got: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "1 tracks"),
+            "Jazz's track count renders too, got: {texts:?}"
+        );
     }
 }
