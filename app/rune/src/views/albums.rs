@@ -485,6 +485,7 @@ mod tests {
             remote_source: None,
             original_date: 0,
             release_date: 0,
+            loudness: None,
         }
     }
 

@@ -3091,6 +3091,7 @@ fn seed_demo_library(s: &mut State) {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             });
             id += 1;
         }
@@ -9952,6 +9953,7 @@ mod tests {
             remote_source: None,
             original_date: 0,
             release_date: 0,
+            loudness: None,
         }
     }
 
@@ -9966,6 +9968,7 @@ mod tests {
             remote_source: None,
             original_date: 0,
             release_date: 0,
+            loudness: None,
         }
     }
 
@@ -9980,6 +9983,7 @@ mod tests {
             remote_source: None,
             original_date: 0,
             release_date: 0,
+            loudness: None,
         }
     }
 
@@ -10096,6 +10100,7 @@ mod tests {
                 remote_source: Some("listen.home.lan".into()),
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -10107,6 +10112,7 @@ mod tests {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             },
         ];
         s.route = Route::Artist;
@@ -10389,6 +10395,7 @@ mod tests {
             remote_source: None,
             original_date: 0,
             release_date: 0,
+            loudness: None,
         }
     }
 
@@ -10508,6 +10515,7 @@ mod tests {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -10519,6 +10527,7 @@ mod tests {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             },
         ];
         s.route = Route::Genre;
@@ -10893,6 +10902,7 @@ mod tests {
                 remote_source: Some("listen.home.lan".into()),
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -10904,6 +10914,7 @@ mod tests {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             },
         ];
         s.route = Route::Album;
@@ -11137,6 +11148,7 @@ mod tests {
             remote_source: Some("listen.home.lan".into()),
             original_date: 0,
             release_date: 0,
+            loudness: None,
         }];
         s.now_playing_id = Some(1);
         let env = Env {
@@ -11438,6 +11450,7 @@ mod tests {
                 remote_source: Some("listen.home.lan".into()),
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -11449,6 +11462,7 @@ mod tests {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             },
         ];
         let env = Env {
@@ -11911,6 +11925,7 @@ mod tests {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             })
             .collect();
         let env = Env {
@@ -11991,6 +12006,7 @@ mod tests {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             })
             .collect();
         let env = Env {
@@ -12099,6 +12115,7 @@ mod tests {
                 remote_source: None,
                 original_date: 0,
                 release_date: 0,
+                loudness: None,
             }
         }
         let mut s = State::new(PlayerHandle::offline());
@@ -12152,6 +12169,7 @@ mod tests {
             remote_source: None,
             original_date: 0,
             release_date: 0,
+            loudness: None,
         }
     }
 
@@ -12370,6 +12388,7 @@ mod tests {
             remote_source: None,
             original_date: 1973u32 << 9,
             release_date: 2015u32 << 9,
+            loudness: None,
         }];
         let env = Env {
             system_dark: true,

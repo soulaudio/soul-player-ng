@@ -116,6 +116,8 @@ pub fn apply_command<K: Sink, D: SeekableDecoder>(
         // Seeding the loudness cache is pump state (the cache lives there), not a
         // transport action — the pump intercepts it before this call. No-op here.
         Command::SeedLoudness(_) => Ok(()),
+        // The background loudness sweep enqueues on the pump's cache; intercepted there.
+        Command::AnalyzeTracks(_) => Ok(()),
     }
 }
 

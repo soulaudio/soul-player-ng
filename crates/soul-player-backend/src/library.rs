@@ -24,7 +24,7 @@ use soul_audio_import::{ScanCache, ScanProgress};
 use soul_audio_index::IndexReader;
 use soul_audio_multicatalog::{MultiCatalog, pack, unpack};
 
-use crate::types::{TrackLocator, TrackView};
+use crate::types::{TrackLocator, TrackLoudness, TrackView};
 
 /// The result of an [incremental scan](Library::scan_many_incremental): the baked
 /// library plus the warm cache and deletions, carried back so the host can persist
@@ -134,6 +134,7 @@ impl Library {
         max_threads: usize,
         target: &AtomicUsize,
         progress: &mut dyn FnMut(ScanProgress),
+        loudness: &HashMap<PathBuf, TrackLoudness>,
     ) -> anyhow::Result<IncrementalBuild> {
         let max_threads = max_threads.max(1);
         let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(roots.len());
@@ -143,13 +144,26 @@ impl Library {
         let mut removed = Vec::new();
         for (i, root) in roots.iter().enumerate() {
             let prior = priors.get(i).cloned().unwrap_or_default();
-            let outcome = soul_audio_import::scan_incremental_throttled(
+            let mut outcome = soul_audio_import::scan_incremental_throttled(
                 root,
                 &prior,
                 max_threads,
                 target,
                 progress,
             )?;
+            // Stamp any known per-track loudness into the record so the baked `.soulidx`
+            // carries it (for the DAP and a rebake-persistent column); the metadata scan
+            // itself never computes loudness (the deferred Tier-2 sweep does).
+            if !loudness.is_empty() {
+                for t in &mut outcome.input.tracks {
+                    let path = root
+                        .join(&outcome.input.folders[t.folder as usize].path)
+                        .join(&t.file_name);
+                    if let Some(m) = loudness.get(&path) {
+                        t.loudness = Some((*m).into());
+                    }
+                }
+            }
             let bytes = soul_audio_index::build::write_index(&outcome.input);
             // Keep the baked bytes so an unaffected root can be reused verbatim on a
             // scoped rescan; the reader reads a clone, the original is carried back.
@@ -347,6 +361,9 @@ impl Library {
                     remote_source: None,
                     original_date,
                     release_date,
+                    // The baked loudness (present once a scan has stamped it); the host
+                    // overrides with fresher live analysis via `mark_loudness`.
+                    loudness: t.loudness.map(Into::into),
                 })
             })
             .collect()
@@ -1019,6 +1036,60 @@ mod tests {
     }
 
     #[test]
+    fn scan_bakes_loudness_from_the_provided_map() {
+        // The Tier-2 injection: a scan stamps per-track loudness (from the host's live map)
+        // into the baked `.soulidx`, and `views()` reads it back on `TrackView.loudness`.
+        let root = tmpdir("loud_bake");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
+        std::fs::write(root.join("b.wav"), wav(48_000, 24_000)).unwrap();
+        let roots = vec![root.clone()];
+
+        let la = TrackLoudness {
+            integrated_lufs: -14.0,
+            lra: 7.5,
+            true_peak_dbtp: -1.0,
+            plr: 13.0,
+            dr: 11.0,
+        };
+        // Provide loudness for a.wav only; b.wav stays unanalyzed.
+        let mut map = HashMap::new();
+        map.insert(root.join("a.wav"), la);
+
+        let build = Library::scan_many_incremental(
+            &roots,
+            &[ScanCache::default()],
+            4,
+            &AtomicUsize::new(4),
+            &mut |_| {},
+            &map,
+        )
+        .unwrap();
+
+        let views = build.library.views();
+        let view_for = |name: &str| {
+            views
+                .iter()
+                .find(|v| {
+                    build
+                        .library
+                        .path_of(v.id)
+                        .is_some_and(|p| p.ends_with(name))
+                })
+                .unwrap_or_else(|| panic!("no view for {name}"))
+        };
+        assert_eq!(
+            view_for("a.wav").loudness,
+            Some(la),
+            "a.wav's loudness baked + read back"
+        );
+        assert_eq!(
+            view_for("b.wav").loudness,
+            None,
+            "b.wav unanalyzed reads None"
+        );
+    }
+
+    #[test]
     fn incremental_scan_matches_full_scan_then_warm_reflects_add_and_remove() {
         let root = tmpdir("incr");
         std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
@@ -1033,6 +1104,7 @@ mod tests {
             4,
             &AtomicUsize::new(4),
             &mut |_| {},
+            &HashMap::new(),
         )
         .unwrap();
         assert_eq!(build.library.len(), 2);
@@ -1054,6 +1126,7 @@ mod tests {
             4,
             &AtomicUsize::new(4),
             &mut |_| {},
+            &HashMap::new(),
         )
         .unwrap();
         assert_eq!(build2.library.len(), 3, "added file appears");
@@ -1068,6 +1141,7 @@ mod tests {
             4,
             &AtomicUsize::new(4),
             &mut |_| {},
+            &HashMap::new(),
         )
         .unwrap();
         assert_eq!(build3.library.len(), 1, "only c.wav remains");
@@ -1092,9 +1166,15 @@ mod tests {
         let cold = || [ScanCache::default(), ScanCache::default()];
 
         // A scan carries back the baked bytes, parallel to `roots`.
-        let full =
-            Library::scan_many_incremental(&roots, &cold(), 4, &AtomicUsize::new(4), &mut |_| {})
-                .unwrap();
+        let full = Library::scan_many_incremental(
+            &roots,
+            &cold(),
+            4,
+            &AtomicUsize::new(4),
+            &mut |_| {},
+            &HashMap::new(),
+        )
+        .unwrap();
         assert_eq!(full.bytes.len(), 2, "one baked index per root");
 
         // `from_source_bytes` rebuilds the SAME library with no scan.
@@ -1115,6 +1195,7 @@ mod tests {
             4,
             &AtomicUsize::new(4),
             &mut |_| {},
+            &HashMap::new(),
         )
         .unwrap();
         let merged = vec![only_a.bytes[0].clone(), full.bytes[1].clone()];
@@ -1126,6 +1207,7 @@ mod tests {
             4,
             &AtomicUsize::new(4),
             &mut |_| {},
+            &HashMap::new(),
         )
         .unwrap();
         assert_eq!(
@@ -1158,6 +1240,7 @@ mod tests {
             4,
             &AtomicUsize::new(4),
             &mut |p| ticks.push(p),
+            &HashMap::new(),
         )
         .unwrap();
         assert_eq!(build.library.len(), 3);
