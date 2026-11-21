@@ -34,11 +34,14 @@ mod config;
 #[cfg(test)]
 mod i18n_tests;
 mod logging;
+mod macos_menu;
 mod media_session;
 mod notify;
 mod organize_job;
 mod playlists;
 mod report;
+// The tray (Rune `Tray`) has Linux/Windows backends only; macOS uses `macos_menu`.
+#[cfg(any(not(target_os = "macos"), test))]
 mod systray;
 mod theme;
 mod ui;
@@ -2879,6 +2882,7 @@ fn feed_media_session(s: &mut State) {
         && let Some(track) = s.now_playing_id.and_then(|id| s.track(id))
     {
         let _ = tx.send(media_session::Update::Track(media_session::TrackMeta {
+            id: track.id,
             title: track.title.clone().unwrap_or_default(),
             artist: track.artist.clone().unwrap_or_default(),
             album: track.album.clone().unwrap_or_default(),
@@ -3533,6 +3537,17 @@ fn main() -> anyhow::Result<()> {
     let mut needs_startup_scan = false;
     if std::env::var_os("SOUL_PLAYER_FOLDER").is_some() {
         host.autoload_from_env()?;
+        // e2e harness only (never set in normal use): start playing the loaded folder
+        // from track 0, so OS-integration tests (Now Playing, media keys) can drive a
+        // real playing app without UI clicks.
+        if std::env::var_os("SOUL_PLAYER_AUTOPLAY").is_some() {
+            let ids: Vec<u32> = host.views().iter().map(|t| t.id).collect();
+            tracing::info!(
+                tracks = ids.len(),
+                "SOUL_PLAYER_AUTOPLAY: playing the loaded folder"
+            );
+            host.send(soul_player_host::Command::PlayContext { ids, start: 0 });
+        }
     } else {
         let saved = config::load_sources_with_enabled();
         if !saved.is_empty() {
@@ -3623,6 +3638,14 @@ fn main() -> anyhow::Result<()> {
         };
         builder = builder.configured_options(wo.into()).maximized(g.maximized);
     }
+    // macOS: native Controls menu (menu bar) + Dock menu transport. Rune's native
+    // menus are macOS-only; Windows/Linux expose the same controls via the tray.
+    #[cfg(target_os = "macos")]
+    {
+        for item in macos_menu::items() {
+            builder = builder.menu_item(item);
+        }
+    }
     let app = builder
         .titlebar(Titlebar::new(views::titlebar::HEIGHT).traffic_lights(
             views::titlebar::TRAFFIC_LIGHTS.0,
@@ -3673,11 +3696,15 @@ fn main() -> anyhow::Result<()> {
                     *w = Some(wh.clone());
                 }
                 let hwnd = window_hwnd(wh);
-                if let Some(tx) = media_session::spawn(ah.clone(), hwnd) {
+                if let Some(tx) = media_session::spawn(ah.clone(), tray_host.clone(), hwnd) {
                     ah.update(move |s: &mut State, _tx: &mut Tx| s.media_tx = Some(tx));
                 }
                 // The tray must stay alive for the app's lifetime (dropping it
                 // removes the icon); it's an app-lifetime singleton, so leak it.
+                // Not on macOS: Rune has no macOS tray backend (it would only log
+                // "Unsupported"); the native Controls + Dock menus (`macos_menu`) carry
+                // the same transport there. A menu-bar extra is on the roadmap.
+                #[cfg(not(target_os = "macos"))]
                 if let Some(tray) = systray::create(tray_host.clone(), ah.clone()) {
                     std::mem::forget(tray);
                 }

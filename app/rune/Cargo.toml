@@ -105,6 +105,12 @@ display-info = "0.5"
 # `ID3D12Heap` must match wgpu-hal's). All WinRT + registry calls are safe (no
 # `unsafe`). `windows-registry` (0.62-family split crates, not the big `windows`)
 # writes the unpackaged-app AUMID under HKCU so Windows renders our toasts.
+# macOS notifications (UNUserNotificationCenter) — Rune's own notifier crate, at the same
+# pinned rev as `rune`, so its objc2 0.5 is the one Rune already compiles. It posts only
+# from a bundled `.app` (`available()`); an unbundled dev binary stays silent.
+[target.'cfg(target_os = "macos")'.dependencies]
+rune-notify = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830" }
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["UI_Notifications", "Data_Xml_Dom", "Foundation"] }
 windows-registry = "0.6"
@@ -116,5 +122,7 @@ windows-registry = "0.6"
 [package.metadata.packager]
 product-name = "Soul Player"
 identifier = "co.datadir.soulplayer"
+# macOS: LSApplicationCategoryType (Finder / Launchpad / App Store "Music").
+category = "Music"
 icons = ["icons/icon.ico", "icons/128x128.png"]
 formats = ["nsis"]
