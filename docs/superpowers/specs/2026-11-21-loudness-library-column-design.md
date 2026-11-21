@@ -71,10 +71,14 @@ cache), never writing tags (a possible separate opt-in later).
 
 - **TrackLoudness** is the payload (already defined). The library needs `integrated_lufs` + `dr`; the
   full set stays available for the detail panel.
-- **`.soulidx` seam (the designed path):** a new `extended.blob` section holding per-track TLV records;
-  `TrackRec.flags` gets a `HAS_LOUDNESS` bit and `extended_off` points at the track's TLV. A `Loudness`
-  TLV type carries the 5 f32. Format bumps `FORMAT_VERSION` (migration-free; rebaked each scan). The
-  bake accepts optional per-track loudness (from the cache) and emits the TLV when present.
+- **`.soulidx` storage — widen `TrackRec` (v6):** add the 5 loudness `f32` fields to `TrackRec` and a
+  `HAS_LOUDNESS` bit in the existing `flags: u16` (set iff analyzed; un-analyzed tracks carry zeroed
+  fields). This follows the project's established pattern for fixed per-track data (`mbid` widened the
+  record in v4, the packed dates in v5) rather than the never-yet-used `extended.blob`/`extended_off`
+  TLV seam, which is reserved for genuinely variable-length Tier-2 payloads (a later fingerprint/MBID
+  need, not fixed-size loudness). Bumps `FORMAT_VERSION` 5 → 6 and `RECORD_SIZE` 65 → 85 (migration-free;
+  rebaked each scan). The bake accepts optional per-track loudness (from the cache) and emits it with the
+  flag when present.
 - **Cache (the live source):** the path-keyed, stamp-validated cache is what the Tier-2 pass writes and
   what the live UI reads. It updates per analysis event, so the column fills **progressively without
   re-baking**. This is the authoritative in-session source.
@@ -118,9 +122,9 @@ independent oracles**, exactly like the downmix work used ffmpeg.
    with `dr14_t.meter`/`foo_dr_meter` and committed as the golden, since our `dr` is the TT crest-factor
    definition) within ±1 DR; (c) LRA vs ffmpeg `ebur128` LRA. These make "compare with other solutions"
    a committed, CI-running assertion, not a manual check.
-2. **Seam round-trip (core).** Bake a catalog with per-track loudness → read via `IndexReader` → the TLV
-   decodes bit-identical; the `flags` bit + `extended_off` are set iff loudness present; un-analyzed
-   tracks carry no TLV and read back `None`. Format-version bump verified (old 4-field cache ignored).
+2. **Record round-trip (core).** Bake a catalog with per-track loudness → read via `IndexReader` → the
+   widened `TrackRec` loudness fields decode bit-identical; the `HAS_LOUDNESS` flag is set iff loudness
+   present; un-analyzed tracks read back `None`. Format-version bump (v6) + `RECORD_SIZE` (85) verified.
 3. **Tier-2 orchestration (-ng).** A temp library of a few known fixtures: run a scan → the sweep
    analyzes each, the cache + seam populate, `TrackView.loudness` is `Some`; a second scan **skips**
    (stamp unchanged, no re-decode — assert via a decode counter/log); a changed file re-analyzes;
@@ -136,9 +140,9 @@ Every task is TDD: write the failing conformance/round-trip/e2e test first, watc
 
 ## Increments (sequencing)
 
-- **PR 1 (core):** the `extended.blob` TLV infrastructure + a `Loudness` TLV + `TrackRec` `flags`/
-  `extended_off` wiring + `IndexReader` exposes loudness + bake accepts per-track loudness + format bump.
-  Tests: seam round-trip + the metric-conformance goldens (DR/LUFS/LRA vs oracles).
+- **PR 1 (core):** widen `TrackRec` (v6) with the 5 loudness fields + a `HAS_LOUDNESS` flag bit +
+  `IndexReader` exposes loudness + the bake accepts per-track loudness + format/record-size bump.
+  Tests: record round-trip + the metric-conformance goldens (DR/LUFS/LRA vs oracles).
 - **PR 2 (-ng):** the scan-driven Tier-2 pass (reuse the worker; incremental stamp; throttle + the
   playback-yield + cancel; `ScanPhase::Analyzing` progress) + feed loudness into the bake + the cache
   wiring + bump core. Tests: orchestration (analyze/skip/re-analyze/cancel/yield) + the seam carries it.

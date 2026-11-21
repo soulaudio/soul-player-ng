@@ -303,6 +303,13 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         // Seed the in-memory loudness cache (pump state, lives here),
                         // not a transport call — a no-op in `apply_command`.
                         Command::SeedLoudness(entries) => loudness.seed(entries),
+                        // Background loudness sweep: enqueue each track (single-flight skips
+                        // already-analyzed / in-flight). Pump state, no-op in `apply_command`.
+                        Command::AnalyzeTracks(entries) => {
+                            for (id, path) in entries {
+                                loudness.enqueue(*id, path.clone());
+                            }
+                        }
                         _ => {}
                     }
                     seed = seed.wrapping_add(SEED_STEP);
