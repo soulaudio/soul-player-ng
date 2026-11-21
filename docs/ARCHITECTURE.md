@@ -48,9 +48,19 @@ calling Rust methods directly, never by embedding logic in the view.
 | Service stays memory-safe | `unsafe_code = "forbid"` | root `Cargo.toml` `[workspace.lints.rust]` |
 | The GUI stack lives only in the UI head | separate `deny.app.toml` (GUI crates allowed there only) | `deny.app.toml`, used by `app/rune`'s `cargo deny` run |
 | UI → host → service → core direction | Cargo path/dep graph (a reverse edge won't compile) | `Cargo.toml` manifests |
+| Editing a playlist does not mutate the active queue (the queue is a decoupled snapshot) | `cargo test` architecture tests | [ADR 0001](adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md); `app/rune` `views/playlist_detail.rs` (`editing_a_playing_playlist_does_not_mutate_the_queue`, `removing_...`) |
 
 Keep the `FORBIDDEN` list in the architecture test in sync with `deny.toml`'s
 `[bans].deny`.
+
+## Decision records (ADRs)
+
+Cross-cutting design decisions that are not pure dependency boundaries are
+recorded as ADRs under [`docs/adr/`](adr/), and (where enforceable) backed by an
+architecture test that cites the ADR by number. Supporting research is archived
+under [`docs/research/`](research/).
+
+- [ADR 0001 — The play queue is a stable snapshot, decoupled from playlists](adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md)
 
 ## Migration roadmap (logic → core)
 

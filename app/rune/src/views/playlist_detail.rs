@@ -926,6 +926,98 @@ mod tests {
         }
     }
 
+    /// Architecture invariant (ADR 0001, `docs/adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md`):
+    /// the play queue is a stable SNAPSHOT decoupled from playlists. Editing a
+    /// playlist you are currently playing MUST NOT mutate the active queue — no
+    /// playlist-mutation path may issue a playback/queue command. This guards
+    /// against anyone wiring a playlist edit into the queue (the "live-context"
+    /// model the target audiophile community explicitly rejects; see the ADR's
+    /// research citations under `docs/research/`). Play the playlist (which
+    /// snapshots the queue via `PlayContext`), then add a track to that SAME
+    /// playlist through the production handler, and assert no further command
+    /// was issued.
+    #[test]
+    fn editing_a_playing_playlist_does_not_mutate_the_queue() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_over_library();
+
+        click(&mut rt, "playlist-play-all");
+        let after_play = rt.state.host.recorded_commands().len();
+        assert!(
+            after_play >= 1,
+            "Play All issued the queue snapshot (PlayContext)"
+        );
+
+        // A library track that is NOT already in the playlist.
+        let in_playlist: Vec<u32> = {
+            let locs: Vec<TrackLocator> = rt
+                .state
+                .playlists
+                .get(id)
+                .unwrap()
+                .entries
+                .iter()
+                .map(|e| e.locator.clone())
+                .collect();
+            rt.state
+                .host
+                .resolve_locators(&locs)
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        let extra = rt
+            .state
+            .library
+            .iter()
+            .map(|t| t.id)
+            .find(|tid| !in_playlist.contains(tid))
+            .expect("the testdata library has a third track to add");
+
+        // Add it to the playing playlist via the SAME handler the UI uses.
+        crate::views::add_to_playlist::add_track_to_playlist(&mut rt.state, extra, id);
+        rt.frame(0.0);
+
+        assert_eq!(
+            rt.state.playlists.get(id).unwrap().entries.len(),
+            3,
+            "the track was actually added to the playlist (so the edit happened)"
+        );
+        assert_eq!(
+            rt.state.host.recorded_commands().len(),
+            after_play,
+            "ADR 0001: editing a playing playlist must issue NO queue/playback command \
+             (snapshot, not live-context)"
+        );
+    }
+
+    /// Architecture invariant (ADR 0001), remove side: removing a track from a
+    /// playlist you are currently playing likewise must not mutate the active
+    /// queue snapshot — the snapshot is intentionally stable.
+    #[test]
+    fn removing_from_a_playing_playlist_does_not_mutate_the_queue() {
+        let _g = config::use_test_config_dir();
+        let (mut rt, id) = runtime_playlist_over_library();
+
+        click(&mut rt, "playlist-play-all");
+        let after_play = rt.state.host.recorded_commands().len();
+        assert!(after_play >= 1, "Play All issued the queue snapshot");
+
+        rt.state.playlists.remove_entry(id, 0);
+        rt.frame(0.0);
+
+        assert_eq!(
+            rt.state.playlists.get(id).unwrap().entries.len(),
+            1,
+            "the entry was actually removed (so the edit happened)"
+        );
+        assert_eq!(
+            rt.state.host.recorded_commands().len(),
+            after_play,
+            "ADR 0001: removing from a playing playlist must issue NO queue/playback command"
+        );
+    }
+
     #[test]
     fn play_all_is_absent_and_sends_nothing_when_every_entry_is_unavailable() {
         let _g = config::use_test_config_dir();
