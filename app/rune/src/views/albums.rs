@@ -210,7 +210,25 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
 /// copies the styling of).
 pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let q = s.album_search.text.to_lowercase();
-    let albums = filter_albums(group_albums(&s.library), &q);
+    // Genre Filters (the old app's Filters chips): narrow the library to the
+    // selected genres before grouping, so an album shows when it has at least
+    // one track in a selected genre. Empty selection = every album.
+    let grouped = if s.album_genre_filter.is_empty() {
+        group_albums(&s.library)
+    } else {
+        let subset: Vec<TrackView> = s
+            .library
+            .iter()
+            .filter(|t| {
+                t.genre
+                    .as_deref()
+                    .is_some_and(|g| s.album_genre_filter.contains(g))
+            })
+            .cloned()
+            .collect();
+        group_albums(&subset)
+    };
+    let albums = filter_albums(grouped, &q);
     // Responsive grid (the old app's `grid-cols-2 sm:3 md:4 lg:5 xl:6 2xl:8`): fill
     // the content pane, adding columns as it widens. Read the pane's laid-out width
     // (minus the grid's own padding); the first frame has no prior layout, so fall
@@ -222,18 +240,97 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .key("albums-search")
         .single_line()
         .label(t!("albums.searchPlaceholder").to_string())
-        .w_full()
+        .grow(1.0)
         .px(space::MD)
         .py(space::SM)
         .radius(radius::SM)
         .fill(p.muted)
         .color(p.fg)
         .on_edit(|st: &mut State| &mut st.album_search);
+    // A Filters button that toggles the genre-chip row (old app's "Filters").
+    // Lit while open or while a genre filter is active.
+    let filters_lit = s.albums_filters_open || !s.album_genre_filter.is_empty();
+    let filters_btn = row()
+        .key("albums-filters-toggle")
+        .role("button")
+        .label(t!("albums.filters").to_string())
+        .focusable(true)
+        .center_y()
+        .gap(space::XS)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if filters_lit {
+            p.accent.alpha(0.2)
+        } else {
+            p.muted
+        })
+        .hover(p.fg.alpha(fx::HOVER))
+        .child(
+            text(t!("albums.filters").to_string())
+                .font(type_::ITEM)
+                .color(if filters_lit { p.accent } else { p.fg }),
+        )
+        .on_press(|st: &mut State| st.albums_filters_open = !st.albums_filters_open);
     let search_bar = row()
         .key("albums-search-bar")
         .px(space::PANE)
         .pt(space::SM)
-        .child(search);
+        .gap(space::SM)
+        .child(search)
+        .child(filters_btn);
+    // The expandable genre-chip row (one toggle chip per library genre).
+    let chips = s.albums_filters_open.then(|| {
+        let mut genres: Vec<&str> = s
+            .library
+            .iter()
+            .filter_map(|t| t.genre.as_deref())
+            .filter(|g| !g.is_empty())
+            .collect();
+        genres.sort_unstable();
+        genres.dedup();
+        let mut chip_row = row()
+            .key("albums-genre-chips")
+            .px(space::PANE)
+            .pt(space::SM)
+            .gaps(space::SM, space::SM)
+            .flex_wrap();
+        for (i, g) in genres.into_iter().enumerate() {
+            let selected = s.album_genre_filter.contains(g);
+            let g_owned = g.to_string();
+            chip_row = chip_row.child(
+                row()
+                    .key(format!("albums-genre-chip-{i}"))
+                    .role("button")
+                    .label(g.to_string())
+                    .focusable(true)
+                    .px(space::MD)
+                    .py(space::XS)
+                    .radius(radius::LG)
+                    .cursor(Cursor::Pointer)
+                    .fill(if selected {
+                        p.accent.alpha(0.3)
+                    } else {
+                        p.muted
+                    })
+                    .hover(p.fg.alpha(fx::HOVER))
+                    .child(text(g.to_string()).font(type_::ITEM).color(if selected {
+                        p.accent
+                    } else {
+                        p.fg
+                    }))
+                    .on_press(move |st: &mut State| {
+                        if st.album_genre_filter.contains(&g_owned) {
+                            st.album_genre_filter.remove(&g_owned);
+                        } else {
+                            st.album_genre_filter.insert(g_owned.clone());
+                        }
+                    }),
+            );
+        }
+        chip_row
+    });
 
     let mut grid = row()
         .key("albums-grid")
@@ -246,28 +343,27 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     for (slot, a) in albums.iter().enumerate() {
         grid = grid.child(album_card(s, p, slot, a, card_w, scale));
     }
-    col()
-        .key("albums")
-        .grow(1.0)
-        .min_h(0.0)
-        .child(search_bar)
-        .child(
-            // Scroll on the growing wrapper, NOT the grid itself. A flex-wrap grid that is
-            // the growing scroll element has flexbox stretch its wrapped lines to fill the
-            // height, spreading the rows apart whenever the library doesn't fill the window
-            // (worse the more you zoom, fewer rows fit). A natural-height grid inside a
-            // growing scroll viewport packs rows to the top (extra space falls below the
-            // last row) and still scrolls once the content is taller than the viewport.
-            col()
-                .key("albums-scroll")
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .scroll_edge_fade(24.0)
-                .grow(1.0)
-                .min_h(0.0)
-                .child(grid),
-        )
+    let mut page = col().key("albums").grow(1.0).min_h(0.0).child(search_bar);
+    if let Some(chips) = chips {
+        page = page.child(chips);
+    }
+    page.child(
+        // Scroll on the growing wrapper, NOT the grid itself. A flex-wrap grid that is
+        // the growing scroll element has flexbox stretch its wrapped lines to fill the
+        // height, spreading the rows apart whenever the library doesn't fill the window
+        // (worse the more you zoom, fewer rows fit). A natural-height grid inside a
+        // growing scroll viewport packs rows to the top (extra space falls below the
+        // last row) and still scrolls once the content is taller than the viewport.
+        col()
+            .key("albums-scroll")
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0)
+            .child(grid),
+    )
 }
 
 /// A back link — a `←` glyph. Returns to wherever this album was opened from
@@ -348,6 +444,12 @@ pub(crate) fn detail_track_row(
     // nothing renders for a local track, the unremarked default.
     if let Some(host) = &t.remote_source {
         r = r.child(remote_badge(t.id, host, p));
+    }
+    // Codec format badge (FLAC / MP3 / DSF ...), the same color-coded pill the
+    // Tracks table uses, matching the old app's FORMAT column. Nothing renders
+    // when the format is unknown.
+    if let Some(fmt) = &t.format {
+        r = r.child(crate::views::library::format_badge(fmt, p));
     }
     // Right-click opens the same track actions as a library row (the add-to-
     // playlist item opens the themed `views::add_to_playlist` overlay), so a
@@ -1001,6 +1103,97 @@ mod tests {
             texts(&rt).iter().any(|t| t == "Crooked Rain")
                 && texts(&rt).iter().any(|t| t == "Tago Mago"),
             "clearing the query shows every album again"
+        );
+    }
+
+    /// The Filters button toggles the genre-chip row, and selecting a genre
+    /// narrows the grid to albums that have a track in that genre.
+    #[test]
+    fn albums_genre_filter_narrows_the_grid() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            albums_page(s, &p, cx, cx.env().scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        let mut rock = atv(1, "Pavement", "Crooked Rain");
+        rock.genre = Some("Rock".into());
+        let mut jazz = atv(2, "Can", "Tago Mago");
+        jazz.genre = Some("Jazz".into());
+        s.library = vec![rock, jazz];
+        s.route = crate::Route::Albums;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("albums-filters-toggle").is_some(),
+            "the Filters button renders"
+        );
+        assert!(
+            rt.find("albums-genre-chip-0").is_none(),
+            "chips stay hidden until Filters is opened"
+        );
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.albums_filters_open = true);
+        rt.frame(0.0);
+        assert!(
+            rt.find("albums-genre-chip-0").is_some(),
+            "opening Filters reveals the genre chips"
+        );
+
+        let texts = |rt: &Runtime<State>| -> Vec<String> {
+            rt.elements()
+                .into_iter()
+                .filter(|e| !e.exiting)
+                .filter_map(|e| e.text)
+                .collect()
+        };
+        rt.update(|st: &mut State, _tx: &mut Tx| {
+            st.album_genre_filter.insert("Jazz".into());
+        });
+        rt.frame(0.0);
+        assert!(
+            texts(&rt).iter().any(|t| t == "Tago Mago"),
+            "the selected-genre album stays"
+        );
+        assert!(
+            !texts(&rt).iter().any(|t| t == "Crooked Rain"),
+            "an album with no track in the selected genre is filtered out"
+        );
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.album_genre_filter.clear());
+        rt.frame(0.0);
+        assert!(
+            texts(&rt).iter().any(|t| t == "Crooked Rain")
+                && texts(&rt).iter().any(|t| t == "Tago Mago"),
+            "clearing the genre filter shows every album again"
+        );
+    }
+
+    /// The Albums filter state is page-scoped: navigating away clears it.
+    #[test]
+    fn albums_filter_state_resets_on_nav() {
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.albums_filters_open = true;
+        s.album_genre_filter.insert("Jazz".into());
+        crate::go_back(&mut s);
+        assert!(
+            !s.albums_filters_open && s.album_genre_filter.is_empty(),
+            "go_back clears the Albums filter state"
+        );
+        s.albums_filters_open = true;
+        s.album_genre_filter.insert("Rock".into());
+        crate::navigate_to(&mut s, crate::Route::Albums, None, None, None, None);
+        assert!(
+            !s.albums_filters_open && s.album_genre_filter.is_empty(),
+            "navigate_to clears the Albums filter state"
         );
     }
 }

@@ -162,6 +162,8 @@ pub(crate) fn navigate_to(
     s.genre_search = rune::TextEdit::new("");
     s.album_search = rune::TextEdit::new("");
     s.artist_search = rune::TextEdit::new("");
+    s.albums_filters_open = false;
+    s.album_genre_filter.clear();
     // A playlist's inline new/rename/delete-confirm fields are page-scoped
     // ephemeral UI, same as `genre_search` above; reset rather than carried to
     // wherever we land next (including back onto the same detail page via a
@@ -179,6 +181,8 @@ pub(crate) fn go_back(s: &mut State) {
     s.genre_search = rune::TextEdit::new("");
     s.album_search = rune::TextEdit::new("");
     s.artist_search = rune::TextEdit::new("");
+    s.albums_filters_open = false;
+    s.album_genre_filter.clear();
     s.playlist_new_buf = rune::TextEdit::new("");
     s.playlist_renaming = None;
     s.playlist_rename_buf = rune::TextEdit::new("");
@@ -363,6 +367,10 @@ struct State {
     /// album name or artist. Same convention as `genre_search`, reset whenever
     /// we navigate (see [`navigate_to`]/[`go_back`]).
     album_search: rune::TextEdit,
+    /// Whether the Albums page's genre-Filters chip row is expanded.
+    albums_filters_open: bool,
+    /// Genres selected in the Albums page's Filters (empty = no genre filter).
+    album_genre_filter: std::collections::BTreeSet<String>,
     /// The Artists grid's in-page search box (ephemeral): filters the grid by
     /// artist name. Same convention as `genre_search`, reset whenever we
     /// navigate (see [`navigate_to`]/[`go_back`]).
@@ -737,6 +745,8 @@ impl State {
             discography_list: false,
             genre_search: rune::TextEdit::new(""),
             album_search: rune::TextEdit::new(""),
+            albums_filters_open: false,
+            album_genre_filter: std::collections::BTreeSet::new(),
             artist_search: rune::TextEdit::new(""),
             artist_top_expanded: false,
             settings_tab: SettingsTab::Appearance,
