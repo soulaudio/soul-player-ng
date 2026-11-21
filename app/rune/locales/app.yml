@@ -138,6 +138,13 @@ albums.searchPlaceholder:
   zh: '搜索专辑'
   cs: 'Hledat alba'
   ja: 'アルバムを検索'
+albums.filters:
+  en: 'Filters'
+  de: 'Filter'
+  es: 'Filtros'
+  zh: '筛选'
+  cs: 'Filtry'
+  ja: 'フィルター'
 artist.eyebrow:
   en: 'Artist'
   de: 'Künstler'
