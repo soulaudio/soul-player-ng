@@ -109,6 +109,7 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
             circular: true,
             play_ids: a.ids.clone(),
             remote_source: a.remote_source.clone(),
+            dr: None, // artists span albums; DR is an album-level indicator
         },
         card_w,
         scale,
@@ -368,6 +369,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                         circular: false,
                         play_ids: alb.ids.clone(),
                         remote_source: alb.remote_source.clone(),
+                        dr: alb.dr,
                     },
                     card_w,
                     scale,

@@ -38,6 +38,19 @@ pub(crate) struct Album {
     pub(crate) original_date: u32,
     pub(crate) release_date: u32,
     pub(crate) remote_source: Option<String>,
+    /// The album's dynamic-range indicator: the mean of its analyzed tracks' DR (the TT /
+    /// dr.loudness-war convention), or `None` until at least one member track is analyzed.
+    pub(crate) dr: Option<f32>,
+}
+
+/// An album's DR indicator: the mean of its member tracks' DR over those analyzed so far (the
+/// TT / dr.loudness-war album-DR convention), or `None` when none are analyzed yet. `drs`
+/// yields the DR of each already-analyzed member track.
+pub(crate) fn album_dr<I: IntoIterator<Item = f32>>(drs: I) -> Option<f32> {
+    let (sum, n) = drs
+        .into_iter()
+        .fold((0.0f32, 0u32), |(s, n), d| (s + d, n + 1));
+    if n == 0 { None } else { Some(sum / n as f32) }
 }
 
 /// Group the flat library into albums, preserving first-seen (library) order so
@@ -59,6 +72,7 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
                 original_date: t.original_date,
                 release_date: t.release_date,
                 remote_source: None, // resolved below, once every member track is known
+                dr: None,            // resolved below from the member tracks' loudness
             });
             albums.len() - 1
         });
@@ -76,6 +90,18 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
                 .iter()
                 .filter_map(|id| remote_by_id.get(id).copied()),
         );
+    }
+    // Album DR = mean of the member tracks' DR over those analyzed so far. Same `id -> dr`
+    // map rationale as the remote-source pass (avoid an O(n²) find per member id).
+    let dr_by_id: HashMap<u32, f32> = library
+        .iter()
+        .filter_map(|t| {
+            let d = t.loudness.as_ref()?.dr;
+            d.is_finite().then_some((t.id, d))
+        })
+        .collect();
+    for album in &mut albums {
+        album.dr = album_dr(album.ids.iter().filter_map(|id| dr_by_id.get(id).copied()));
     }
     albums
 }
@@ -188,6 +214,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             circular: false,
             play_ids: a.ids.clone(),
             remote_source: a.remote_source.clone(),
+            dr: a.dr,
         },
         card_w,
         scale,
@@ -590,6 +617,11 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     {
         meta = format!("{meta} · {}", t!("detail.reissued", year => ry));
     }
+    // The album's overall dynamic range (mean of its analyzed tracks' DR), once at least
+    // one track is analyzed — the same figure the grid card's DR badge carries.
+    if let Some(dr) = album.dr {
+        meta = format!("{meta} · DR{}", dr.round() as i32);
+    }
 
     let hero = detail_hero(
         s,
@@ -731,6 +763,7 @@ mod tests {
             original_date: 1973u32 << 9,
             release_date: 2015u32 << 9,
             remote_source: None,
+            dr: None,
         };
         assert_eq!(album_year(&a, Original), Some(1973));
         assert_eq!(album_year(&a, Release), Some(2015));
@@ -748,6 +781,41 @@ mod tests {
             ..a.clone()
         };
         assert_eq!(album_year(&c, Original), None);
+    }
+
+    #[test]
+    fn album_dr_means_analyzed_tracks_and_is_none_when_unanalyzed() {
+        // The mean of the analyzed members' DR (6, 12, 18 → 12.0).
+        assert_eq!(album_dr([6.0, 12.0, 18.0]), Some(12.0));
+        assert_eq!(album_dr([8.5]), Some(8.5));
+        // No analyzed member tracks yet → no album DR.
+        assert_eq!(album_dr(std::iter::empty::<f32>()), None);
+    }
+
+    #[test]
+    fn group_albums_means_the_member_tracks_dr() {
+        let dr_track = |id: u32, album: &str, dr: Option<f32>| {
+            let mut t = atv(id, "A", album);
+            t.loudness = dr.map(|d| soul_player_host::TrackLoudness {
+                integrated_lufs: -14.0,
+                lra: 5.0,
+                true_peak_dbtp: -1.0,
+                plr: 8.0,
+                dr: d,
+            });
+            t
+        };
+        let albums = group_albums(&[
+            dr_track(1, "X", Some(6.0)),
+            dr_track(2, "X", Some(12.0)), // album X: mean(6, 12) = 9.0
+            dr_track(3, "Y", None),       // album Y: nothing analyzed yet
+        ]);
+        assert_eq!(
+            albums[0].dr,
+            Some(9.0),
+            "album DR is the mean of its analyzed tracks"
+        );
+        assert_eq!(albums[1].dr, None, "an all-un-analyzed album has no DR");
     }
 
     #[test]
@@ -850,6 +918,56 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.contains("· 0")),
             "never render a bare zero year; got {texts:?}"
+        );
+    }
+
+    /// Through the real Albums grid: an album whose tracks are analyzed shows a DR badge on
+    /// its cover carrying the mean DR; an un-analyzed album shows none.
+    #[test]
+    fn album_card_shows_the_mean_dr_badge_when_analyzed() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            albums_page(s, &p, cx, scale)
+        }
+
+        rust_i18n::set_locale("en");
+        let dr_track = |id: u32, album: &str, dr: Option<f32>| {
+            let mut t = atv(id, "A", album);
+            t.loudness = dr.map(|d| soul_player_host::TrackLoudness {
+                integrated_lufs: -14.0,
+                lra: 5.0,
+                true_peak_dbtp: -1.0,
+                plr: 8.0,
+                dr: d,
+            });
+            t
+        };
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        // Album "X": mean(6, 12) = 9 → "DR9". Album "Y": un-analyzed → no badge.
+        s.library = vec![
+            dr_track(1, "X", Some(6.0)),
+            dr_track(2, "X", Some(12.0)),
+            dr_track(3, "Y", None),
+        ];
+        s.route = crate::Route::Albums;
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        let dr_badges: Vec<&String> = texts.iter().filter(|t| t.starts_with("DR")).collect();
+        assert_eq!(
+            dr_badges,
+            vec!["DR9"],
+            "exactly the analyzed album shows its mean-DR badge; got {texts:?}"
         );
     }
 
@@ -965,6 +1083,50 @@ mod tests {
                 .iter()
                 .any(|e| e.key.as_deref() == Some("album-remote")),
             "a local album's header should show no badge"
+        );
+    }
+
+    /// The album detail header's meta line carries the album DR (mean of its analyzed
+    /// tracks) once at least one track is analyzed.
+    #[test]
+    fn album_detail_header_shows_the_album_dr_when_analyzed() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let dr_track = |id: u32, dr: f32| {
+            let mut t = atv(id, "Artist", "Analyzed Album");
+            t.loudness = Some(soul_player_host::TrackLoudness {
+                integrated_lufs: -14.0,
+                lra: 5.0,
+                true_peak_dbtp: -1.0,
+                plr: 8.0,
+                dr,
+            });
+            t
+        };
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![dr_track(1, 6.0), dr_track(2, 12.0)]; // mean = 9 → "DR9"
+        s.route = crate::Route::Album;
+        s.open_album = Some("Analyzed Album".into());
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("DR9")),
+            "the detail header meta includes the album DR; got {texts:?}"
         );
     }
 
