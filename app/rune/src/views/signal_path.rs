@@ -463,7 +463,10 @@ fn metric_row(
 /// DR colour band (TT/Dynameter convention): dynamic (≥ 14) highlighted in the
 /// brand colour, compressed (< 8) flagged with the attention accent, in-between
 /// neutral.
-fn dr_color(dr: f32, p: &Palette) -> Color {
+/// Colour-band for a DR (crest-factor) value: green (primary) for a dynamic >=14, warm
+/// (accent) for a compressed <8 (the loudness-war warning), neutral between. Shared with the
+/// library loudness/DR column. DR is an indicator, not a precise quality score.
+pub(crate) fn dr_color(dr: f32, p: &Palette) -> Color {
     if dr >= 14.0 {
         p.primary
     } else if dr < 8.0 {
