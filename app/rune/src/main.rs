@@ -160,6 +160,8 @@ pub(crate) fn navigate_to(
     s.open_playlist = open_playlist;
     s.mobile_show_content = true;
     s.genre_search = rune::TextEdit::new("");
+    s.album_search = rune::TextEdit::new("");
+    s.artist_search = rune::TextEdit::new("");
     // A playlist's inline new/rename/delete-confirm fields are page-scoped
     // ephemeral UI, same as `genre_search` above; reset rather than carried to
     // wherever we land next (including back onto the same detail page via a
@@ -175,6 +177,8 @@ pub(crate) fn navigate_to(
 /// end.
 pub(crate) fn go_back(s: &mut State) {
     s.genre_search = rune::TextEdit::new("");
+    s.album_search = rune::TextEdit::new("");
+    s.artist_search = rune::TextEdit::new("");
     s.playlist_new_buf = rune::TextEdit::new("");
     s.playlist_renaming = None;
     s.playlist_rename_buf = rune::TextEdit::new("");
@@ -355,6 +359,14 @@ struct State {
     /// track list. Separate from the library search so the two never cross over;
     /// reset whenever we navigate (see [`navigate_to`]/[`go_back`]).
     genre_search: rune::TextEdit,
+    /// The Albums grid's in-page search box (ephemeral): filters the grid by
+    /// album name or artist. Same convention as `genre_search`, reset whenever
+    /// we navigate (see [`navigate_to`]/[`go_back`]).
+    album_search: rune::TextEdit,
+    /// The Artists grid's in-page search box (ephemeral): filters the grid by
+    /// artist name. Same convention as `genre_search`, reset whenever we
+    /// navigate (see [`navigate_to`]/[`go_back`]).
+    artist_search: rune::TextEdit,
     /// Whether the artist detail's "Top Songs" section is expanded past the first
     /// five (toggled by its Show more/less link). Reset when a new artist opens.
     artist_top_expanded: bool,
@@ -710,6 +722,8 @@ impl State {
             nav_history: Vec::new(),
             discography_list: false,
             genre_search: rune::TextEdit::new(""),
+            album_search: rune::TextEdit::new(""),
+            artist_search: rune::TextEdit::new(""),
             artist_top_expanded: false,
             settings_tab: SettingsTab::Appearance,
             theme_pref: config::load_theme_pref()
@@ -10351,6 +10365,43 @@ mod tests {
         s.playlist_new_buf = rune::TextEdit::new("again");
         go_back(&mut s);
         assert_eq!(s.playlist_new_buf.text, "");
+    }
+
+    /// The Albums/Artists grid search boxes are ephemeral, same convention as
+    /// `genre_search`/`playlist_new_buf`: partially-typed text in either one
+    /// does not survive leaving the page, whether via `navigate_to`,
+    /// `go_back`, or a sidebar tab switch.
+    #[test]
+    fn albums_and_artists_search_are_cleared_on_navigate_away() {
+        let _guard = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.route = Route::Albums;
+        s.album_search = rune::TextEdit::new("crooked");
+        s.artist_search = rune::TextEdit::new("pavement");
+        navigate_to(&mut s, Route::Artists, None, None, None, None);
+        assert_eq!(s.album_search.text, "");
+        assert_eq!(s.artist_search.text, "");
+
+        s.album_search = rune::TextEdit::new("again");
+        s.artist_search = rune::TextEdit::new("again");
+        go_back(&mut s);
+        assert_eq!(s.album_search.text, "");
+        assert_eq!(s.artist_search.text, "");
+
+        // A sidebar tab switch clears both too (the same nav-item `on_press`
+        // that already clears `genre_search`/`playlist_new_buf`).
+        s.album_search = rune::TextEdit::new("once more");
+        s.artist_search = rune::TextEdit::new("once more");
+        s.sidebar_collapsed = false;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click(&mut rt, "nav-genres");
+        assert_eq!(rt.state.album_search.text, "");
+        assert_eq!(rt.state.artist_search.text, "");
     }
 
     /// With more than five tracks, Show more expands the Top-Songs list.

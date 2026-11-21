@@ -174,6 +174,8 @@ fn nav_item(
             .on_press(move |s: &mut State| {
                 s.nav_history.clear();
                 s.genre_search = rune::TextEdit::new("");
+                s.album_search = rune::TextEdit::new("");
+                s.artist_search = rune::TextEdit::new("");
                 s.playlist_new_buf = rune::TextEdit::new("");
                 s.route = route;
                 s.mobile_show_content = true;
