@@ -2221,6 +2221,50 @@ mod tests {
         assert_eq!(h.resolve_locators(&[missing]), vec![None]);
     }
 
+    /// The playlist's greyed "unavailable" state is UNIVERSAL, not remote-only:
+    /// disabling a LOCAL source makes its tracks' durable locators resolve to
+    /// None (→ the greyed row), exactly like a disabled/offline remote, and
+    /// re-enabling restores them. A playlist entry for a track whose source is
+    /// turned off (or whose drive is unplugged) must grey out, never silently
+    /// vanish or resolve to a different song. Pairs with the remote case in
+    /// `remote::tests::a_remote_track_locator_round_trips_and_greys_out_when_the_remote_is_disabled`.
+    #[test]
+    fn a_local_track_locator_greys_out_when_its_source_is_disabled() {
+        let a = folder_with("locator_disable", &["a1.wav", "a2.wav"]);
+        let real = a.path().to_path_buf();
+
+        let h = PlayerHandle::offline();
+        h.set_sources(&[(real.clone(), true)]).unwrap();
+        let id = h.views()[0].id;
+
+        // What a playlist stores for this local track.
+        let loc = h
+            .locator_of(id)
+            .expect("a scanned local track yields a durable locator");
+        assert_eq!(
+            h.resolve_locators(std::slice::from_ref(&loc)),
+            vec![Some(id)],
+            "the local locator resolves while its source is enabled"
+        );
+
+        // Disable the source: its tracks leave the aggregate, so the locator
+        // resolves to None — the playlist greys it, same as a disabled remote.
+        h.set_folder_enabled(&real, false).unwrap();
+        assert_eq!(
+            h.resolve_locators(std::slice::from_ref(&loc)),
+            vec![None],
+            "a disabled local source's track locator resolves to None (greyed/unavailable)"
+        );
+
+        // Re-enable: it resolves again.
+        h.set_folder_enabled(&real, true).unwrap();
+        assert_eq!(
+            h.resolve_locators(std::slice::from_ref(&loc)),
+            vec![Some(id)],
+            "re-enabling the source restores resolution"
+        );
+    }
+
     #[test]
     fn subscribe_receives_now_playing_tick() {
         use soul_player_backend::PlayState;
