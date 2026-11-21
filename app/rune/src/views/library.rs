@@ -169,7 +169,7 @@ fn track_row(
                     .truncate(),
             )
     } else {
-        title.grow(1.0)
+        title.grow(1.0).min_w(0.0)
     };
     // Cover + title hug each other, mirroring the old app's `flex items-center`
     // title column with its `w-8 h-8 rounded-lg` (32 px) thumbnail. The pair
@@ -348,6 +348,78 @@ fn track_row(
         })
 }
 
+/// Uppercase column-header labels over the Tracks table (the old app's
+/// TITLE/ARTIST/ALBUM/FORMAT/DURATION row), mirroring [`track_row`]'s own
+/// per-tier column layout *exactly* (same `RowWidth` gating, same per-column
+/// `.w(..)`/`.grow(1.0)`), so each label sits directly over its row's cells at
+/// every pane width. Purely decorative text, so it carries no role/label of
+/// its own; the leading `#`, the cover-thumbnail gap and the trailing
+/// enqueue-button gap are blank spacers sized to match their row counterpart.
+fn track_header_row(p: &Palette, width: RowWidth) -> El {
+    let compact = width == RowWidth::Compact;
+    let label = |s: String| text(s).font(type_::CAPTION).color(p.text_secondary);
+
+    // The title header hugs a blank spacer the width of the row's cover
+    // thumbnail, same gap, so TITLE lands over the row's title text rather
+    // than over its cover.
+    let title_header = row()
+        .key("tracks-header-title")
+        .gap(space::SM)
+        .center_y()
+        .grow(1.0)
+        .min_w(0.0)
+        .child(el().key("tracks-header-cover-spacer").size(32.0, 32.0))
+        .child(
+            label(t!("library.colTitle").to_uppercase())
+                .grow(1.0)
+                .min_w(0.0)
+                .truncate(),
+        );
+
+    let mut r = row()
+        .key("tracks-header")
+        .gap(space::MD)
+        .px(space::MD)
+        .py(space::XS)
+        .child(el().key("tracks-header-index").w(28.0))
+        .child(title_header);
+    if !compact {
+        r = r
+            .child(
+                label(t!("library.colArtist").to_uppercase())
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .truncate(),
+            )
+            .child(
+                label(t!("library.colAlbum").to_uppercase())
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .truncate(),
+            );
+    }
+    if width == RowWidth::Wide {
+        r = r.child(
+            el().key("tracks-header-format")
+                .w(52.0)
+                .child(label(t!("library.colFormat").to_uppercase())),
+        );
+    }
+    r = r
+        .child(label(t!("library.colDuration").to_uppercase()).w(56.0))
+        .child(label(t!("library.colDr").to_uppercase()).w(44.0));
+    if width == RowWidth::Wide {
+        r = r.child(label(t!("library.colLufs").to_uppercase()).w(64.0));
+    }
+    // A blank spacer the same size as the row's `+` enqueue button (icon +
+    // its padding), so the header's trailing edge lines up with the rows'.
+    r.child(
+        el().key("tracks-header-enqueue-spacer")
+            .padding(space::SNUG)
+            .child(icon(&icons::PLUS, 14.0).color(p.text_secondary.alpha(0.0))),
+    )
+}
+
 /// The search bar: shows the current filter and, while active, a cursor. Click
 /// it (or press `/`) to start typing; the ✕ clears it. No focused text field —
 /// `main::handle_key` routes keystrokes into `State::search`.
@@ -501,6 +573,7 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .min_h(0.0)
         .child(search_bar(s, p))
         .child(sort_bar(s, p))
+        .child(track_header_row(p, width))
         .child(body)
 }
 
@@ -708,5 +781,69 @@ mod tests {
         assert!(texts.iter().any(|t| t == "FLAC"), "FLAC label renders");
         assert!(texts.iter().any(|t| t == "MP3"), "MP3 label renders");
         assert!(texts.iter().any(|t| t == "DSF"), "DSF label renders");
+    }
+
+    /// End to end through the real Tracks table: the column-header row renders
+    /// above the list, and its labels match `track_row`'s own tier gating:
+    /// TITLE/DURATION/DR always show; ARTIST/ALBUM join at Standard+; FORMAT
+    /// and LUFS only join at Wide.
+    #[test]
+    fn tracks_header_row_shows_the_labels_its_tier_reveals() {
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            track_list(s, &p, cx, scale)
+        }
+
+        fn render(width: f32) -> Runtime<State> {
+            rust_i18n::set_locale("en");
+            let mut s = State::new(soul_player_host::PlayerHandle::offline());
+            s.library = vec![tv(1, Some("FLAC"))];
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut rt = Runtime::new(s, test_view, (width, 720.0), env);
+            rt.frame(0.0);
+            rt
+        }
+
+        let texts = |rt: &Runtime<State>| -> Vec<String> {
+            rt.elements().into_iter().filter_map(|e| e.text).collect()
+        };
+
+        // Wide (> 760 content pane): every column's header shows.
+        let wide = render(1400.0);
+        assert!(
+            wide.find("tracks-header").is_some(),
+            "the header row renders"
+        );
+        let wide_texts = texts(&wide);
+        assert!(wide_texts.iter().any(|t| t == "TITLE"));
+        assert!(wide_texts.iter().any(|t| t == "ARTIST"));
+        assert!(wide_texts.iter().any(|t| t == "ALBUM"));
+        assert!(wide_texts.iter().any(|t| t == "FORMAT"));
+        assert!(wide_texts.iter().any(|t| t == "DURATION"));
+        assert!(wide_texts.iter().any(|t| t == "DR"));
+        assert!(wide_texts.iter().any(|t| t == "LUFS"));
+
+        // Standard (a mid content pane, 641..=760): artist/album join, but not
+        // the wide-only FORMAT/LUFS columns.
+        let standard = render(700.0);
+        let standard_texts = texts(&standard);
+        assert!(standard_texts.iter().any(|t| t == "TITLE"));
+        assert!(standard_texts.iter().any(|t| t == "ARTIST"));
+        assert!(standard_texts.iter().any(|t| t == "ALBUM"));
+        assert!(standard_texts.iter().any(|t| t == "DURATION"));
+        assert!(!standard_texts.iter().any(|t| t == "FORMAT"));
+        assert!(!standard_texts.iter().any(|t| t == "LUFS"));
+
+        // Compact (a narrow content pane): artist/album fold away too.
+        let compact = render(500.0);
+        let compact_texts = texts(&compact);
+        assert!(compact_texts.iter().any(|t| t == "TITLE"));
+        assert!(compact_texts.iter().any(|t| t == "DURATION"));
+        assert!(!compact_texts.iter().any(|t| t == "ARTIST"));
+        assert!(!compact_texts.iter().any(|t| t == "ALBUM"));
     }
 }

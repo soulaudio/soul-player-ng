@@ -19,7 +19,7 @@ use crate::playlists::{Playlist, PlaylistEntry, PlaylistId};
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::albums::{detail_track_row, fmt_total_dur};
-use crate::views::detail_page::{HeroArt, detail_hero, play_all_pill};
+use crate::views::detail_page::{HeroArt, detail_hero, enqueue_all_button, play_all_pill};
 use crate::views::icons;
 
 /// A row control's square hit box (remove/up/down/rename/delete icons).
@@ -248,10 +248,12 @@ fn remove_cover_control(p: &Palette, id: PlaylistId) -> El {
 fn hero_actions(s: &State, p: &Palette, id: PlaylistId, play_ids: Vec<u32>) -> El {
     let mut r = row().key("playlist-actions").gap(space::SM).center_y();
     if !play_ids.is_empty() {
-        r = r.child(
-            play_all_pill("playlist-play-all", play_ids, p)
-                .label(t!("playlists.playAll").to_string()),
-        );
+        r = r
+            .child(
+                play_all_pill("playlist-play-all", play_ids.clone(), p)
+                    .label(t!("playlists.playAll").to_string()),
+            )
+            .child(enqueue_all_button("detail-enqueue-all", play_ids, p));
     }
 
     if s.playlist_renaming == Some(id) {
