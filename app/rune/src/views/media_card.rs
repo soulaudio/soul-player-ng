@@ -54,6 +54,26 @@ pub(crate) struct CardSpec {
     /// badge next to the title. `None` (a local or mixed-source card) shows
     /// nothing, the unremarked default.
     pub(crate) remote_source: Option<String>,
+    /// `Some(dr)` shows a colour-banded DR pill in the cover's corner — the album's
+    /// dynamic-range indicator (albums only). `None` shows nothing (artists, or an album
+    /// whose tracks are all un-analyzed).
+    pub(crate) dr: Option<f32>,
+}
+
+/// A colour-banded DR pill for a cover's top-left corner: `DR12`, green (dynamic) to warm
+/// (compressed) via the shared band, on a dark scrim so it stays legible over any artwork.
+fn dr_badge(key: &str, dr: f32, p: &Palette) -> El {
+    el().key(format!("{key}-dr"))
+        .absolute(space::XS, space::XS)
+        .px(space::XS)
+        .py(space::XXS)
+        .radius(radius::SM)
+        .fill(Color::BLACK.alpha(0.55))
+        .child(
+            text(format!("DR{}", dr.round() as i32))
+                .font(type_::CAPTION.mono())
+                .color(crate::views::signal_path::dr_color(dr, p)),
+        )
 }
 
 /// One library card: artwork (square or circular) with a hover play-overlay, a
@@ -123,6 +143,14 @@ pub(crate) fn media_card(
                         ),
                 ),
         );
+
+    // An album's DR rides in the cover's corner, so a browser can spot a compressed
+    // (loudness-war) master vs a dynamic one at a glance across the grid.
+    let cover_area = if let Some(dr) = spec.dr {
+        cover_area.child(dr_badge(&spec.key, dr, p))
+    } else {
+        cover_area
+    };
 
     let title_el = text(spec.title)
         .font(type_::CARD_TITLE)
