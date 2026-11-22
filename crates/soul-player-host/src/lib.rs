@@ -3329,6 +3329,59 @@ mod tests {
     }
 
     #[test]
+    fn set_dsp_chain_round_trips_truncates_bands_and_bumps_generation() {
+        let h = PlayerHandle::offline();
+        let gen0 = h.dsp_chain().generation;
+
+        // An EQ unit carrying MORE than MAX_BANDS bands is truncated on apply (the
+        // sink's fixed-size `Equalizer<MAX_BANDS>` can hold no more).
+        let bands: Vec<Band> = default_bands()
+            .iter()
+            .cloned()
+            .cycle()
+            .take(MAX_BANDS + 3)
+            .collect();
+        let unit = EqUnit {
+            bands,
+            ..EqUnit::default()
+        };
+        h.set_dsp_chain(vec![DspUnit::Eq(unit)]);
+
+        let chain = h.dsp_chain();
+        assert_eq!(
+            chain.units.len(),
+            1,
+            "the set chain round-trips through the handle"
+        );
+        assert_eq!(
+            chain.generation,
+            gen0.wrapping_add(1),
+            "applying a chain bumps the generation the sink re-designs on"
+        );
+        let eq = chain.units[0]
+            .as_eq()
+            .expect("the round-tripped unit is the EQ");
+        assert_eq!(
+            eq.bands.len(),
+            MAX_BANDS,
+            "an over-long band list is truncated to MAX_BANDS on apply"
+        );
+
+        // A second apply (an empty passthrough chain) bumps the generation again.
+        h.set_dsp_chain(Vec::new());
+        let chain2 = h.dsp_chain();
+        assert_eq!(
+            chain2.generation,
+            gen0.wrapping_add(2),
+            "each apply increments the generation"
+        );
+        assert!(
+            chain2.units.is_empty(),
+            "an empty chain round-trips as a bit-exact passthrough"
+        );
+    }
+
+    #[test]
     fn set_folders_preserves_enabled_flags() {
         // Disable `a`, then reconcile to `[a, b]` via the flag-agnostic
         // `set_folders`: `a` keeps its disabled flag; the new `b` defaults enabled.
