@@ -252,7 +252,7 @@ jobs:
         working-directory: dist
         run: |
           for f in *; do
-            case "$f" in *.meta.json) continue ;; esac
+            case "$f" in *.meta.json|*.sha256) continue ;; esac # incl. the file being written
             python -c "import hashlib,sys; p=sys.argv[1]; print(hashlib.sha256(open(p,'rb').read()).hexdigest()+'  '+p)" "$f"
           done > ${{ matrix.target_key }}.sha256
           cat ${{ matrix.target_key }}.sha256
@@ -369,7 +369,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --tag "$TAG" --version "$VERSION" \
             --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --notes "Soul Player $TAG" \
             --out dist/latest.json
-          cat dist/*.sha256 | sort -k2 > dist/SHA256SUMS
+          cat dist/*.sha256 | grep -v '\.sha256$' | sort -k2 > dist/SHA256SUMS
           rm dist/*.sha256 dist/*.meta.json
           (cd dist && sha256sum -c SHA256SUMS && ls -la)
 
