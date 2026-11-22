@@ -3412,4 +3412,43 @@ mod tests {
             "a newly-added source defaults to enabled"
         );
     }
+
+    #[test]
+    fn views_overlay_live_seeded_loudness_onto_the_track_rows() {
+        // mark_loudness: a loudness value seeded/analyzed THIS session (keyed by the
+        // track's path) must surface on views()/views_by() without waiting for a rebake —
+        // the library DR/LUFS column lighting up for a just-analyzed track.
+        // `seed_loudness_populates_the_live_map` proves the seed lands in the map; this
+        // proves views() actually overlays it onto the row (the path_of join).
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.wav"), wav(48_000, 96_000)).unwrap();
+
+        let h = PlayerHandle::offline();
+        h.open_folder(dir.path()).expect("open_folder");
+        let id = h.views()[0].id;
+        assert!(
+            h.views()[0].loudness.is_none(),
+            "an untagged WAV has no loudness before any analysis"
+        );
+
+        // Seed loudness for this exact track's path (derived from its durable locator, so
+        // it matches `path_of` on every platform — the locator is built from path_of).
+        let TrackLocator::Local { path } = h.locator_of(id).expect("local locator") else {
+            panic!("a local scan yields a Local locator");
+        };
+        h.seed_loudness(vec![(PathBuf::from(path), test_loudness(-9.5))]);
+
+        // views() overlays the live-seeded loudness onto the row, fresher than the bake.
+        assert_eq!(
+            h.views()[0].loudness,
+            Some(test_loudness(-9.5)),
+            "views() overlays the live-seeded loudness"
+        );
+        // views_by() takes the same overlay path.
+        assert_eq!(
+            h.views_by(BrowseAxis::ArtistAlbumTrack)[0].loudness,
+            Some(test_loudness(-9.5)),
+            "views_by() overlays loudness too"
+        );
+    }
 }

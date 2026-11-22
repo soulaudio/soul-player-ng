@@ -244,7 +244,14 @@ mod tests {
             .join("\n");
         let max = 2500;
         let url = report_url("owner/repo", &sample_diag(), &huge, max);
-        assert!(url.len() <= max, "url len {} exceeds {}", url.len(), max);
+        // Assert the budget the product actually enforces: the logged-out, double-encoded
+        // `login?return_to=` wrapped length (report_url trims against THIS, not url.len(),
+        // which is ~half the size and would pass even with the real budget blown).
+        let wrapped = login_wrapped_len(&url);
+        assert!(
+            wrapped <= max,
+            "wrapped url len {wrapped} exceeds budget {max}"
+        );
         assert!(
             url.contains("issues/new?"),
             "still a valid issue URL: {url}"
