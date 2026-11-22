@@ -105,10 +105,17 @@ pub(crate) fn media_card(
         .key("cover-area")
         .size(card_w, card_w)
         .radius(corner)
+        // Clip children to the rounded shape so the blurred artist avatar keeps a
+        // crisp circle edge (the blur would otherwise bleed past the circle).
+        .clip_rounded(corner)
         .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
         .child(if spec.circular {
-            // Artist avatar: real art, else the artist-seeded generated cover.
+            // Artist avatar: real art, else the artist-seeded generated cover,
+            // softly blurred so the person silhouette reads on top (the original's
+            // artist cards blur the art behind the glyph). Sigma scales with the
+            // card so the look is consistent at every grid density.
             artist_cover(s, spec.cover_id, &spec.title, card_w, corner, p, scale)
+                .blur(card_w * 0.05)
         } else {
             cover(s, Some(spec.cover_id), card_w, corner, p, scale)
         });
