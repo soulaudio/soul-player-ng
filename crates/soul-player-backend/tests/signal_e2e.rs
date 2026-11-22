@@ -11,10 +11,11 @@
 //! broken rate handshake — a shifted Goertzel peak), clipping, and channel swaps.
 //! Where `signal_path_matrix` asserts the projected rates/flags against a `NullSink`
 //! (no audio), this asserts the real samples that reach the device. Coverage is the
-//! full codec set: PCM (WAV/AIFF), FLAC, ALAC, MP3, AAC-LC (ADTS + MP4), **HE-AAC
-//! (SBR)** — the format whose post-load rate flip caused the half-speed bug, so it's a
-//! live regression guard — MPEG Layer II, Opus, Vorbis, and DSD64/128/256/512 (DSF +
-//! DFF). Only MPEG Layer I (`tone.mp1`) is excluded; see the note below.
+//! codec set: PCM (WAV/AIFF), FLAC, ALAC, MP3, MPEG Layer II, Opus, Vorbis, and
+//! DSD64/128/256/512 (DSF + DFF). Only MPEG Layer I (`tone.mp1`) is excluded; see the
+//! note below. AAC (AAC-LC + HE-AAC/SBR) is also excluded — it's dropped from shipped
+//! products for licensing (default-off `aac` feature keeps the decoder out of the player);
+//! the SBR half-speed-rate regression is guarded in soul-audio-core where that decoder lives.
 
 use std::path::PathBuf;
 
@@ -31,16 +32,13 @@ use soul_player_backend::{Command, ServicePlayer, apply_command, project_signal_
 /// Opus, 32 kHz for MP1, DSD decimates to 44.1 kHz) — so at a 48 kHz device several of
 /// these resample, exercising the exact path that mangled speed in the wild.
 const FIXTURES: &[&str] = &[
-    "tone.wav",     // PCM
-    "tone.flac",    // FLAC (lossless)
-    "tone.m4a",     // ALAC (lossless, MP4)
-    "tone-aac.m4a", // AAC-LC (MP4)
-    "tone.aif",     // AIFF PCM
-    "tone.mp3",     // MP3
-    "tone.aac",     // AAC-LC (ADTS)
-    // HE-AAC (SBR): its reported rate flips after the first frame — the exact format
-    // whose stale-rate caching played at half speed. A decode-path regression guard.
-    "tone-sbr.m4a",
+    "tone.wav",  // PCM
+    "tone.flac", // FLAC (lossless)
+    "tone.m4a",  // ALAC (lossless, MP4)
+    "tone.aif",  // AIFF PCM
+    "tone.mp3",  // MP3
+    // AAC (AAC-LC ADTS/MP4 + HE-AAC/SBR) omitted: gated out for licensing — see the
+    // module note above and architecture.rs::aac_decoder_feature_never_enabled.
     "tone.mp2",        // MPEG Layer II
     "tone.opus",       // Opus (48 kHz)
     "tone-vorbis.ogg", // Vorbis (Ogg)

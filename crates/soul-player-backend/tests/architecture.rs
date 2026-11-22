@@ -68,3 +68,69 @@ fn headless_service_has_no_gui_dependencies() {
          offending code into the Rune app (`app/rune`) instead. See docs/ARCHITECTURE.md."
     );
 }
+
+/// License gate: the **AAC decoder must NEVER be compiled into the distributed
+/// player.** AAC is a Via LA patent — **$15,000 one-time + $0.98 per unit** — so
+/// each distributed copy bundling an AAC decoder owes a per-unit royalty (a
+/// clean-room pure-Rust decoder is still patent-bearing). The decoder lives in
+/// `soul-audio-core` behind an opt-in `aac` cargo feature (default **OFF**); this
+/// asserts nothing in the resolved graph turns it on. If AAC playback is ever
+/// wanted on the desktop, delegate to the OS codec (Media Foundation / CoreAudio),
+/// never enable this feature. Rationale + cross-repo picture:
+/// soul-listener/docs/research/2026-11-18-licensing-ip-and-workarounds.md §5.
+#[test]
+fn aac_decoder_feature_never_enabled() {
+    let output = Command::new(env!("CARGO"))
+        .args(["metadata", "--format-version", "1"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output();
+
+    let output = match output {
+        Ok(o) if o.status.success() => o,
+        other => {
+            eprintln!(
+                "aac license gate skipped: `cargo metadata` unavailable ({other:?}); \
+                 the CI gate still enforces this"
+            );
+            return;
+        }
+    };
+
+    let meta: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("cargo metadata emits valid JSON");
+
+    // Resolve the decode core's package id (exact name — not its sibling crates).
+    let core_id = meta["packages"]
+        .as_array()
+        .expect("metadata has a packages array")
+        .iter()
+        .find(|p| p["name"] == "soul-audio-core")
+        .and_then(|p| p["id"].as_str())
+        .map(str::to_owned);
+    let core_id = match core_id {
+        Some(id) => id,
+        None => {
+            eprintln!("aac license gate skipped: soul-audio-core not in the dependency graph");
+            return;
+        }
+    };
+
+    // Its ENABLED features in the current resolution must not include `aac`.
+    let aac_enabled = meta["resolve"]["nodes"]
+        .as_array()
+        .expect("resolve has a nodes array")
+        .iter()
+        .find(|n| n["id"].as_str() == Some(core_id.as_str()))
+        .and_then(|n| n["features"].as_array())
+        .is_some_and(|feats| feats.iter().any(|f| f.as_str() == Some("aac")));
+
+    assert!(
+        !aac_enabled,
+        "AAC LICENSE VIOLATION: `soul-audio-core` was resolved with the `aac` feature enabled, \
+         pulling the patented AAC decoder into the distributed player. AAC is a Via LA patent \
+         ($15,000 one-time + $0.98/unit) and is DROPPED from every shipped soul product — decode \
+         AAC via the OS codec (Media Foundation / CoreAudio) instead, never by enabling this \
+         feature. Remove `features = [\"aac\"]` from whatever dependency added it. See \
+         soul-listener/docs/research/2026-11-18-licensing-ip-and-workarounds.md §5."
+    );
+}

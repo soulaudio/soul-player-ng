@@ -34,7 +34,7 @@
 //!      requested frame peaks at lag 0 and clears the row's floor (lossless
 //!      ~0.99, lossy looser);
 //!   3. **duration** — `project_tick().duration_secs` is `Some` and ≈ the row's
-//!      known length (ADTS `.aac` / MP1 / MP2 now report an exact length);
+//!      known length (MP1 / MP2 now report an exact length);
 //!   4. **plays** — the pre-seek audio is non-silent with a sane peak/RMS.
 //!
 //! Everything runs deterministically on a 64 MiB-stack thread (no device, no
@@ -79,7 +79,7 @@ struct Fixture {
     corr_floor: f64,
 }
 
-/// The audited formats. ADTS AAC, AAC-LC, ALAC, MP1, MP2, Opus and Vorbis sit
+/// The audited formats. ALAC, MP1, MP2, Opus and Vorbis sit
 /// beside the WAV/FLAC/MP3 baseline — the seek-relevant format spread. MP1 is the
 /// committed Layer-I conformance vector concatenated to a seekable length (ffmpeg
 /// has no Layer-I encoder); Opus is 48 kHz and MP1 32 kHz, so the harness also
@@ -90,8 +90,8 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "tone.flac",       lossy: false, rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.99 },
     Fixture { file: "tone.m4a",        lossy: false, rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.99 }, // ALAC
     Fixture { file: "tone.mp3",        lossy: true,  rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.90 },
-    Fixture { file: "tone.aac",        lossy: true,  rate: 44100, ch: 2, known_secs: 2.077, corr_floor: 0.90 }, // ADTS
-    Fixture { file: "tone-aac.m4a",    lossy: true,  rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.90 }, // AAC-LC
+    // AAC (ADTS + AAC-LC) omitted — gated out for licensing (Via LA); the decoder sits
+    // behind soul-audio-core's default-off `aac` feature. Guard: architecture.rs::aac_decoder_feature_never_enabled.
     Fixture { file: "tone.mp2",        lossy: true,  rate: 44100, ch: 2, known_secs: 2.011, corr_floor: 0.90 },
     Fixture { file: "tone-vorbis.ogg", lossy: true,  rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.90 },
     Fixture { file: "tone.opus",       lossy: true,  rate: 48000, ch: 2, known_secs: 2.006, corr_floor: 0.90 },
@@ -497,8 +497,8 @@ fn audit_one(fix: &Fixture, clips_dir: Option<&Path>) -> Result<(), String> {
     pump_capture_frames(&mut player, &path, pre_frames, ch);
 
     // (3) Duration — end-to-end, as the UI would see it. Every seekable stream
-    // must report a real length so the seek bar works (incl. ADTS .aac / MP1 /
-    // MP2, which now header-walk for an exact frame count).
+    // must report a real length so the seek bar works (incl. MP1 / MP2, which
+    // now header-walk for an exact frame count).
     let dur = project_tick(&player, 1.0, false).duration_secs;
     let d = dur
         .ok_or_else(|| "deck reported no duration; a seekable stream must have one".to_string())?;
