@@ -560,72 +560,61 @@ mod tests {
         }
     }
 
+    /// `remote_health_summary` is a pure fold over a sources snapshot: only ENABLED
+    /// remotes count, locals never affect it, and the enabled-remote online/offline mix
+    /// picks the indicator state — all-online → Healthy, some-offline → Partial,
+    /// all-offline → Down, no enabled remotes → hidden (None). One table over every
+    /// case (was seven near-duplicate tests). Because it is called fresh per row it also
+    /// shows the fold keeps no memory between snapshots (what the periodic poller relies
+    /// on when it re-folds each refreshed `sources()`).
     #[test]
-    fn no_remotes_at_all_summarizes_to_none() {
-        assert_eq!(remote_health_summary(&[]), None);
-        assert_eq!(remote_health_summary(&[local()]), None);
-    }
-
-    #[test]
-    fn every_enabled_remote_online_is_healthy() {
-        let sources = vec![remote(true, true), remote(true, true)];
-        assert_eq!(
-            remote_health_summary(&sources),
-            Some(RemoteSummary::Healthy)
-        );
-    }
-
-    #[test]
-    fn a_mix_of_online_and_offline_enabled_remotes_is_partial() {
-        let sources = vec![remote(true, true), remote(true, false)];
-        assert_eq!(
-            remote_health_summary(&sources),
-            Some(RemoteSummary::Partial)
-        );
-    }
-
-    #[test]
-    fn every_enabled_remote_offline_is_down() {
-        let sources = vec![remote(true, false), remote(true, false)];
-        assert_eq!(remote_health_summary(&sources), Some(RemoteSummary::Down));
-    }
-
-    #[test]
-    fn disabled_remotes_are_excluded_from_both_the_count_and_the_color() {
-        // One enabled-and-online, one DISABLED-and-offline: the disabled one must
-        // not drag an otherwise-healthy summary down to Partial, nor count toward
-        // "there are enabled remotes" on its own.
-        let sources = vec![remote(true, true), remote(false, false)];
-        assert_eq!(
-            remote_health_summary(&sources),
-            Some(RemoteSummary::Healthy)
-        );
-
-        // Every remote disabled: zero ENABLED remotes, even though the list isn't
-        // empty — the indicator must hide, not show a trivial "down" for sources
-        // the user intentionally turned off.
-        let all_disabled = vec![remote(false, true), remote(false, false)];
-        assert_eq!(remote_health_summary(&all_disabled), None);
-    }
-
-    #[test]
-    fn local_sources_never_affect_the_remote_summary() {
-        let sources = vec![local(), remote(true, false)];
-        assert_eq!(remote_health_summary(&sources), Some(RemoteSummary::Down));
-    }
-
-    /// The summary is a pure fold over whatever snapshot it's given — calling it
-    /// again with a DIFFERENT snapshot (as the periodic poller's refreshed
-    /// `sources()` would produce) reflects that snapshot immediately, with no
-    /// memory of the previous call. Simulates a remote flipping
-    /// online → offline → online across three successive poller refreshes.
-    #[test]
-    fn reflects_each_fresh_snapshot_independently_across_simulated_poller_refreshes() {
-        let online = vec![remote(true, true)];
-        let offline = vec![remote(true, false)];
-
-        assert_eq!(remote_health_summary(&online), Some(RemoteSummary::Healthy));
-        assert_eq!(remote_health_summary(&offline), Some(RemoteSummary::Down));
-        assert_eq!(remote_health_summary(&online), Some(RemoteSummary::Healthy));
+    fn remote_health_summary_folds_a_sources_snapshot_to_the_indicator_state() {
+        let cases: Vec<(&str, Vec<SourceStatus>, Option<RemoteSummary>)> = vec![
+            ("no sources at all", vec![], None),
+            ("only a local source", vec![local()], None),
+            (
+                "one enabled online remote",
+                vec![remote(true, true)],
+                Some(RemoteSummary::Healthy),
+            ),
+            (
+                "one enabled offline remote",
+                vec![remote(true, false)],
+                Some(RemoteSummary::Down),
+            ),
+            (
+                "every enabled remote online",
+                vec![remote(true, true), remote(true, true)],
+                Some(RemoteSummary::Healthy),
+            ),
+            (
+                "a mix of online and offline enabled remotes",
+                vec![remote(true, true), remote(true, false)],
+                Some(RemoteSummary::Partial),
+            ),
+            (
+                "every enabled remote offline",
+                vec![remote(true, false), remote(true, false)],
+                Some(RemoteSummary::Down),
+            ),
+            (
+                "a disabled offline remote does not drag an online one down to Partial",
+                vec![remote(true, true), remote(false, false)],
+                Some(RemoteSummary::Healthy),
+            ),
+            (
+                "every remote disabled: zero enabled remotes, so the indicator hides",
+                vec![remote(false, true), remote(false, false)],
+                None,
+            ),
+            (
+                "a local source never affects the remote summary",
+                vec![local(), remote(true, false)],
+                Some(RemoteSummary::Down),
+            ),
+        ];
+        for (label, sources, want) in cases {
+            assert_eq!(remote_health_summary(&sources), want, "case: {label}");
+        }
     }
 }
