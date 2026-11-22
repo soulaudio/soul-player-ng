@@ -261,6 +261,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         genre.remote_source.clone(),
         None,
         meta,
+        Some(&icons::CLOCK),
         detail_actions("genre-play-all", genre.ids.clone(), p),
     );
 
