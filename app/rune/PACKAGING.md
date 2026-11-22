@@ -73,18 +73,28 @@ with a new key**, so rotate only with a plan (e.g. a one-time manual download).
 
 ## Cutting a release
 
-1. Bump `version` in `app/rune/Cargo.toml`, commit.
-2. Tag it: `git tag v0.2.0 && git push origin v0.2.0` (the tag **must** match the
-   manifest version — the release workflow's `guard` job fails otherwise).
-3. `.github/workflows/release.yml` (tag-triggered) then, per platform (Windows x64,
-   macOS Apple silicon, macOS Intel, Linux x64):
-   - builds + **signs** the bundle (`cargo packager --release -f <format>`),
-   - writes a per-platform sidecar (`.github/scripts/write-meta.py`),
-   - on macOS, also builds the DMG and **verifies** it before upload
-     (`.github/scripts/verify-macos-bundle.sh`),
-   - and the `publish` job assembles `latest.json`
-     (`.github/scripts/gen-latest-json.py`) and uploads the installers +
-     manifest to the GitHub Release.
+1. **Dry run first** (on the branch with the version bump):
+   `gh workflow run release.yml --ref <branch> -f dry_run=true` — builds and runs the full
+   per-OS e2e, publishes nothing; the installers stay as run artifacts.
+2. Bump `version` in `app/rune/Cargo.toml`, merge to `main`.
+3. Tag the merge commit: `git tag v0.4.0 && git push origin v0.4.0`.
+
+`.github/workflows/release.yml` then runs, stage by stage — nothing reaches users
+until every earlier stage is green:
+
+| Stage | What it does |
+| --- | --- |
+| `guard` | tag == `Cargo.toml` version; the commit is on `main` and its `CI success` check passed (waits for it if still running); the tag isn't already published |
+| `build` | per platform (Windows x64, macOS Apple silicon, macOS Intel, Linux x64): `cargo build --release --locked`, `cargo packager` + updater signature, the sidecar for `latest.json` (`write-meta.py`); macOS also builds the DMG and runs the static bundle checks (`verify-macos-bundle.sh`: sealed signature, architecture, identity, launch); SHA-256 of every installer |
+| `e2e` | on a fresh runner of each OS, with the exact installer that will ship (`.github/scripts/release-e2e.py`): **fresh install** → headless renders + the real app autoplaying a generated library (stays up, logs the right version, starts playback, no panic, quits cleanly) → **uninstall** leaves nothing behind; then **upgrade** from the currently published release (whose updater must pick up the new `latest.json`, served locally) → **rollback** to that release (it must still run on the config the new one wrote) → uninstall |
+| `draft` | a draft GitHub Release with the installers, `latest.json` (`gen-latest-json.py`) and `SHA256SUMS`; the uploaded assets are downloaded again and checked against the tested bytes |
+| `publish` | undraft + mark latest (the `release` environment — add required reviewers there to make this a manual approval) |
+| `verify` | the public `releases/latest/download/latest.json` serves the new version, covers all 4 platforms, and every URL in it downloads the tested bytes |
+| `rollback` | if `draft`, `publish` or `verify` fails: a draft is deleted; a published release is demoted to pre-release and the previous release is made latest again, so in-app updaters stop offering it. The tag is kept — fix forward with a new patch version |
+
+Run the e2e locally (it installs into `/Applications` / the registry / `~/Applications`,
+so use a VM or a throwaway account):
+`python .github/scripts/release-e2e.py --installer <dmg|setup.exe|AppImage> --version X.Y.Z --target-key macos-aarch64`.
 
 The in-app updater reads `…/releases/latest/download/latest.json`; `latest/`
 always points at the newest release, so the endpoint never changes.
@@ -102,9 +112,8 @@ always points at the newest release, so the endpoint never changes.
 | `UPDATER_PRIVATE_KEY` | the **contents** of `.signing/soul-player-updater.key` |
 | `UPDATER_KEY_PASSWORD` | the key's password — **empty** for the current key |
 
-**Dry run** (before tagging): `gh workflow run release.yml --ref <branch> -f dry_run=true`
-builds, packages and verifies every platform and keeps the installers as run artifacts,
-but publishes nothing.
+**Manual rollback** of a published release (outside the workflow):
+`gh release edit vX.Y.Z --prerelease --latest=false && gh release edit vPREV --latest`.
 
 ## Shipping unsigned (what users see, and how to handle it)
 

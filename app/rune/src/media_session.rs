@@ -188,10 +188,12 @@ pub(crate) fn now_playing_cover(
     })
 }
 
-/// Where now-playing covers are cached (`~/Library/Caches/Soul Player/now-playing` on
-/// macOS).
+/// Where now-playing covers are cached (`~/Library/Caches/soul-player/now-playing` on
+/// macOS), beside the remote cache. Not "Soul Player": on Windows the cache dir is
+/// `%LOCALAPPDATA%`, where `%LOCALAPPDATA%\Soul Player` is the per-user INSTALL dir — a
+/// cache there survives the uninstaller (the release e2e caught that).
 fn artwork_dir() -> Option<std::path::PathBuf> {
-    Some(dirs::cache_dir()?.join("Soul Player").join("now-playing"))
+    Some(dirs::cache_dir()?.join("soul-player").join("now-playing"))
 }
 
 /// Owned track metadata to publish (strings owned because `MediaMetadata` borrows).

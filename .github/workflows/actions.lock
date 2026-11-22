@@ -8,10 +8,9 @@ workflows:
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/pr-title.yml': []
     '.github/workflows/release.yml':
-        - 'actions/checkout@v4.4.0'
+        - 'actions/checkout@v7.0.1'
         - 'actions/download-artifact@v4.3.0'
         - 'actions/upload-artifact@v4.6.2'
-        - 'softprops/action-gh-release@v2.6.2'
     '.github/workflows/security.yml':
         - 'actions/checkout@v7.0.1'
         - 'anchore/sbom-action@v0.24.3'
@@ -19,11 +18,6 @@ workflows:
     '.github/workflows/verify-lockfile.yml':
         - 'actions/checkout@v7.0.1'
 dependencies:
-    'actions/checkout@v4.4.0':
-        ref: 'v4.4.0'
-        commit: 'sha1-11d5960a326750d5838078e36cf38b85af677262'
-        owner_id: 44036562
-        repo_id: 197814629
     'actions/checkout@v7.0.1':
         ref: 'v7.0.1'
         commit: 'sha1-3d3c42e5aac5ba805825da76410c181273ba90b1'
@@ -44,11 +38,6 @@ dependencies:
         commit: 'sha1-66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c'
         owner_id: 16208487
         repo_id: 399925381
-    'softprops/action-gh-release@v2.6.2':
-        ref: 'v2.6.2'
-        commit: 'sha1-3bb12739c298aeb8a4eeaf626c5b8d85266b0e65'
-        owner_id: 2242
-        repo_id: 204253808
     'swatinem/rust-cache@v2.9.3':
         ref: 'v2.9.3'
         commit: 'sha1-d1527c8f67ef9af357290475d4af4b0fab8f12e0'
