@@ -558,12 +558,11 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
                 .unwrap_or(f64::from(e.snapshot.duration_secs))
         })
         .sum();
-    let meta = t!(
-        "detail.tracksAndDuration",
-        count => playlist.entries.len(),
-        dur => fmt_total_dur(total)
-    )
-    .to_string();
+    let meta = format!(
+        "{} · {}",
+        crate::views::library::tracks_label(playlist.entries.len()),
+        fmt_total_dur(total)
+    );
 
     // A user-set custom cover always wins over the cover-track/icon fallback,
     // matching the Playlists list page's own precedence (`playlists::playlist_cover`).

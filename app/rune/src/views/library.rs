@@ -26,6 +26,26 @@ pub(crate) fn fmt_dur(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// "1 album" / "N albums" — picks the singular or plural form in code, since
+/// rust-i18n 3 has no CLDR plurals (two forms suffice for en/de/es/cs; zh/ja are
+/// plural-invariant). Avoids the "1 albums" grammar slip the old app doesn't have.
+pub(crate) fn albums_label(n: usize) -> String {
+    if n == 1 {
+        t!("count.albumOne").to_string()
+    } else {
+        t!("count.albumOther", count => n).to_string()
+    }
+}
+
+/// "1 track" / "N tracks" — see [`albums_label`].
+pub(crate) fn tracks_label(n: usize) -> String {
+    if n == 1 {
+        t!("count.trackOne").to_string()
+    } else {
+        t!("count.trackOther", count => n).to_string()
+    }
+}
+
 /// A list-filter search field matching the old app's: a magnifier icon then the
 /// typed text / placeholder, inside a muted rounded box. The `input_key` stays
 /// on the inner `text_input` so existing finders and tests keep resolving it;

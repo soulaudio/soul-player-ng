@@ -97,14 +97,11 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
             key: format!("artist-{slot}"),
             label: a.name.clone(),
             title: a.name.clone(),
-            subtitle: Some(
-                t!(
-                    "detail.albumsAndTracks",
-                    albums => album_count,
-                    tracks => a.ids.len()
-                )
-                .to_string(),
-            ),
+            subtitle: Some(format!(
+                "{} · {}",
+                crate::views::library::albums_label(album_count),
+                crate::views::library::tracks_label(a.ids.len())
+            )),
             cover_id: a.cover_id,
             circular: true,
             play_ids: a.ids.clone(),
@@ -202,12 +199,11 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     };
 
     let discography = albums_of_artist(&s.library, &artist.name, s.album_year);
-    let meta = t!(
-        "detail.albumsAndTracks",
-        albums => discography.len(),
-        tracks => artist.ids.len()
-    )
-    .to_string();
+    let meta = format!(
+        "{} · {}",
+        crate::views::library::albums_label(discography.len()),
+        crate::views::library::tracks_label(artist.ids.len())
+    );
     let hero = detail_hero(
         s,
         p,
@@ -397,12 +393,11 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
         .filter_map(|id| s.library.iter().find(|t| t.id == *id))
         .map(|t| t.duration_secs)
         .sum();
-    let meta = t!(
-        "detail.tracksAndDuration",
-        count => alb.ids.len(),
-        dur => crate::views::albums::fmt_total_dur(total)
-    )
-    .to_string();
+    let meta = format!(
+        "{} · {}",
+        crate::views::library::tracks_label(alb.ids.len()),
+        crate::views::albums::fmt_total_dur(total)
+    );
     let name = alb.name.clone();
     row()
         .key(format!("artist-disc-row-{i}"))
@@ -661,8 +656,8 @@ mod tests {
             "Bach's card shows both its album and track counts, got: {texts:?}"
         );
         assert!(
-            texts.iter().any(|t| t == "1 albums · 1 tracks"),
-            "Satie's card shows its own counts too, got: {texts:?}"
+            texts.iter().any(|t| t == "1 album · 1 track"),
+            "Satie's card shows its own counts too (singular), got: {texts:?}"
         );
     }
 }
