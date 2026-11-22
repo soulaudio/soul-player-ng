@@ -42,7 +42,7 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
       - id: v
         shell: bash
         run: |
@@ -73,7 +73,7 @@ jobs:
             format: appimage
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       - name: Install the pinned toolchain
         working-directory: app/rune # rust-toolchain.toml resolves from CWD
@@ -137,7 +137,7 @@ jobs:
           cargo packager --release -f dmg
           cp target/release/*.dmg "../../dist/Soul-Player_${{ needs.guard.outputs.version }}_aarch64.dmg"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         with:
           name: bundle-${{ matrix.target_key }}
           path: dist/*
@@ -146,9 +146,9 @@ jobs:
     needs: [guard, package]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4.3.0
         with:
           path: dist
           merge-multiple: true
@@ -165,7 +165,7 @@ jobs:
             --out dist/latest.json
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v2.6.2
         with:
           tag_name: ${{ needs.guard.outputs.tag }}
           name: Soul Player ${{ needs.guard.outputs.tag }}
