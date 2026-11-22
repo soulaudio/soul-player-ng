@@ -447,6 +447,11 @@ pub(crate) fn loudness_block(s: &State, p: &Palette) -> El {
                 "—".to_string()
             }
         };
+        let peak = if live.peak_dbfs.is_finite() {
+            format!("{:+.1} dBFS", live.peak_dbfs)
+        } else {
+            "—".to_string()
+        };
         block = block
             .child(
                 text(t!("player.signalPath.liveMeter").to_string())
@@ -454,29 +459,25 @@ pub(crate) fn loudness_block(s: &State, p: &Palette) -> El {
                     .font(type_::SECTION)
                     .color(p.text_secondary),
             )
-            .child(metric_row(
+            .child(meter_row(
                 "signal-path-momentary",
                 t!("player.signalPath.momentary").to_string(),
                 lufs(live.momentary_lufs),
-                p.fg,
+                meter_frac(live.momentary_lufs),
                 p,
             ))
-            .child(metric_row(
+            .child(meter_row(
                 "signal-path-shortterm",
                 t!("player.signalPath.shortTerm").to_string(),
                 lufs(live.short_term_lufs),
-                p.fg,
+                meter_frac(live.short_term_lufs),
                 p,
             ))
-            .child(metric_row(
+            .child(meter_row(
                 "signal-path-livepeak",
                 t!("player.signalPath.peak").to_string(),
-                if live.peak_dbfs.is_finite() {
-                    format!("{:+.1} dBFS", live.peak_dbfs)
-                } else {
-                    "—".to_string()
-                },
-                p.fg,
+                peak,
+                meter_frac(live.peak_dbfs),
                 p,
             ));
     }
@@ -503,6 +504,76 @@ fn metric_row(
                 .grow(1.0),
         )
         .child(text(value).font(type_::LABEL.mono()).color(value_color))
+}
+
+// ── Live loudness meter bars ──────────────────────────────────────────────────
+// The live-meter section draws each reading (momentary / short-term LUFS, sample
+// peak dBFS) as a horizontal bar on a fixed -60..0 dB scale, so loudness and peak
+// are read at a glance as they move during playback, with the exact number beside
+// them. The bar fills via flex-grow WEIGHTS (fill : remainder = frac : 1-frac) so it
+// adapts to the panel width (`min_w` 260, variable) without a fixed track width that
+// could overflow a narrow panel.
+
+/// Bottom of the meter scale in dB (LUFS / dBFS). Quiet passages and silence sit at
+/// the far left; 0 (full scale) is the far right.
+const METER_FLOOR_DB: f32 = -60.0;
+const METER_BAR_H: f32 = 7.0;
+const METER_LABEL_W: f32 = 64.0;
+const METER_VALUE_W: f32 = 74.0;
+
+/// Map a dB value (LUFS or dBFS) to the bar's 0..1 fill fraction over the fixed
+/// `METER_FLOOR_DB..0` scale. Non-finite (silence / not-yet-measured) reads empty.
+fn meter_frac(db: f32) -> f32 {
+    if !db.is_finite() {
+        return 0.0;
+    }
+    ((db - METER_FLOOR_DB) / -METER_FLOOR_DB).clamp(0.0, 1.0)
+}
+
+/// The bar fill colour: the calm brand colour normally, warming to the attention
+/// accent as the level approaches full scale (a hot, near-clipping reading), the
+/// familiar green-to-amber level cue, not a quality judgement.
+fn meter_color(frac: f32, p: &Palette) -> Color {
+    if frac >= 0.9 { p.accent } else { p.primary }
+}
+
+/// One live-meter row: a fixed-width `name`, a level bar that grows to fill the row
+/// and is filled to `frac`, and the exact `value` text in a fixed-width cell so the
+/// bar's right edge stays stable as the digits change.
+fn meter_row(key: &'static str, name: String, value: String, frac: f32, p: &Palette) -> El {
+    let frac = frac.clamp(0.0, 1.0);
+    let track = row()
+        .key(format!("{key}-track"))
+        .grow(1.0)
+        .h(METER_BAR_H)
+        .radius(radius::FULL)
+        .fill(p.muted)
+        .child(
+            el().key(format!("{key}-fill"))
+                .grow(frac)
+                .h(METER_BAR_H)
+                .radius(radius::FULL)
+                .fill(meter_color(frac, p)),
+        )
+        .child(el().grow(1.0 - frac));
+    row()
+        .key(key)
+        .w_full()
+        .items_center()
+        .gap(space::SM)
+        .child(
+            text(name)
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .w(METER_LABEL_W),
+        )
+        .child(track)
+        .child(
+            text(value)
+                .font(type_::LABEL.mono())
+                .color(p.fg)
+                .w(METER_VALUE_W),
+        )
 }
 
 /// DR colour band (TT/Dynameter convention): dynamic (≥ 14) highlighted in the
@@ -576,6 +647,38 @@ mod tests {
             exclusive: false,
             loudness: None,
         }
+    }
+
+    #[test]
+    fn meter_frac_maps_the_db_scale_and_clamps() {
+        assert_eq!(meter_frac(0.0), 1.0, "full scale fills the bar");
+        assert_eq!(meter_frac(METER_FLOOR_DB), 0.0, "the floor is empty");
+        assert!(
+            (meter_frac(-30.0) - 0.5).abs() < 1e-6,
+            "-30 dB is half on a -60..0 scale"
+        );
+        assert_eq!(
+            meter_frac(f32::NEG_INFINITY),
+            0.0,
+            "silence / no reading reads empty"
+        );
+        assert_eq!(meter_frac(6.0), 1.0, "above full scale clamps to full");
+        assert_eq!(meter_frac(-120.0), 0.0, "below the floor clamps to empty");
+    }
+
+    #[test]
+    fn meter_color_warms_only_when_hot() {
+        let p = crate::theme::palette(true);
+        assert_eq!(
+            meter_color(0.5, &p),
+            p.primary,
+            "a normal level is the calm brand colour"
+        );
+        assert_eq!(
+            meter_color(0.95, &p),
+            p.accent,
+            "a near-full-scale level warms to the accent"
+        );
     }
 
     #[test]
