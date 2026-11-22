@@ -5221,6 +5221,96 @@ mod tests {
         assert!(!cover_path.exists(), "the cover file is deleted from disk");
     }
 
+    /// Clicking an album's "Edit Artwork" button opens the image file dialog and,
+    /// on a pick, applies it as that album's custom cover (stored by name in
+    /// `CoverStore`) so the hero renders the chosen image. Drives the full
+    /// button -> `tx.open_file` -> `set_album_cover` path through a real Runtime,
+    /// mirroring the playlist Set-cover e2e above.
+    #[test]
+    fn edit_artwork_sets_an_album_cover_via_the_file_dialog() {
+        let _g = config::use_test_config_dir();
+        let mut s = populated_state();
+        let album_name = s
+            .library
+            .iter()
+            .find_map(|t| t.album.clone())
+            .filter(|a| !a.is_empty())
+            .expect("the testdata library has at least one named album");
+        s.route = Route::Album;
+        s.open_album = Some(album_name.clone());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.state.covers.album_cover_path(&album_name).is_none(),
+            "no custom cover yet"
+        );
+
+        click_key(&mut rt, "album-edit-artwork");
+        rt.frame(0.0);
+        let (kind, _opts) = rt
+            .file_dialog()
+            .expect("Edit Artwork opens an image file dialog");
+        assert_eq!(kind, FileDialogKind::Open);
+        rt.resolve_file_dialog(Some(write_temp_cover_png()))
+            .unwrap();
+        rt.frame(0.0);
+
+        assert!(
+            rt.state.covers.album_cover_path(&album_name).is_some(),
+            "the picked image is stored as the album's custom cover"
+        );
+        assert!(
+            rt.find("album-hero-image").is_some(),
+            "the album hero now renders the custom cover image"
+        );
+    }
+
+    /// The Keyboard-tab playback shortcuts actually fire through the real key
+    /// path: Ctrl+Space/Right/Left/M each send their transport Command, and
+    /// Ctrl+Up raises the volume. Guards that the `ev.mods.ctrl` arms in
+    /// `handle_key` stay wired (and keep winning over the plain arms).
+    #[test]
+    fn ctrl_playback_shortcuts_drive_the_transport() {
+        let s = State::new(PlayerHandle::recording());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.on_key = Some(handle_key);
+        rt.frame(0.0);
+        let ctrl = |key: Key| KeyEvent {
+            key,
+            mods: Mods {
+                ctrl: true,
+                ..Mods::default()
+            },
+        };
+        // Start below max so Ctrl+Up has headroom (the default sits at 1.0).
+        rt.state.volume = 0.5;
+        let before = rt.state.volume;
+        rt.key(ctrl(Key::Text(" ".to_string())));
+        rt.key(ctrl(Key::Right));
+        rt.key(ctrl(Key::Left));
+        rt.key(ctrl(Key::Text("m".to_string())));
+        rt.key(ctrl(Key::Up));
+        rt.frame(0.0);
+
+        let cmds = rt.state.host.recorded_commands();
+        assert!(
+            cmds.contains(&Command::TogglePlay),
+            "Ctrl+Space toggles play, got {cmds:?}"
+        );
+        assert!(cmds.contains(&Command::Next), "Ctrl+Right skips to next");
+        assert!(cmds.contains(&Command::Prev), "Ctrl+Left skips to previous");
+        assert!(cmds.contains(&Command::ToggleMute), "Ctrl+M toggles mute");
+        assert!(rt.state.volume > before, "Ctrl+Up raises the volume");
+    }
+
     /// Capstone end-to-end: the whole Playlists lifecycle driven through ONE
     /// running `Runtime` over the real scanned `testdata/` library, chaining
     /// every feature the earlier capstones (above) proved in isolation
