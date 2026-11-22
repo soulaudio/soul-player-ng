@@ -4466,8 +4466,20 @@ mod tests {
             let _ = host.set_folders(folders);
         }
         let mut s = State::new(host);
+        pin_persisted_layout(&mut s);
         s.route = Route::Settings;
         s
+    }
+
+    /// Reset the layout settings `State::new` loads from the SHARED test config dir —
+    /// UI zoom and sidebar geometry — to their defaults. Another test persisting e.g.
+    /// a Ctrl+= zoom concurrently would otherwise leak into a layout assertion (seen
+    /// in CI: the every-locale sweep rendered Genres at ~1.1× zoom and overflowed the
+    /// 900 px window). Tests that exercise those settings set them explicitly anyway.
+    fn pin_persisted_layout(s: &mut State) {
+        s.ui_zoom = 1.0;
+        s.sidebar_width = views::sidebar::DEFAULT_WIDTH;
+        s.sidebar_collapsed = false;
     }
 
     /// Click the element with `key`: find its position, drive a full
@@ -4578,6 +4590,7 @@ mod tests {
     /// queue render real rows (not just empty states) for the layout sweep.
     fn populated_state() -> State {
         let mut s = State::new(PlayerHandle::offline());
+        pin_persisted_layout(&mut s);
         if let Ok(up) = s.host.add_folder(&testdata_dir()) {
             apply_watch(&mut s, up);
         }
