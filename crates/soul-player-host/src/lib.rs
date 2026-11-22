@@ -6,6 +6,7 @@
 pub mod analyzer;
 pub mod device_transport;
 pub mod eq;
+pub mod generated_cover;
 // Public (not just `mod`) so the crate's own integration tests
 // (`tests/remote_e2e.rs`, a separate crate) can drive the exact same
 // login/fetch_index/RemoteLibrary/DownloadCache path
