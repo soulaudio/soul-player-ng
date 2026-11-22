@@ -59,13 +59,21 @@ fi
 
 ( cd "$root/app/rune" && cargo build --release ${CARGO_EXTRA_ARGS:-} )
 HOME="$home" SOUL_PLAYER_FOLDER="$music" SOUL_PLAYER_AUTOPLAY=1 \
+  RUST_LOG="${RUST_LOG:-info,soul_player_rune=debug}" \
   "$root/app/rune/target/release/soul-player-rune" >"$work/app.log" 2>&1 &
 app_pid=$!
 
 # ---- helpers ------------------------------------------------------------------------
 np() { media-control get 2>/dev/null || echo null; }
 field() { np | python3 -c "import json,sys; d=json.load(sys.stdin) or {}; v=d.get('$1'); print(len(v) if '$1'=='artworkData' and v else (v if v is not None else ''))"; }
-fail() { echo "FAIL: $*"; echo "--- now playing:"; np | python3 -c 'import json,sys; d=json.load(sys.stdin) or {}; d.pop("artworkData",None); print(d)'; echo "--- app log:"; tail -20 "$work/app.log"; exit 1; }
+fail() {
+  echo "FAIL: $*"
+  echo "--- now playing:"; np | python3 -c 'import json,sys; d=json.load(sys.stdin) or {}; d.pop("artworkData",None); print(d)'
+  echo "--- app stdout/stderr:"; tail -20 "$work/app.log"
+  echo "--- app log file:"; tail -40 "$home/Library/Logs/Soul Player/"*.log 2>/dev/null || echo "(none)"
+  echo "--- now-playing cover cache:"; ls -la "$home/Library/Caches/Soul Player/now-playing" 2>/dev/null || echo "(none)"
+  exit 1
+}
 # wait_for FIELD EXPECTED [TIMEOUT_S]
 wait_for() {
   local f="$1" want="$2" t="${3:-15}" got=""
