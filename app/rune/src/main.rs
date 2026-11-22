@@ -2615,7 +2615,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
             .w_full()
             .h_full()
             .fill(p.bg)
-            .child(views::titlebar::bar(s, &p, cx))
+            .child(views::titlebar::bar(s, &p, cx, mobile))
             .child(body)
     } else {
         // Desktop: the left sidebar's fill runs to the very top, but its content is
@@ -2642,7 +2642,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
                     .key("shell")
                     .grow(1.0)
                     .min_h(0.0)
-                    .child(views::titlebar::bar(s, &p, cx))
+                    .child(views::titlebar::bar(s, &p, cx, mobile))
                     .child(content_pane(s, &p, cx, scale)),
             )
     };
@@ -5095,7 +5095,7 @@ mod tests {
         // mount (not freshly inserted), so it's clickable without settling;
         // the list page it lands on IS a fresh mid-session insert, so settle
         // before the next click.
-        click_key(&mut rt, "playlist-back");
+        click_key(&mut rt, "detail-back");
         rt.settle_all();
         rt.frame(0.0);
         assert!(
@@ -5188,7 +5188,7 @@ mod tests {
 
         rt.settle_all();
         rt.frame(0.0);
-        click_key(&mut rt, "playlist-back");
+        click_key(&mut rt, "detail-back");
         rt.settle_all();
         rt.frame(0.0);
         assert!(
@@ -5329,7 +5329,7 @@ mod tests {
             "the rename persisted"
         );
 
-        click_key(&mut rt, "playlist-back");
+        click_key(&mut rt, "detail-back");
         rt.settle_all();
         rt.frame(0.0);
         assert!(
@@ -10442,7 +10442,7 @@ mod tests {
             rt.find("artist-header").is_some(),
             "the detail header renders"
         );
-        assert!(rt.find("artist-back").is_some(), "a back link renders");
+        assert!(rt.find("detail-back").is_some(), "a back link renders");
         assert!(
             rt.find("album-track-0").is_some(),
             "the artist's tracks are listed"
@@ -10663,7 +10663,7 @@ mod tests {
         // Same reason: the album detail page just mounted this frame.
         rt.settle_all();
         rt.frame(0.0);
-        click(&mut rt, "album-back"); // Back
+        click(&mut rt, "detail-back"); // Back
         assert!(
             matches!(rt.state.route, Route::Artist),
             "back returns to the artist"
@@ -10672,7 +10672,7 @@ mod tests {
         // The artist detail page is remounted on the way back too.
         rt.settle_all();
         rt.frame(0.0);
-        click(&mut rt, "artist-back"); // Back again
+        click(&mut rt, "detail-back"); // Back again
         assert!(
             matches!(rt.state.route, Route::Artists),
             "and then to the Artists list"
@@ -10900,7 +10900,7 @@ mod tests {
             rt.find("genre-header").is_some(),
             "the detail header renders"
         );
-        assert!(rt.find("genre-back").is_some(), "a back link renders");
+        assert!(rt.find("detail-back").is_some(), "a back link renders");
         assert!(
             rt.find("album-track-0").is_some(),
             "the genre's tracks are listed"
@@ -11278,7 +11278,7 @@ mod tests {
             "the detail header renders"
         );
         assert!(rt.find("album-play-all").is_some(), "a Play-all button");
-        assert!(rt.find("album-back").is_some(), "a back link");
+        assert!(rt.find("detail-back").is_some(), "a back link");
         assert!(
             rt.find("album-track-0").is_some() && rt.find("album-track-1").is_some(),
             "both album tracks are listed"
@@ -11292,7 +11292,7 @@ mod tests {
             }],
             "clicking a track plays the album from that position"
         );
-        click(&mut rt, "album-back");
+        click(&mut rt, "detail-back");
         assert!(
             matches!(rt.state.route, Route::Albums),
             "back returns to the albums grid"

@@ -393,23 +393,6 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     )
 }
 
-/// A back link — a `←` glyph. Returns to wherever this album was opened from
-/// (the back-stack), falling back to the Albums grid if reached without one.
-fn back_button(p: &Palette) -> El {
-    el().key("album-back")
-        .role("button")
-        .label(t!("nav.albums").to_string())
-        .focusable(true)
-        .px(space::SM)
-        .py(space::XS)
-        .radius(radius::SM)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(crate::go_back)
-}
-
 /// One row on the album detail page: the track number (or a ⏸/▶ state glyph when
 /// it's the current track), title and duration. Clicking plays the album from
 /// that track, or toggles pause/resume when it is already the one playing.
@@ -587,8 +570,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             .key("album-detail")
             .grow(1.0)
             .min_h(0.0)
-            .padding(space::PANE)
-            .child(back_button(p));
+            .padding(space::PANE);
     };
 
     let total: f64 = album
@@ -658,31 +640,20 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         }
     }
 
-    col()
-        .key("album-detail")
-        .grow(1.0)
-        .min_h(0.0)
-        .child(
-            row()
-                .key("album-detail-top")
-                .px(space::PANE)
-                .pt(space::SM)
-                .child(back_button(p)),
-        )
-        .child(
-            col()
-                .key("album-detail-content")
-                .padding(space::PANE)
-                .child(hero)
-                .child(detail_track_header(p))
-                .child(list)
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .scroll_edge_fade(24.0)
-                .grow(1.0)
-                .min_h(0.0),
-        )
+    col().key("album-detail").grow(1.0).min_h(0.0).child(
+        col()
+            .key("album-detail-content")
+            .padding(space::PANE)
+            .child(hero)
+            .child(detail_track_header(p))
+            .child(list)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0),
+    )
 }
 
 #[cfg(test)]
