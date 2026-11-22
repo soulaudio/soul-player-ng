@@ -435,6 +435,51 @@ pub(crate) fn loudness_block(s: &State, p: &Palette) -> El {
                 .color(p.text_secondary),
         ),
     };
+    // Live meter: the real-time momentary (400 ms) + short-term (3 s) loudness and sample
+    // peak from the output tap, shown while a track plays — the dynamic counterpart to the
+    // whole-track readouts above. Each value is "—" until the window fills.
+    if s.playing {
+        let live = s.host.live_loudness();
+        let lufs = |v: f32| {
+            if v.is_finite() {
+                format!("{v:.1} LUFS")
+            } else {
+                "—".to_string()
+            }
+        };
+        block = block
+            .child(
+                text(t!("player.signalPath.liveMeter").to_string())
+                    .key("signal-path-live-heading")
+                    .font(type_::SECTION)
+                    .color(p.text_secondary),
+            )
+            .child(metric_row(
+                "signal-path-momentary",
+                t!("player.signalPath.momentary").to_string(),
+                lufs(live.momentary_lufs),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-shortterm",
+                t!("player.signalPath.shortTerm").to_string(),
+                lufs(live.short_term_lufs),
+                p.fg,
+                p,
+            ))
+            .child(metric_row(
+                "signal-path-livepeak",
+                t!("player.signalPath.peak").to_string(),
+                if live.peak_dbfs.is_finite() {
+                    format!("{:+.1} dBFS", live.peak_dbfs)
+                } else {
+                    "—".to_string()
+                },
+                p.fg,
+                p,
+            ));
+    }
     block
 }
 

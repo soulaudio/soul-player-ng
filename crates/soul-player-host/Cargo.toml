@@ -20,6 +20,9 @@ all = { level = "deny", priority = -1 }
 tracing = "0.1"
 soul-player-backend = { path = "../soul-player-backend" }
 soul-audio-core = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
+# Shared no_std streaming loudness analyzer: the DspSink runs its LiveLoudnessMeter on the
+# pre-chain signal for the UI's real-time loudness/peak meter.
+soul-audio-loudness = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 # Shared no_std parametric-EQ coefficient design (RBJ), reused by the DAP firmware.
 soul-audio-eq = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 # Shared no_std DSP-chain + audio-profile model (DspChain/DspUnit/EqUnit/ProfileSet),

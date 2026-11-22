@@ -260,7 +260,7 @@ fn oauth_login(server_url: &str, username: &str, password: &str) -> Tokens {
 fn remote_add_sync_browse_play() {
     // Three real, differently-containered fixtures with readable tags — the
     // server's whole "library".
-    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta.flac"];
     let server = start_server(FIXTURES);
 
     // --- 1/2. Log in via the REAL browser-facing OAuth 2.1 flow, then add +
@@ -372,7 +372,7 @@ fn remote_add_sync_browse_play() {
 /// from the already-fetched blobs, with no re-fetch needed.
 #[test]
 fn remote_disable_drops_its_tracks_and_reenable_restores_them() {
-    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta.flac"];
     let server = start_server(FIXTURES);
 
     let handle = PlayerHandle::offline();
@@ -446,7 +446,7 @@ fn remote_disable_drops_its_tracks_and_reenable_restores_them() {
 /// for a local root, now proven for a remote too.
 #[test]
 fn remote_health_flips_offline_after_the_server_goes_away_but_track_count_survives() {
-    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta.flac"];
     let server = start_server(FIXTURES);
     let url = server.url.clone();
 
@@ -512,7 +512,7 @@ fn remote_health_flips_offline_after_the_server_goes_away_but_track_count_surviv
 /// reconnect would present tokens.
 #[test]
 fn remote_add_twice_same_url_replaces_not_duplicates() {
-    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta.flac"];
     let server = start_server(FIXTURES);
 
     let handle = PlayerHandle::offline();
@@ -554,7 +554,7 @@ fn remote_add_twice_same_url_replaces_not_duplicates() {
 /// twice.
 #[test]
 fn remote_add_with_trailing_slash_collapses_to_the_same_entry() {
-    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta.flac"];
     let server = start_server(FIXTURES);
 
     let handle = PlayerHandle::offline();
@@ -610,7 +610,7 @@ fn remote_add_with_trailing_slash_collapses_to_the_same_entry() {
 /// its live health, and list it exactly once.
 #[test]
 fn rescan_keeps_a_connected_remotes_tracks_and_live_health() {
-    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta.flac"];
     let server = start_server(FIXTURES);
 
     let handle = PlayerHandle::offline();
@@ -692,7 +692,7 @@ fn rescan_keeps_a_connected_remotes_tracks_and_live_health() {
 /// disabled-state, for a remote source, over the wire.
 #[test]
 fn remote_track_composes_with_a_playlist_locator_and_greys_when_disabled() {
-    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta-id3.aac"];
+    const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta.flac"];
     let server = start_server(FIXTURES);
     let handle = PlayerHandle::offline();
     let tokens = oauth_login(&server.url, "e2e", "pw");
