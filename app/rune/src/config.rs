@@ -1641,6 +1641,82 @@ mod tests {
         assert_eq!(back.sidebar_width, DEFAULT_WIDTH);
     }
 
+    /// `load()` migrates the pre-TOML plain-text files (`sources.txt`/`theme.txt`/
+    /// `sidebar.txt`) into `config.toml` exactly once. A regression here silently
+    /// wipes an upgrading user's saved sources, theme, and sidebar on first launch,
+    /// so it is worth a direct `load()` test (not just `toml::from_str`).
+    #[test]
+    fn load_migrates_legacy_txt_files_once() {
+        let _g = use_test_config_dir();
+        let dir = soul_player_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        // Start clean (the test config dir is shared per-process), then drop in the
+        // plain-text files an older build left behind — and NO config.toml.
+        let _ = std::fs::remove_file(dir.join("config.toml"));
+        std::fs::write(dir.join("sources.txt"), "/music/a\n/music/b\n").unwrap();
+        std::fs::write(dir.join("theme.txt"), "dark\n").unwrap();
+        std::fs::write(dir.join("sidebar.txt"), "300\ncollapsed\n").unwrap();
+
+        let cfg = load();
+        assert_eq!(
+            cfg.sources,
+            vec!["/music/a".to_string(), "/music/b".to_string()],
+            "legacy sources migrate"
+        );
+        assert_eq!(cfg.theme, "dark", "legacy theme migrates");
+        assert_eq!(cfg.sidebar_width, 300.0, "legacy sidebar width migrates");
+        assert!(cfg.sidebar_collapsed, "legacy collapsed state migrates");
+        assert!(
+            dir.join("config.toml").exists(),
+            "migration persists config.toml so it runs exactly once"
+        );
+
+        // With config.toml now written, a second load reads IT, not the legacy files:
+        // delete them and prove the migrated values survive.
+        for f in ["sources.txt", "theme.txt", "sidebar.txt"] {
+            std::fs::remove_file(dir.join(f)).unwrap();
+        }
+        let again = load();
+        assert_eq!(
+            again.sources, cfg.sources,
+            "second load reads the migrated config.toml, not the (now gone) legacy files"
+        );
+        assert_eq!(again.theme, "dark");
+
+        let _ = std::fs::remove_file(dir.join("config.toml"));
+    }
+
+    /// A corrupt `config.toml` must recover to defaults, never panic or hang — the
+    /// `toml::from_str` failure in `load()` falls through to the legacy migration
+    /// (absent here) and then `Config::default()`.
+    #[test]
+    fn load_recovers_from_a_garbled_config() {
+        let _g = use_test_config_dir();
+        let dir = soul_player_dir().unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in ["sources.txt", "theme.txt", "sidebar.txt"] {
+            let _ = std::fs::remove_file(dir.join(f));
+        }
+        std::fs::write(dir.join("config.toml"), "not = valid = toml [[[\n").unwrap();
+
+        let cfg = load();
+        assert_eq!(
+            cfg.theme,
+            Config::default().theme,
+            "a garbled config recovers to the default theme, not a panic"
+        );
+        assert_eq!(
+            cfg.sidebar_width, DEFAULT_WIDTH,
+            "garbled config recovers to the default sidebar width"
+        );
+        assert!(
+            cfg.sources.is_empty(),
+            "garbled config recovers to no sources"
+        );
+
+        let _ = std::fs::remove_file(dir.join("config.toml"));
+    }
+
     #[test]
     fn out_of_range_width_clamps() {
         let wide = Config {
