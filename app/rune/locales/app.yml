@@ -446,6 +446,20 @@ playlists.done:
   zh: '完成'
   cs: 'Hotovo'
   ja: '完了'
+playlists.addingTrack:
+  en: 'Adding track'
+  de: 'Titel wird hinzugefügt'
+  es: 'Añadiendo pista'
+  zh: '正在添加曲目'
+  cs: 'Přidávání skladby'
+  ja: 'トラックを追加中'
+playlists.searchPlaylists:
+  en: 'Search playlists…'
+  de: 'Playlists durchsuchen…'
+  es: 'Buscar listas…'
+  zh: '搜索播放列表…'
+  cs: 'Hledat playlisty…'
+  ja: 'プレイリストを検索…'
 
 player.nowPlaying:
   en: 'NOW PLAYING'
@@ -763,6 +777,20 @@ common.back:
   zh: '返回'
   cs: 'Zpět'
   ja: '戻る'
+common.cancel:
+  en: 'Cancel'
+  de: 'Abbrechen'
+  es: 'Cancelar'
+  zh: '取消'
+  cs: 'Zrušit'
+  ja: 'キャンセル'
+common.close:
+  en: 'Close'
+  de: 'Schließen'
+  es: 'Cerrar'
+  zh: '关闭'
+  cs: 'Zavřít'
+  ja: '閉じる'
 
 settings.title:
   en: 'Settings'

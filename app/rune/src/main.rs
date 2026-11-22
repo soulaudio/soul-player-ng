@@ -312,6 +312,10 @@ struct State {
     /// The overlay's inline "New playlist..." field, bound the same way
     /// `playlist_new_buf` binds the Playlists page's own field.
     add_to_playlist_buf: rune::TextEdit,
+    /// The overlay's "Search playlists..." filter box, narrowing the
+    /// membership list by name. Reset alongside the pending track so the
+    /// overlay always opens with an empty filter.
+    add_to_playlist_search: rune::TextEdit,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -745,6 +749,7 @@ impl State {
             playlist_delete_confirm: None,
             add_to_playlist_for: None,
             add_to_playlist_buf: rune::TextEdit::new(""),
+            add_to_playlist_search: rune::TextEdit::new(""),
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -1608,6 +1613,7 @@ pub(crate) fn close_remote_health_popover(s: &mut State) {
 /// `views::add_to_playlist::overlay` to render.
 pub(crate) fn open_add_to_playlist(s: &mut State, track_id: u32) {
     s.add_to_playlist_buf = rune::TextEdit::new("");
+    s.add_to_playlist_search = rune::TextEdit::new("");
     s.add_to_playlist_for = Some(track_id);
 }
 
@@ -1617,6 +1623,7 @@ pub(crate) fn open_add_to_playlist(s: &mut State, track_id: u32) {
 pub(crate) fn close_add_to_playlist(s: &mut State) {
     s.add_to_playlist_for = None;
     s.add_to_playlist_buf = rune::TextEdit::new("");
+    s.add_to_playlist_search = rune::TextEdit::new("");
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
