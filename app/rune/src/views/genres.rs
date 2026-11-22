@@ -139,11 +139,32 @@ fn genre_tile(p: &Palette, slot: usize, g: &Genre, card_w: f32) -> El {
 /// Mirrors the Albums/Artists grid (`grid::responsive_grid`), just without
 /// cover art.
 pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
+    // A per-page search box above the grid, matching the old app's Genres page
+    // (and the Albums/Artists grids). Reuses `genre_search` (which resets on
+    // nav, so it never leaks between this list and a genre's detail page).
+    let q = s.genre_search.text.to_lowercase();
     let genres = group_genres(&s.library);
     // Read this page's own pane width (first frame has no prior layout → a
     // sensible desktop fallback), same rule the Albums/Artists grids use.
     let pane = cx.layout_size("genres").map(|[w, _]| w).unwrap_or(820.0);
     let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
+
+    let search = text_input(&s.genre_search, type_::ITEM)
+        .key("genres-search")
+        .single_line()
+        .label(t!("genres.searchPlaceholder").to_string())
+        .w_full()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .color(p.fg)
+        .on_edit(|st: &mut State| &mut st.genre_search);
+    let search_bar = row()
+        .key("genres-search-bar")
+        .px(space::PANE)
+        .pt(space::SM)
+        .child(search);
 
     let mut tiles = row()
         .key("genres-grid")
@@ -151,24 +172,33 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         .flex_wrap()
         .gaps(space::MD, space::GUTTER)
         .padding(space::PANE);
-    for (slot, g) in genres.iter().enumerate() {
+    for (slot, g) in genres
+        .iter()
+        .filter(|g| q.is_empty() || g.name.to_lowercase().contains(&q))
+        .enumerate()
+    {
         tiles = tiles.child(genre_tile(p, slot, g, card_w));
     }
-    col().key("genres").grow(1.0).min_h(0.0).child(
-        // Scroll on the growing wrapper, not the grid itself, see `albums_page`: a
-        // flex-wrap grid that is itself the growing scroll element stretches its
-        // wrapped rows down the viewport when they don't fill it. Natural-height
-        // grid, growing scroll viewport around it.
-        col()
-            .key("genres-scroll")
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .scroll_edge_fade(24.0)
-            .grow(1.0)
-            .min_h(0.0)
-            .child(tiles),
-    )
+    col()
+        .key("genres")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(search_bar)
+        .child(
+            // Scroll on the growing wrapper, not the grid itself, see `albums_page`: a
+            // flex-wrap grid that is itself the growing scroll element stretches its
+            // wrapped rows down the viewport when they don't fill it. Natural-height
+            // grid, growing scroll viewport around it.
+            col()
+                .key("genres-scroll")
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_edge_fade(24.0)
+                .grow(1.0)
+                .min_h(0.0)
+                .child(tiles),
+        )
 }
 
 /// A back link to the Genres list — a `←` glyph.
@@ -442,6 +472,67 @@ mod tests {
         assert!(
             texts.iter().any(|t| t == "1 tracks"),
             "Jazz's track count renders too, got: {texts:?}"
+        );
+    }
+
+    /// The Genres list search filters the tiles by name (empty query = all),
+    /// matching the old app's Genres page and the Albums/Artists grids.
+    #[test]
+    fn genres_search_narrows_the_tiles() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            genres_page(s, &p, cx)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![
+            tv(1, Some("Rock")),
+            tv(2, Some("Jazz")),
+            tv(3, Some("Electronic")),
+        ];
+        s.route = crate::Route::Genres;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("genres-search").is_some(),
+            "the search box renders above the grid"
+        );
+
+        // Skip `exiting` tiles: a filtered-out tile plays a removal animation and
+        // lingers in `elements()` with its stale label until it settles.
+        let tile_labels = |rt: &Runtime<State>| -> Vec<String> {
+            rt.elements()
+                .into_iter()
+                .filter(|e| !e.exiting)
+                .filter(|e| {
+                    e.key
+                        .as_deref()
+                        .is_some_and(|k| k.starts_with("genre-tile-"))
+                })
+                .filter_map(|e| e.label)
+                .collect()
+        };
+        assert_eq!(tile_labels(&rt).len(), 3, "all genres show with no query");
+
+        rt.update(|st: &mut State, _tx: &mut rune::Tx| {
+            st.genre_search = rune::TextEdit::new("jazz")
+        });
+        rt.frame(0.0);
+        let labels = tile_labels(&rt);
+        assert!(
+            labels.contains(&"Jazz".to_string()),
+            "the matching genre stays, got: {labels:?}"
+        );
+        assert!(
+            !labels.contains(&"Rock".to_string()) && !labels.contains(&"Electronic".to_string()),
+            "non-matching genres are filtered out, got: {labels:?}"
         );
     }
 }
