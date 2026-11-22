@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [workspace]
 resolver = "3"
+members = [".", "macos-native"]
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -114,6 +115,8 @@ signal-hook = "0.3"
 # pinned rev as `rune`, so its objc2 0.5 is the one Rune already compiles. It posts only
 # from a bundled `.app` (`available()`); an unbundled dev binary stays silent.
 [target.'cfg(target_os = "macos")'.dependencies]
+# Finder "open documents" (Rune only handles `myapp://` links) — the one crate allowed `unsafe`.
+soul-macos-native = { path = "macos-native" }
 rune-notify = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830" }
 
 [target.'cfg(windows)'.dependencies]
@@ -132,3 +135,16 @@ category = "Music"
 # macOS gets a proper `.icns` (the mark on a rounded tile, 16–1024 px; see icons/macos/).
 icons = ["icons/icon.ico", "icons/128x128.png", "icons/macos/icon.icns"]
 formats = ["nsis"]
+# "Open With → Soul Player" / double-click for every format the player decodes. Viewer role:
+# it plays files, never edits them. Handled by `open_files` (Finder events on macOS, launch
+# arguments on Windows/Linux).
+[[package.metadata.packager.file-associations]]
+name = "Lossless audio"
+description = "Lossless audio"
+role = "viewer"
+extensions = ["flac", "wav", "aif", "aiff", "aifc", "caf", "alac", "wv", "dsf", "dff"]
+[[package.metadata.packager.file-associations]]
+name = "Compressed audio"
+description = "Compressed audio"
+role = "viewer"
+extensions = ["mp3", "m4a", "aac", "ogg", "oga", "opus", "mka"]

@@ -5192,6 +5192,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "soul-macos-native"
+version = "0.1.0"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "soul-player-backend"
 version = "0.1.0"
 dependencies = [
@@ -5263,6 +5273,7 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-hook",
+ "soul-macos-native",
  "soul-player-host",
  "souvlaki",
  "sys-locale",
