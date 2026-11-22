@@ -586,6 +586,70 @@ mod tests {
     }
 
     #[test]
+    fn garbled_manifest_rebuilds_from_folders() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let mut s = PlaylistStore::load();
+        let id = s.create("Keeper");
+        s.add_entry(id, entry("x"));
+        // A GARBLED (not missing) index.toml: `read_manifest` returns None, so `load`
+        // falls back to scanning the folders and re-persists a valid manifest.
+        fs::write(
+            playlist_store_path().join("index.toml"),
+            "not = valid = toml [[[",
+        )
+        .unwrap();
+
+        let s2 = PlaylistStore::load();
+        assert_eq!(
+            s2.get(id).unwrap().name,
+            "Keeper",
+            "a garbled manifest recovers by scanning folders"
+        );
+        assert_eq!(s2.get(id).unwrap().entries.len(), 1);
+        assert!(
+            read_manifest(&playlist_store_path()).is_some(),
+            "the rebuild re-persists a valid index.toml (back on the fast path)"
+        );
+    }
+
+    #[test]
+    fn stale_manifest_member_triggers_a_folder_rebuild() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let mut s = PlaylistStore::load();
+        let id = s.create("Keeper");
+        s.add_entry(id, entry("x"));
+        // A VALID manifest that lists a member whose folder does not exist: the `?` in
+        // `from_manifest` fails on it -> None -> `load` rebuilds from the real folders.
+        let dir = playlist_store_path();
+        let mut manifest = read_manifest(&dir).expect("valid manifest after create");
+        manifest.playlists.push(ManifestEntry {
+            id: 9999,
+            slug: "ghost".into(),
+            order: 99,
+            name: "Ghost".into(),
+            count: 0,
+            cover: Vec::new(),
+        });
+        fs::write(dir.join("index.toml"), toml::to_string(&manifest).unwrap()).unwrap();
+
+        let names: Vec<String> = PlaylistStore::load()
+            .list()
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"Keeper".to_string()),
+            "the real playlist survives a stale-manifest rebuild"
+        );
+        assert!(
+            !names.contains(&"Ghost".to_string()),
+            "the phantom manifest entry is dropped by the rebuild"
+        );
+    }
+
+    #[test]
     fn create_after_manifest_rebuild_does_not_reissue_a_live_id() {
         let _g = config::use_test_config_dir();
         reset();
