@@ -425,6 +425,27 @@ playlists.setCoverDialog:
   zh: '选择封面图片'
   cs: 'Vybrat obrázek obálky'
   ja: 'カバー画像を選択'
+artwork.edit:
+  en: 'Edit Artwork'
+  de: 'Cover bearbeiten'
+  es: 'Editar portada'
+  zh: '编辑封面'
+  cs: 'Upravit obálku'
+  ja: 'アートワークを編集'
+artwork.editDialog:
+  en: 'Choose a cover image'
+  de: 'Cover-Bild auswählen'
+  es: 'Elige una imagen de portada'
+  zh: '选择封面图片'
+  cs: 'Vybrat obrázek obálky'
+  ja: 'カバー画像を選択'
+artwork.remove:
+  en: 'Remove Artwork'
+  de: 'Cover entfernen'
+  es: 'Quitar portada'
+  zh: '移除封面'
+  cs: 'Odstranit obálku'
+  ja: 'アートワークを削除'
 playlists.addTo:
   en: 'Add to playlist'
   de: 'Zu Playlist hinzufügen'

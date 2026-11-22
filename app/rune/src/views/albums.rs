@@ -16,7 +16,7 @@ use soul_player_host::{Command, TrackView};
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::detail_page::{HeroArt, detail_actions, detail_hero};
+use crate::views::detail_page::{ArtworkTarget, HeroArt, detail_actions_with_artwork, detail_hero};
 use crate::views::grid;
 use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
@@ -210,6 +210,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             title: a.name.clone(),
             subtitle: album_subtitle(a, s.album_year),
             cover_id: a.cover_id,
+            cover_override: s.covers.album_cover_path(&a.name),
             circular: false,
             play_ids: a.ids.clone(),
             remote_source: a.remote_source.clone(),
@@ -641,22 +642,34 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         meta = format!("{meta} · DR{}", dr.round() as i32);
     }
 
+    // A user-uploaded custom cover (the old app's "Edit Artwork") wins over the
+    // cover-track art, the same precedence the album grid card uses.
+    let art = match s.covers.album_cover_path(&album.name) {
+        Some(path) => HeroArt::Image(path),
+        None => HeroArt::Cover {
+            id: album.cover_id,
+            circular: false,
+        },
+    };
     let hero = detail_hero(
         s,
         p,
         scale,
         "album",
-        HeroArt::Cover {
-            id: album.cover_id,
-            circular: false,
-        },
+        art,
         t!("album.eyebrow").to_uppercase(),
         album.name.clone(),
         album.remote_source.clone(),
         album_subtitle(&album, s.album_year),
         meta,
         Some(&crate::views::icons::CLOCK),
-        detail_actions("album-play-all", album.ids.clone(), p),
+        detail_actions_with_artwork(
+            s,
+            p,
+            "album-play-all",
+            album.ids.clone(),
+            ArtworkTarget::Album(album.name.clone()),
+        ),
     );
 
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
