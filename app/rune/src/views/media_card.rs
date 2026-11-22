@@ -13,7 +13,7 @@ use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::grid;
 use crate::views::icons;
-use crate::views::player::{artist_cover, cover, remote_badge_for};
+use crate::views::player::{artist_cover, cover, cover_from_path, remote_badge_for};
 
 /// The hover play-overlay button — the old app's `w-14 h-14 rounded-xl` (56 px).
 const PLAY_BTN: f32 = 56.0;
@@ -45,6 +45,11 @@ pub(crate) struct CardSpec {
     pub(crate) subtitle: Option<String>,
     /// A member track id to draw the cover from.
     pub(crate) cover_id: u32,
+    /// A user-uploaded custom cover file (the old app's "Edit Artwork"), which
+    /// wins over the `cover_id`-derived art when set: the album/artist's own
+    /// custom image is drawn instead (see `crate::covers::CoverStore`). `None`
+    /// (the common case) keeps the generated/embedded art.
+    pub(crate) cover_override: Option<std::path::PathBuf>,
     /// Circular artwork (artists) vs a square `radius::MD` tile (albums).
     pub(crate) circular: bool,
     /// Every track id the play-overlay plays, in order.
@@ -101,6 +106,26 @@ pub(crate) fn media_card(
         .is_some_and(|id| spec.play_ids.contains(&id))
         && s.playing;
 
+    // The base artwork: a user-uploaded custom cover wins over everything (the
+    // old app's "Edit Artwork"); else an artist card draws its avatar and an
+    // album card its cover-track art. A circular card blurs its base art either
+    // way, so the person silhouette + scrim overlay below still reads on top.
+    let base_art = if let Some(path) = &spec.cover_override {
+        let art = cover_from_path(s, path, card_w, corner, p, scale);
+        if spec.circular {
+            art.blur(card_w * 0.05)
+        } else {
+            art
+        }
+    } else if spec.circular {
+        // Artist avatar: real art, else the artist-seeded generated cover,
+        // softly blurred so the person silhouette reads on top (the original's
+        // artist cards blur the art behind the glyph). Sigma scales with the
+        // card so the look is consistent at every grid density.
+        artist_cover(s, spec.cover_id, &spec.title, card_w, corner, p, scale).blur(card_w * 0.05)
+    } else {
+        cover(s, Some(spec.cover_id), card_w, corner, p, scale)
+    };
     let mut cover_area = el()
         .key("cover-area")
         .size(card_w, card_w)
@@ -109,16 +134,7 @@ pub(crate) fn media_card(
         // crisp circle edge (the blur would otherwise bleed past the circle).
         .clip_rounded(corner)
         .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
-        .child(if spec.circular {
-            // Artist avatar: real art, else the artist-seeded generated cover,
-            // softly blurred so the person silhouette reads on top (the original's
-            // artist cards blur the art behind the glyph). Sigma scales with the
-            // card so the look is consistent at every grid density.
-            artist_cover(s, spec.cover_id, &spec.title, card_w, corner, p, scale)
-                .blur(card_w * 0.05)
-        } else {
-            cover(s, Some(spec.cover_id), card_w, corner, p, scale)
-        });
+        .child(base_art);
     // Artist cards (circular) overlay a person silhouette over a subtle scrim, so
     // the avatar reads as a profile the way the original's artist cards do; the
     // artwork stays faintly visible behind the glyph.

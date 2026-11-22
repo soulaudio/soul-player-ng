@@ -5,9 +5,9 @@
 //! `play_all_pill`, so the three pages share one grammar.
 #![forbid(unsafe_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use rune::{Color, Cursor, El, Icon, col, el, icon, row, text};
+use rune::{Color, Cursor, El, FileDialogOptions, Icon, Tx, col, el, icon, row, text};
 use soul_player_host::Command;
 
 use crate::State;
@@ -226,4 +226,168 @@ pub(crate) fn detail_actions(play_key: &str, ids: Vec<u32>, p: &Palette) -> El {
         .center_y()
         .child(play_all_pill(play_key, ids.clone(), p))
         .child(enqueue_all_button("detail-enqueue-all", ids, p))
+}
+
+/// Side of the circular Edit/Remove-Artwork icon buttons (matches
+/// [`ENQUEUE_ALL_BTN`] so they sit evenly beside it in the hero actions row).
+const ARTWORK_BTN: f32 = ENQUEUE_ALL_BTN;
+
+/// Which entity an "Edit Artwork" control sets a custom cover for. Covers are
+/// keyed by name in [`crate::covers::CoverStore`] (an album or artist name, so
+/// they survive the volatile track-id re-mint every rescan does), so the target
+/// just carries the name plus which kind it is.
+#[derive(Clone)]
+pub(crate) enum ArtworkTarget {
+    Album(String),
+    Artist(String),
+}
+
+impl ArtworkTarget {
+    /// This target's current custom-cover path, if one is set and the file
+    /// still exists ([`crate::covers::CoverStore`] returns `None` for a
+    /// vanished file).
+    fn cover_path(&self, s: &State) -> Option<PathBuf> {
+        match self {
+            ArtworkTarget::Album(name) => s.covers.album_cover_path(name),
+            ArtworkTarget::Artist(name) => s.covers.artist_cover_path(name),
+        }
+    }
+
+    /// Apply `src` as this target's custom cover (validated + copied by the
+    /// store). Returns whether it applied.
+    fn set_cover(&self, s: &mut State, src: &Path) -> bool {
+        match self {
+            ArtworkTarget::Album(name) => s.covers.set_album_cover(name, src),
+            ArtworkTarget::Artist(name) => s.covers.set_artist_cover(name, src),
+        }
+    }
+
+    /// Clear this target's custom cover.
+    fn clear_cover(&self, s: &mut State) {
+        match self {
+            ArtworkTarget::Album(name) => s.covers.clear_album_cover(name),
+            ArtworkTarget::Artist(name) => s.covers.clear_artist_cover(name),
+        }
+    }
+
+    /// The element-key prefix (`"album"`/`"artist"`) its controls key under,
+    /// so each page keeps a stable key (`album-edit-artwork`, …).
+    fn key_prefix(&self) -> &'static str {
+        match self {
+            ArtworkTarget::Album(_) => "album",
+            ArtworkTarget::Artist(_) => "artist",
+        }
+    }
+}
+
+/// A circular icon button in the hero actions row, [`ARTWORK_BTN`] wide, muted
+/// like [`enqueue_all_button`]. Shared shape for the Edit/Remove-Artwork
+/// controls.
+fn artwork_btn(key: String, label: String, glyph: &'static Icon, p: &Palette) -> El {
+    el().key(key)
+        .role("button")
+        .label(label.clone())
+        .help(label)
+        .focusable(true)
+        .size(ARTWORK_BTN, ARTWORK_BTN)
+        .center()
+        .radius(radius::FULL)
+        .fill(p.muted)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(icon(glyph, 18.0).color(p.text_secondary))
+}
+
+/// The "Edit Artwork" control (the old app's per-album/artist cover upload):
+/// opens an image-file dialog and, on a pick, applies it as `target`'s custom
+/// cover via [`crate::covers::CoverStore`]. A set cover always wins over the
+/// generated/embedded art everywhere that album/artist shows, so from here on
+/// its grid card and this hero show exactly what was picked. Mirrors the
+/// playlist "Set cover" control (`views::playlist_detail::set_cover_control`),
+/// including forgetting the art cache's path-keyed memo so a same-extension
+/// replace (which overwrites the file in place) re-decodes instead of serving
+/// the stale image.
+fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
+    artwork_btn(
+        format!("{}-edit-artwork", target.key_prefix()),
+        t!("artwork.edit").to_string(),
+        &icons::UPLOAD,
+        p,
+    )
+    .on_press_tx(move |_s: &mut State, tx: &mut Tx| {
+        let target = target.clone();
+        tx.open_file(
+            FileDialogOptions {
+                title: t!("artwork.editDialog").to_string(),
+                ..Default::default()
+            }
+            .filter(
+                "Images (*.jpg, *.jpeg, *.png, *.webp, *.gif)",
+                &["jpg", "jpeg", "png", "webp", "gif"],
+            ),
+            move |s: &mut State, result, _tx| {
+                if let Ok(Some(path)) = result {
+                    // A replaced cover may overwrite the same `<stem>.<ext>`
+                    // path in place, so drop the art cache's path-keyed memo
+                    // for both the old and new path, otherwise the hero and
+                    // grid card keep showing the stale decode until restart
+                    // (see `views::player::ArtCache::forget_path`).
+                    let old = target.cover_path(s);
+                    if target.set_cover(s, &path) {
+                        if let Some(old) = old {
+                            s.art.forget_path(&old);
+                        }
+                        if let Some(new) = target.cover_path(s) {
+                            s.art.forget_path(&new);
+                        }
+                    }
+                }
+            },
+        );
+    })
+}
+
+/// The "Remove Artwork" control: clears `target`'s custom cover, falling its
+/// art back to the generated/embedded default. Only rendered when a custom
+/// cover is actually set (see [`detail_actions_with_artwork`]).
+fn remove_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
+    artwork_btn(
+        format!("{}-remove-artwork", target.key_prefix()),
+        t!("artwork.remove").to_string(),
+        &icons::X,
+        p,
+    )
+    .on_press(move |s: &mut State| {
+        let old = target.cover_path(s);
+        target.clear_cover(s);
+        if let Some(old) = old {
+            s.art.forget_path(&old);
+        }
+    })
+}
+
+/// [`detail_actions`] plus an "Edit Artwork" control (and a "Remove Artwork"
+/// control once a custom cover is set) for the album/artist detail hero. The
+/// row wraps (`flex_wrap`) so the extra controls reflow under Play All on a
+/// narrow pane rather than overflowing it.
+pub(crate) fn detail_actions_with_artwork(
+    s: &State,
+    p: &Palette,
+    play_key: &str,
+    ids: Vec<u32>,
+    target: ArtworkTarget,
+) -> El {
+    let mut r = row()
+        .key(format!("{play_key}-actions"))
+        .flex_wrap()
+        .gap(space::SM)
+        .center_y()
+        .child(play_all_pill(play_key, ids.clone(), p))
+        .child(enqueue_all_button("detail-enqueue-all", ids, p))
+        .child(edit_artwork_control(p, target.clone()));
+    if target.cover_path(s).is_some() {
+        r = r.child(remove_artwork_control(p, target));
+    }
+    r
 }
