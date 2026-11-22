@@ -396,6 +396,7 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
 /// One row on the album detail page: the track number (or a ⏸/▶ state glyph when
 /// it's the current track), title and duration. Clicking plays the album from
 /// that track, or toggles pause/resume when it is already the one playing.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn detail_track_row(
     now_playing: Option<u32>,
     is_playing: bool,
@@ -403,6 +404,12 @@ pub(crate) fn detail_track_row(
     ids: &[u32],
     i: usize,
     t: &TrackView,
+    // Which of the ARTIST / ALBUM columns to show. The old app always shows both;
+    // we show them only where they add information: genre and playlist detail
+    // (tracks span many artists/albums) show both, artist detail shows ALBUM
+    // (one artist, many albums), album detail shows neither (both are constant).
+    show_artist: bool,
+    show_album: bool,
 ) -> El {
     let playing = now_playing == Some(t.id);
     let ids = ids.to_vec();
@@ -450,8 +457,31 @@ pub(crate) fn detail_track_row(
             .font(type_::ITEM)
             .color(if playing { p.accent } else { p.fg })
             .truncate()
-            .grow(1.0),
+            .grow(1.0)
+            .min_w(0.0),
         );
+    // ARTIST / ALBUM columns (the old app's TrackList), each a flexible column
+    // sharing the row with the title, shown only where it adds information.
+    if show_artist {
+        r = r.child(
+            text(t.artist.clone().unwrap_or_default())
+                .font(type_::ITEM)
+                .color(p.text_secondary)
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        );
+    }
+    if show_album {
+        r = r.child(
+            text(t.album.clone().unwrap_or_default())
+                .font(type_::ITEM)
+                .color(p.text_secondary)
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        );
+    }
     // A subtle cloud badge for a track streaming from a remote source;
     // nothing renders for a local track, the unremarked default.
     if let Some(host) = &t.remote_source {
@@ -524,34 +554,42 @@ pub(crate) fn detail_track_row(
 /// [`detail_track_row`]'s columns exactly: a blank `#`-width spacer, TITLE
 /// (grow), FORMAT (over the codec-badge area) and DURATION. `detail_track_row`
 /// doesn't gate any of these by pane width, so neither does the header.
-fn detail_track_header(p: &Palette) -> El {
-    row()
+pub(crate) fn detail_track_header(p: &Palette, show_artist: bool, show_album: bool) -> El {
+    let col_head = |label: String| {
+        text(label)
+            .font(type_::CAPTION)
+            .color(p.text_secondary)
+            .grow(1.0)
+            .truncate()
+            .min_w(0.0)
+    };
+    let mut h = row()
         .key("album-tracks-header")
         .gap(space::MD)
         .center_y()
         .px(space::MD)
         .py(space::XS)
         .child(el().key("album-tracks-header-index").w(28.0))
-        .child(
-            text(t!("library.colTitle").to_uppercase())
+        .child(col_head(t!("library.colTitle").to_uppercase()));
+    if show_artist {
+        h = h.child(col_head(t!("library.colArtist").to_uppercase()));
+    }
+    if show_album {
+        h = h.child(col_head(t!("library.colAlbum").to_uppercase()));
+    }
+    h.child(
+        el().key("album-tracks-header-format").w(52.0).child(
+            text(t!("library.colFormat").to_uppercase())
                 .font(type_::CAPTION)
-                .color(p.text_secondary)
-                .grow(1.0)
-                .truncate(),
-        )
-        .child(
-            el().key("album-tracks-header-format").w(52.0).child(
-                text(t!("library.colFormat").to_uppercase())
-                    .font(type_::CAPTION)
-                    .color(p.text_secondary),
-            ),
-        )
-        .child(
-            text(t!("library.colDuration").to_uppercase())
-                .font(type_::CAPTION)
-                .color(p.text_secondary)
-                .w(56.0),
-        )
+                .color(p.text_secondary),
+        ),
+    )
+    .child(
+        text(t!("library.colDuration").to_uppercase())
+            .font(type_::CAPTION)
+            .color(p.text_secondary)
+            .w(56.0),
+    )
 }
 
 /// An album's detail page (the old app's AlbumPage): a back link, then the shared
@@ -636,6 +674,8 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                 &album.ids,
                 i,
                 t,
+                false, // album detail: artist is constant
+                false, // album detail: album is constant
             ));
         }
     }
@@ -645,7 +685,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             .key("album-detail-content")
             .padding(space::PANE)
             .child(hero)
-            .child(detail_track_header(p))
+            .child(detail_track_header(p, false, false))
             .child(list)
             .scroll(ScrollSpec {
                 stick_bottom: false,
