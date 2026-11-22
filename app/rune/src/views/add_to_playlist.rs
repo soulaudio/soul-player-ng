@@ -229,16 +229,90 @@ fn new_playlist_field(s: &State, p: &Palette) -> El {
         )
 }
 
-/// The explicit close affordance: a right-aligned "Done" button, the
-/// membership manager's only in-dialog way to close (besides the dim
-/// backdrop press / Escape that `El::modal` already wires). Rows no longer
-/// close the overlay themselves, so without this there would be no way to
-/// leave once satisfied short of dismissing via the backdrop.
-fn done_row(p: &Palette) -> El {
+/// The modal's title row: the "Add to playlist" heading (left) and an
+/// explicit X close button (right). The X mirrors the dim-backdrop press /
+/// Escape that `El::modal` already wires, giving a pointer user an obvious
+/// corner affordance to dismiss the membership manager.
+fn title_row(p: &Palette) -> El {
     row()
-        .key("add-to-playlist-done-row")
+        .key("add-to-playlist-title-row")
         .w_full()
-        .justify_end()
+        .center_y()
+        .justify_between()
+        .child(
+            text(t!("playlists.addTo").to_string())
+                .font(type_::TITLE)
+                .color(p.fg),
+        )
+        .child(
+            el().key("add-to-playlist-close")
+                .role("button")
+                .label(t!("common.close").to_string())
+                .focusable(true)
+                .size(28.0, 28.0)
+                .center()
+                .radius(radius::SM)
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
+                .child(icon(&icons::X, 18.0).color(p.text_secondary))
+                .on_press(|st: &mut State| crate::close_add_to_playlist(st)),
+        )
+}
+
+/// The track-header card: a small, dim "Adding track" label over the pending
+/// track's title (resolved from `s.library` by id), so the user always sees
+/// *which* track their toggles apply to. A muted, rounded panel mirroring the
+/// old app's header card.
+fn track_header(s: &State, p: &Palette, track_id: u32) -> El {
+    let title = s
+        .library
+        .iter()
+        .find(|t| t.id == track_id)
+        .and_then(|t| t.title.clone())
+        .unwrap_or_default();
+    col()
+        .key("add-to-playlist-track")
+        .w_full()
+        .gap(space::XXS)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .child(
+            text(t!("playlists.addingTrack").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+        .child(text(title).font(type_::ITEM_STRONG).color(p.fg).truncate())
+}
+
+/// The footer: a muted "Cancel" button (left) and the primary "Done" button
+/// (right). Both close the membership manager — Cancel reads as the explicit
+/// dismiss, Done as the satisfied "I'm finished toggling" exit — matching the
+/// old app's two-button footer. Toggles already persist immediately, so the
+/// two are behaviourally identical; the pair is a familiarity affordance.
+fn footer(p: &Palette) -> El {
+    row()
+        .key("add-to-playlist-footer")
+        .w_full()
+        .center_y()
+        .justify_between()
+        .child(
+            el().key("add-to-playlist-cancel")
+                .role("button")
+                .label(t!("common.cancel").to_string())
+                .focusable(true)
+                .px(space::MD)
+                .py(space::XS)
+                .radius(radius::SM)
+                .fill(p.muted)
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
+                .child(text(t!("common.cancel").to_string()).color(p.fg))
+                .on_press(|st: &mut State| crate::close_add_to_playlist(st)),
+        )
         .child(
             el().key("add-to-playlist-done")
                 .role("button")
@@ -255,28 +329,56 @@ fn done_row(p: &Palette) -> El {
 }
 
 /// The "Add to playlist" overlay, mounted at the window root (via
-/// [`crate::view`]'s overlay layer): a centered, dim-backdrop modal listing
-/// every playlist (or the empty-state message) over the inline New-playlist
-/// field, with an explicit "Done" button to close it. `None` while
-/// `State::add_to_playlist_for` is `None` (closed).
+/// [`crate::view`]'s overlay layer): a centered, dim-backdrop modal that
+/// mirrors the old app's header → track card → search → create → list →
+/// footer stack. It lists every playlist (filtered by the search box) as a
+/// membership row, or an icon + "No playlists yet" empty state when the user
+/// has no playlists at all. `None` while `State::add_to_playlist_for` is
+/// `None` (closed).
 pub fn overlay(s: &State, p: &Palette) -> Option<El> {
     let track_id = s.add_to_playlist_for?;
     let summaries = s.playlists.list();
-    let mut list = col()
-        .key("add-to-playlist-list")
-        .role("list")
-        .gap(space::XXS);
-    if summaries.is_empty() {
-        list = list.child(
-            text(t!("playlists.empty").to_string())
-                .font(type_::ITEM)
-                .color(p.text_secondary),
-        );
+    let query = s.add_to_playlist_search.text.trim().to_lowercase();
+
+    // Body: an icon + empty-state message when there are NO playlists at all,
+    // else the membership list filtered by the search box (an all-filtered
+    // list simply renders empty, which is fine).
+    let body = if summaries.is_empty() {
+        col()
+            .key("add-to-playlist-empty")
+            .w_full()
+            .center()
+            .gap(space::SM)
+            .py(space::LG)
+            .child(icon(&icons::LIST, 28.0).color(p.text_secondary))
+            .child(
+                text(t!("playlists.empty").to_string())
+                    .font(type_::ITEM)
+                    .color(p.text_secondary),
+            )
     } else {
-        for summary in &summaries {
+        let mut list = col()
+            .key("add-to-playlist-list")
+            .role("list")
+            .gap(space::XXS);
+        for summary in summaries
+            .iter()
+            .filter(|sm| query.is_empty() || sm.name.to_lowercase().contains(&query))
+        {
             list = list.child(pick_row(s, p, track_id, summary));
         }
-    }
+        list
+    };
+
+    let search = crate::views::library::search_box(
+        &s.add_to_playlist_search,
+        "add-to-playlist-search",
+        t!("playlists.searchPlaylists").to_string(),
+        p,
+        |st: &mut State| &mut st.add_to_playlist_search,
+    )
+    .w_full();
+
     Some(
         col()
             .key("add-to-playlist-modal")
@@ -288,21 +390,19 @@ pub fn overlay(s: &State, p: &Palette) -> Option<El> {
             .child(
                 col()
                     .key("add-to-playlist-dialog")
-                    .w(360.0)
+                    .w(380.0)
                     .fill(p.card)
                     .radius(radius::LG)
                     .border(1.0, p.border)
                     .padding(space::LG)
                     .gap(space::MD)
                     .modal(true, crate::close_add_to_playlist)
-                    .child(
-                        text(t!("playlists.addTo").to_string())
-                            .font(type_::TITLE)
-                            .color(p.fg),
-                    )
-                    .child(list)
+                    .child(title_row(p))
+                    .child(track_header(s, p, track_id))
+                    .child(search)
                     .child(new_playlist_field(s, p))
-                    .child(done_row(p)),
+                    .child(body)
+                    .child(footer(p)),
             ),
     )
 }
