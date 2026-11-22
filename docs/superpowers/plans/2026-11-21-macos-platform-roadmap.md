@@ -126,10 +126,14 @@ pause/play/seek/next/toggle all round-trip. Bundled, macOS attributes it to
 - ❎ Skip ±15 s — **decided 2026-11-22: no.** Enabling `skipForward/BackwardCommand` makes
   Control Center and the media keys show ±15 s *instead of* previous/next track (right for
   podcasts, wrong for a music player; Apple Music doesn't enable them).
-- ⏳ Repeat mode (`changeRepeatModeCommand`) + like (`likeCommand`, maps to the heart): souvlaki
-  0.9 registers only play/pause/toggle/next/prev/position/shuffle. Needs a small audited objc2
-  crate (`objc2-media-player`) that adds handlers on the shared `MPRemoteCommandCenter` beside
-  souvlaki — the only `unsafe` the app would carry, so it's a deliberate decision.
+- ❎ Repeat / like in Control Center — **decided 2026-11-22: no.** macOS's Now Playing widget
+  never shows repeat/shuffle, and the heart opens add-to-playlist (no liked state to toggle).
+- ✅ Finder "Open With" / double-click / Dock drop (`open_files` + `soul-macos-native`, the
+  app's one `unsafe` crate: an `'odoc'` Apple-event handler installed on
+  `NSApplicationWillFinishLaunching`); launch arguments on Windows/Linux. Library files play
+  at once; others get their folder added as a source first. Bundle declares the audio types.
+  e2e: `scripts/e2e-open-files-macos.sh`.
+- ✅ Proper macOS icon (`icons/macos/icon.icns`, 16–1024 px on Apple's grid).
 - ✅ kill / Ctrl-C / closed terminal quit like ⌘Q (`signal_quit`): no false crash report.
 - ✅ Output picker shows each device's transport (`device_transport`, from `system_profiler`)
   and flags AirPlay / Bluetooth as "not bit-perfect" before the user picks them.

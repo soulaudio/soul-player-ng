@@ -42,6 +42,7 @@ mod signal_quit;
 mod macos_menu;
 mod media_session;
 mod notify;
+mod open_files;
 mod organize_job;
 mod playlists;
 mod report;
@@ -499,6 +500,13 @@ struct State {
     /// devices that can never be bit-perfect before the user picks one.
     output_transports:
         std::collections::HashMap<String, soul_player_host::device_transport::Transport>,
+    /// Files the OS asked us to open that weren't in the library yet: held while their
+    /// folders are added and scanned, then played (`open_files`).
+    pending_open: Vec<PathBuf>,
+    /// The restored library's first scan hasn't landed yet. Files opened meanwhile wait in
+    /// `pending_open` (their track ids would be resolved against a library that's about to
+    /// be replaced) and are opened when it lands (`apply_startup_scan`).
+    startup_scan_pending: bool,
     /// Whether **exclusive** (bit-perfect) output is requested (persisted), rendered
     /// as a toggle in Settings → Output. Applies to the next playback session; the
     /// device may fall back to shared if it can't open exclusive (reflected live in
@@ -795,6 +803,8 @@ impl State {
             output_device: config::load_output_device(),
             output_devices,
             output_transports: Default::default(),
+            pending_open: Vec::new(),
+            startup_scan_pending: false,
             exclusive: config::load_output_exclusive(),
             exclusive_strict: config::load_output_exclusive_strict(),
             replaygain_mode,
@@ -965,6 +975,22 @@ pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
     // caches); persist them so the next launch stays warm, with this add/remove/
     // toggle already folded in.
     config::save_scan_caches(&s.host.caches_snapshot());
+}
+
+/// The restored library's first scan landed: apply it like any Sources edit, then open any
+/// files the OS handed us while it ran.
+pub(crate) fn apply_startup_scan(s: &mut State, up: WatchUpdate) {
+    apply_and_save(s, up);
+    tracing::debug!(
+        library = s.library.len(),
+        queued = s.pending_open.len(),
+        "startup scan landed"
+    );
+    s.startup_scan_pending = false;
+    let waiting = std::mem::take(&mut s.pending_open);
+    if !waiting.is_empty() {
+        open_files::open(s, waiting);
+    }
 }
 
 /// Run a library-rescanning host op **off the UI thread**, then apply its result
@@ -3682,6 +3708,9 @@ fn main() -> anyhow::Result<()> {
         .init(move || {
             let mut s = State::new(init_host.clone());
             s.crashed_last_session = crashed_last_session;
+            // Set from the start (not in the first-frame update that kicks the scan off): a
+            // file that launched the app arrives during AppKit's launch, before that frame.
+            s.startup_scan_pending = needs_startup_scan;
             s
         })
         .on_ready({
@@ -3759,7 +3788,7 @@ fn main() -> anyhow::Result<()> {
             // main thread. Results fold in via `apply_and_save` and the title-bar
             // activity widget animates meanwhile — no blocked first paint (#102).
             if needs_startup_scan {
-                scan_in_background(s, |host| host.rescan_sources(), apply_and_save);
+                scan_in_background(s, |host| host.rescan_sources(), apply_startup_scan);
             }
             // Reconnect every persisted remote source (Inc 5), also off the main
             // thread — same "don't block the first paint" reasoning as the local
@@ -3767,6 +3796,23 @@ fn main() -> anyhow::Result<()> {
             // refresh-token round-trip (plus a catalog re-fetch) over the network.
             reconnect_remotes_on_startup(s);
         });
+    }
+    // Files the OS hands us: Finder open-documents events (macOS, for the app's whole life)
+    // and audio files among the launch arguments (Windows/Linux file associations, CLI).
+    // Both queue after the first-frame update below, so `app_handle` is set by then.
+    {
+        let oh = ah.clone();
+        #[cfg(target_os = "macos")]
+        soul_macos_native::on_open_documents(move |paths| {
+            oh.update(move |s: &mut State, _tx: &mut Tx| open_files::open(s, paths));
+        });
+        let args = open_files::from_args(std::env::args().skip(1));
+        if !args.is_empty() {
+            let ah2 = ah.clone();
+            ah2.update(move |s: &mut State, _tx: &mut Tx| open_files::open(s, args));
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = oh;
     }
     // Periodic remote-health poller (Inc 2): its own dedicated sleep-loop
     // thread — never the UI thread — wakes every ~30 s and asks the UI thread
@@ -3839,7 +3885,12 @@ fn main() -> anyhow::Result<()> {
     }
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
     // installer uses the same icons via [package.metadata.packager]).
-    if let Err(e) = rune::set_app_icon(include_bytes!("../icons/icon.png").to_vec()) {
+    // macOS: the tiled Dock icon (matches the bundle's .icns); elsewhere the bare mark.
+    #[cfg(target_os = "macos")]
+    let icon: &[u8] = include_bytes!("../icons/macos/icon-512.png");
+    #[cfg(not(target_os = "macos"))]
+    let icon: &[u8] = include_bytes!("../icons/icon.png");
+    if let Err(e) = rune::set_app_icon(icon.to_vec()) {
         tracing::warn!("set_app_icon failed: {e}");
     }
     app.run();
