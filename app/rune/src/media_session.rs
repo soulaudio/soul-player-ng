@@ -457,6 +457,25 @@ mod tests {
         assert_eq!(file_url(odd), "file:///tmp/AC%23DC%20%3F/Bj%C3%B6rk.png");
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn file_urls_on_windows_prefix_the_drive_and_percent_encode() {
+        // The Windows drive-letter branch (`Component::Prefix`) builds `file:///C:/…` —
+        // the path this platform actually runs, previously exercised only under
+        // `#[cfg(unix)]`, so Windows had zero coverage of its own branch.
+        let p = std::path::Path::new(r"C:\Users\me\Soul Player\now-playing\cover-1.jpg");
+        assert_eq!(
+            file_url(p),
+            "file:///C:/Users/me/Soul%20Player/now-playing/cover-1.jpg"
+        );
+        // Special characters in a drive path are still percent-encoded per segment.
+        let odd = std::path::Path::new(r"C:\Music\AC#DC ?\Björk.png");
+        assert_eq!(
+            file_url(odd),
+            "file:///C:/Music/AC%23DC%20%3F/Bj%C3%B6rk.png"
+        );
+    }
+
     #[test]
     fn publish_artwork_writes_one_current_cover_and_prunes_old_ones() {
         let root = std::env::temp_dir().join(format!("soul_np_art_{}", std::process::id()));
