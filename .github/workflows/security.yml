@@ -26,8 +26,8 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+      - uses: actions/checkout@v7.0.1
+      - uses: taiki-e/install-action@v2.90.1
         with:
           tool: cargo-audit
       - name: Scan both lockfiles
@@ -43,11 +43,11 @@ jobs:
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
       CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7.0.1
       - name: Authenticate the private soul-audio-core git dependency
         if: ${{ env.CORE_REPO_TOKEN != '' }}
         run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
-      - uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b # v2
+      - uses: taiki-e/install-action@v2.90.1
         with:
           # Pinned: cargo-deny moved `--config` between a global flag and a
           # `check` subcommand flag across releases; pin so the invocation below
@@ -66,7 +66,7 @@ jobs:
     name: gitleaks (secret scan)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7.0.1
       # The gitleaks Action requires a paid licence for GitHub orgs; the CLI is
       # free, so pin + run the binary directly. `dir` scans the working tree.
       - name: Install gitleaks
@@ -89,7 +89,7 @@ jobs:
     # it.)
     continue-on-error: true
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7.0.1
       - name: Install OSV-Scanner
         run: |
           curl -sSL -o /usr/local/bin/osv-scanner "https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64"
@@ -107,9 +107,9 @@ jobs:
     name: SBOM (CycloneDX)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7.0.1
       - name: Generate SBOM from the lockfiles
-        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        uses: anchore/sbom-action@v0.24.3
         with:
           format: cyclonedx-json
           output-file: sbom.cdx.json

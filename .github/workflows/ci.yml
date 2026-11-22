@@ -34,7 +34,7 @@ jobs:
       run:
         shell: bash # available on all three runners; keeps one syntax everywhere
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Authenticate the private soul-audio-core git dependency
         if: ${{ env.CORE_REPO_TOKEN != '' }}
@@ -67,7 +67,7 @@ jobs:
         if: runner.os == 'Linux'
         run: rustup component add rustfmt clippy
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: |
             .
@@ -144,7 +144,7 @@ jobs:
         shell: bash
         working-directory: app/rune
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Authenticate the private soul-audio-core git dependency
         if: ${{ env.CORE_REPO_TOKEN != '' }}
@@ -174,7 +174,7 @@ jobs:
           done
           echo "::error::apt-get failed after 5 attempts"; exit 1
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           workspaces: app/rune
 
