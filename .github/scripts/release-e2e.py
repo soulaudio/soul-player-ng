@@ -54,6 +54,10 @@ import urllib.request
 import zlib
 from pathlib import Path
 
+# Windows consoles default to cp1252; the report uses arrows and dashes.
+for _stream in (sys.stdout, sys.stderr):
+    _stream.reconfigure(encoding="utf-8", errors="replace")
+
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 APP_NAME = "Soul Player"
@@ -392,8 +396,10 @@ def live_run(
             p.wait()
             raise E2EFailure("app did not quit within 30s of SIGTERM") from None
     if not IS_WIN:
-        check(p.returncode == 0, f"app quit with status {p.returncode} after SIGTERM")
-        ok("quit cleanly on SIGTERM")
+        # Releases before 0.4 have no SIGTERM handler and die by the signal (-15).
+        allowed = (0,) if require_log else (0, -signal.SIGTERM)
+        check(p.returncode in allowed, f"app quit with status {p.returncode} after SIGTERM")
+        ok(f"quit on SIGTERM (status {p.returncode})")
     text = env.log_since(mark)
     if not require_log and "Soul Player starting" not in text:
         log(f"  note: {version} writes no log file; checked that it runs only")

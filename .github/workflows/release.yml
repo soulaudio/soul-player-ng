@@ -205,6 +205,17 @@ jobs:
         working-directory: app/rune
         run: cargo packager --release -f ${{ matrix.format }}
 
+      # The AppImage runs on any distro whose glibc is at least the build's. Keep the floor
+      # at Ubuntu 24.04 LTS (2.39): v0.3.0, built on a newer image, needed 2.43 and does not
+      # start on 24.04 (the release e2e caught it).
+      - name: glibc floor (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          need=$(objdump -T app/rune/target/release/soul-player-rune | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          echo "binary needs $need"
+          [ "$(printf '%s\nGLIBC_2.39\n' "$need" | sort -V | tail -1)" = "GLIBC_2.39" ] \
+            || { echo "::error::binary needs $need, above the GLIBC_2.39 floor (Ubuntu 24.04)"; exit 1; }
+
       # Stage under a GitHub-safe name (so the manifest URL matches the uploaded asset)
       # and write the updater sidecar for latest.json.
       - name: Stage artifact + write updater sidecar
