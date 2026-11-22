@@ -65,7 +65,9 @@ rate/format change; hog released last) · bit-exact Float32 output at unity volu
 | airpods | bluetooth | Float32 48k fixed | refused | synthesized |
 | airplay | airplay | Float32 44.1k fixed | refused | synthesized |
 | aggregate / multi-output | aggregate | sum of members | no property | synthesized |
-| blackhole-2ch | virtual | Float32 8k–768k | yes | synthesized → captured in CI |
+| blackhole-2ch | virtual | Float32 8k–768k | yes | captured (CI) |
+| null-audio-device (CI runner) | virtual | Float32 44.1/48k only | yes | captured (CI) |
+| apple-virtual-sound-device (CI runner) | built-in | Float32 48/96k only | yes | captured (CI) |
 
 Priority captures to request from users / borrow: Studio Display, Mac Studio/mini jack,
 Intel iMac/MacBook, a UAC2 DAC, AirPods, an HDMI AVR.
@@ -85,15 +87,20 @@ Driven red→green by Phase 1 faults:
 - Hog refused (aggregate / Bluetooth / AirPlay) → typed `Unsupported` → host falls back to
   shared with a clear reason (strict mode stops).
 
-## Phase 4 — CI on every Apple desktop architecture 🔨 (written; first runs pending)
+## Phase 4 — CI on every Apple desktop architecture ✅
+
+First run (soul-audio-core#109) green on macos-15, macos-26 and macos-15-intel: BlackHole
+**accepts hog mode** on hosted runners, the whole 13-rate ladder switches, and the loopback is
+**bit-identical** at 44.1k and 96k on all three — so the loopback step now gates. The runners'
+device profiles are identical across images and are checked in as captured fixtures.
 
 - Matrix `macos-15`, `macos-26` (arm64) + `macos-15-intel` (x86_64): build, clippy, unit +
   fake-HAL contract suite (no device needed).
 - Virtual-device integration: `brew install --cask blackhole-2ch` + `switchaudio-osx`,
   `sudo killall -9 coreaudiod`, assert presence via `system_profiler`; run the real-device
   suites serially against BlackHole (cubeb-coreaudio-rs does exactly this).
-- Bit-perfect loopback (BlackHole out → in, sample-exact compare); non-blocking until the
-  runner's TCC microphone grant is confirmed.
+- ✅ Bit-perfect loopback (BlackHole out → in, sample-exact compare); blocking (the hosted
+  runners grant the microphone permission).
 - 🧪 Custom-built BlackHole with a restricted `kSampleRates` ladder (44.1/48/96/192k) to
   exercise in-family fallback on the real AUHAL path.
 - 🧪 libASPL / tympan-aspl "ProfileDevice" HAL plug-in loading fixture profiles (Int24,
