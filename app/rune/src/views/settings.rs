@@ -42,9 +42,9 @@ use crate::{
     set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict, set_indexing_mode,
     set_locale_pref, set_loudness_analysis_mode, set_managed_dest, set_managed_strategy,
     set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_theme_pref, start_dsp_rename,
-    start_profile_rename, switch_profile, toggle_dsp_expanded, toggle_eq_bands_expanded,
-    toggle_remote_enabled, unit_bands, unit_enabled, unit_preamp,
+    set_replaygain_preamp, set_settings_tab, set_show_loudness_columns, set_theme_pref,
+    start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
+    toggle_eq_bands_expanded, toggle_remote_enabled, unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::{IndexingMode, LoudnessAnalysisMode};
 
@@ -1690,6 +1690,54 @@ fn appearance_card(s: &State, p: &Palette) -> El {
                         )),
                 ),
         )
+        .child(
+            row()
+                .key("loudness-columns-row")
+                .center_y()
+                .gap(space::SM)
+                .flex_wrap()
+                .child(
+                    col()
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .gap(space::XXS)
+                        .child(
+                            text(t!("settings.loudnessColumns").to_string())
+                                .font(type_::ITEM)
+                                .color(p.fg),
+                        )
+                        .child(
+                            text(t!("settings.loudnessColumnsDesc").to_string())
+                                .font(type_::CAPTION)
+                                .color(p.text_secondary)
+                                .wrap(),
+                        ),
+                )
+                .child(loudness_columns_toggle(s.show_loudness_columns, p)),
+        )
+}
+
+/// The loudness-columns on/off switch (a filled pill), persisted via
+/// [`set_show_loudness_columns`]. Filled `primary` when the per-track DR/LUFS columns
+/// are shown, muted when hidden.
+fn loudness_columns_toggle(on: bool, p: &Palette) -> El {
+    el().key("loudness-columns-toggle")
+        .role("button")
+        .label(t!("settings.loudnessColumns").to_string())
+        .focusable(true)
+        .padding(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if on { p.primary } else { p.muted })
+        .child(
+            text(if on {
+                t!("settings.on").to_string()
+            } else {
+                t!("settings.off").to_string()
+            })
+            .color(if on { p.bg } else { p.fg }),
+        )
+        .on_press(move |s: &mut State| set_show_loudness_columns(s, !s.show_loudness_columns))
 }
 
 /// Language: a dropdown of System (follow the OS) plus each shipped locale in its

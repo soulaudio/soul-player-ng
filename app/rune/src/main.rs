@@ -396,6 +396,9 @@ struct State {
     /// first-release date, or this particular release's own date. Consumed by
     /// the library/discography display and sort.
     album_year: config::AlbumYearSource,
+    /// Whether the library track list shows the per-track loudness columns (DR + LUFS)
+    /// and their sort pills. User preference (Settings -> Appearance), persisted.
+    show_loudness_columns: bool,
     /// Which baked axis the library list is ordered by.
     sort_axis: BrowseAxis,
     /// An optional client-side loudness sort layered over `sort_axis` (DR or Integrated
@@ -775,6 +778,7 @@ impl State {
                 .map(|s| ThemePref::from_config(&s))
                 .unwrap_or(ThemePref::System),
             album_year: config::load_album_year(),
+            show_loudness_columns: config::load_show_loudness_columns(),
             sort_axis: BrowseAxis::ArtistAlbumTrack,
             loudness_sort: None,
             loudness_dirty: false,
@@ -1041,6 +1045,19 @@ pub(crate) fn set_theme_pref(s: &mut State, pref: ThemePref) {
 pub(crate) fn set_album_year(s: &mut State, src: config::AlbumYearSource) {
     s.album_year = src;
     config::save_album_year(src);
+}
+
+/// Set + persist whether the library shows the per-track loudness columns (DR + LUFS),
+/// used by the Appearance settings toggle. Hiding them also clears an active loudness
+/// sort and reverts to the baked axis order: the DR/Loudness pills vanish with the
+/// columns, so the list must not keep sorting by now-hidden data.
+pub(crate) fn set_show_loudness_columns(s: &mut State, show: bool) {
+    s.show_loudness_columns = show;
+    config::save_show_loudness_columns(show);
+    if !show && s.loudness_sort.is_some() {
+        s.loudness_sort = None;
+        s.library = s.host.views_by(s.sort_axis);
+    }
 }
 
 /// Set + persist the library indexing-speed mode and apply it to the host (takes

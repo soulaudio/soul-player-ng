@@ -187,6 +187,18 @@ struct Config {
     /// struct-level one for clarity).
     #[serde(default)]
     album_year_source: AlbumYearSource,
+    /// Whether the library track list shows the per-track loudness columns (DR +
+    /// integrated LUFS). `#[serde(default = "default_true")]` so a config written
+    /// before this setting loads as shown, the long-standing behaviour (a bare
+    /// `#[serde(default)]` would wrongly default a missing bool to `false`).
+    #[serde(default = "default_true")]
+    show_loudness_columns: bool,
+}
+
+/// serde field default for a bool that should default to `true` when absent from an
+/// older config (plain `#[serde(default)]` gives `false`).
+fn default_true() -> bool {
+    true
 }
 
 /// Which date an album's "year" is read from: the track's original
@@ -345,6 +357,7 @@ impl Default for Config {
             active_profile: 0,
             window: None,
             album_year_source: AlbumYearSource::Original,
+            show_loudness_columns: true,
         }
     }
 }
@@ -548,6 +561,18 @@ pub fn load_album_year() -> AlbumYearSource {
 pub fn save_album_year(src: AlbumYearSource) {
     let mut cfg = load();
     cfg.album_year_source = src;
+    save(&cfg);
+}
+
+/// Whether the track list shows the per-track loudness columns (DR + LUFS). Default `true`.
+pub fn load_show_loudness_columns() -> bool {
+    load().show_loudness_columns
+}
+
+/// Persist the loudness-columns visibility preference.
+pub fn save_show_loudness_columns(show: bool) {
+    let mut cfg = load();
+    cfg.show_loudness_columns = show;
     save(&cfg);
 }
 
@@ -1291,6 +1316,7 @@ mod tests {
                 maximized: true,
             }),
             album_year_source: AlbumYearSource::Release,
+            show_loudness_columns: false,
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -1314,6 +1340,7 @@ mod tests {
         assert_eq!(back.profiles, cfg.profiles);
         assert_eq!(back.active_profile, 0);
         assert_eq!(back.album_year_source, AlbumYearSource::Release);
+        assert!(!back.show_loudness_columns);
     }
 
     #[test]
@@ -1322,6 +1349,25 @@ mod tests {
         assert_eq!(load_album_year(), AlbumYearSource::Original); // default
         save_album_year(AlbumYearSource::Release);
         assert_eq!(load_album_year(), AlbumYearSource::Release);
+    }
+
+    #[test]
+    fn loudness_columns_round_trip_and_default_to_shown() {
+        let _g = use_test_config_dir();
+        assert!(load_show_loudness_columns(), "shown by default"); // default true
+        save_show_loudness_columns(false);
+        assert!(!load_show_loudness_columns());
+        save_show_loudness_columns(true);
+        assert!(load_show_loudness_columns());
+    }
+
+    #[test]
+    fn a_config_written_before_the_loudness_columns_setting_loads_as_shown() {
+        // A TOML body with no `show_loudness_columns` key must deserialize to `true`
+        // (the serde field default), not bool's `false` — existing users keep the
+        // columns they have always had.
+        let back: Config = toml::from_str("theme = 'dark'\n").unwrap();
+        assert!(back.show_loudness_columns);
     }
 
     #[test]

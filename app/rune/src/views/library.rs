@@ -271,13 +271,16 @@ fn track_row(
             .w(56.0),
     );
     // Audiophile loudness columns, mirroring the duration column (right-aligned, fixed
-    // width). DR is the headline indicator (narrow, color-banded) and shows at every
-    // width; Integrated LUFS is secondary and only joins on a WIDE pane, where there is
-    // room for it beside artist/album without crowding them. Each shows "·" until the
-    // background sweep analyzes the track.
-    r = r.child(dr_cell(t, p));
-    if width == RowWidth::Wide {
-        r = r.child(lufs_cell(t, p));
+    // width). The whole pair is behind the Appearance "loudness columns" preference
+    // (`show_loudness_columns`). When shown: DR is the headline indicator (narrow,
+    // color-banded) at every width; Integrated LUFS is secondary and only joins on a
+    // WIDE pane, where there is room beside artist/album without crowding them. Each
+    // shows "·" until the background sweep analyzes the track.
+    if s.show_loudness_columns {
+        r = r.child(dr_cell(t, p));
+        if width == RowWidth::Wide {
+            r = r.child(lufs_cell(t, p));
+        }
     }
     r
         // Add-to-queue (`+`): appends the track to the override queue, which
@@ -357,7 +360,7 @@ fn track_row(
 /// every pane width. Purely decorative text, so it carries no role/label of
 /// its own; the leading `#`, the cover-thumbnail gap and the trailing
 /// enqueue-button gap are blank spacers sized to match their row counterpart.
-fn track_header_row(p: &Palette, width: RowWidth) -> El {
+fn track_header_row(p: &Palette, width: RowWidth, show_loudness: bool) -> El {
     let compact = width == RowWidth::Compact;
     let label = |s: String| text(s).font(type_::CAPTION).color(p.text_secondary);
 
@@ -408,11 +411,12 @@ fn track_header_row(p: &Palette, width: RowWidth) -> El {
                 .child(label(t!("library.colFormat").to_uppercase())),
         );
     }
-    r = r
-        .child(label(t!("library.colDuration").to_uppercase()).w(56.0))
-        .child(label(t!("library.colDr").to_uppercase()).w(44.0));
-    if width == RowWidth::Wide {
-        r = r.child(label(t!("library.colLufs").to_uppercase()).w(64.0));
+    r = r.child(label(t!("library.colDuration").to_uppercase()).w(56.0));
+    if show_loudness {
+        r = r.child(label(t!("library.colDr").to_uppercase()).w(44.0));
+        if width == RowWidth::Wide {
+            r = r.child(label(t!("library.colLufs").to_uppercase()).w(64.0));
+        }
     }
     // A blank spacer the same size as the row's `+` enqueue button (icon +
     // its padding), so the header's trailing edge lines up with the rows'.
@@ -576,7 +580,7 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .min_h(0.0)
         .child(search_bar(s, p))
         .child(sort_bar(s, p))
-        .child(track_header_row(p, width))
+        .child(track_header_row(p, width, s.show_loudness_columns))
         .child(body)
 }
 
@@ -641,7 +645,7 @@ fn sort_bar(s: &State, p: &Palette) -> El {
     let ls = s.loudness_sort;
     // An axis pill reads active only when no loudness sort is overriding it.
     let axis_active = |ax: BrowseAxis| ls.is_none() && a == ax;
-    row()
+    let mut bar = row()
         .key("sort-bar")
         .gap(space::SM)
         .padding(space::SM)
@@ -675,21 +679,29 @@ fn sort_bar(s: &State, p: &Palette) -> El {
             BrowseAxis::Folder,
             axis_active(BrowseAxis::Folder),
             p,
-        ))
-        .child(loudness_sort_button(
-            t!("library.sortDr").to_string(),
-            "sort-dr",
-            crate::LoudnessKey::Dr,
-            ls == Some(crate::LoudnessKey::Dr),
-            p,
-        ))
-        .child(loudness_sort_button(
-            t!("library.sortLoudness").to_string(),
-            "sort-loudness",
-            crate::LoudnessKey::Loudness,
-            ls == Some(crate::LoudnessKey::Loudness),
-            p,
-        ))
+        ));
+    // The DR / Loudness sort pills ride the loudness columns: they are hidden together
+    // with them (the Appearance preference), so the list never offers a sort by a column
+    // the user can't see. `set_show_loudness_columns` clears an active loudness sort when
+    // the columns go away, so the base-axis pills read correctly here too.
+    if s.show_loudness_columns {
+        bar = bar
+            .child(loudness_sort_button(
+                t!("library.sortDr").to_string(),
+                "sort-dr",
+                crate::LoudnessKey::Dr,
+                ls == Some(crate::LoudnessKey::Dr),
+                p,
+            ))
+            .child(loudness_sort_button(
+                t!("library.sortLoudness").to_string(),
+                "sort-loudness",
+                crate::LoudnessKey::Loudness,
+                ls == Some(crate::LoudnessKey::Loudness),
+                p,
+            ));
+    }
+    bar
 }
 
 #[cfg(test)]
@@ -785,6 +797,49 @@ mod tests {
         assert!(texts.iter().any(|t| t == "FLAC"), "FLAC label renders");
         assert!(texts.iter().any(|t| t == "MP3"), "MP3 label renders");
         assert!(texts.iter().any(|t| t == "DSF"), "DSF label renders");
+    }
+
+    /// The per-track loudness columns (DR + LUFS cells) and their DR/Loudness sort
+    /// pills are behind the Appearance `show_loudness_columns` preference: all present
+    /// when on, all gone when off. Wide pane so LUFS is width-eligible, isolating the
+    /// preference as the only gate under test.
+    #[test]
+    fn loudness_columns_follow_the_appearance_preference() {
+        let _locale = crate::config::use_test_locale("en");
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            col()
+                .child(sort_bar(s, &p))
+                .child(track_list(s, &p, cx, scale))
+        }
+        let present = |show: bool| {
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut s = State::new(soul_player_host::PlayerHandle::offline());
+            s.show_loudness_columns = show;
+            s.library = vec![tv(1, Some("FLAC"))];
+            let mut rt = Runtime::new(s, test_view, (1400.0, 720.0), env);
+            rt.frame(0.0);
+            (
+                rt.find("dr-1").is_some(),
+                rt.find("lufs-1").is_some(),
+                rt.find("sort-dr").is_some(),
+                rt.find("sort-loudness").is_some(),
+            )
+        };
+        assert_eq!(
+            present(true),
+            (true, true, true, true),
+            "DR + LUFS cells and both loudness sort pills show when the preference is on"
+        );
+        assert_eq!(
+            present(false),
+            (false, false, false, false),
+            "they all disappear when the preference is off"
+        );
     }
 
     /// End to end through the real Tracks table: the column-header row renders
