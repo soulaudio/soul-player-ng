@@ -3947,6 +3947,75 @@ mod tests {
         }
     }
 
+    /// The ReplayGain-preamp slider's position<->dB map must be a true inverse pair
+    /// over the ±GAIN_LIMIT_DB range (endpoints, unity midpoint, clamp, round-trip),
+    /// so dragging the slider and reading the number back never drift. Both fns were
+    /// untested.
+    #[test]
+    fn preamp_slider_and_db_are_inverse_maps_over_the_gain_range() {
+        use super::{GAIN_LIMIT_DB, db_to_slider, slider_to_db};
+
+        // slider_to_db: 0.0 -> -limit, 0.5 -> 0 dB (unity), 1.0 -> +limit (within the
+        // 0.1 dB rounding quantum).
+        assert!(
+            (slider_to_db(0.0) - (-GAIN_LIMIT_DB)).abs() < 0.06,
+            "slider 0.0 maps to -GAIN_LIMIT_DB"
+        );
+        assert!(
+            slider_to_db(0.5).abs() < 0.06,
+            "slider 0.5 maps to 0 dB (unity)"
+        );
+        assert!(
+            (slider_to_db(1.0) - GAIN_LIMIT_DB).abs() < 0.06,
+            "slider 1.0 maps to +GAIN_LIMIT_DB"
+        );
+
+        // db_to_slider: the exact affine inverse (no rounding) at the endpoints + unity.
+        assert!((db_to_slider(-GAIN_LIMIT_DB) - 0.0).abs() < 1e-6);
+        assert!((db_to_slider(0.0) - 0.5).abs() < 1e-6);
+        assert!((db_to_slider(GAIN_LIMIT_DB) - 1.0).abs() < 1e-6);
+
+        // Out-of-range dB clamps onto [0, 1] — a slider can't leave its track.
+        assert_eq!(db_to_slider(GAIN_LIMIT_DB + 100.0), 1.0);
+        assert_eq!(db_to_slider(-GAIN_LIMIT_DB - 100.0), 0.0);
+
+        // Round-trip: a grid-aligned dB inside the range survives db -> slider -> db
+        // within the 0.1 dB quantum (slider_to_db rounds to 0.1).
+        for &db in &[-12.0_f32, -6.0, -0.5, 0.0, 3.0, 6.0, 12.0] {
+            if db.abs() <= GAIN_LIMIT_DB {
+                let back = slider_to_db(db_to_slider(db));
+                assert!((back - db).abs() < 0.05, "dB {db} round-trips to {back}");
+            }
+        }
+    }
+
+    /// Remote-URL equality normalization (persisted-vs-live comparison): trailing
+    /// slashes are trimmed so `http://h:8080/` and `http://h:8080` compare equal,
+    /// mirroring the host's own `trim_end_matches('/')`. Previously untested.
+    #[test]
+    fn normalize_remote_url_trims_trailing_slashes_for_equality() {
+        use super::normalize_remote_url;
+
+        assert_eq!(normalize_remote_url("http://h:8080/"), "http://h:8080");
+        assert_eq!(
+            normalize_remote_url("http://h:8080"),
+            "http://h:8080",
+            "a URL with no trailing slash is unchanged"
+        );
+        // The one variance a persisted and a live URL can differ by normalizes away.
+        assert_eq!(
+            normalize_remote_url("http://h:8080/"),
+            normalize_remote_url("http://h:8080"),
+        );
+        // `trim_end_matches` trims ALL trailing slashes (the host mirrors this), but
+        // never an interior slash or a path segment's content.
+        assert_eq!(normalize_remote_url("http://h:8080//"), "http://h:8080");
+        assert_eq!(
+            normalize_remote_url("http://h:8080/v0/"),
+            "http://h:8080/v0"
+        );
+    }
+
     #[test]
     fn exclusive_display_maps_status_to_the_right_message() {
         use ExclusiveDisplay::*;
