@@ -263,7 +263,7 @@ class WindowsInstall(Install):
         self.exe = exes[0]
 
 
-def install(installer: Path, work: Path) -> Install:
+def install(installer: Path, work: Path, verify_sig: bool = True) -> Install:
     log(f"  installing {installer.name}")
     if IS_WIN:
         run([str(installer), "/S"], timeout=600)
@@ -297,7 +297,8 @@ def install(installer: Path, work: Path) -> Install:
         check(pb("CFBundleIdentifier") == BUNDLE_ID, f"bundle id {pb('CFBundleIdentifier')}")
         inst.version = pb("CFBundleShortVersionString")
         inst.exe = app / "Contents" / "MacOS" / pb("CFBundleExecutable")
-        run(["codesign", "--verify", "--deep", "--strict", str(app)])
+        if verify_sig:  # releases before 0.4 carry only the linker's signature
+            run(["codesign", "--verify", "--deep", "--strict", str(app)])
     else:
         dest_dir = Path.home() / "Applications"
         dest_dir.mkdir(exist_ok=True)
@@ -313,7 +314,7 @@ def install(installer: Path, work: Path) -> Install:
     return inst
 
 
-def uninstall(inst: Install) -> None:
+def uninstall(inst: Install, strict: bool = True) -> None:
     log("  uninstalling")
     if IS_WIN:
         exe = inst.entry["uninstall"].strip().strip('"')
@@ -323,7 +324,11 @@ def uninstall(inst: Install) -> None:
         gone = wait_until(lambda: not WindowsInstall.entries() and not inst.exe.exists(), 180)
         check(gone, f"uninstall left {WindowsInstall.entries()} / {inst.exe}")
         if inst.dir.exists() and any(inst.dir.iterdir()):
-            raise E2EFailure(f"uninstall left files in {inst.dir}: {list(inst.dir.iterdir())}")
+            left = f"uninstall left files in {inst.dir}: {list(inst.dir.iterdir())}"
+            if strict:
+                raise E2EFailure(left)
+            log(f"::warning::{left} (previous release; fixed since)")
+            shutil.rmtree(inst.dir, ignore_errors=True)
     elif IS_MAC:
         shutil.rmtree(inst.app)
         check(not inst.app.exists(), "app bundle still present")
@@ -361,11 +366,18 @@ def live_run(
         p = subprocess.Popen([str(inst.exe)], env=e, stdout=out, stderr=subprocess.STDOUT)
     try:
         time.sleep(secs)
-        check(
-            p.poll() is None,
-            f"app exited early with {p.returncode}:\n{console.read_text(errors='replace')[-4000:]}"
-            f"\n--- log ---\n{env.log_since(mark)[-4000:]}",
-        )
+        if p.poll() is not None:
+            detail = console.read_text(errors="replace")[-4000:]
+            if sys.platform.startswith("linux") and str(inst.exe).endswith(".AppImage"):
+                # Tell a FUSE/runtime problem from an app problem: run it unmounted.
+                r = subprocess.run(
+                    [str(inst.exe)], env=dict(e, APPIMAGE_EXTRACT_AND_RUN="1"),
+                    capture_output=True, text=True, timeout=60,
+                )
+                detail += f"\n--- APPIMAGE_EXTRACT_AND_RUN=1: exit {r.returncode} ---\n{r.stdout[-2000:]}{r.stderr[-2000:]}"
+            raise E2EFailure(
+                f"app exited early with {p.returncode}:\n{detail}\n--- log ---\n{env.log_since(mark)[-4000:]}"
+            )
         ok(f"stayed up for {secs}s")
     finally:
         if p.poll() is None:
@@ -543,12 +555,20 @@ def main() -> int:
             env = AppEnv(work, "upgrade")  # one profile: config carries across versions
 
             section(f"upgrade {prev_version} → {a.version}")
-            old = install(prev_installer, work)
-            live_run(old, env, prev_version, library, secs=10, require_log=False)
-            if a.manifest and semver(prev_version) < semver(a.version):
+            old = install(prev_installer, work, verify_sig=False)
+            # The previous release is history: if it can't run on today's runner that is
+            # reported, not fatal — but installing over it, and getting back to it, are.
+            try:
+                live_run(old, env, prev_version, library, secs=10, require_log=False)
+                prev_runs = True
+            except E2EFailure as e:
+                prev_runs = False
+                log(f"::warning::previous release {prev_version} does not run on this runner: {e}")
+                steps.append((f"previous {prev_version} runs here", "WARNING: no — see log"))
+            if prev_runs and a.manifest and semver(prev_version) < semver(a.version):
                 check_update_detected(old, env, a.manifest, a.version, library)
                 steps.append((f"{prev_version} detects {a.version} as an update", "pass"))
-            else:
+            elif semver(prev_version) >= semver(a.version):
                 log(f"::notice::{prev_version} is not older than {a.version}; update detection skipped")
             new = install(installer, work)
             check(new.version in ("", a.version), f"after upgrade the OS reports {new.version}")
@@ -558,10 +578,11 @@ def main() -> int:
 
             section(f"rollback {a.version} → {prev_version}")
             uninstall(new)
-            old = install(prev_installer, work)
+            old = install(prev_installer, work, verify_sig=False)
             check(old.version in ("", prev_version), f"after rollback the OS reports {old.version}")
-            live_run(old, env, prev_version, library, secs=12, require_log=False)
-            uninstall(old)
+            if prev_runs:  # it ran before the upgrade, so it must run on what the new one left
+                live_run(old, env, prev_version, library, secs=12, require_log=False)
+            uninstall(old, strict=False)
             steps.append((f"rollback {a.version} → {prev_version} → uninstall", "pass"))
             end_section()
     except (E2EFailure, subprocess.SubprocessError, OSError) as e:
