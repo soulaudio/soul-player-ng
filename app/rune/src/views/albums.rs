@@ -613,12 +613,11 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         .filter_map(|id| s.library.iter().find(|t| t.id == *id))
         .map(|t| t.duration_secs)
         .sum();
-    let mut meta = t!(
-        "detail.tracksAndDuration",
-        count => album.ids.len(),
-        dur => fmt_total_dur(total)
-    )
-    .to_string();
+    let mut meta = format!(
+        "{} · {}",
+        crate::views::library::tracks_label(album.ids.len()),
+        fmt_total_dur(total)
+    );
     // A reissue note, but only when it genuinely supplements the year already
     // shown in the subtitle above — e.g. a 2015 remaster of a 1973 album.
     // Compare YEARS (not full packed dates): mixed-precision tags are common
