@@ -3797,22 +3797,14 @@ fn main() -> anyhow::Result<()> {
             reconnect_remotes_on_startup(s);
         });
     }
-    // Files the OS hands us: Finder open-documents events (macOS, for the app's whole life)
-    // and audio files among the launch arguments (Windows/Linux file associations, CLI).
-    // Both queue after the first-frame update below, so `app_handle` is set by then.
+    // Audio files among the launch arguments (CLI, and file associations once Rune can
+    // deliver Finder opens — anomalyco/rune#157). Queued after the first-frame update above,
+    // so `app_handle` is set by then.
     {
-        let oh = ah.clone();
-        #[cfg(target_os = "macos")]
-        soul_macos_native::on_open_documents(move |paths| {
-            oh.update(move |s: &mut State, _tx: &mut Tx| open_files::open(s, paths));
-        });
         let args = open_files::from_args(std::env::args().skip(1));
         if !args.is_empty() {
-            let ah2 = ah.clone();
-            ah2.update(move |s: &mut State, _tx: &mut Tx| open_files::open(s, args));
+            ah.update(move |s: &mut State, _tx: &mut Tx| open_files::open(s, args));
         }
-        #[cfg(not(target_os = "macos"))]
-        let _ = oh;
     }
     // Periodic remote-health poller (Inc 2): its own dedicated sleep-loop
     // thread — never the UI thread — wakes every ~30 s and asks the UI thread

@@ -1,6 +1,7 @@
-//! Opening audio files handed to the app by the OS — Finder "Open With" / double-click /
-//! drop on the Dock icon (macOS, via `soul_macos_native`), or launch arguments (Windows and
-//! Linux file associations, `soul-player-rune song.flac`).
+//! Opening audio files handed to the app: today the audio files among the launch arguments
+//! (`soul-player-rune song.flac`); Finder "Open With" / double-click / Dock drop once Rune
+//! exposes the macOS open-documents event (anomalyco/rune#157) — the app won't carry the
+//! AppKit `unsafe` itself.
 //!
 //! Library-centric like Apple Music: a file already in the library plays straight away; a
 //! file outside it has its **folder added as a source** (exactly what Settings → Add folder

@@ -45,7 +45,7 @@ no restore attempts on a dead device) · external rate change (AirPods SCO) · d
 moving · restore + hog release on **every** exit path · sequencing (stream stopped before
 rate/format change; hog released last) · bit-exact Float32 output at unity volume.
 
-## Phase 2 — Device profiles: capture tool + fixture library ✅ (captures wanted)
+## Phase 2 — Device profiles: capture tool + fixture library ✅
 
 - ✅ `soul-audio-desktop` example `coreaudio_device_report` (`--probe-hog`, `--out DIR`): dumps every output device
   (name, transport, nominal rate, physical-format ladder, hog support) as JSON — **the same
@@ -69,8 +69,11 @@ rate/format change; hog released last) · bit-exact Float32 output at unity volu
 | null-audio-device (CI runner) | virtual | Float32 44.1/48k only | yes | captured (CI) |
 | apple-virtual-sound-device (CI runner) | built-in | Float32 48/96k only | yes | captured (CI) |
 
-Priority captures to request from users / borrow: Studio Display, Mac Studio/mini jack,
-Intel iMac/MacBook, a UAC2 DAC, AirPods, an HDMI AVR.
+Single-Mac project (decided 2026-11-22): no further hardware captures are planned. Real
+coverage = this MacBook Pro + its DisplayPort monitor + the three CI runners' devices; every
+other device class is a synthesized profile from public specs, exercised through the fake HAL
+and — next — a virtual device that mimics it (Phase 4 spikes). A user's
+`coreaudio_device_report` dump drops straight in as a new fixture if one ever arrives.
 
 ## Phase 3 — Robustness for real-world device behaviour ✅
 
@@ -81,9 +84,9 @@ Driven red→green by Phase 1 faults:
   via a `DeviceIsAlive` listener — Apple-silicon headphone jack / AirPods / USB DACs are
   separate devices that vanish); backend `classify_pump_error` → `handle_device_lost`
   pauses + parks (never auto-resumes onto the speakers). Manual hardware check:
-  `tests/coreaudio_unplug_manual.rs`. ⏸ Intel Macs switch headphones via a *data source*
-  on one device (needs a `kAudioDevicePropertyDataSource` listener — not in coreaudio-rs's
-  safe API). **Decided 2026-11-21: deferred** (would need an audited unsafe FFI crate).
+  `tests/coreaudio_unplug_manual.rs`. ❎ Intel Macs switch headphones via a *data source*
+  on one device (`kAudioDevicePropertyDataSource` — not in coreaudio-rs's safe API).
+  **Not planned:** needs `unsafe` FFI and an Intel Mac to verify; we have neither.
 - Hog refused (aggregate / Bluetooth / AirPlay) → typed `Unsupported` → host falls back to
   shared with a clear reason (strict mode stops).
 
@@ -101,9 +104,9 @@ device profiles are identical across images and are checked in as captured fixtu
   suites serially against BlackHole (cubeb-coreaudio-rs does exactly this).
 - ✅ Bit-perfect loopback (BlackHole out → in, sample-exact compare); blocking (the hosted
   runners grant the microphone permission).
-- 🧪 Custom-built BlackHole with a restricted `kSampleRates` ladder (44.1/48/96/192k) to
+- ⏳ **Next** (the hardware-free way to cover more devices): custom-built BlackHole with a restricted `kSampleRates` ladder (44.1/48/96/192k) to
   exercise in-family fallback on the real AUHAL path.
-- 🧪 libASPL / tympan-aspl "ProfileDevice" HAL plug-in loading fixture profiles (Int24,
+- ⏳ libASPL / tympan-aspl "ProfileDevice" HAL plug-in loading fixture profiles (Int24,
   Int32-384k, 48k-only, no-hog) — blocked on a signing spike (do ad-hoc-signed HAL plug-ins
   load on macOS 15/26 runners?).
 
@@ -128,11 +131,13 @@ pause/play/seek/next/toggle all round-trip. Bundled, macOS attributes it to
   podcasts, wrong for a music player; Apple Music doesn't enable them).
 - ❎ Repeat / like in Control Center — **decided 2026-11-22: no.** macOS's Now Playing widget
   never shows repeat/shuffle, and the heart opens add-to-playlist (no liked state to toggle).
-- ✅ Finder "Open With" / double-click / Dock drop (`open_files` + `soul-macos-native`, the
-  app's one `unsafe` crate: an `'odoc'` Apple-event handler installed on
-  `NSApplicationWillFinishLaunching`); launch arguments on Windows/Linux. Library files play
-  at once; others get their folder added as a source first. Bundle declares the audio types.
-  e2e: `scripts/e2e-open-files-macos.sh`.
+- ⏸ Finder "Open With" / double-click / Dock drop — **waiting on Rune**
+  ([anomalyco/rune#157](https://github.com/anomalyco/rune/issues/157): an `on_open_files`
+  hook for the `'odoc'` Apple event; Rune takes issues, not PRs). Shipped briefly in #265 via
+  our own `unsafe` crate, **removed 2026-11-22** to keep the app at zero `unsafe`. Ready to
+  re-enable in a few lines: `open_files` (library files play; unknown folders are added,
+  then play; opens wait for the startup scan) already handles launch arguments; the bundle
+  associations and the e2e script are in git history (6ad0dcd).
 - ✅ Proper macOS icon (`icons/macos/icon.icns`, 16–1024 px on Apple's grid).
 - ✅ kill / Ctrl-C / closed terminal quit like ⌘Q (`signal_quit`): no false crash report.
 - ✅ Output picker shows each device's transport (`device_transport`, from `system_profiler`)
@@ -163,10 +168,11 @@ Original plan:
 mounts, correct bundle id, arm64); release.yml ships it on macOS. ⏳ Developer ID signing +
 notarization need the team's Apple Developer account (decision for the owner).
 
-## Phase 7 — Hardware-in-the-loop 🧪
+## Phase 7 — Hardware-in-the-loop ❎
 
-Self-hosted Apple-silicon runner with a UAC2 DAC (+ HDMI) running the `#[ignore]`d suites
-nightly; S/PDIF digital loopback for true bit-perfect proof on real hardware.
+**Not planned** (2026-11-22): there's no Apple hardware beyond one MacBook Pro. Device
+diversity is covered by the fake-HAL contract suite over synthesized profiles, the CI runners'
+virtual devices, and the Phase 4 virtual-device spikes.
 
 ---
 
