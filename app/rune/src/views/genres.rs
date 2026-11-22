@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use rune::{Cursor, Cx, El, ScrollSpec, col, row, text, text_input};
+use rune::{Cursor, Cx, El, ScrollSpec, col, row, text};
 use soul_player_host::TrackView;
 
 use crate::State;
@@ -149,17 +149,14 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let pane = cx.layout_size("genres").map(|[w, _]| w).unwrap_or(820.0);
     let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
-    let search = text_input(&s.genre_search, type_::ITEM)
-        .key("genres-search")
-        .single_line()
-        .label(t!("genres.searchPlaceholder").to_string())
-        .w_full()
-        .px(space::MD)
-        .py(space::SM)
-        .radius(radius::SM)
-        .fill(p.muted)
-        .color(p.fg)
-        .on_edit(|st: &mut State| &mut st.genre_search);
+    let search = crate::views::library::search_box(
+        &s.genre_search,
+        "genres-search",
+        t!("genres.searchPlaceholder").to_string(),
+        p,
+        |st: &mut State| &mut st.genre_search,
+    )
+    .w_full();
     let search_bar = row()
         .key("genres-search-bar")
         .px(space::PANE)
@@ -261,17 +258,14 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
                     .is_some_and(|t| crate::views::library::track_matches(t, &q))
         })
         .collect();
-    let search = text_input(&s.genre_search, type_::ITEM)
-        .key("genre-search")
-        .single_line()
-        .label(t!("genre.searchPlaceholder").to_string())
-        .w_full()
-        .px(space::MD)
-        .py(space::SM)
-        .radius(radius::SM)
-        .fill(p.muted)
-        .color(p.fg)
-        .on_edit(|st: &mut State| &mut st.genre_search);
+    let search = crate::views::library::search_box(
+        &s.genre_search,
+        "genre-search",
+        t!("genre.searchPlaceholder").to_string(),
+        p,
+        |st: &mut State| &mut st.genre_search,
+    )
+    .w_full();
     let mut list = col().key("genre-tracks").role("list").gap(space::XXS);
     if shown.is_empty() {
         list = list.child(
