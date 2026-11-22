@@ -62,10 +62,16 @@ pub fn parse_system_profiler(json: &str) -> HashMap<String, Transport> {
         .cloned()
         .unwrap_or_default();
     for g in groups {
-        for item in g.get("_items").and_then(|i| i.as_array()).into_iter().flatten() {
+        for item in g
+            .get("_items")
+            .and_then(|i| i.as_array())
+            .into_iter()
+            .flatten()
+        {
             let (Some(name), Some(tag)) = (
                 item.get("_name").and_then(|n| n.as_str()),
-                item.get("coreaudio_device_transport").and_then(|t| t.as_str()),
+                item.get("coreaudio_device_transport")
+                    .and_then(|t| t.as_str()),
             ) else {
                 continue;
             };
@@ -131,7 +137,12 @@ mod tests {
     fn only_airplay_and_bluetooth_can_never_be_bit_perfect() {
         assert!(!Transport::AirPlay.can_be_bit_perfect());
         assert!(!Transport::Bluetooth.can_be_bit_perfect());
-        for t in [Transport::BuiltIn, Transport::Usb, Transport::Hdmi, Transport::DisplayPort] {
+        for t in [
+            Transport::BuiltIn,
+            Transport::Usb,
+            Transport::Hdmi,
+            Transport::DisplayPort,
+        ] {
             assert!(t.can_be_bit_perfect(), "{t:?}");
         }
     }
@@ -147,6 +158,9 @@ mod tests {
     fn the_real_report_lists_at_least_one_output() {
         // Every Mac (and CI runner) has some output device; this proves the field names
         // still match what this macOS version emits.
-        assert!(!query().is_empty(), "system_profiler reported no output transports");
+        assert!(
+            !query().is_empty(),
+            "system_profiler reported no output transports"
+        );
     }
 }
