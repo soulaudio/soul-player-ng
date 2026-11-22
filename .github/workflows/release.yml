@@ -1,87 +1,134 @@
 name: Release
 
-# TAG-TRIGGERED ONLY — never on push/PR. Cut a release by bumping
-# app/rune/Cargo.toml, committing, then pushing a matching `vX.Y.Z` tag, or run it
-# manually with the tag as input. `dry_run: true` builds, packages and verifies
-# everything but publishes nothing (see app/rune/PACKAGING.md).
+# Cut a release by bumping app/rune/Cargo.toml on main and pushing a matching `vX.Y.Z` tag
+# (or run it manually with the tag). `dry_run: true` runs build + e2e on every platform
+# and publishes nothing — use it on a branch before tagging (see app/rune/PACKAGING.md).
 #
-# It builds + SIGNS the bundles for each OS with the updater private key (a repo
-# secret, independent of OS code-signing — see app/rune/src/update.rs), then
-# publishes the installers plus `latest.json` (the update manifest) to a GitHub
-# Release. The shipped app's launch-time check reads that manifest and offers an
-# in-app "Install & Restart".
+#   guard ──► build (4 OS legs) ──► e2e (4 OS legs) ──► draft ──► publish ──► verify
+#                                                          └────────┴─────────┴──► rollback (on failure)
+#
+# guard    the tag matches Cargo.toml, sits on main, and that commit passed CI; the
+#          tag isn't already published.
+# build    compile, package and updater-sign each platform; static bundle checks (macOS:
+#          sealed signature, architecture, identity); upload the installers.
+# e2e      on a fresh runner of each OS, with the exact installer that will ship:
+#          fresh install → run (renders + playback) → uninstall; then upgrade from the
+#          currently published release (which must see this one as an update) → rollback
+#          to it → uninstall (.github/scripts/release-e2e.py).
+# draft    a DRAFT release with the installers, latest.json and SHA256SUMS; the uploaded
+#          bytes are re-downloaded and checked against the tested ones.
+# publish  undraft and mark latest — only now do users and in-app updaters see it.
+# verify   the public `latest/download/latest.json` serves this version and every
+#          platform URL in it downloads the tested bytes.
+# rollback anything failing after the draft exists: a draft is deleted; a published
+#          release is demoted to pre-release and the previous release made latest again,
+#          so updaters stop offering it. The tag is kept.
+#
+# Installers are updater-signed with UPDATER_PRIVATE_KEY (independent of OS code-signing —
+# see app/rune/src/update.rs). Apple/Windows code-signing is deferred: macOS ships with a
+# sealed ad-hoc signature.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (e.g. v0.2.0) — must match app/rune/Cargo.toml. Empty with dry_run: the manifest version."
+        description: "Release tag (e.g. v0.4.0) — must match app/rune/Cargo.toml. Empty with dry_run: the manifest version."
         required: false
       dry_run:
-        description: "Build, package and verify every platform, but publish nothing (artifacts stay on the run)"
+        description: "Build + e2e every platform, publish nothing (installers stay as run artifacts)"
         type: boolean
         default: false
 
+# One release at a time, and never cancel one half-way through publishing.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 permissions:
-  contents: write # create the release and upload assets
+  contents: read
 
 env:
-  # Generate the keypair once with `cargo packager signer generate`; store the
-  # PRIVATE key as the UPDATER_PRIVATE_KEY secret and its password as
-  # UPDATER_KEY_PASSWORD. The matching PUBLIC key is embedded in
-  # app/rune/src/update.rs. Without these, packaging still succeeds but produces
-  # no `.sig`, and the publish job will fail (empty signature) — by design.
-  CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
-  CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.UPDATER_KEY_PASSWORD }}
+  CARGO_TERM_COLOR: always
+  DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
 
 jobs:
-  # Fail fast if the tag and the manifest version disagree: the installer name
-  # and the running app's reported version both come from Cargo.toml, while the
-  # manifest version comes from the tag — a mismatch ships an update that never
-  # applies.
   guard:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      checks: read
     outputs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
+      previous: ${{ steps.v.outputs.previous }}
     steps:
       - uses: actions/checkout@v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - id: v
-        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
+          set -euo pipefail
           cargo_ver=$(grep -m1 '^version' app/rune/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            tag="${{ github.event.inputs.tag }}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            tag="$INPUT_TAG"
             if [ -z "$tag" ]; then
-              [ "${{ github.event.inputs.dry_run }}" = "true" ] \
-                || { echo "::error::a tag is required unless dry_run is set"; exit 1; }
+              [ "$DRY_RUN" = "true" ] || { echo "::error::a tag is required unless dry_run is set"; exit 1; }
               tag="v$cargo_ver"
             fi
           else
-            tag="${{ github.ref_name }}"
+            tag="$GITHUB_REF_NAME"
           fi
           ver="${tag#v}"
-          if [ "$ver" != "$cargo_ver" ]; then
-            echo "::error::tag $tag implies version $ver but app/rune/Cargo.toml is $cargo_ver — bump the manifest and retag."
-            exit 1
+          # The installer names and the running app's version come from Cargo.toml, the
+          # manifest version from the tag — a mismatch ships an update that never applies.
+          [ "$ver" = "$cargo_ver" ] || {
+            echo "::error::tag $tag implies $ver but app/rune/Cargo.toml is $cargo_ver — bump it and retag"; exit 1; }
+
+          if [ "$DRY_RUN" != "true" ]; then
+            sha=$(git rev-parse "$tag^{commit}") || { echo "::error::tag $tag does not exist"; exit 1; }
+            # Only ship what is on main and went green there.
+            git merge-base --is-ancestor "$sha" origin/main \
+              || { echo "::error::$tag ($sha) is not on main"; exit 1; }
+            # A tag pushed right after the merge waits for main's CI to finish.
+            for i in $(seq 1 90); do
+              ci=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha/check-runs?check_name=CI%20success" \
+                     --jq 'if (.check_runs | length) == 0 then "missing"
+                           elif any(.check_runs[]; .status != "completed") then "pending"
+                           elif all(.check_runs[]; .conclusion == "success") then "success"
+                           else "failure" end')
+              case "$ci" in success|failure) break ;; esac
+              echo "CI on $sha: $ci — waiting"; sleep 20
+            done
+            [ "$ci" = "success" ] || { echo "::error::CI on $sha is '$ci' — release only a green commit"; exit 1; }
+            # Published releases are immutable; a leftover draft is replaced by the draft job.
+            if draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null) \
+               && [ "$draft" = "false" ]; then
+              echo "::error::$tag is already published"; exit 1
+            fi
           fi
+
+          prev=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "previous=$prev" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (previous latest: ${prev:-none}; dry run: $DRY_RUN)" >> "$GITHUB_STEP_SUMMARY"
 
-  package:
+  build:
     needs: guard
     strategy:
-      fail-fast: false # a failed macOS job still ships Windows + Linux
+      fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - os: windows-2025
             target_key: windows-x86_64
             format: nsis
-          # macOS ships per architecture (no universal binary): Apple silicon and Intel.
-          # Unsigned by Apple for now — the bundle carries a sealed ad-hoc signature
-          # (Cargo.toml `packager.macos.signing-identity = "-"`); Developer ID +
-          # notarization come later.
+          # macOS ships per architecture: Apple silicon and Intel.
           - os: macos-15
             target_key: macos-aarch64
             format: app
@@ -92,12 +139,22 @@ jobs:
             format: app
             arch: x86_64
             asset_arch: x86_64
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target_key: linux-x86_64
             format: appimage
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY: ${{ secrets.UPDATER_PRIVATE_KEY }}
+      CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ${{ secrets.UPDATER_KEY_PASSWORD }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install the pinned toolchain
         working-directory: app/rune # rust-toolchain.toml resolves from CWD
@@ -107,20 +164,14 @@ jobs:
         run: cargo install cargo-packager --locked
 
       - name: Linux packaging dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
-          # Retry update+install so a transient Ubuntu apt-mirror stall
-          # (actions/runner-images#14823) self-heals rather than failing the job.
+          # Retry so a transient apt-mirror stall (actions/runner-images#14823) self-heals.
           for attempt in 1 2 3 4 5; do
             if sudo apt-get update \
               && sudo apt-get install -y -o Acquire::Retries=3 \
-                   libasound2-dev \
-                   libdbus-1-dev \
-                   libgtk-3-dev \
-                   libxdo-dev \
-                   librsvg2-dev \
-                   libayatana-appindicator3-dev \
-                   libfuse2; then
+                   libasound2-dev libdbus-1-dev libgtk-3-dev libxdo-dev librsvg2-dev \
+                   libayatana-appindicator3-dev libfuse2t64; then
               exit 0
             fi
             echo "::warning::apt attempt $attempt failed, retrying in $((attempt * 5))s"
@@ -128,21 +179,18 @@ jobs:
           done
           echo "::error::apt-get failed after 5 attempts"; exit 1
 
-      # cargo-packager only *packages* a pre-built binary — it does not build
-      # one (its `--release` just selects the release-profile output). So build
-      # first, then package; from app/rune the pinned nightly is used.
+      # cargo-packager only packages a pre-built binary, so build first.
       - name: Build the release binary
         working-directory: app/rune
-        run: cargo build --release
+        run: cargo build --release --locked
 
-      - name: Package + sign
+      - name: Package + updater-sign
         working-directory: app/rune
         run: cargo packager --release -f ${{ matrix.format }}
 
-      # Stages the signed artifact into dist/ under a GitHub-safe name (so the
-      # manifest URL matches the uploaded asset) and writes its meta sidecar.
+      # Stage under a GitHub-safe name (so the manifest URL matches the uploaded asset)
+      # and write the updater sidecar for latest.json.
       - name: Stage artifact + write updater sidecar
-        shell: bash # Windows defaults to PowerShell; this uses \ continuations
         run: |
           python .github/scripts/write-meta.py \
             --out-dir app/rune/target/release \
@@ -151,77 +199,259 @@ jobs:
             --stage-dir dist \
             --meta-out dist/${{ matrix.target_key }}.meta.json \
             ${{ runner.os == 'macOS' && format('--asset-name Soul-Player_{0}_{1}.app.tar.gz', needs.guard.outputs.version, matrix.asset_arch) || '' }}
+          # Without the updater key the sidecar has no signature and the update can never
+          # install — fail here, not after publishing.
+          python -c "import json,sys; m=json.load(open('dist/${{ matrix.target_key }}.meta.json')); sys.exit(0 if m['signature'] else 'empty updater signature — is UPDATER_PRIVATE_KEY set?')"
 
-      # macOS: also ship a drag-to-Applications DMG for first installs (the updater
-      # keeps using the signed .app.tar.gz above). Same binary, so no rebuild. Renamed
-      # without spaces so the release asset URL is stable.
+      # macOS: a drag-to-Applications DMG for first installs (the updater keeps using the
+      # .app.tar.gz above). Same binary, no rebuild.
       - name: Package DMG (macOS)
         if: runner.os == 'macOS'
         working-directory: app/rune
         run: |
           rm -f target/release/*.dmg
           cargo packager --release -f dmg
-          cp target/release/*.dmg "../../dist/Soul-Player_${{ needs.guard.outputs.version }}_${{ matrix.asset_arch }}.dmg"
+          cp target/release/*.dmg "../../dist/Soul-Player_${VERSION}_${{ matrix.asset_arch }}.dmg"
 
-      # Nothing ships unverified: the app inside the DMG must carry an intact sealed
-      # signature, the right architecture / identity / version, and actually launch and
-      # render; the updater tarball's signature must be intact too.
-      - name: Verify the macOS bundle
+      - name: Static bundle checks (macOS)
         if: runner.os == 'macOS'
         run: |
-          .github/scripts/verify-macos-bundle.sh \
-            "${{ needs.guard.outputs.version }}" "${{ matrix.arch }}" \
-            "dist/Soul-Player_${{ needs.guard.outputs.version }}_${{ matrix.asset_arch }}.dmg" \
-            "dist/Soul-Player_${{ needs.guard.outputs.version }}_${{ matrix.asset_arch }}.app.tar.gz"
+          .github/scripts/verify-macos-bundle.sh "$VERSION" "${{ matrix.arch }}" \
+            "dist/Soul-Player_${VERSION}_${{ matrix.asset_arch }}.dmg" \
+            "dist/Soul-Player_${VERSION}_${{ matrix.asset_arch }}.app.tar.gz"
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          for f in *; do
+            case "$f" in *.meta.json) continue ;; esac
+            python -c "import hashlib,sys; p=sys.argv[1]; print(hashlib.sha256(open(p,'rb').read()).hexdigest()+'  '+p)" "$f"
+          done > ${{ matrix.target_key }}.sha256
+          cat ${{ matrix.target_key }}.sha256
 
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: bundle-${{ matrix.target_key }}
           path: dist/*
+          if-no-files-found: error
 
-  publish:
-    needs: [guard, package]
-    if: ${{ github.event.inputs.dry_run != 'true' }}
-    runs-on: ubuntu-latest
+  e2e:
+    needs: [guard, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target_key: windows-x86_64
+            installer: "*-setup.exe"
+          - os: macos-15
+            target_key: macos-aarch64
+            installer: "*.dmg"
+          - os: macos-15-intel
+            target_key: macos-x86_64
+            installer: "*.dmg"
+          - os: ubuntu-24.04
+            target_key: linux-x86_64
+            installer: "*.AppImage"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4.4.0
+        with:
+          persist-credentials: false
 
       - uses: actions/download-artifact@v4.3.0
         with:
+          name: bundle-${{ matrix.target_key }}
+          path: dist
+
+      # Rune renders through wgpu: a software Vulkan adapter (Lavapipe) under Xvfb, and
+      # FUSE to mount the AppImage the way a user's desktop does.
+      - name: Runtime dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update \
+              && sudo apt-get install -y -o Acquire::Retries=3 \
+                   xvfb mesa-vulkan-drivers libxkbcommon-x11-0 libfuse2t64 libasound2t64 \
+                   libgtk-3-0t64 libayatana-appindicator3-1 libxdo3; then
+              exit 0
+            fi
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      # The new manifest, for the previous release's updater to read (served locally).
+      - name: New latest.json
+        run: |
+          mkdir -p meta && cp dist/*.meta.json meta/
+          python .github/scripts/gen-latest-json.py --meta-dir meta \
+            --repo "$GITHUB_REPOSITORY" --tag "${{ needs.guard.outputs.tag }}" --version "$VERSION" \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --out latest.json
+
+      - name: Install → run → uninstall; upgrade → rollback
+        run: |
+          installer=$(ls dist/${{ matrix.installer }})
+          args=(.github/scripts/release-e2e.py --installer "$installer" --version "$VERSION"
+                --target-key ${{ matrix.target_key }} --manifest latest.json --out e2e-out
+                --previous-manifest "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/latest.json")
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run -a -s "-screen 0 1920x1080x24" python "${args[@]}"
+          else
+            python "${args[@]}"
+          fi
+
+      - uses: actions/upload-artifact@v4.6.2
+        if: always()
+        with:
+          name: e2e-${{ matrix.target_key }}
+          path: e2e-out
+          if-no-files-found: ignore
+
+  draft:
+    needs: [guard, e2e]
+    if: github.event.inputs.dry_run != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.guard.outputs.tag }}
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          pattern: bundle-*
           path: dist
           merge-multiple: true
 
-      - name: Generate latest.json
+      - name: latest.json + SHA256SUMS
         run: |
-          python .github/scripts/gen-latest-json.py \
-            --meta-dir dist \
-            --repo ${{ github.repository }} \
-            --tag ${{ needs.guard.outputs.tag }} \
-            --version ${{ needs.guard.outputs.version }} \
-            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --notes "Soul Player ${{ needs.guard.outputs.tag }}" \
+          python .github/scripts/gen-latest-json.py --meta-dir dist \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --version "$VERSION" \
+            --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --notes "Soul Player $TAG" \
             --out dist/latest.json
+          cat dist/*.sha256 | sort -k2 > dist/SHA256SUMS
+          rm dist/*.sha256 dist/*.meta.json
+          (cd dist && sha256sum -c SHA256SUMS && ls -la)
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2.6.2
-        with:
-          tag_name: ${{ needs.guard.outputs.tag }}
-          name: Soul Player ${{ needs.guard.outputs.tag }}
-          # The installers users download, plus the manifest the in-app updater
-          # reads from `latest/download/latest.json`. The *.meta.json sidecars
-          # are deliberately not uploaded.
-          files: |
-            dist/*-setup.exe
-            dist/*.AppImage
-            dist/*.app.tar.gz
-            dist/*.dmg
-            dist/latest.json
-          fail_on_unmatched_files: false
-          generate_release_notes: true # grouped per .github/release.yml
-          # Prepended to the generated notes.
-          body: |
-            ## Install
+      - name: Create the draft release
+        run: |
+          if gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null | grep -qx true; then
+            echo "replacing a leftover draft for $TAG"
+            gh release delete "$TAG" --yes
+          fi
+          cat > notes.md <<'EOF'
+          ## Install
 
-            - **macOS** — download the DMG for your Mac (`aarch64` = Apple silicon, `x86_64` = Intel) and drag Soul Player to Applications. The app isn't notarized by Apple yet, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Soul Player.app"`). Later updates install in-app.
-            - **Windows** — run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
-            - **Linux** — `chmod +x` the AppImage and run it.
+          - **macOS** — download the DMG for your Mac (`aarch64` = Apple silicon, `x86_64` = Intel) and drag Soul Player to Applications. The app isn't notarized by Apple yet, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Soul Player.app"`). Later updates install in-app.
+          - **Windows** — run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
+          - **Linux** — `chmod +x` the AppImage and run it.
+
+          Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`.
+          EOF
+          gh release create "$TAG" --draft --verify-tag --title "Soul Player $TAG" \
+            --notes-file notes.md --generate-notes dist/*
+
+      # The draft must hold exactly the bytes the e2e job tested.
+      - name: Verify the uploaded assets
+        run: |
+          mkdir check
+          gh release download "$TAG" --dir check
+          diff <(ls dist) <(ls check)
+          (cd check && sha256sum -c SHA256SUMS)
+
+  publish:
+    needs: [guard, draft]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Add required reviewers to this environment (Settings → Environments) to make
+    # publishing a manual approval.
+    environment: release
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Publish
+        run: |
+          gh release edit "${{ needs.guard.outputs.tag }}" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --latest
+          gh release view "${{ needs.guard.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    needs: [guard, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      TAG: ${{ needs.guard.outputs.tag }}
+    steps:
+      # What every installed app's updater reads.
+      - name: Public update manifest and assets
+        run: |
+          set -euo pipefail
+          base="https://github.com/$GITHUB_REPOSITORY/releases"
+          for i in $(seq 1 18); do
+            v=$(curl -fsSL "$base/latest/download/latest.json" | jq -r .version) || v=""
+            [ "$v" = "$VERSION" ] && break
+            echo "latest.json reports '${v}', waiting for $VERSION"; sleep 10
+          done
+          [ "$v" = "$VERSION" ] || { echo "::error::latest/download/latest.json never served $VERSION"; exit 1; }
+          curl -fsSL "$base/latest/download/latest.json" -o latest.json
+          curl -fsSL "$base/download/$TAG/SHA256SUMS" -o SHA256SUMS
+          jq -e '.platforms | length == 4' latest.json >/dev/null \
+            || { echo "::error::latest.json does not cover all 4 platforms"; jq . latest.json; exit 1; }
+          jq -r '.platforms | to_entries[] | "\(.key) \(.value.url) \(.value.signature | length)"' latest.json |
+          while read -r key url siglen; do
+            [ "$siglen" -gt 0 ] || { echo "::error::$key has no updater signature"; exit 1; }
+            name="${url##*/}"
+            curl -fsSL "$url" -o "$name"
+            grep -F "  $name" SHA256SUMS | sha256sum -c - || { echo "::error::$key: $name differs from the tested build"; exit 1; }
+            echo "ok: $key → $name"
+          done
+
+  rollback:
+    needs: [guard, draft, publish, verify]
+    if: >-
+      always() && github.event.inputs.dry_run != 'true' &&
+      (needs.draft.result == 'failure' || needs.publish.result == 'failure' || needs.verify.result == 'failure')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.guard.outputs.tag }}
+      PREV: ${{ needs.guard.outputs.previous }}
+    steps:
+      - name: Withdraw the release
+        run: |
+          set -euo pipefail
+          state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
+          case "$state" in
+            none)
+              echo "No release for $TAG — nothing to roll back." ;;
+            true)
+              gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes
+              echo "Deleted the draft $TAG (tag kept)." | tee -a "$GITHUB_STEP_SUMMARY" ;;
+            false)
+              # Keep the assets for diagnosis but take it out of `latest`, so in-app
+              # updaters (which read latest/download/latest.json) stop offering it.
+              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false
+              if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
+                gh release edit "$PREV" --repo "$GITHUB_REPOSITORY" --latest
+              fi
+              echo "Demoted $TAG to pre-release; latest is ${PREV:-unset} again." | tee -a "$GITHUB_STEP_SUMMARY" ;;
+          esac
+          exit 1 # the release failed; keep the run red
