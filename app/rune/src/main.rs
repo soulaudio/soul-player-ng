@@ -12703,7 +12703,7 @@ mod tests {
     /// window. The scroll now wraps a natural-height grid.
     #[test]
     fn the_album_grid_packs_rows_to_the_top_of_a_tall_window() {
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.route = Route::Albums;
@@ -12744,7 +12744,7 @@ mod tests {
     /// resize). The width is now threaded from the stable content size ÷ zoom.
     #[test]
     fn zooming_out_fills_the_album_grid_width_on_one_frame() {
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let _g = config::use_test_config_dir(); // set_zoom would persist
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
@@ -12864,7 +12864,7 @@ mod tests {
     /// is the bug the flex cards fix.
     #[test]
     fn the_album_grid_fills_the_width_at_every_size_and_scale() {
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         // Scale 1.0 is the coarsest rounding (most exposure); 2.0 the finest — the
         // two extremes of the physical-pixel grid the cards must tile.
         let (worst, w, scale) =
@@ -12879,7 +12879,7 @@ mod tests {
     /// scale confirms its grid path fills identically.
     #[test]
     fn the_artists_grid_fills_the_width() {
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let (worst, w, scale) = worst_grid_fill(Route::Artists, "artists-grid", "artist-", &[1.25]);
         assert!(
             worst <= 1.0,
@@ -12895,7 +12895,7 @@ mod tests {
     /// user-facing effect of the setting.
     #[test]
     fn album_year_toggle_relabels_the_displayed_year_on_the_albums_grid() {
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.route = Route::Albums;
