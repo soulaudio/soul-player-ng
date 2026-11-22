@@ -1490,6 +1490,42 @@ mod tests {
     }
 
     #[test]
+    fn http_range_reader_rejects_a_bad_access_token() {
+        // The streaming endpoint is authenticated too (like `fetch_index`): a
+        // wrong/expired access token makes the range request return a non-206 status,
+        // which `fetch_chunk` surfaces as an `Err` rather than silently opening a reader
+        // over empty/garbage audio. Track 0 IS valid here, so this isolates the AUTH
+        // rejection (distinct from `..._for_an_unknown_track_errors`). Note there is no
+        // mid-stream token refresh — the reader holds the token captured at construction
+        // (`access_token`), so an expired token is terminal for that reader.
+        let server = start_server();
+        let remote = RemoteServer {
+            url: server.url.clone(),
+            access_token: "not-a-valid-token".to_string(),
+        };
+        assert!(
+            HttpRangeReader::new(&remote, 0).is_err(),
+            "a bad access token on the streaming endpoint must error, not open a reader"
+        );
+    }
+
+    #[test]
+    fn parse_content_range_total_reads_the_total_after_the_slash() {
+        // The streamed track's length is learned by parsing the server's
+        // `Content-Range: bytes START-END/TOTAL` header — the denominator `len()` keys
+        // off. Valid forms yield the total; a malformed / unknown (`*`) / absent total
+        // yields None, so `fetch_chunk` errors rather than guessing a size.
+        assert_eq!(parse_content_range_total("bytes 0-1023/4096"), Some(4096));
+        assert_eq!(parse_content_range_total("bytes 0-0/1"), Some(1));
+        // The unknown-RANGE `*` form still carries a concrete total.
+        assert_eq!(parse_content_range_total("bytes */1234"), Some(1234));
+        // No slash, an unknown (`*`) total, or an empty value -> None.
+        assert_eq!(parse_content_range_total("bytes 0-1023"), None);
+        assert_eq!(parse_content_range_total("bytes 0-10/*"), None);
+        assert_eq!(parse_content_range_total(""), None);
+    }
+
+    #[test]
     fn deframe_round_trips_with_the_servers_frame_index() {
         let blobs = vec![b"hello".to_vec(), Vec::new(), b"a bit longer blob".to_vec()];
         let framed = soul_server::index::frame_index(&blobs);
