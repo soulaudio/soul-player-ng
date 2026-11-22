@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Release e2e on the runner's own OS: install → exercise → uninstall, then
-upgrade-from-the-previous-release → rollback → uninstall.
+"""Release e2e on the runner's own OS: install → exercise → auto-update → uninstall,
+then upgrade-from-the-previous-release → rollback → uninstall.
 
 Runs against the exact installer the release will publish (the build job's artifact),
 installed the way a user installs it:
@@ -15,10 +15,19 @@ Scenarios
   1. fresh      install the new build on a clean machine; check the installed identity
                 (version, signature on macOS); exercise it; uninstall; assert nothing is
                 left behind.
+     auto-update  still installed, run it with its updater pointed at a local server that
+                offers a newer version whose download is THIS release's own signed
+                update artifact (the exact `latest.json` entry the release publishes,
+                re-hosted). The app must download and verify it, quit cleanly, install
+                it with the OS's real mechanism (NSIS passive installer on Windows, bundle
+                swap on macOS, AppImage swap on Linux), and come back up as a new process
+                on the replaced files without reporting a crash.
   2. upgrade    install the PREVIOUS published release; check that it detects this release
-                as an update (its updater reads the new `latest.json`, served locally);
-                install the new build over it; check exactly one install remains at the
-                new version and it runs with the old version's config.
+                as an update (its updater reads the new `latest.json`, served locally).
+                If that release can install updates unattended, let its own updater
+                perform the upgrade (as above); otherwise install the new build over it.
+                Either way check exactly one install remains at the new version and it
+                runs with the old version's config.
   3. rollback   uninstall the new build, reinstall the previous one, and check it still
                 runs against the config the new version left behind (the path a user takes
                 back after a bad release); uninstall.
@@ -30,7 +39,12 @@ panic, and (Unix) quit cleanly on SIGTERM so the next launch sees no crash.
 
 Usage:
   release-e2e.py --installer PATH --version X.Y.Z --target-key KEY \
-                 [--manifest new-latest.json] [--previous-manifest URL] [--out DIR]
+                 [--manifest new-latest.json] [--update-meta KEY.meta.json] \
+                 [--previous-manifest URL] [--out DIR]
+
+`--update-meta` is the build's updater sidecar (artifact name + signature; the artifact
+sits next to it). Without it the auto-update scenario is skipped. `SOUL_E2E_APPS_DIR`
+overrides /Applications on macOS (for running this on a developer machine).
 """
 
 from __future__ import annotations
@@ -62,6 +76,7 @@ IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 APP_NAME = "Soul Player"
 BUNDLE_ID = "co.datadir.soulplayer"
+APPS_DIR = Path(os.environ.get("SOUL_E2E_APPS_DIR", "/Applications"))
 
 
 # ---------------------------------------------------------------- reporting
@@ -275,7 +290,7 @@ def install(installer: Path, work: Path, verify_sig: bool = True) -> Install:
         check(len(entries) == 1, f"expected exactly one '{APP_NAME}' install, found {entries}")
         inst = WindowsInstall(entries[0])
     elif IS_MAC:
-        app = Path("/Applications") / f"{APP_NAME}.app"
+        app = APPS_DIR / f"{APP_NAME}.app"
         if app.exists():
             shutil.rmtree(app)  # what a drag-to-Applications "Replace" does
         if installer.name.endswith(".dmg"):
@@ -287,7 +302,7 @@ def install(installer: Path, work: Path, verify_sig: bool = True) -> Install:
             finally:
                 subprocess.run(["hdiutil", "detach", str(mnt), "-force", "-quiet"], check=False)
         else:  # the updater's .app.tar.gz
-            run(["tar", "-xzf", str(installer), "-C", "/Applications"])
+            run(["tar", "-xzf", str(installer), "-C", str(APPS_DIR)])
         check(app.is_dir(), f"{app} missing after install")
         inst = Install()
         inst.app = app
@@ -491,6 +506,199 @@ def check_update_detected(inst: Install, env: AppEnv, manifest: Path, new_versio
         srv.shutdown()
 
 
+# ---------------------------------------------------------------- auto-update
+
+STALE = b"\0soul-e2e-stale-build\0"
+
+
+def installed_version(inst: Install) -> str:
+    """What the OS now records for the install (re-read, not cached)."""
+    if IS_WIN:
+        entries = WindowsInstall.entries()
+        check(len(entries) == 1, f"expected exactly one '{APP_NAME}' install, found {entries}")
+        return entries[0]["version"]
+    if IS_MAC:
+        return subprocess.check_output(
+            ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString",
+             str(inst.app / "Contents" / "Info.plist")], text=True,
+        ).strip()
+    return ""  # an AppImage records nothing outside itself
+
+
+def mark_stale(inst: Install) -> None:
+    """Tag the installed files so their replacement is observable even when the update
+    carries byte-identical contents: a trailing overlay on the executable (ignored by
+    PE and AppImage loaders), or a file inside the bundle on macOS (appending to a
+    Mach-O would break its signature)."""
+    if IS_MAC:
+        (inst.app / "Contents" / "Resources" / "soul-e2e-stale").write_bytes(STALE)
+    else:
+        with open(inst.exe, "ab") as f:
+            f.write(STALE)
+
+
+def is_stale(inst: Install) -> bool:
+    if IS_MAC:
+        return (inst.app / "Contents" / "Resources" / "soul-e2e-stale").exists()
+    try:
+        with open(inst.exe, "rb") as f:
+            f.seek(-len(STALE), os.SEEK_END)
+            return f.read() == STALE
+    except OSError:
+        return True  # mid-replacement
+
+
+def pid_alive(pid: int) -> bool:
+    if IS_WIN:
+        r = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                           capture_output=True, text=True)
+        return f'"{pid}"' in r.stdout
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_pid(pid: int) -> None:
+    """Quit a process we did not start (the updater relaunched it) and wait for it."""
+    if IS_WIN:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+    else:
+        os.kill(pid, signal.SIGTERM)
+    if not wait_until(lambda: not pid_alive(pid), 30, 0.5):
+        if not IS_WIN:
+            os.kill(pid, signal.SIGKILL)
+        raise E2EFailure(f"relaunched app (pid {pid}) did not quit within 30s")
+
+
+class UpdateServer:
+    """Serves a manifest offering `version` → `artifact` (with its real signature) until
+    the artifact has been downloaded, then answers 404 — so the relaunched build, which
+    still has the endpoint in its environment, sees no update and stays up instead of
+    updating in a loop."""
+
+    def __init__(self, version: str, target_key: str, artifact: Path, signature: str, fmt: str):
+        self.requests: list[str] = []
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):  # noqa: N802 (stdlib name)
+                outer.requests.append(self.path)
+                if self.path.startswith("/latest.json") and "/artifact" not in outer.requests:
+                    body, ctype = json.dumps(outer.manifest).encode(), "application/json"
+                elif self.path == "/artifact":
+                    body, ctype = artifact.read_bytes(), "application/octet-stream"
+                else:
+                    self.send_error(404)
+                    return
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        base = f"http://127.0.0.1:{self.srv.server_address[1]}"
+        self.endpoint = f"{base}/latest.json"
+        self.manifest = {
+            "version": version,
+            "pub_date": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "notes": "release e2e",
+            "platforms": {target_key: {"url": f"{base}/artifact", "signature": signature, "format": fmt}},
+        }
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.srv.shutdown()
+
+
+STARTING = re.compile(r"Soul Player starting(?P<rest>.*)")
+
+
+def startups(text: str) -> list[dict[str, str]]:
+    """Every startup line in a log chunk, with its `version` and `pid` fields."""
+    out = []
+    for m in STARTING.finditer(text):
+        line = text[text.rfind("\n", 0, m.start()) + 1 : m.end()]
+        fields = dict(re.findall(r'(\w+)="?([^\s"]+)"?', line))
+        out.append(fields)
+    return out
+
+
+def auto_update(
+    inst: Install, env: AppEnv, library: Path, offer: UpdateServer, expect_version: str
+) -> str:
+    """Let the installed app update itself through its own updater, unattended, and check
+    the outcome. Returns the log of the whole episode."""
+    mark_stale(inst)
+    check(is_stale(inst), "could not tag the installed build")
+    mark = env.log_mark()
+    e = dict(env.env, SOUL_PLAYER_FOLDER=str(library), SOUL_PLAYER_AUTOPLAY="1",
+             SOUL_PLAYER_UPDATE_ENDPOINT=offer.endpoint, SOUL_PLAYER_AUTO_INSTALL_UPDATE="1")
+    e.pop("SOUL_PLAYER_NO_UPDATE", None)
+    console = env.home / f"console-update-{time.monotonic_ns()}.txt"
+    with open(console, "wb") as out:
+        p = subprocess.Popen([str(inst.exe)], env=e, stdout=out, stderr=subprocess.STDOUT)
+
+    def detail() -> str:
+        return (f"requests {offer.requests}\n--- console ---\n{console.read_text(errors='replace')[-3000:]}"
+                f"\n--- log ---\n{env.log_since(mark)[-5000:]}")
+
+    # 1. The running build finds the update, downloads + verifies it, and quits on its own.
+    failed = re.compile(r"update (download|install) failed|restarting failed|path is unknown")
+    quit_or_failed = wait_until(lambda: p.poll() is not None or failed.search(env.log_since(mark)), 180)
+    if p.poll() is None:
+        p.kill()
+        p.wait()
+        why = "the updater reported an error" if quit_or_failed else "it did not quit within 180s"
+        raise E2EFailure(f"auto-update failed: {why}\n{detail()}")
+    check(p.returncode == 0, f"the app exited {p.returncode} while updating\n{detail()}")
+    check("/artifact" in offer.requests, f"the update was never downloaded\n{detail()}")
+    ok(f"downloaded + verified the signed update offered as {offer.manifest['version']}, quit cleanly")
+
+    # 2. The OS-level install replaces the files and the new build comes back up.
+    def relaunched() -> dict[str, str] | None:
+        later = [s for s in startups(env.log_since(mark)) if s.get("pid") != str(p.pid)]
+        return later[-1] if later and not is_stale(inst) else None
+
+    check(wait_until(lambda: relaunched() is not None, 180), f"no relaunch on replaced files\n{detail()}")
+    new = relaunched()
+    pid = int(new["pid"])
+    ok(f"installed files replaced; relaunched as pid {pid}")
+    try:
+        check(new.get("version") == expect_version,
+              f"relaunched build reports {new.get('version')}, expected {expect_version}")
+        reported = installed_version(inst)
+        check(reported in ("", expect_version), f"the OS now records {reported}, expected {expect_version}")
+        time.sleep(10)
+        check(pid_alive(pid), f"relaunched app exited early\n{detail()}")
+        text = env.log_since(mark)
+        after = text[text.rfind("Soul Player starting"):]
+        check("did not exit cleanly" not in after, "the update's quit was reported as a crash")
+        check("panicked" not in text, f"panic during the update:\n{text[-4000:]}")
+        ok(f"running {expect_version} after the update; no crash reported, no panic")
+    finally:
+        if pid_alive(pid):
+            stop_pid(pid)
+    return env.log_since(mark)
+
+
+def bump_patch(v: str) -> str:
+    a, b, c = (semver(v) + (0, 0, 0))[:3]
+    return f"{a}.{b}.{c + 1}"
+
+
+def supports_auto_install(version: str) -> bool:
+    """`SOUL_PLAYER_AUTO_INSTALL_UPDATE` and the pid on the startup line arrived after 0.3."""
+    return semver(version) > (0, 3, 0)
+
+
 # ---------------------------------------------------------------- previous release
 
 
@@ -522,6 +730,7 @@ def main() -> int:
     ap.add_argument("--version", required=True)
     ap.add_argument("--target-key", required=True, help="updater platform key, e.g. macos-aarch64")
     ap.add_argument("--manifest", type=Path, help="the new release's latest.json (for the update check)")
+    ap.add_argument("--update-meta", type=Path, help="this build's <key>.meta.json updater sidecar")
     ap.add_argument(
         "--previous-manifest",
         help="URL of the currently published latest.json (default: none → upgrade/rollback skipped)",
@@ -548,8 +757,30 @@ def main() -> int:
         inst = install(installer, work)
         check(inst.version in ("", a.version), f"installed version {inst.version}, expected {a.version}")
         exercise(inst, env, a.version, library, a.out / "fresh", full=True)
+        steps.append(("fresh install → run", "pass"))
+        end_section()
+
+        update = None
+        if a.update_meta:
+            meta = json.loads(a.update_meta.read_text(encoding="utf-8"))
+            check(meta["target_key"] == a.target_key, f"sidecar is for {meta['target_key']}")
+            artifact = a.update_meta.resolve().parent / meta["artifact"]
+            check(artifact.is_file(), f"update artifact {artifact} missing")
+            update = (artifact, meta["signature"].strip(), meta["format"])
+            section(f"auto-update {a.version} → (offered) {bump_patch(a.version)}")
+            offer = UpdateServer(bump_patch(a.version), a.target_key, *update)
+            try:
+                auto_update(inst, env, library, offer, a.version)
+            finally:
+                offer.close()
+            steps.append(("auto-update via the app's updater (download → verify → install → relaunch)", "pass"))
+            end_section()
+        else:
+            steps.append(("auto-update", "skipped (no --update-meta)"))
+
+        section("uninstall")
         uninstall(inst)
-        steps.append(("fresh install → run → uninstall", "pass"))
+        steps.append(("uninstall, nothing left", "pass"))
         end_section()
 
         # 2 + 3. upgrade from, then roll back to, the previous release
@@ -571,12 +802,27 @@ def main() -> int:
                 prev_runs = False
                 log(f"::warning::previous release {prev_version} does not run on this runner: {e}")
                 steps.append((f"previous {prev_version} runs here", "WARNING: no — see log"))
-            if prev_runs and a.manifest and semver(prev_version) < semver(a.version):
+            older = semver(prev_version) < semver(a.version)
+            if prev_runs and a.manifest and older:
                 check_update_detected(old, env, a.manifest, a.version, library)
                 steps.append((f"{prev_version} detects {a.version} as an update", "pass"))
-            elif semver(prev_version) >= semver(a.version):
+            elif not older:
                 log(f"::notice::{prev_version} is not older than {a.version}; update detection skipped")
-            new = install(installer, work)
+            if prev_runs and older and update and supports_auto_install(prev_version):
+                offer = UpdateServer(a.version, a.target_key, *update)
+                try:
+                    auto_update(old, env, library, offer, a.version)
+                finally:
+                    offer.close()
+                steps.append((f"{prev_version} auto-updates itself to {a.version}", "pass"))
+                new = old
+                new.version = a.version
+                if IS_WIN:  # re-read: the installer may have rewritten the registry entry
+                    new = WindowsInstall(WindowsInstall.entries()[0])
+            else:
+                if older and update:
+                    log(f"::notice::{prev_version} cannot install updates unattended; installing over it")
+                new = install(installer, work)
             check(new.version in ("", a.version), f"after upgrade the OS reports {new.version}")
             exercise(new, env, a.version, library, a.out / "upgraded", full=False)
             steps.append((f"upgrade {prev_version} → {a.version}", "pass"))

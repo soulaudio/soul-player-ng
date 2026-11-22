@@ -3557,6 +3557,7 @@ fn main() -> anyhow::Result<()> {
     let os = os_info::get();
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
+        pid = std::process::id(),
         os = %os,
         arch = std::env::consts::ARCH,
         cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
@@ -3877,13 +3878,17 @@ fn main() -> anyhow::Result<()> {
     }
     // Launch-time update check (release builds only): off-thread so it never
     // blocks startup, and it only *flags* an available update — Settings offers
-    // the actual "Install & Restart" so we never yank a playing track away.
+    // the actual "Install & Restart" so we never yank a playing track away
+    // (unless `SOUL_PLAYER_AUTO_INSTALL_UPDATE` asks to install it unattended).
     if update::enabled() {
         let uh = app.handle();
         std::thread::spawn(move || match update::available() {
             Some(version) => {
                 tracing::info!(version, "update available");
                 notify::update_available(&version);
+                if update::auto_install() {
+                    install_update(uh.clone());
+                }
                 uh.update(move |s: &mut State, _tx: &mut Tx| {
                     s.update_available = Some(version);
                 });
@@ -3943,7 +3948,27 @@ fn main() -> anyhow::Result<()> {
     // clean exit first; this covers the rare path where the run loop returns
     // without either firing. `end_session` is idempotent.
     logging::end_session();
+    // "Install & Restart" quit us to get here: now that every quit hook has run,
+    // put the verified update in place and start it (no-op without one).
+    update::apply_pending();
     Ok(())
+}
+
+/// "Install & Restart": download and verify the update off the UI thread, then
+/// quit normally; `main` installs it once the run loop has returned (see
+/// [`update::apply_pending`]). A failed download leaves the app running.
+pub(crate) fn install_update(ah: rune::AppHandle<State>) {
+    std::thread::spawn(move || match update::download() {
+        Ok(Some(version)) => {
+            tracing::info!(
+                version,
+                "update downloaded and verified; quitting to install it"
+            );
+            ah.quit();
+        }
+        Ok(None) => tracing::info!("no update to install"),
+        Err(e) => tracing::error!("update download failed: {e}"),
+    });
 }
 
 #[cfg(test)]
