@@ -645,7 +645,10 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     // A user-uploaded custom cover (the old app's "Edit Artwork") wins over the
     // cover-track art, the same precedence the album grid card uses.
     let art = match s.covers.album_cover_path(&album.name) {
-        Some(path) => HeroArt::Image(path),
+        Some(path) => HeroArt::Image {
+            path,
+            circular: false,
+        },
         None => HeroArt::Cover {
             id: album.cover_id,
             circular: false,
