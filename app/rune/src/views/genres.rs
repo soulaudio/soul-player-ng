@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text, text_input};
+use rune::{Cursor, Cx, El, ScrollSpec, col, row, text, text_input};
 use soul_player_host::TrackView;
 
 use crate::State;
@@ -201,22 +201,6 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         )
 }
 
-/// A back link to the Genres list — a `←` glyph.
-fn back_button(p: &Palette) -> El {
-    el().key("genre-back")
-        .role("button")
-        .label(t!("nav.genres").to_string())
-        .focusable(true)
-        .px(space::SM)
-        .py(space::XS)
-        .radius(radius::SM)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(crate::go_back)
-}
-
 /// A genre's detail page: a back link, the shared hero using a muted music-note
 /// tile in place of artwork ("GENRE" eyebrow, name, "{n} tracks · {duration}",
 /// Play All), then the genre's track list. The genre is `State::open_genre`,
@@ -233,8 +217,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
             .key("genre-detail")
             .grow(1.0)
             .min_h(0.0)
-            .padding(space::PANE)
-            .child(back_button(p));
+            .padding(space::PANE);
     };
 
     let total: f64 = genre
@@ -313,34 +296,20 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         }
     }
 
-    col()
-        .key("genre-detail")
-        .grow(1.0)
-        .min_h(0.0)
-        .child(row_top(p))
-        .child(
-            col()
-                .key("genre-detail-content")
-                .padding(space::PANE)
-                .child(hero)
-                .child(search)
-                .child(list)
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .scroll_edge_fade(24.0)
-                .grow(1.0)
-                .min_h(0.0),
-        )
-}
-
-/// The back-link bar above the genre detail content.
-fn row_top(p: &Palette) -> El {
-    row()
-        .key("genre-detail-top")
-        .px(space::PANE)
-        .pt(space::SM)
-        .child(back_button(p))
+    col().key("genre-detail").grow(1.0).min_h(0.0).child(
+        col()
+            .key("genre-detail-content")
+            .padding(space::PANE)
+            .child(hero)
+            .child(search)
+            .child(list)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0),
+    )
 }
 
 #[cfg(test)]

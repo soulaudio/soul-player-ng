@@ -16,7 +16,7 @@ use rune::{Align, Cursor, Cx, El, Icon, Side, col, el, icon, row, text};
 use soul_player_host::{ScanPhase, ScanProgress, SourceKind, SourceStatus};
 
 use crate::theme::Palette;
-use crate::ui::{radius, space, type_};
+use crate::ui::{fx, radius, space, type_};
 use crate::views::{icons, settings};
 use crate::{State, close_remote_health_popover, set_settings_tab, toggle_remote_health_popover};
 
@@ -82,6 +82,24 @@ pub(crate) fn remote_health_summary(sources: &[SourceStatus]) -> Option<RemoteSu
     }
 }
 
+/// The title-bar back arrow shown at the leading edge on a detail route (desktop).
+/// Returns to the previous view via [`crate::go_back`]; keyed `detail-back` and
+/// labelled, so the a11y sweep and screen readers find it on every detail page.
+fn detail_back_button(p: &Palette) -> El {
+    el().key("detail-back")
+        .role("button")
+        .label(t!("common.back").to_string())
+        .focusable(true)
+        .size(28.0, 28.0)
+        .center()
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .child(text("←").font(type_::NAV).color(p.fg))
+        .on_press(crate::go_back)
+}
+
 /// The window title-bar band over the content: `HEIGHT` tall, draggable. On Windows
 /// it carries our own always-visible `_ [] X` glyphs at the trailing edge; the open
 /// area to their left is where custom header components go later.
@@ -91,7 +109,7 @@ pub(crate) fn remote_health_summary(sources: &[SourceStatus]) -> Option<RemoteSu
 /// over them never reaches the app's client-area hover group — a reveal would blank
 /// out exactly as you reach for a button. Native Windows keeps them always shown, so
 /// we do too.
-pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
+pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>, mobile: bool) -> El {
     let chrome = cx.chrome_insets();
     // Hide the native Windows caption symbols — we draw our own (animatable) glyphs
     // over the buttons, which still take the clicks. alpha 0 keeps macOS unaffected.
@@ -121,6 +139,18 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>) -> El {
         .h_full()
         .items_center()
         .gap(space::SM);
+    // A back arrow at the leading edge on a detail route, inline with the window
+    // controls (the original's title-bar back). Desktop only: the narrow layout
+    // uses the mobile top bar's own back (see `sidebar::mobile_top_bar`). The
+    // title-bar band starts right of the sidebar, so this lands at the top-left
+    // of the content area, exactly where the original puts it.
+    let on_detail = matches!(
+        s.route,
+        crate::Route::Album | crate::Route::Artist | crate::Route::Genre | crate::Route::Playlist
+    );
+    if !mobile && on_detail {
+        content = content.child(detail_back_button(p));
+    }
     if s.scan_progress.is_some() || remote_summary.is_some() {
         content = content.child(el().grow(1.0));
         if let Some(prog) = &s.scan_progress {
