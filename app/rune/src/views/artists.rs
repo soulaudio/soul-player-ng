@@ -15,11 +15,11 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::albums::{Album, albums_of_artist, detail_track_row};
-use crate::views::detail_page::{HeroArt, detail_actions, detail_hero};
+use crate::views::detail_page::{ArtworkTarget, HeroArt, detail_actions_with_artwork, detail_hero};
 use crate::views::grid;
 use crate::views::icons;
 use crate::views::media_card::{CardSpec, media_card};
-use crate::views::player::{cover, group_remote_source};
+use crate::views::player::{cover, cover_from_path, group_remote_source};
 
 /// One grouped artist: display name, a track id to draw a cover from, every
 /// track id (in library order) for Play All / the detail list, and whether
@@ -103,6 +103,7 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
                 crate::views::library::tracks_label(a.ids.len())
             )),
             cover_id: a.cover_id,
+            cover_override: s.covers.artist_cover_path(&a.name),
             circular: true,
             play_ids: a.ids.clone(),
             remote_source: a.remote_source.clone(),
@@ -204,22 +205,37 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         crate::views::library::albums_label(discography.len()),
         crate::views::library::tracks_label(artist.ids.len())
     );
+    // A user-uploaded custom avatar (the old app's "Edit Artwork") wins over the
+    // cover-track art. Note: `HeroArt::Image` renders a square `radius::MD`
+    // tile, so an overridden artist hero is square (not the circular avatar the
+    // generated/embedded art uses); the circular grid card still applies the
+    // override. An acceptable minor deviation (the custom image is shown as-is).
+    let art = match s.covers.artist_cover_path(&artist.name) {
+        Some(path) => HeroArt::Image(path),
+        None => HeroArt::Cover {
+            id: artist.cover_id,
+            circular: true,
+        },
+    };
     let hero = detail_hero(
         s,
         p,
         scale,
         "artist",
-        HeroArt::Cover {
-            id: artist.cover_id,
-            circular: true,
-        },
+        art,
         t!("artist.eyebrow").to_uppercase(),
         artist.name.clone(),
         artist.remote_source.clone(),
         None,
         meta,
         None, // no clock: artist meta is "albums, tracks", not a duration
-        detail_actions("artist-play-all", artist.ids.clone(), p),
+        detail_actions_with_artwork(
+            s,
+            p,
+            "artist-play-all",
+            artist.ids.clone(),
+            ArtworkTarget::Artist(artist.name.clone()),
+        ),
     );
 
     // Top Songs: the first five (or all, expanded), as album-art track rows.
@@ -345,6 +361,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                         title: alb.name.clone(),
                         subtitle: None,
                         cover_id: alb.cover_id,
+                        cover_override: s.covers.album_cover_path(&alb.name),
                         circular: false,
                         play_ids: alb.ids.clone(),
                         remote_source: alb.remote_source.clone(),
@@ -413,7 +430,12 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
-        .child(cover(s, Some(alb.cover_id), 48.0, radius::SM, p, scale))
+        .child(match s.covers.album_cover_path(&alb.name) {
+            // A custom cover wins here too, so the discography list thumbnail
+            // matches the album's grid card and detail hero.
+            Some(path) => cover_from_path(s, &path, 48.0, radius::SM, p, scale),
+            None => cover(s, Some(alb.cover_id), 48.0, radius::SM, p, scale),
+        })
         .child(
             col()
                 .gap(space::XXS)

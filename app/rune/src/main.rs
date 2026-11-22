@@ -31,6 +31,7 @@ use soul_player_host::{
 };
 
 mod config;
+mod covers;
 #[cfg(test)]
 mod i18n_tests;
 mod logging;
@@ -281,6 +282,11 @@ struct State {
     /// ([`playlists::PlaylistStore::load`]). Every mutation
     /// (create/rename/delete/reorder) persists through the store itself.
     playlists: playlists::PlaylistStore,
+    /// User-uploaded custom covers for artists/albums (the old app's "Edit
+    /// Artwork"), loaded from `<config>/covers` at startup. A set cover wins
+    /// over the generated/embedded art everywhere that artist/album appears
+    /// (grid cards + detail heroes). Mirrors the playlist custom-cover store.
+    covers: covers::CoverStore,
     /// The text buffer the Playlists list page's inline "New playlist" field
     /// draws and the user types into. Confirming (Enter or the button)
     /// creates a playlist named by the trimmed text and resets this buffer;
@@ -705,6 +711,9 @@ impl State {
         // Load user-created playlists from the on-disk store (empty store if none
         // exist yet, or the folder hasn't been created).
         let playlists = playlists::PlaylistStore::load();
+        // Load user-uploaded custom artist/album covers from `<config>/covers`
+        // (empty if the folder doesn't exist / nothing has been set yet).
+        let covers = covers::CoverStore::load();
         // Seed the per-source status from the host (its configured set, each with
         // live availability). Counts are 0 until the first rescan's WatchUpdate —
         // live edits refresh the full status via apply_watch.
@@ -744,6 +753,7 @@ impl State {
             host,
             library,
             playlists,
+            covers,
             playlist_new_buf: rune::TextEdit::new(""),
             playlist_renaming: None,
             playlist_rename_buf: rune::TextEdit::new(""),
