@@ -108,9 +108,15 @@ device profiles are identical across images and are checked in as captured fixtu
   AUHAL path exercises the closest-same-family fallback on a restricted ladder; 12/12 incl.
   bit-identical loopback at both rates, on macos-15 and macos-26; gates. The spike's open
   question is answered: **hosted runners load ad-hoc-signed HAL plug-ins.**
-- ⏳ libASPL / tympan-aspl "ProfileDevice" HAL plug-in loading fixture profiles (Int24,
-  Int32-384k, 48k-only, no-hog) — now unblocked (ad-hoc signing works). It would cover what
-  BlackHole can't: integer formats, no-hog devices, fixed-rate devices.
+- ✅ **SoulProfile** — our own libASPL HAL plug-in (soul-audio-core#117,
+  `ci/hal-profile-device`, plain clang++, ad-hoc signed, CI-only). Two loopback devices:
+  "SoulProfile UAC2 DAC" (44.1k–384k, Int16/24/32) and "SoulProfile HDMI 48k" (48k only,
+  Int16/24). The full exclusive suite passes 12/12 on both, on macos-15, macos-26 and
+  macos-15-intel. The sink picks Int32 (UAC2) and Int24 (HDMI). The 24-bit loopback is
+  bit-identical through those integer physical words, so the HAL's float → int conversion
+  is proven, and the fixed-rate path is proven too. Gates.
+- ⏸ No-hog devices: not emulable. Hog mode is implemented by the HAL, not the plug-in, so a
+  virtual device always supports it; the no-hog fallback stays fake-HAL-only.
 
 ## Phase 5 — Native macOS integration 🔨
 
