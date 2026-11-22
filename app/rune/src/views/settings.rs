@@ -142,9 +142,10 @@ fn category_item(
     }
 }
 
-/// The left category rail: Appearance / Music Data / Audio / About, each icon +
-/// label. Music Data uses the music note and Audio the speaker; Appearance and
-/// About use the palette / info glyphs added to `views::icons`.
+/// The left category rail: Appearance / Music Data / Audio / Keyboard / About,
+/// each icon + label. Music Data uses the music note and Audio the speaker;
+/// Appearance / Keyboard / About use the palette / keyboard / info glyphs added
+/// to `views::icons`.
 fn category_nav(s: &State, p: &Palette) -> El {
     let tab = s.settings_tab;
     col()
@@ -181,6 +182,14 @@ fn category_nav(s: &State, p: &Palette) -> El {
             t!("settings.audio").to_string(),
             SettingsTab::Audio,
             tab == SettingsTab::Audio,
+            p,
+        ))
+        .child(category_item(
+            "cat-keyboard",
+            &icons::KEYBOARD,
+            t!("settings.keyboard").to_string(),
+            SettingsTab::Keyboard,
+            tab == SettingsTab::Keyboard,
             p,
         ))
         .child(category_item(
@@ -3516,6 +3525,62 @@ fn about_card(s: &State, p: &Palette) -> El {
     c
 }
 
+// ── Keyboard shortcuts ───────────────────────────────────────────────────────
+
+/// The **Keyboard** category pane (mirrors the original soul-player's Keyboard
+/// settings tab): a heading over a read-only card listing the six fixed playback
+/// shortcuts, each an action label on the left and its key binding in a muted
+/// pill on the right. Rebinding / "Reset to Defaults" is intentionally omitted —
+/// the bindings are fixed for now, so the pills render read-only (not focusable).
+/// The binding strings (e.g. `Ctrl+Space`) are literal key names, not localized;
+/// the action labels are. `handle_key` wires the Ctrl-chord variants these list.
+fn keyboard_settings(_s: &State, p: &Palette) -> El {
+    // (action label, binding literal, row-key suffix).
+    let shortcuts = [
+        (
+            t!("settings.kbdPlayPause").to_string(),
+            "Ctrl+Space",
+            "play-pause",
+        ),
+        (t!("settings.kbdNext").to_string(), "Ctrl+→", "next"),
+        (t!("settings.kbdPrev").to_string(), "Ctrl+←", "prev"),
+        (t!("settings.kbdVolUp").to_string(), "Ctrl+↑", "vol-up"),
+        (t!("settings.kbdVolDown").to_string(), "Ctrl+↓", "vol-down"),
+        (t!("settings.kbdMute").to_string(), "Ctrl+M", "mute"),
+    ];
+    let mut list = card("settings-keyboard-card", p);
+    for (label, binding, action) in shortcuts {
+        list = list.child(
+            row()
+                .key(format!("kbd-row-{action}"))
+                .center_y()
+                .justify_between()
+                .py(space::SM)
+                .child(text(label).color(p.fg))
+                .child(
+                    el().radius(radius::SM)
+                        .fill(p.muted)
+                        .px(space::SM)
+                        .py(space::XS)
+                        .child(
+                            text(binding.to_string())
+                                .font(type_::CAPTION)
+                                .color(p.text_secondary),
+                        ),
+                ),
+        );
+    }
+    col()
+        .key("settings-keyboard-pane")
+        .gap(space::LG)
+        .child(heading(
+            t!("settings.keyboardShortcuts").to_string(),
+            t!("settings.keyboardShortcutsDesc").to_string(),
+            p,
+        ))
+        .child(list)
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 thread_local! {
@@ -3543,6 +3608,7 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .child(music_data_card(s, p))
             .child(managed_library_card(s, p)),
         SettingsTab::Audio => audio_pipeline(s, p, cx),
+        SettingsTab::Keyboard => keyboard_settings(s, p),
         SettingsTab::About => col()
             .key("settings-content")
             .gap(space::LG)
