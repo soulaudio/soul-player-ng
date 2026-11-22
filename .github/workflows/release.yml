@@ -75,7 +75,7 @@ jobs:
       # The release the draft job creates: the tag, or a throwaway one for a rehearsal.
       release_tag: ${{ steps.v.outputs.release_tag }}
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -169,7 +169,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -289,7 +289,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
@@ -353,7 +353,7 @@ jobs:
       TAG: ${{ needs.guard.outputs.release_tag }}
       VERSION: ${{ needs.guard.outputs.version }}
     steps:
-      - uses: actions/checkout@v4.4.0
+      - uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
 
