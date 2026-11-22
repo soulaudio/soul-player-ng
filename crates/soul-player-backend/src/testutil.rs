@@ -260,9 +260,28 @@ pub(crate) struct ConfigSink {
     /// must be dropped (its device freed) BEFORE the new one opens. `None` = a
     /// device-free placeholder (the parked sink), which never counts.
     device_live: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
+    /// When set and `true`, the device is "unplugged": `write`/`flush` fail with
+    /// `SinkError::Closed`, exactly as a real exclusive sink does when its DAC vanishes.
+    unplugged: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl ConfigSink {
+    /// Wire an "unplug" switch: flipping `flag` to `true` makes the sink fail with
+    /// `SinkError::Closed` from then on.
+    pub(crate) fn with_unplug(
+        mut self,
+        flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.unplugged = Some(flag);
+        self
+    }
+
+    fn is_unplugged(&self) -> bool {
+        self.unplugged
+            .as_ref()
+            .is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
     pub(crate) fn new(
         device: Option<String>,
         exclusive: bool,
@@ -277,6 +296,7 @@ impl ConfigSink {
             channels,
             frames,
             device_live: None,
+            unplugged: None,
         }
     }
 
@@ -298,6 +318,7 @@ impl ConfigSink {
             channels,
             frames,
             device_live: Some(device_live),
+            unplugged: None,
         }
     }
 }
@@ -322,6 +343,9 @@ impl Sink for ConfigSink {
         self.exclusive
     }
     fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
+        if self.is_unplugged() {
+            return Err(SinkError::Closed);
+        }
         self.frames.fetch_add(
             frames.len() / usize::from(self.channels.max(1)),
             std::sync::atomic::Ordering::Relaxed,
@@ -329,6 +353,9 @@ impl Sink for ConfigSink {
         Ok(())
     }
     fn flush(&mut self) -> Result<(), SinkError> {
+        if self.is_unplugged() {
+            return Err(SinkError::Closed);
+        }
         Ok(())
     }
 }

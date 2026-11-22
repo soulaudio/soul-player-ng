@@ -6,9 +6,14 @@
 //! `ToastNotificationManager` on the `windows` crate souvlaki already compiled
 //! for SMTC — no extra notification crate, no second `windows` version, no
 //! `unsafe`. Windows only renders toasts whose AppUserModelID it knows, so we
-//! register one under `HKCU` at startup ([`register_identity`]). Other platforms
-//! are no-ops for now (Linux now-playing is already covered by the MPRIS media
-//! session; a libnotify / `NSUserNotification` path can follow).
+//! register one under `HKCU` at startup ([`register_identity`]).
+//!
+//! On macOS we post through `rune-notify` (`UNUserNotificationCenter`), which reads the
+//! app identity from the `.app` bundle (`co.datadir.soulplayer`) and asks the person for
+//! permission on first post. An unbundled dev binary can't post (`available()` is false),
+//! so it stays silent. Each kind reuses one notification id, so a new now-playing banner
+//! replaces the previous one instead of piling up in Notification Center.
+//! Linux is a no-op (now-playing is covered by the MPRIS media session).
 #![forbid(unsafe_code)]
 
 /// Our stable reverse-DNS AppUserModelID (matches the packager identifier).
@@ -19,6 +24,7 @@ const AUMID: &str = "co.datadir.soulplayer";
 /// Escape text for inclusion in XML character data. `&` first so we don't
 /// double-escape the entities we introduce. A track titled "Rock & Roll" or
 /// "<3" would otherwise produce malformed toast XML that silently fails to show.
+#[cfg(any(windows, test))]
 fn escape_xml(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -28,6 +34,7 @@ fn escape_xml(s: &str) -> String {
 }
 
 /// Build a two-line `ToastGeneric` payload (bold title + body line).
+#[cfg(any(windows, test))]
 fn toast_xml(title: &str, body: &str) -> String {
     format!(
         "<toast><visual><binding template=\"ToastGeneric\">\
@@ -70,7 +77,7 @@ pub(crate) fn update_available(version: &str) {
     }
     let title = t!("notify.updateTitle").to_string();
     let body = t!("notify.updateBody", version => version).to_string();
-    show(&toast_xml(&title, &body));
+    show(ID_UPDATE, &title, &body);
 }
 
 /// Toast the now-playing track — only when backgrounded and we have a title.
@@ -78,13 +85,38 @@ pub(crate) fn now_playing(focused: bool, title: &str, artist: &str) {
     if cfg!(test) || !should_notify(focused, title) {
         return;
     }
-    show(&toast_xml(title, artist));
+    show(ID_NOW_PLAYING, title, artist);
 }
 
-/// Display a prepared toast payload. Failures are logged, never propagated — a
-/// missing notifier must not disturb playback.
+/// Stable per-kind notification ids (a repost replaces the previous one).
+const ID_UPDATE: &str = "update-available";
+const ID_NOW_PLAYING: &str = "now-playing";
+
+/// Show a notification. Failures are logged, never propagated — a missing notifier must
+/// not disturb playback.
 #[cfg(windows)]
-fn show(xml: &str) {
+fn show(_id: &str, title: &str, body: &str) {
+    show_xml(&toast_xml(title, body));
+}
+
+#[cfg(target_os = "macos")]
+fn show(id: &str, title: &str, body: &str) {
+    if !rune_notify::available() {
+        tracing::debug!("notifications need the bundled .app; skipped {id}");
+        return;
+    }
+    let n = rune_notify::Notification::new(id, title).body(body);
+    if !rune_notify::post(&n) {
+        tracing::warn!("notification {id} was not posted");
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn show(_id: &str, _title: &str, _body: &str) {}
+
+/// Display a prepared WinRT toast payload.
+#[cfg(windows)]
+fn show_xml(xml: &str) {
     use windows::Data::Xml::Dom::XmlDocument;
     use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
     use windows::core::HSTRING;
@@ -100,9 +132,6 @@ fn show(xml: &str) {
         tracing::warn!("toast failed: {e}");
     }
 }
-
-#[cfg(not(windows))]
-fn show(_xml: &str) {}
 
 #[cfg(test)]
 mod tests {

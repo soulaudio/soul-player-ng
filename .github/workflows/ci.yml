@@ -90,6 +90,35 @@ jobs:
           cargo test
           cargo test --manifest-path crates/soul-player-host/Cargo.toml
 
+      # macOS real-device e2e for CoreAudio exclusive output, against a BlackHole
+      # virtual device (hosted runners have no audio hardware): every track at its native
+      # rate through the full PlayerHandle stack, honest fallback for over-max rates,
+      # exclusive-off releases hog mode and restores the rate, and strict/non-strict
+      # behaviour when another process hogs the device. BlackHole (GPL-3.0) is a CI-only
+      # fixture, never linked or shipped.
+      - name: Install BlackHole virtual audio device (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask blackhole-2ch
+          brew install switchaudio-osx
+          sudo killall -9 coreaudiod || true
+          for i in $(seq 1 30); do
+            if system_profiler SPAudioDataType | grep -q "BlackHole 2ch"; then break; fi
+            sleep 1
+          done
+          system_profiler SPAudioDataType | grep -q "BlackHole 2ch" || { echo "::error::BlackHole did not load"; exit 1; }
+          # native_rate_hardware_e2e plays on the system default.
+          SwitchAudioSource -s "BlackHole 2ch" -t output
+
+      - name: CoreAudio exclusive e2e on BlackHole (macOS only)
+        if: runner.os == 'macOS'
+        env:
+          SOUL_CA_DEVICE: BlackHole 2ch
+        run: >
+          cargo test --manifest-path crates/soul-player-host/Cargo.toml
+          --test coreaudio_exclusive_e2e --test native_rate_hardware_e2e --
+          --ignored --nocapture --test-threads=1
+
   rune:
     name: rune (native UI head)
     # The UI head's interaction tests click focusable controls, which routes
@@ -165,6 +194,26 @@ jobs:
           else
             cargo test
           fi
+
+      # macOS e2e against the system Now Playing service (what Control Center, the lock
+      # screen, media keys and AirPods read/drive): the real app autoplays silent tagged
+      # tracks into a BlackHole output; `media-control` asserts metadata + artwork and
+      # sends remote commands — shared, then hog-mode exclusive. Non-blocking until it has
+      # been seen green on hosted runners (needs a GUI login session for MediaRemote).
+      - name: Now Playing e2e (macOS only)
+        if: runner.os == 'macOS'
+        continue-on-error: true
+        working-directory: .
+        run: |
+          brew install media-control switchaudio-osx
+          brew install --cask blackhole-2ch
+          sudo killall -9 coreaudiod || true
+          for i in $(seq 1 30); do
+            system_profiler SPAudioDataType | grep -q "BlackHole 2ch" && break; sleep 1
+          done
+          SwitchAudioSource -s "BlackHole 2ch" -t output
+          scripts/e2e-now-playing-macos.sh
+          EXCLUSIVE=1 scripts/e2e-now-playing-macos.sh
 
   ci-success:
     name: CI success

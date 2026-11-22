@@ -99,8 +99,86 @@ use crate::State;
 const DBUS_NAME: &str = "soul_player";
 const DISPLAY_NAME: &str = "Soul Player";
 
+// ---- artwork --------------------------------------------------------------------
+//
+// The OS transports load artwork from a URL (macOS: `NSImage initWithContentsOfURL`,
+// asynchronously; MPRIS: `mpris:artUrl`; SMTC: a stream from the URI). A bare path has no
+// scheme and silently fails on macOS, so the cover is written to the cache dir and passed
+// as a properly percent-encoded `file://` URL. One file per track id: macOS caches by URL,
+// so reusing one filename would show the previous cover.
+
+/// The cache file name for track `id`'s cover with MIME `mime`.
+pub(crate) fn artwork_file_name(id: u32, mime: &str) -> String {
+    let ext = match mime {
+        "image/png" => "png",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        _ => "jpg",
+    };
+    format!("cover-{id}.{ext}")
+}
+
+/// A `file://` URL for an absolute `path`, each segment percent-encoded (spaces, `#`,
+/// `?`, non-ASCII album names …) so `NSURL URLWithString:` accepts it.
+pub(crate) fn file_url(path: &std::path::Path) -> String {
+    use std::path::Component;
+    let mut url = String::from("file://");
+    for c in path.components() {
+        match c {
+            Component::RootDir => {}
+            Component::Prefix(p) => {
+                // Windows drive (`C:`) → `file:///C:/…`
+                url.push('/');
+                url.push_str(&p.as_os_str().to_string_lossy());
+                continue;
+            }
+            Component::Normal(seg) => {
+                url.push('/');
+                url.push_str(&urlencoding::encode(&seg.to_string_lossy()));
+            }
+            Component::CurDir | Component::ParentDir => {}
+        }
+    }
+    url
+}
+
+/// Write track `id`'s cover into `dir` (replacing any older cover files there) and return
+/// its `file://` URL; `None` when the track has no art or the write fails.
+fn publish_artwork(
+    dir: &std::path::Path,
+    id: u32,
+    cover: Option<soul_player_host::Cover>,
+) -> Option<String> {
+    let cover = cover?;
+    std::fs::create_dir_all(dir).ok()?;
+    let name = artwork_file_name(id, &cover.mime);
+    // Keep only the current cover: the cache dir must not grow per track played.
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            if n.starts_with("cover-") && n != name {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let path = dir.join(&name);
+    std::fs::write(&path, &cover.bytes).ok()?;
+    Some(file_url(&path))
+}
+
+/// Where now-playing covers are cached (`~/Library/Caches/Soul Player/now-playing` on
+/// macOS).
+fn artwork_dir() -> Option<std::path::PathBuf> {
+    Some(dirs::cache_dir()?.join("Soul Player").join("now-playing"))
+}
+
 /// Owned track metadata to publish (strings owned because `MediaMetadata` borrows).
 pub(crate) struct TrackMeta {
+    /// Library id — the session thread fetches this track's cover art itself, so the
+    /// tag read + file write never runs on the UI thread.
+    pub id: u32,
     pub title: String,
     pub artist: String,
     pub album: String,
@@ -156,18 +234,27 @@ pub(crate) fn decide_push(prev: &Snapshot, cur: &Snapshot, since_last: Duration)
 /// `None` if the thread can't start. `hwnd_raw` is the window handle as an integer
 /// (Windows SMTC; `None` on macOS/Linux) — an `isize` because a raw pointer isn't
 /// `Send`. OS events are routed back to the main thread via `app`.
-pub(crate) fn spawn(app: AppHandle<State>, hwnd_raw: Option<isize>) -> Option<Sender<Update>> {
+pub(crate) fn spawn(
+    app: AppHandle<State>,
+    host: soul_player_host::PlayerHandle,
+    hwnd_raw: Option<isize>,
+) -> Option<Sender<Update>> {
     let (tx, rx) = std::sync::mpsc::channel::<Update>();
     std::thread::Builder::new()
         .name("media-session".into())
-        .spawn(move || session_thread(app, hwnd_raw, rx))
+        .spawn(move || session_thread(app, host, hwnd_raw, rx))
         .ok()?;
     Some(tx)
 }
 
 /// The session thread: owns `MediaControls`, attaches the OS→app handler, and
 /// applies app→OS updates until the channel closes (app exit).
-fn session_thread(app: AppHandle<State>, hwnd_raw: Option<isize>, rx: Receiver<Update>) {
+fn session_thread(
+    app: AppHandle<State>,
+    host: soul_player_host::PlayerHandle,
+    hwnd_raw: Option<isize>,
+    rx: Receiver<Update>,
+) {
     let hwnd = hwnd_raw.map(|h| h as *mut c_void);
     let config = PlatformConfig {
         dbus_name: DBUS_NAME,
@@ -194,11 +281,22 @@ fn session_thread(app: AppHandle<State>, hwnd_raw: Option<isize>, rx: Receiver<U
     while let Ok(update) = rx.recv() {
         match update {
             Update::Track(meta) => {
+                let t0 = std::time::Instant::now();
+                let art = host.art(meta.id);
+                let art_ms = t0.elapsed().as_millis() as u64;
+                let cover_url = artwork_dir().and_then(|dir| publish_artwork(&dir, meta.id, art));
+                tracing::debug!(
+                    id = meta.id,
+                    art_ms,
+                    total_ms = t0.elapsed().as_millis() as u64,
+                    has_art = cover_url.is_some(),
+                    "now-playing artwork published"
+                );
                 let md = MediaMetadata {
                     title: Some(&meta.title),
                     artist: Some(&meta.artist),
                     album: Some(&meta.album),
-                    cover_url: None, // cover art is a follow-up (temp-file plumbing)
+                    cover_url: cover_url.as_deref(),
                     duration: (meta.duration_secs > 0.0)
                         .then(|| Duration::from_secs_f64(meta.duration_secs)),
                 };
@@ -307,6 +405,68 @@ mod tests {
             map_event(MediaControlEvent::OpenUri("x".into()), 0.0, 0.0),
             None
         );
+    }
+
+    #[test]
+    fn artwork_file_names_follow_the_mime_and_are_per_track() {
+        assert_eq!(artwork_file_name(7, "image/jpeg"), "cover-7.jpg");
+        assert_eq!(artwork_file_name(7, "image/png"), "cover-7.png");
+        assert_eq!(
+            artwork_file_name(8, "application/octet-stream"),
+            "cover-8.jpg"
+        );
+        assert_ne!(
+            artwork_file_name(1, "image/png"),
+            artwork_file_name(2, "image/png"),
+            "macOS caches artwork by URL, so each track needs its own file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_urls_are_absolute_and_percent_encoded() {
+        let p =
+            std::path::Path::new("/Users/me/Library/Caches/Soul Player/now-playing/cover-1.jpg");
+        assert_eq!(
+            file_url(p),
+            "file:///Users/me/Library/Caches/Soul%20Player/now-playing/cover-1.jpg"
+        );
+        let odd = std::path::Path::new("/tmp/AC#DC ?/Björk.png");
+        assert_eq!(file_url(odd), "file:///tmp/AC%23DC%20%3F/Bj%C3%B6rk.png");
+    }
+
+    #[test]
+    fn publish_artwork_writes_one_current_cover_and_prunes_old_ones() {
+        let root = std::env::temp_dir().join(format!("soul_np_art_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        struct Cleanup(std::path::PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let dir = &root;
+        let cover = |b: u8| {
+            Some(soul_player_host::Cover {
+                mime: "image/png".into(),
+                bytes: vec![b; 16],
+            })
+        };
+        let u1 = publish_artwork(dir, 1, cover(1)).expect("url");
+        assert!(u1.starts_with("file://") && u1.ends_with("cover-1.png"));
+        let u2 = publish_artwork(dir, 2, cover(2)).expect("url");
+        assert!(u2.ends_with("cover-2.png"));
+        let names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, vec!["cover-2.png".to_string()], "old cover pruned");
+        assert_eq!(
+            std::fs::read(dir.join("cover-2.png")).unwrap(),
+            vec![2u8; 16]
+        );
+        assert_eq!(publish_artwork(dir, 3, None), None, "no art → no URL");
     }
 
     fn snap(id: Option<u32>, playing: bool) -> Snapshot {

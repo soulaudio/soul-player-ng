@@ -17,6 +17,23 @@ downloads `makensis` on first run. Output on Windows is an **NSIS setup `.exe`**
 (~8 MB). To also emit the signed updater artifact locally, set the signing env
 (see below) before `cargo packager`.
 
+## macOS (.app + .dmg)
+
+```sh
+cd app/rune
+cargo build --release                 # cargo-packager packages, it doesn't build
+cargo packager --release -f app       # → target/release/Soul Player.app
+cargo packager --release -f dmg       # → target/release/Soul Player_<ver>_aarch64.dmg
+```
+
+The bundle identity (`co.datadir.soulplayer`, category Music) comes from
+`[package.metadata.packager]`. Run the app from the bundle to test anything that depends
+on identity: the Now Playing widget's name/icon and notifications (`rune-notify` only
+posts from a bundle). Releases ship the DMG for first installs and the `.app.tar.gz` for
+the updater. Builds are **unsigned** today: Gatekeeper requires right-click → Open on
+first launch until Developer ID signing + notarization are set up (needs an Apple
+Developer account).
+
 ## Auto-update (implemented, free)
 
 The app updates itself with no paid accounts. **This is independent of OS
