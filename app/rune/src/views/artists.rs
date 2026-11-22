@@ -211,7 +211,10 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // generated/embedded art uses); the circular grid card still applies the
     // override. An acceptable minor deviation (the custom image is shown as-is).
     let art = match s.covers.artist_cover_path(&artist.name) {
-        Some(path) => HeroArt::Image(path),
+        Some(path) => HeroArt::Image {
+            path,
+            circular: true,
+        },
         None => HeroArt::Cover {
             id: artist.cover_id,
             circular: true,

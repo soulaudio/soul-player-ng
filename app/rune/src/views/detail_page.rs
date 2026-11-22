@@ -27,9 +27,11 @@ const ICON_TILE: f32 = 120.0;
 pub(crate) enum HeroArt {
     /// A cover drawn from a member track id; `circular` clips it to a circle.
     Cover { id: u32, circular: bool },
-    /// A cover drawn from an image file on disk (a playlist's custom cover),
-    /// rendered via the same path-keyed cache the Playlists list page uses.
-    Image(PathBuf),
+    /// A cover drawn from an image file on disk (a custom artist/album/playlist
+    /// cover), rendered via the same path-keyed cache the Playlists list page
+    /// uses. `circular` clips it to a circle (a custom artist avatar) so an
+    /// overridden artist hero matches its circular grid card.
+    Image { path: PathBuf, circular: bool },
     /// A centered glyph in a muted `radius::MD` tile.
     Icon(&'static Icon),
 }
@@ -47,18 +49,17 @@ fn hero_artwork(s: &State, p: &Palette, scale: f32, prefix: &str, art: HeroArt) 
                 .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
                 .child(cover(s, Some(id), DETAIL_COVER, corner, p, scale))
         }
-        HeroArt::Image(path) => el()
-            .key(format!("{prefix}-hero-image"))
-            .radius(radius::MD)
-            .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
-            .child(cover_from_path(
-                s,
-                &path,
-                DETAIL_COVER,
-                radius::MD,
-                p,
-                scale,
-            )),
+        HeroArt::Image { path, circular } => {
+            let corner = if circular {
+                DETAIL_COVER * 0.5
+            } else {
+                radius::MD
+            };
+            el().key(format!("{prefix}-hero-image"))
+                .radius(corner)
+                .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
+                .child(cover_from_path(s, &path, DETAIL_COVER, corner, p, scale))
+        }
         HeroArt::Icon(glyph) => el()
             .key(format!("{prefix}-cover"))
             .size(ICON_TILE, ICON_TILE)

@@ -567,7 +567,10 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
     // A user-set custom cover always wins over the cover-track/icon fallback,
     // matching the Playlists list page's own precedence (`playlists::playlist_cover`).
     let art = match s.playlists.custom_cover_path(id) {
-        Some(path) => HeroArt::Image(path),
+        Some(path) => HeroArt::Image {
+            path,
+            circular: false,
+        },
         None => match play_ids.first() {
             Some(&cid) if s.host.art(cid).is_some() => HeroArt::Cover {
                 id: cid,
