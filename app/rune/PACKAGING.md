@@ -29,10 +29,18 @@ cargo packager --release -f dmg       # → target/release/Soul Player_<ver>_aar
 The bundle identity (`co.datadir.soulplayer`, category Music) comes from
 `[package.metadata.packager]`. Run the app from the bundle to test anything that depends
 on identity: the Now Playing widget's name/icon and notifications (`rune-notify` only
-posts from a bundle). Releases ship the DMG for first installs and the `.app.tar.gz` for
-the updater. Builds are **unsigned** today: Gatekeeper requires right-click → Open on
-first launch until Developer ID signing + notarization are set up (needs an Apple
-Developer account).
+posts from a bundle). Releases ship a DMG per architecture (`aarch64` for Apple silicon,
+`x86_64` for Intel) for first installs, and a matching `.app.tar.gz` for the updater.
+
+Not Apple-signed yet: the bundle carries a sealed **ad-hoc** signature
+(`[package.metadata.packager.macos] signing-identity = "-"`, no certificate or secret),
+so `codesign --verify --deep --strict` passes and the DMG/tarball copies are intact, but
+Gatekeeper still blocks the first launch of a download (see *Shipping unsigned*).
+Developer ID signing + notarization come later (Apple Developer account).
+
+Check a packaged DMG the way the release does:
+`.github/scripts/verify-macos-bundle.sh <version> arm64 "target/release/Soul Player_<ver>_aarch64.dmg"`
+(signature, architecture, identity, version, icon, DMG layout, and a headless launch).
 
 ## Auto-update (implemented, free)
 
@@ -68,10 +76,12 @@ with a new key**, so rotate only with a plan (e.g. a one-time manual download).
 1. Bump `version` in `app/rune/Cargo.toml`, commit.
 2. Tag it: `git tag v0.2.0 && git push origin v0.2.0` (the tag **must** match the
    manifest version — the release workflow's `guard` job fails otherwise).
-3. `.github/workflows/release.yml` (tag-triggered, so it doesn't touch the
-   day-to-day Actions budget) then, per OS:
+3. `.github/workflows/release.yml` (tag-triggered) then, per platform (Windows x64,
+   macOS Apple silicon, macOS Intel, Linux x64):
    - builds + **signs** the bundle (`cargo packager --release -f <format>`),
    - writes a per-platform sidecar (`.github/scripts/write-meta.py`),
+   - on macOS, also builds the DMG and **verifies** it before upload
+     (`.github/scripts/verify-macos-bundle.sh`),
    - and the `publish` job assembles `latest.json`
      (`.github/scripts/gen-latest-json.py`) and uploads the installers +
      manifest to the GitHub Release.
@@ -92,8 +102,9 @@ always points at the newest release, so the endpoint never changes.
 | `UPDATER_PRIVATE_KEY` | the **contents** of `.signing/soul-player-updater.key` |
 | `UPDATER_KEY_PASSWORD` | the key's password — **empty** for the current key |
 
-Actions is currently disabled repo-wide to conserve quota; the release workflow
-only fires on a `v*` tag, so it runs when you enable Actions and push a tag.
+**Dry run** (before tagging): `gh workflow run release.yml --ref <branch> -f dry_run=true`
+builds, packages and verifies every platform and keeps the installers as run artifacts,
+but publishes nothing.
 
 ## Shipping unsigned (what users see, and how to handle it)
 
