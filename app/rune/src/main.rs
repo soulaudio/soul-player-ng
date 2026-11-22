@@ -215,13 +215,14 @@ pub(crate) fn go_back(s: &mut State) {
 
 /// Which Settings category the content pane shows — a sub-navigation inside the
 /// Settings route, mirroring the original soul-player's settings rail
-/// (Appearance / Music Data / Audio / About). Ephemeral UI state (not persisted);
-/// defaults to `Appearance` each launch.
+/// (Appearance / Music Data / Audio / Keyboard / About). Ephemeral UI state (not
+/// persisted); defaults to `Appearance` each launch.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum SettingsTab {
     Appearance,
     MusicData,
     Audio,
+    Keyboard,
     About,
 }
 
@@ -3066,6 +3067,19 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         return true;
     }
     match &ev.key {
+        // Ctrl-chord playback bindings, matching the original soul-player's
+        // Keyboard settings tab (Play/Pause, Next, Prev, Volume Up/Down, Mute).
+        // Guarded on `ev.mods.ctrl` and placed BEFORE the plain arms so a ctrl
+        // chord never falls through to the unmodified handler. Search-input mode
+        // already returned above, so these never fire while typing a filter.
+        Key::Text(t) if t == " " && ev.mods.ctrl => s.host.send(Command::TogglePlay),
+        Key::Right if ev.mods.ctrl => s.host.send(Command::Next),
+        Key::Left if ev.mods.ctrl => s.host.send(Command::Prev),
+        Key::Up if ev.mods.ctrl => set_volume(s, s.volume + 0.05),
+        Key::Down if ev.mods.ctrl => set_volume(s, s.volume - 0.05),
+        Key::Text(t) if ev.mods.ctrl && t.eq_ignore_ascii_case("m") => {
+            s.host.send(Command::ToggleMute)
+        }
         Key::Text(t) if t == "/" && matches!(s.route, Route::Library) => s.searching = true,
         Key::Text(t) if t == " " => s.host.send(Command::TogglePlay),
         Key::Right => s.host.send(Command::Next),
@@ -3105,6 +3119,10 @@ fn scene_home(s: &mut State) {
 fn scene_settings_music(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::MusicData;
+}
+fn scene_settings_keyboard(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Keyboard;
 }
 fn scene_settings_audio(s: &mut State) {
     // Populate a live chain so the Signal-path card reads out (not "nothing playing").
@@ -3633,6 +3651,7 @@ fn main() -> anyhow::Result<()> {
             ("settings", scene_settings),
             ("home", scene_home),
             ("settings-music", scene_settings_music),
+            ("settings-keyboard", scene_settings_keyboard),
             ("settings-audio", scene_settings_audio),
             ("settings-audio-eq", scene_settings_audio_eq),
             ("settings-audio-eq-off", scene_settings_audio_eq_off),
@@ -4560,6 +4579,7 @@ mod tests {
             ("Appearance", SettingsTab::Appearance),
             ("MusicData", SettingsTab::MusicData),
             ("Audio", SettingsTab::Audio),
+            ("Keyboard", SettingsTab::Keyboard),
             ("About", SettingsTab::About),
         ];
         // A roomy window and a cramped one: the narrow pass is where button rows
@@ -13384,6 +13404,7 @@ mod tests {
         ("collapsed", scene_collapsed),
         ("mobile-content", scene_mobile_content),
         ("settings-music", scene_settings_music),
+        ("settings-keyboard", scene_settings_keyboard),
         ("settings-audio", scene_settings_audio),
         ("settings-audio-eq", scene_settings_audio_eq),
         ("settings-appearance", scene_settings_appearance),
