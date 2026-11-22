@@ -1,6 +1,14 @@
 # Generated covers for albums and artists without art
 
-Status: **todo** · Added 2026-11-22
+Status: **done** (2026-11-22) · Added 2026-11-22
+
+Shipped as `soul_player_host::generated_cover` (seeds, Oklab gradient + blob + grain, PNG) and
+wired into the app's art cache (album/track covers), artist avatars, and the Now Playing
+artwork. Differences from the notes below: albums are keyed by **title** (the library groups
+albums by title, so every track of a compilation shares one cover; there's no album-artist
+field yet); MBIDs aren't used yet; maths goes through `libm` so covers are bit-identical on
+every platform (golden digests in the tests, checked on macOS/Linux/Windows CI). Renders are
+memoized per seed in memory, not cached on disk (≈ms each).
 
 ## Goal
 

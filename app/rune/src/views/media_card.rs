@@ -13,7 +13,7 @@ use crate::theme::Palette;
 use crate::ui::{radius, space, type_};
 use crate::views::grid;
 use crate::views::icons;
-use crate::views::player::{cover, remote_badge_for};
+use crate::views::player::{artist_cover, cover, remote_badge_for};
 
 /// The hover play-overlay button — the old app's `w-14 h-14 rounded-xl` (56 px).
 const PLAY_BTN: f32 = 56.0;
@@ -106,7 +106,12 @@ pub(crate) fn media_card(
         .size(card_w, card_w)
         .radius(corner)
         .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
-        .child(cover(s, Some(spec.cover_id), card_w, corner, p, scale));
+        .child(if spec.circular {
+            // Artist avatar: real art, else the artist-seeded generated cover.
+            artist_cover(s, spec.cover_id, &spec.title, card_w, corner, p, scale)
+        } else {
+            cover(s, Some(spec.cover_id), card_w, corner, p, scale)
+        });
     // Artist cards (circular) overlay a person silhouette over a subtle scrim, so
     // the avatar reads as a profile the way the original's artist cards do; the
     // artwork stays faintly visible behind the glyph.

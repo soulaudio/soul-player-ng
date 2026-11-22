@@ -14,6 +14,7 @@ use rune::{
     Align, Cursor, Cx, El, Icon, Image, ImageCache, SurfaceFit, Waker, WheelEvent, col, el, icon,
     row, text,
 };
+use soul_player_host::generated_cover;
 use soul_player_host::{Command, PlayerHandle, RepeatMode, SignalPath, SourceFormat, TrackView};
 
 use crate::theme::Palette;
@@ -148,6 +149,11 @@ pub struct ArtCache {
     /// playlist's custom cover image). Kept separate from `images` since the
     /// two never collide and never need to invalidate each other.
     path_images: RefCell<HashMap<PathBuf, Image>>,
+    /// Generated covers (`soul_player_host::generated_cover`) for albums / artists with no
+    /// art, keyed by their seed — every track of an art-less album shares one decode.
+    generated: RefCell<HashMap<u64, Image>>,
+    /// Whether a track has real art (artist avatars ask before choosing art vs generated).
+    has_art: RefCell<HashMap<u32, bool>>,
 }
 
 impl ArtCache {
@@ -156,6 +162,8 @@ impl ArtCache {
             cache: None,
             images: RefCell::new(HashMap::new()),
             path_images: RefCell::new(HashMap::new()),
+            generated: RefCell::new(HashMap::new()),
+            has_art: RefCell::new(HashMap::new()),
         }
     }
 
@@ -175,6 +183,20 @@ impl ArtCache {
         let cover = host.art(id)?;
         let image = cache.load_mime(cover.bytes, &cover.mime, DECODE_PX, scale);
         self.images.borrow_mut().insert(id, image.clone());
+        Some(image)
+    }
+
+    /// The generated cover for `seed` (rendered once, then memoized and shared).
+    fn generated_image(&self, seed: u64, scale: f32) -> Option<Image> {
+        if let Some(image) = self.generated.borrow().get(&seed) {
+            return Some(image.clone());
+        }
+        let cache = self.cache.as_ref()?;
+        // Rendered at the decode size (capped — a generated gradient gains nothing above it).
+        let px = (DECODE_PX * scale).clamp(64.0, 320.0) as u32;
+        let png = generated_cover::render_png(seed, px);
+        let image = cache.load_mime(png, "image/png", DECODE_PX, scale);
+        self.generated.borrow_mut().insert(seed, image.clone());
         Some(image)
     }
 
@@ -259,8 +281,57 @@ fn cover_placeholder(size: f32, corner: f32, p: &Palette) -> El {
         .child(icon(&icons::MUSIC, (size * 0.5).round()).color(p.text_secondary))
 }
 
-/// A rounded cover box at `size` pt: the track's decoded art if ready, else the
-/// placeholder. Shared by the now-playing panel (40 pt) and the queue rows
+/// The seed of the generated cover for track `id` when it has no art: its album (by title,
+/// matching how the library groups albums), else its artist; `None` when it has neither.
+pub(crate) fn generated_seed_for_track(s: &State, id: u32) -> Option<u64> {
+    let t = s.library.iter().find(|t| t.id == id)?;
+    t.album
+        .as_deref()
+        .and_then(generated_cover::album_seed)
+        .or_else(|| t.artist.as_deref().and_then(generated_cover::artist_seed))
+}
+
+/// An element showing `image` (or the placeholder if it failed).
+fn image_el(image: Option<Image>, size: f32, corner: f32, p: &Palette) -> El {
+    match image {
+        Some(image) if image.error().is_none() => el()
+            .key("cover")
+            .size(size, size)
+            .radius(corner)
+            .fill(p.muted)
+            .pixels_fit(image.pixels(), SurfaceFit::Fit),
+        _ => cover_placeholder(size, corner, p),
+    }
+}
+
+/// An artist avatar: the cover track's real art if it has any, else the generated cover
+/// seeded by the **artist** (not the album), so an art-less artist keeps one look everywhere.
+pub fn artist_cover(
+    s: &State,
+    cover_id: u32,
+    artist: &str,
+    size: f32,
+    corner: f32,
+    p: &Palette,
+    scale: f32,
+) -> El {
+    // `host.art` re-reads tags, so remember which cover tracks have none.
+    let known = s.art.has_art.borrow().get(&cover_id).copied();
+    let has_art = known.unwrap_or_else(|| {
+        let has = s.host.art(cover_id).is_some();
+        s.art.has_art.borrow_mut().insert(cover_id, has);
+        has
+    });
+    if has_art {
+        return cover(s, Some(cover_id), size, corner, p, scale);
+    }
+    let image =
+        generated_cover::artist_seed(artist).and_then(|seed| s.art.generated_image(seed, scale));
+    image_el(image, size, corner, p)
+}
+
+/// A rounded cover box at `size` pt: the track's decoded art if ready, else its generated
+/// cover (album / artist seeded), else the placeholder. Shared by the now-playing panel (40 pt) and the queue rows
 /// (36 pt), matching the old app's `w-10` cover and `TrackItem` thumbnail.
 pub fn cover(s: &State, id: Option<u32>, size: f32, corner: f32, p: &Palette, scale: f32) -> El {
     let Some(id) = id else {
@@ -279,7 +350,17 @@ pub fn cover(s: &State, id: Option<u32>, size: f32, corner: f32, p: &Palette, sc
             .radius(corner)
             .fill(p.muted)
             .pixels_fit(image.pixels(), SurfaceFit::Fit),
-        _ => cover_placeholder(size, corner, p),
+        Some(_) => cover_placeholder(size, corner, p),
+        None => {
+            let image =
+                generated_seed_for_track(s, id).and_then(|seed| s.art.generated_image(seed, scale));
+            if let Some(image) = &image {
+                // Memoize under the track id too: later frames skip the art lookup and the
+                // library scan entirely, exactly like a track with real art.
+                s.art.images.borrow_mut().insert(id, image.clone());
+            }
+            image_el(image, size, corner, p)
+        }
     }
 }
 
@@ -822,7 +903,9 @@ mod tests {
     use rune::{Cx, El, Env, Mods, Runtime, Tx, WheelEvent};
     use soul_player_host::PlayerHandle;
 
-    use super::{ArtCache, group_remote_source, player_panel, wheel_volume_delta};
+    use super::{
+        ArtCache, generated_seed_for_track, group_remote_source, player_panel, wheel_volume_delta,
+    };
     use crate::State;
     use crate::config;
 
@@ -1010,6 +1093,47 @@ mod tests {
         // decode (the per-id memo `image_for` exists for).
         let again = art.image_for(id, &host, 2.0).expect("memoized lookup");
         assert_eq!(again.id(), image.id());
+    }
+
+    /// An album with no art (no embedded picture, no folder image) gets the generated cover:
+    /// every track of it shares one decoded image, it decodes, and it's the album's seed.
+    #[test]
+    fn art_less_tracks_get_their_albums_generated_cover() {
+        use soul_player_host::generated_cover as gc;
+        let dir = std::env::temp_dir().join(format!("soul-gen-cover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // meta.wav carries tags but no picture; two copies = one art-less album.
+        for n in ["a.wav", "b.wav"] {
+            std::fs::copy(testdata_dir().join("meta.wav"), dir.join(n)).unwrap();
+        }
+        let mut s = State::new(PlayerHandle::offline());
+        let up = s.host.add_folder(&dir).expect("scan");
+        crate::apply_watch(&mut s, up);
+        assert_eq!(s.library.len(), 2);
+        let (a, b) = (s.library[0].id, s.library[1].id);
+        assert!(s.host.art(a).is_none(), "fixture must be art-less");
+        let album = s.library[0]
+            .album
+            .clone()
+            .expect("meta.wav has an album tag");
+
+        s.art.wire(Arc::new(|| {}));
+        let seed = generated_seed_for_track(&s, a).expect("album seed");
+        assert_eq!(Some(seed), gc::album_seed(&album));
+        assert_eq!(
+            generated_seed_for_track(&s, b),
+            Some(seed),
+            "same album, same cover"
+        );
+        let image = s.art.generated_image(seed, 2.0).expect("generated");
+        image.wait().expect("generated cover decodes");
+        assert!(image.error().is_none());
+        assert_eq!(
+            s.art.generated_image(seed, 2.0).unwrap().id(),
+            image.id(),
+            "memoized: one decode per album"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn env() -> Env {

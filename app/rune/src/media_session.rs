@@ -168,6 +168,26 @@ fn publish_artwork(
     Some(file_url(&path))
 }
 
+/// Size of a generated Now Playing cover (Control Center / lock screen draw it large).
+const GENERATED_NOW_PLAYING_PX: u32 = 600;
+
+/// The cover to publish: the track's real art, else the same generated cover the app shows
+/// for its album (or, with no album, its artist) — never an empty Now Playing tile.
+pub(crate) fn now_playing_cover(
+    art: Option<soul_player_host::Cover>,
+    album: &str,
+    artist: &str,
+) -> Option<soul_player_host::Cover> {
+    use soul_player_host::generated_cover as gc;
+    art.or_else(|| {
+        let seed = gc::album_seed(album).or_else(|| gc::artist_seed(artist))?;
+        Some(soul_player_host::Cover {
+            mime: "image/png".into(),
+            bytes: gc::render_png(seed, GENERATED_NOW_PLAYING_PX),
+        })
+    })
+}
+
 /// Where now-playing covers are cached (`~/Library/Caches/Soul Player/now-playing` on
 /// macOS).
 fn artwork_dir() -> Option<std::path::PathBuf> {
@@ -282,7 +302,7 @@ fn session_thread(
         match update {
             Update::Track(meta) => {
                 let t0 = std::time::Instant::now();
-                let art = host.art(meta.id);
+                let art = now_playing_cover(host.art(meta.id), &meta.album, &meta.artist);
                 let art_ms = t0.elapsed().as_millis() as u64;
                 let cover_url = artwork_dir().and_then(|dir| publish_artwork(&dir, meta.id, art));
                 tracing::debug!(
@@ -522,6 +542,40 @@ mod tests {
                 Duration::from_secs(10)
             ),
             Push::Nothing
+        );
+    }
+
+    #[test]
+    fn now_playing_falls_back_to_the_generated_album_then_artist_cover() {
+        use soul_player_host::{Cover, generated_cover as gc};
+        let real = Cover {
+            mime: "image/jpeg".into(),
+            bytes: vec![1, 2, 3],
+        };
+        let kept = now_playing_cover(Some(real.clone()), "Album", "Artist").unwrap();
+        assert_eq!(kept.bytes, real.bytes, "real art always wins");
+
+        let by_album = now_playing_cover(None, "Kind of Blue", "Miles Davis").unwrap();
+        assert_eq!(by_album.mime, "image/png");
+        assert_eq!(
+            by_album.bytes,
+            gc::render_png(
+                gc::album_seed("kind of blue").unwrap(),
+                GENERATED_NOW_PLAYING_PX
+            ),
+            "the same generated cover the app shows for that album"
+        );
+        let by_artist = now_playing_cover(None, "", "Miles Davis").unwrap();
+        assert_eq!(
+            by_artist.bytes,
+            gc::render_png(
+                gc::artist_seed("Miles Davis").unwrap(),
+                GENERATED_NOW_PLAYING_PX
+            )
+        );
+        assert!(
+            now_playing_cover(None, "", "").is_none(),
+            "nothing to seed from"
         );
     }
 }
