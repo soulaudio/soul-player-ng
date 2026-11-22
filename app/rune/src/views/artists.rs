@@ -187,22 +187,6 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         )
 }
 
-/// A back link to the Artists grid — a `←` glyph.
-fn back_button(p: &Palette) -> El {
-    el().key("artist-back")
-        .role("button")
-        .label(t!("nav.artists").to_string())
-        .focusable(true)
-        .px(space::SM)
-        .py(space::XS)
-        .radius(radius::SM)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(crate::go_back)
-}
-
 /// An artist's detail page (the original's ArtistPage): a back link, a circular
 /// hero ("ARTIST" eyebrow, name, "{n} albums · {n} tracks", Play All), then Top
 /// Songs (first five, expandable) and a Discography grid of the artist's albums.
@@ -217,8 +201,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             .key("artist-detail")
             .grow(1.0)
             .min_h(0.0)
-            .padding(space::PANE)
-            .child(back_button(p));
+            .padding(space::PANE);
     };
 
     let discography = albums_of_artist(&s.library, &artist.name, s.album_year);
@@ -390,31 +373,20 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         }
     }
 
-    col()
-        .key("artist-detail")
-        .grow(1.0)
-        .min_h(0.0)
-        .child(
-            row()
-                .key("artist-detail-top")
-                .px(space::PANE)
-                .pt(space::SM)
-                .child(back_button(p)),
-        )
-        .child(
-            col()
-                .key("artist-detail-content")
-                .padding(space::PANE)
-                .child(hero)
-                .child(top)
-                .child(disc)
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .scroll_edge_fade(24.0)
-                .grow(1.0)
-                .min_h(0.0),
-        )
+    col().key("artist-detail").grow(1.0).min_h(0.0).child(
+        col()
+            .key("artist-detail-content")
+            .padding(space::PANE)
+            .child(hero)
+            .child(top)
+            .child(disc)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0),
+    )
 }
 
 /// One Discography row (list mode): a small square cover, the album name, and

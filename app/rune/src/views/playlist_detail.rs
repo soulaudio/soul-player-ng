@@ -499,41 +499,15 @@ fn playlist_entry_index_from_pick(picked: &Picked) -> Option<usize> {
     })
 }
 
-/// A back link to the Playlists list: a `←` glyph, matching `genres.rs`'s
-/// `back_button`.
-fn back_button(p: &Palette) -> El {
-    el().key("playlist-back")
-        .role("button")
-        .label(t!("nav.playlists").to_string())
-        .focusable(true)
-        .px(space::SM)
-        .py(space::XS)
-        .radius(radius::SM)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(text("←").font(type_::NAV).color(p.fg))
-        .on_press(crate::go_back)
-}
-
-/// The back-link bar above the detail content.
-fn row_top(p: &Palette) -> El {
-    row()
-        .key("playlist-detail-top")
-        .px(space::PANE)
-        .pt(space::SM)
-        .child(back_button(p))
-}
-
 /// The fallback body when no playlist is open, or the open id has vanished
-/// (e.g. deleted from elsewhere): just the way back.
-fn missing_playlist(p: &Palette) -> El {
+/// (e.g. deleted from elsewhere): an empty placeholder (the way back now lives
+/// in the shared titlebar).
+fn missing_playlist() -> El {
     col()
         .key("playlist-detail")
         .grow(1.0)
         .min_h(0.0)
         .padding(space::PANE)
-        .child(back_button(p))
 }
 
 /// A playlist's detail page: a back link, the shared hero (cover/icon,
@@ -544,11 +518,11 @@ fn missing_playlist(p: &Palette) -> El {
 /// `host.resolve_locators`.
 pub fn page(s: &State, p: &Palette, scale: f32) -> El {
     let Some(id) = s.open_playlist else {
-        return missing_playlist(p);
+        return missing_playlist();
     };
     let playlist: &Playlist = match s.playlists.get(id) {
         Some(pl) => pl,
-        None => return missing_playlist(p),
+        None => return missing_playlist(),
     };
 
     let locators: Vec<TrackLocator> = playlist.entries.iter().map(|e| e.locator.clone()).collect();
@@ -630,24 +604,19 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
         ));
     }
 
-    col()
-        .key("playlist-detail")
-        .grow(1.0)
-        .min_h(0.0)
-        .child(row_top(p))
-        .child(
-            col()
-                .key("playlist-detail-content")
-                .padding(space::PANE)
-                .child(hero)
-                .child(list)
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
-                .scroll_edge_fade(24.0)
-                .grow(1.0)
-                .min_h(0.0),
-        )
+    col().key("playlist-detail").grow(1.0).min_h(0.0).child(
+        col()
+            .key("playlist-detail-content")
+            .padding(space::PANE)
+            .child(hero)
+            .child(list)
+            .scroll(ScrollSpec {
+                stick_bottom: false,
+            })
+            .scroll_edge_fade(24.0)
+            .grow(1.0)
+            .min_h(0.0),
+    )
 }
 
 #[cfg(test)]
