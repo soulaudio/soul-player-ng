@@ -14,10 +14,11 @@ use soul_player_host::Command;
 
 use crate::State;
 
-/// Extensions the player decodes (soul-audio-core + the desktop container dispatch).
+/// Extensions the player decodes (soul-audio-core + the desktop container dispatch). No
+/// `.aac`: AAC decode is deliberately off (patent licensing); `.m4a` stays for ALAC.
 const AUDIO_EXTS: &[&str] = &[
-    "flac", "wav", "wave", "aif", "aiff", "aifc", "caf", "mp3", "mp1", "mp2", "m4a", "mp4", "aac",
-    "alac", "ogg", "oga", "opus", "wv", "dsf", "dff", "mka", "webm",
+    "flac", "wav", "wave", "aif", "aiff", "aifc", "caf", "mp3", "mp1", "mp2", "m4a", "mp4", "alac",
+    "ogg", "oga", "opus", "wv", "dsf", "dff", "mka", "webm",
 ];
 
 pub(crate) fn is_audio(p: &Path) -> bool {

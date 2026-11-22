@@ -8,7 +8,8 @@
 # Albums (artist "Soul Demo Ensemble", 30 s synthesized arpeggio pieces + folder covers):
 #   Hi-Res Ladder          24-bit FLAC at 44.1 / 48 / 88.2 / 96 / 176.4 / 192 / 352.8 / 384 kHz
 #   Lossless Formats       FLAC 16/44.1, ALAC 24/96, WAV 24/96, AIFF 16/44.1, WavPack 24/48, FLAC 24/192
-#   Lossy Formats          MP3 320, AAC 256, Opus 160, Vorbis q6
+#   Lossy Formats          MP3 320, Opus 160, Vorbis q6 (no AAC: the player deliberately
+#                          doesn't decode it — patent licensing)
 #   Direct Stream Digital  DSD64 (DSF + DFF), DSD128, DSD256, DSD512 — real 1-bit (dsdgen)
 #   Surround Fold-Down     FLAC 5.1 24/48 + the repo's ALAC / Opus 5.1 fixtures
 set -euo pipefail
@@ -70,9 +71,8 @@ enc "Lossless Formats" 6 "FLAC 24-192" 2025   flac 192000 261.63 4 "${F24[@]}"
 
 album "Lossy Formats" 0xf4a261 0x264653
 enc "Lossy Formats" 1 "MP3 320" 2024   mp3  44100 220    5 -c:a libmp3lame -b:a 320k
-enc "Lossy Formats" 2 "AAC 256" 2024   m4a  44100 246.94 5 -c:a aac -b:a 256k
-enc "Lossy Formats" 3 "Opus 160" 2024  opus 48000 261.63 5 -c:a libopus -b:a 160k
-enc "Lossy Formats" 4 "Vorbis q6" 2024 ogg  44100 293.66 5 -c:a vorbis -strict -2 -q:a 6
+enc "Lossy Formats" 2 "Opus 160" 2024  opus 48000 261.63 5 -c:a libopus -b:a 160k
+enc "Lossy Formats" 3 "Vorbis q6" 2024 ogg  44100 293.66 5 -c:a vorbis -strict -2 -q:a 6
 
 album "Direct Stream Digital" 0x3d348b 0xf7b801
 cargo build -q --release --manifest-path "$here/dsdgen/Cargo.toml"
