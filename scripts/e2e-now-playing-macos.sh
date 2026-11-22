@@ -93,7 +93,8 @@ wait_for artist "Soul E2E Artist";           ok "artist"
 wait_for album "Now Playing Album";          ok "album"
 wait_for duration "60";                      ok "duration"
 wait_for playing "True";                     ok "playing"
-for _ in $(seq 1 60); do [ "$(field artworkData)" != "" ] && [ "$(field artworkData)" -gt 0 ] && break; sleep 0.25; done
+# 30 s: macOS loads the cover asynchronously, and a cold CI VM has been seen to need >15 s.
+for _ in $(seq 1 120); do [ "$(field artworkData)" != "" ] && [ "$(field artworkData)" -gt 0 ] && break; sleep 0.25; done
 [ "$(field artworkData)" != "" ] && [ "$(field artworkData)" -gt 0 ] || fail "no artwork"
 ok "artwork ($(field artworkData) bytes)"
 
