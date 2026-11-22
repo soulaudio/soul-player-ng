@@ -26,6 +26,39 @@ pub(crate) fn fmt_dur(secs: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+/// A list-filter search field matching the old app's: a magnifier icon then the
+/// typed text / placeholder, inside a muted rounded box. The `input_key` stays
+/// on the inner `text_input` so existing finders and tests keep resolving it;
+/// the box row is keyed `{input_key}-box`. The caller sizes the box (`.grow(1)`
+/// beside a Filters button, or `.w_full()` on its own).
+pub(crate) fn search_box(
+    edit: &rune::TextEdit,
+    input_key: &'static str,
+    placeholder: String,
+    p: &Palette,
+    on_edit: impl Fn(&mut State) -> &mut rune::TextEdit + 'static,
+) -> El {
+    row()
+        .key(format!("{input_key}-box"))
+        .center_y()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .child(icon(&icons::SEARCH, 16.0).color(p.text_secondary))
+        .child(
+            rune::text_input(edit, type_::ITEM)
+                .key(input_key)
+                .single_line()
+                .label(placeholder.clone())
+                .placeholder(placeholder, p.text_secondary)
+                .grow(1.0)
+                .color(p.fg)
+                .on_edit(on_edit),
+        )
+}
+
 /// The Integrated-LUFS cell for a track row: `-14.0`, or `·` until the track is analyzed
 /// (or if it is below the measurement gate / silent).
 fn lufs_cell(t: &TrackView, p: &Palette) -> El {
