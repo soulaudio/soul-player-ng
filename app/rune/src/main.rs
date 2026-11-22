@@ -3839,7 +3839,12 @@ fn main() -> anyhow::Result<()> {
     }
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
     // installer uses the same icons via [package.metadata.packager]).
-    if let Err(e) = rune::set_app_icon(include_bytes!("../icons/icon.png").to_vec()) {
+    // macOS: the tiled Dock icon (matches the bundle's .icns); elsewhere the bare mark.
+    #[cfg(target_os = "macos")]
+    let icon: &[u8] = include_bytes!("../icons/macos/icon-512.png");
+    #[cfg(not(target_os = "macos"))]
+    let icon: &[u8] = include_bytes!("../icons/icon.png");
+    if let Err(e) = rune::set_app_icon(icon.to_vec()) {
         tracing::warn!("set_app_icon failed: {e}");
     }
     app.run();

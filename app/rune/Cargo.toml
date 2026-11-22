@@ -129,5 +129,6 @@ product-name = "Soul Player"
 identifier = "co.datadir.soulplayer"
 # macOS: LSApplicationCategoryType (Finder / Launchpad / App Store "Music").
 category = "Music"
-icons = ["icons/icon.ico", "icons/128x128.png"]
+# macOS gets a proper `.icns` (the mark on a rounded tile, 16–1024 px; see icons/macos/).
+icons = ["icons/icon.ico", "icons/128x128.png", "icons/macos/icon.icns"]
 formats = ["nsis"]
