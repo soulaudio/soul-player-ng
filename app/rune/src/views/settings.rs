@@ -15,6 +15,7 @@ use rune::{
     Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Shadow,
     Tx, WheelEvent, col, el, icon, row, text, text_input,
 };
+use soul_player_host::device_transport::Transport;
 use soul_player_host::organize;
 use soul_player_host::{
     BandKind, DspUnit, GAIN_LIMIT_DB, RemoteHealth, ReplayGainMode, SourceKind, SourceStatus,
@@ -1359,25 +1360,58 @@ fn language_dropdown(s: &State, p: &Palette) -> El {
 /// target), mirroring `theme_button`'s selected-fill treatment.
 fn device_button(
     label: String,
+    caption: Option<String>,
     key: &str,
     choice: Option<String>,
     active: bool,
     p: &Palette,
 ) -> El {
+    let fg = if active { p.bg } else { p.fg };
+    let mut body = col()
+        .gap(space::XS)
+        .grow(1.0)
+        .child(text(label.clone()).color(fg));
+    let mut a11y = label;
+    if let Some(c) = caption {
+        a11y = format!("{a11y}, {c}");
+        body = body.child(text(c).font(type_::CAPTION).color(if active {
+            p.bg
+        } else {
+            p.text_secondary
+        }));
+    }
     el().key(key.to_string())
         .role("button")
-        .label(label.clone())
+        .label(a11y)
         .focusable(true)
         .padding(space::SM)
         .radius(radius::SM)
         .cursor(Cursor::Pointer)
         .fill(if active { p.primary } else { p.muted })
-        .child(
-            text(label)
-                .color(if active { p.bg } else { p.fg })
-                .grow(1.0),
-        )
+        .child(body)
         .on_press(move |s: &mut State| set_output_device(s, choice.clone()))
+}
+
+/// The picker caption for a device's connection: its transport, plus a "not
+/// bit-perfect" warning for AirPlay / Bluetooth (they always transcode).
+pub(crate) fn transport_caption(t: &Transport) -> String {
+    let name = match t {
+        Transport::BuiltIn => t!("settings.transportBuiltIn").to_string(),
+        Transport::Usb => "USB".into(),
+        Transport::Hdmi => "HDMI".into(),
+        Transport::DisplayPort => "DisplayPort".into(),
+        Transport::Thunderbolt => "Thunderbolt".into(),
+        Transport::Bluetooth => "Bluetooth".into(),
+        Transport::AirPlay => "AirPlay".into(),
+        Transport::Virtual => t!("settings.transportVirtual").to_string(),
+        Transport::Aggregate => t!("settings.transportAggregate").to_string(),
+        Transport::Other(o) => o.clone(),
+    };
+    if t.can_be_bit_perfect() {
+        name
+    } else {
+        format!("{name} · {}", t!("settings.notBitPerfect"))
+    }
 }
 
 /// One ReplayGain mode choice; the active mode is filled with the primary color
@@ -1948,6 +1982,7 @@ fn output_card(s: &State, p: &Palette) -> El {
         .gap(space::SM)
         .child(device_button(
             t!("settings.systemDefault").to_string(),
+            None,
             "output-default",
             None,
             s.output_device.is_none(),
@@ -1961,6 +1996,7 @@ fn output_card(s: &State, p: &Palette) -> El {
             let active = s.output_device.as_deref() == Some(name.as_str());
             choices = choices.child(device_button(
                 name.clone(),
+                s.output_transports.get(name).map(transport_caption),
                 &format!("output-{i}"),
                 Some(name.clone()),
                 active,
@@ -3887,5 +3923,64 @@ mod tests {
         // The three kinds are genuinely distinct, so applied never looks like idle.
         assert_ne!(StatusKind::Active, StatusKind::Neutral);
         assert_ne!(StatusKind::Active, StatusKind::Attention);
+    }
+
+    /// The output picker says up front which devices can never be bit-perfect.
+    #[test]
+    fn output_picker_captions_each_device_with_its_transport() {
+        use super::{Transport, output_card, transport_caption};
+        use crate::State;
+        use rune::{Cx, El, Env, Runtime};
+        let _locale = crate::config::use_test_locale("en");
+
+        assert_eq!(transport_caption(&Transport::Usb), "USB");
+        assert_eq!(transport_caption(&Transport::BuiltIn), "Built-in");
+        assert_eq!(
+            transport_caption(&Transport::AirPlay),
+            "AirPlay · not bit-perfect"
+        );
+        assert_eq!(
+            transport_caption(&Transport::Bluetooth),
+            "Bluetooth · not bit-perfect"
+        );
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            output_card(s, &p)
+        }
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.output_devices = vec!["Speakers".into(), "Living Room".into(), "Unknown".into()];
+        s.output_transports = [
+            ("Speakers".to_string(), Transport::BuiltIn),
+            ("Living Room".to_string(), Transport::AirPlay),
+        ]
+        .into_iter()
+        .collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (900.0, 720.0), env);
+        rt.frame(0.0);
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(texts.iter().any(|t| t == "Built-in"), "{texts:?}");
+        assert!(
+            texts.iter().any(|t| t == "AirPlay · not bit-perfect"),
+            "{texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "Unknown"),
+            "a device with no known transport still lists"
+        );
+        let airplay = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("output-1"))
+            .expect("the AirPlay button");
+        assert_eq!(
+            airplay.label.as_deref(),
+            Some("Living Room, AirPlay · not bit-perfect"),
+            "screen readers hear the warning too"
+        );
     }
 }

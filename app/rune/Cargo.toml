@@ -105,6 +105,11 @@ display-info = "0.5"
 # `ID3D12Heap` must match wgpu-hal's). All WinRT + registry calls are safe (no
 # `unsafe`). `windows-registry` (0.62-family split crates, not the big `windows`)
 # writes the unpackaged-app AUMID under HKCU so Windows renders our toasts.
+# Unix termination signals (kill / Ctrl-C / closed terminal) → the normal quit path
+# (`signal_quit`), so they are not reported as crashes. Safe iterator API only.
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3"
+
 # macOS notifications (UNUserNotificationCenter) — Rune's own notifier crate, at the same
 # pinned rev as `rune`, so its objc2 0.5 is the one Rune already compiles. It posts only
 # from a bundled `.app` (`available()`); an unbundled dev binary stays silent.

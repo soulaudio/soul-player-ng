@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 pub mod analyzer;
+pub mod device_transport;
 pub mod eq;
 // Public (not just `mod`) so the crate's own integration tests
 // (`tests/remote_e2e.rs`, a separate crate) can drive the exact same
