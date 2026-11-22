@@ -36,6 +36,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import functools
 import http.server
 import json
@@ -355,10 +356,16 @@ def live_run(
     their log is checked only if they wrote one."""
     mark = env.log_mark()
     e = dict(env.env, SOUL_PLAYER_FOLDER=str(library), SOUL_PLAYER_AUTOPLAY="1")
-    p = subprocess.Popen([str(inst.exe)], env=e, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    console = env.home / f"console-{time.monotonic_ns()}.txt"
+    with open(console, "wb") as out:
+        p = subprocess.Popen([str(inst.exe)], env=e, stdout=out, stderr=subprocess.STDOUT)
     try:
         time.sleep(secs)
-        check(p.poll() is None, f"app exited early with {p.returncode}:\n{p.stdout.read().decode(errors='replace')}")
+        check(
+            p.poll() is None,
+            f"app exited early with {p.returncode}:\n{console.read_text(errors='replace')[-4000:]}"
+            f"\n--- log ---\n{env.log_since(mark)[-4000:]}",
+        )
         ok(f"stayed up for {secs}s")
     finally:
         if p.poll() is None:
@@ -503,8 +510,12 @@ def main() -> int:
     )
     ap.add_argument("--out", type=Path, default=Path("e2e-out"))
     a = ap.parse_args()
+    # Never hang silently until the job timeout: dump every thread's stack and abort.
+    faulthandler.dump_traceback_later(20 * 60, exit=True)
 
     installer = a.installer.resolve()
+    # Absolute: an AppImage's launcher runs the app from inside its own mount.
+    a.out = a.out.resolve()
     check(installer.is_file(), f"installer {installer} not found")
     a.out.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="soul-e2e-"))
