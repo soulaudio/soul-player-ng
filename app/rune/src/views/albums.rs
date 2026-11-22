@@ -10,7 +10,6 @@ use std::collections::HashMap;
 
 use rune::{
     Align, Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
-    text_input,
 };
 use soul_player_host::{Command, TrackView};
 
@@ -263,17 +262,14 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let pane = cx.layout_size("albums").map(|[w, _]| w).unwrap_or(820.0);
     let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
-    let search = text_input(&s.album_search, type_::ITEM)
-        .key("albums-search")
-        .single_line()
-        .label(t!("albums.searchPlaceholder").to_string())
-        .grow(1.0)
-        .px(space::MD)
-        .py(space::SM)
-        .radius(radius::SM)
-        .fill(p.muted)
-        .color(p.fg)
-        .on_edit(|st: &mut State| &mut st.album_search);
+    let search = crate::views::library::search_box(
+        &s.album_search,
+        "albums-search",
+        t!("albums.searchPlaceholder").to_string(),
+        p,
+        |st: &mut State| &mut st.album_search,
+    )
+    .grow(1.0);
     // A Filters button that toggles the genre-chip row (old app's "Filters").
     // Lit while open or while a genre filter is active.
     let filters_lit = s.albums_filters_open || !s.album_genre_filter.is_empty();

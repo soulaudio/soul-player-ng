@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text, text_input};
+use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text};
 use soul_player_host::TrackView;
 
 use crate::State;
@@ -139,17 +139,14 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let pane = cx.layout_size("artists").map(|[w, _]| w).unwrap_or(820.0);
     let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
-    let search = text_input(&s.artist_search, type_::ITEM)
-        .key("artists-search")
-        .single_line()
-        .label(t!("artists.searchPlaceholder").to_string())
-        .w_full()
-        .px(space::MD)
-        .py(space::SM)
-        .radius(radius::SM)
-        .fill(p.muted)
-        .color(p.fg)
-        .on_edit(|st: &mut State| &mut st.artist_search);
+    let search = crate::views::library::search_box(
+        &s.artist_search,
+        "artists-search",
+        t!("artists.searchPlaceholder").to_string(),
+        p,
+        |st: &mut State| &mut st.artist_search,
+    )
+    .w_full();
     let search_bar = row()
         .key("artists-search-bar")
         .px(space::PANE)
