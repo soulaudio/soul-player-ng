@@ -257,6 +257,13 @@ artists.searchPlaceholder:
   zh: '搜索艺术家'
   cs: 'Hledat interprety'
   ja: 'アーティストを検索'
+genres.searchPlaceholder:
+  en: 'Search genres'
+  de: 'Genres durchsuchen'
+  es: 'Buscar géneros'
+  zh: '搜索流派'
+  cs: 'Hledat žánry'
+  ja: 'ジャンルを検索'
 genre.searchPlaceholder:
   en: 'Search this genre'
   de: 'In diesem Genre suchen'
