@@ -34,6 +34,8 @@ mod config;
 #[cfg(test)]
 mod i18n_tests;
 mod logging;
+#[cfg(unix)]
+mod signal_quit;
 // macOS-only at runtime; still compiled for tests everywhere so its pure mapping is
 // unit-tested on Linux/Windows CI too.
 #[cfg(any(target_os = "macos", test))]
@@ -492,6 +494,11 @@ struct State {
     /// The output devices enumerated from the host at startup — the picker's
     /// choices. Empty on a host that exposes none (headless / no audio).
     output_devices: Vec<String>,
+    /// How each output device is connected (AirPlay / Bluetooth / USB …), filled in
+    /// off the UI thread after startup (macOS; empty elsewhere) — lets the picker flag
+    /// devices that can never be bit-perfect before the user picks one.
+    output_transports:
+        std::collections::HashMap<String, soul_player_host::device_transport::Transport>,
     /// Whether **exclusive** (bit-perfect) output is requested (persisted), rendered
     /// as a toggle in Settings → Output. Applies to the next playback session; the
     /// device may fall back to shared if it can't open exclusive (reflected live in
@@ -787,6 +794,7 @@ impl State {
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
             output_devices,
+            output_transports: Default::default(),
             exclusive: config::load_output_exclusive(),
             exclusive_strict: config::load_output_exclusive_strict(),
             replaygain_mode,
@@ -3722,6 +3730,22 @@ fn main() -> anyhow::Result<()> {
         .on_focus(|s: &mut State, focused: bool, _tx: &mut Tx| s.focused = focused);
     let ah = app.handle();
     let _ = media_ah_cell.set(app.handle());
+    // kill / Ctrl-C / a closed terminal quit like ⌘Q (quit hooks run, no crash report).
+    #[cfg(unix)]
+    {
+        let qh = ah.clone();
+        signal_quit::spawn(move |_| qh.quit());
+    }
+    // Output-device transports (≈0.2 s of system_profiler on macOS) — off the UI thread.
+    {
+        let th = ah.clone();
+        std::thread::spawn(move || {
+            let t = soul_player_host::device_transport::query();
+            if !t.is_empty() {
+                th.update(move |s: &mut State, _tx: &mut Tx| s.output_transports = t);
+            }
+        });
+    }
     // Stash a self-handle in State (once, on the main thread) so the managed-library
     // organize flow can post plan/apply progress back from its worker threads. This
     // self-posting update runs on the first frame; `update` only borrows `ah`, so it

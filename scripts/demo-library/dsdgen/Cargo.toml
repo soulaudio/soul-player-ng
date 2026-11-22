@@ -1,0 +1,12 @@
+[package]
+name = "dsdgen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Demo-library helper: synthesizes a short piece straight to 1-bit DSD (2nd-order sigma-delta) as DSF or DSDIFF."
+
+# Standalone tool, not part of the player's workspace.
+[workspace]
+
+[profile.release]
+opt-level = 3

@@ -123,8 +123,18 @@ pause/play/seek/next/toggle all round-trip. Bundled, macOS attributes it to
 - ✅ Artwork latency measured: cover fetch + write ≈ 0 ms; macOS shows it ~0.6 s after the
   title (souvlaki's async `NSImage` load) — expected, not a bug (an earlier "4–7 s" was a
   coarse polling artefact). Debug log `now-playing artwork published` records timings.
-- ⏳ souvlaki gaps: no skip ±15 s / like / rate commands; uses deprecated `objc` 0.2.
-  Revisit (`mediaplayer` crate or a small objc2 platform crate) if those are wanted.
+- ❎ Skip ±15 s — **decided 2026-11-22: no.** Enabling `skipForward/BackwardCommand` makes
+  Control Center and the media keys show ±15 s *instead of* previous/next track (right for
+  podcasts, wrong for a music player; Apple Music doesn't enable them).
+- ⏳ Repeat mode (`changeRepeatModeCommand`) + like (`likeCommand`, maps to the heart): souvlaki
+  0.9 registers only play/pause/toggle/next/prev/position/shuffle. Needs a small audited objc2
+  crate (`objc2-media-player`) that adds handlers on the shared `MPRemoteCommandCenter` beside
+  souvlaki — the only `unsafe` the app would carry, so it's a deliberate decision.
+- ✅ kill / Ctrl-C / closed terminal quit like ⌘Q (`signal_quit`): no false crash report.
+- ✅ Output picker shows each device's transport (`device_transport`, from `system_profiler`)
+  and flags AirPlay / Bluetooth as "not bit-perfect" before the user picks them.
+- ✅ `scripts/demo-library/make-demo-library.sh`: one-command 26-track library (every format
+  and rate, real DSD64–512 via `dsdgen`, 5.1) for machines with no music.
 - ❎ Menu-bar extra — **decided 2026-11-21: no.** Native surfaces instead (Control
   Center Now Playing + Dock menu + Controls menu, like Apple Music); avoids `tray-icon`'s
   second objc2 copy. Rune `Tray` stays Linux/Windows only.
