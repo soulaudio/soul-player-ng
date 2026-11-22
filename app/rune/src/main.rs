@@ -4810,6 +4810,12 @@ mod tests {
     /// render, not just the empty state) under the shared test config dir.
     #[test]
     fn playlists_layout_contains_itself_in_every_locale() {
+        // This test cycles the process-GLOBAL i18n locale over every locale, so it must
+        // hold the locale lock (acquired FIRST, before the config lock, per the documented
+        // ordering in config.rs) or it races sibling tests asserting exact English strings
+        // — the known i18n flake. Its sibling sweepers (app_layout_/settings_layout_) do
+        // the same.
+        let _locale = config::use_test_locale("en");
         let _guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
