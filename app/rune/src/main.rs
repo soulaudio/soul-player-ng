@@ -34,6 +34,9 @@ mod config;
 #[cfg(test)]
 mod i18n_tests;
 mod logging;
+// macOS-only at runtime; still compiled for tests everywhere so its pure mapping is
+// unit-tested on Linux/Windows CI too.
+#[cfg(any(target_os = "macos", test))]
 mod macos_menu;
 mod media_session;
 mod notify;
