@@ -99,6 +99,14 @@ git = "https://github.com/soulaudio/soul-audio-core"
 branch = "main"
 features = ["wasapi-exclusive"]
 
+# On macOS, the CoreAudio exclusive / bit-perfect backend (hog mode + per-track native
+# nominal-rate switching + widest physical format). Same feature-union trick as the
+# Windows block above; it adds only `coreaudio-rs`, the same 0.11 cpal already links.
+[target.'cfg(target_os = "macos")'.dependencies.soul-audio-desktop]
+git = "https://github.com/soulaudio/soul-audio-core"
+branch = "main"
+features = ["coreaudio-exclusive"]
+
 [dev-dependencies]
 tempfile = "3"
 # The `remote` module's tests drive a REAL in-process soul-server rather than

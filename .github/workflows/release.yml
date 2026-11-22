@@ -127,6 +127,16 @@ jobs:
             --stage-dir dist \
             --meta-out dist/${{ matrix.target_key }}.meta.json
 
+      # macOS: also ship a drag-to-Applications DMG for first installs (the updater
+      # keeps using the signed .app.tar.gz above). Same .app, so no rebuild. Renamed
+      # without spaces so the release asset URL is stable.
+      - name: Package DMG (macOS)
+        if: runner.os == 'macOS'
+        working-directory: app/rune
+        run: |
+          cargo packager --release -f dmg
+          cp target/release/*.dmg "../../dist/Soul-Player_${{ needs.guard.outputs.version }}_aarch64.dmg"
+
       - uses: actions/upload-artifact@v4
         with:
           name: bundle-${{ matrix.target_key }}
@@ -166,6 +176,7 @@ jobs:
             dist/*-setup.exe
             dist/*.AppImage
             dist/*.app.tar.gz
+            dist/*.dmg
             dist/latest.json
           fail_on_unmatched_files: false
           generate_release_notes: true # grouped per .github/release.yml

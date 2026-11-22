@@ -257,6 +257,13 @@ artists.searchPlaceholder:
   zh: '搜索艺术家'
   cs: 'Hledat interprety'
   ja: 'アーティストを検索'
+genres.searchPlaceholder:
+  en: 'Search genres'
+  de: 'Genres durchsuchen'
+  es: 'Buscar géneros'
+  zh: '搜索流派'
+  cs: 'Hledat žánry'
+  ja: 'ジャンルを検索'
 genre.searchPlaceholder:
   en: 'Search this genre'
   de: 'In diesem Genre suchen'
@@ -1520,6 +1527,34 @@ settings.noOutputDevices:
   zh: '未检测到输出设备。'
   cs: 'Nebyla zjištěna žádná výstupní zařízení.'
   ja: '出力デバイスが見つかりません。'
+settings.transportBuiltIn:
+  en: 'Built-in'
+  de: 'Integriert'
+  es: 'Integrado'
+  zh: '内置'
+  cs: 'Vestavěné'
+  ja: '内蔵'
+settings.transportVirtual:
+  en: 'Virtual'
+  de: 'Virtuell'
+  es: 'Virtual'
+  zh: '虚拟'
+  cs: 'Virtuální'
+  ja: '仮想'
+settings.transportAggregate:
+  en: 'Aggregate'
+  de: 'Aggregat'
+  es: 'Agregado'
+  zh: '聚合'
+  cs: 'Agregované'
+  ja: '機器セット'
+settings.notBitPerfect:
+  en: 'not bit-perfect'
+  de: 'nicht bitgenau'
+  es: 'no exacto a bits'
+  zh: '非比特完美'
+  cs: 'není bitově přesné'
+  ja: 'ビットパーフェクトではありません'
 settings.replayGain:
   en: 'ReplayGain'
   de: 'ReplayGain'

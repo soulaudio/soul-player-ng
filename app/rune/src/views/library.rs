@@ -4,8 +4,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Color, Cursor, Cx, El, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon,
-    row, text,
+    Align, Color, Cursor, Cx, El, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col,
+    el, icon, row, text,
 };
 use soul_player_host::{BrowseAxis, Command, TrackView};
 
@@ -196,6 +196,7 @@ fn track_row(
         .label(row_label)
         .focusable(true)
         .gap(space::MD)
+        .center_y()
         .px(space::MD)
         .py(space::SM)
         .radius(radius::SM)
@@ -219,6 +220,7 @@ fn track_row(
                 text(format!("{}", index + 1)).color(p.text_secondary)
             }
             .font(type_::ITEM)
+            .align(Align::Center)
             .w(28.0),
         )
         .child(title_col);
@@ -379,6 +381,7 @@ fn track_header_row(p: &Palette, width: RowWidth) -> El {
     let mut r = row()
         .key("tracks-header")
         .gap(space::MD)
+        .center_y()
         .px(space::MD)
         .py(space::XS)
         .child(el().key("tracks-header-index").w(28.0))
@@ -642,6 +645,7 @@ fn sort_bar(s: &State, p: &Palette) -> El {
         .key("sort-bar")
         .gap(space::SM)
         .padding(space::SM)
+        .center_y()
         .flex_wrap()
         .child(text(t!("library.sort").to_string()).color(p.text_secondary))
         .child(sort_button(
@@ -744,7 +748,7 @@ mod tests {
             track_list(s, &p, cx, scale)
         }
 
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let mut s = State::new(soul_player_host::PlayerHandle::offline());
         s.library = vec![
             tv(1, Some("FLAC")),
@@ -789,6 +793,7 @@ mod tests {
     /// and LUFS only join at Wide.
     #[test]
     fn tracks_header_row_shows_the_labels_its_tier_reveals() {
+        let _locale = crate::config::use_test_locale("en");
         fn test_view(s: &State, cx: &mut Cx<State>) -> El {
             let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
             let scale = cx.env().scale;
@@ -796,7 +801,6 @@ mod tests {
         }
 
         fn render(width: f32) -> Runtime<State> {
-            rust_i18n::set_locale("en");
             let mut s = State::new(soul_player_host::PlayerHandle::offline());
             s.library = vec![tv(1, Some("FLAC"))];
             let env = Env {

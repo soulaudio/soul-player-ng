@@ -1,5 +1,6 @@
 //! Audio sink selection for the desktop host: the real `CpalSink` (shared mode),
-//! a Windows-only WASAPI **exclusive** (bit-perfect) sink, or a headless
+//! an **exclusive** (bit-perfect) sink — WASAPI exclusive on Windows, CoreAudio hog
+//! mode with native-rate switching on macOS — or a headless
 //! `NullSink` for device-free runs and unit tests. Mirrors the sink choice that
 //! previously lived in the (now-removed) Tauri head's `actor.rs`/`offline.rs`.
 #![forbid(unsafe_code)]
@@ -7,9 +8,16 @@
 use std::sync::{Arc, Mutex};
 
 use soul_audio_core::{SampleFormat, Sink, SinkError, StreamInfo};
-use soul_audio_desktop::sink::CpalSink;
+/// The platform's exclusive (bit-perfect) device sink. Both share one contract: `open(name,
+/// rate, channels)`, `exclusive() == true`, and an in-place `reopen(rate)` for per-track
+/// native-rate switching — so everything below is platform-neutral past this alias.
+#[cfg(target_os = "macos")]
+use soul_audio_desktop::CoreAudioExclusiveSink as ExclusiveSink;
 #[cfg(windows)]
-use soul_audio_desktop::{WasapiExclusiveSink, default_output_config};
+use soul_audio_desktop::WasapiExclusiveSink as ExclusiveSink;
+#[cfg(any(windows, target_os = "macos"))]
+use soul_audio_desktop::default_output_config;
+use soul_audio_desktop::sink::CpalSink;
 use soul_player_backend::library::TrackSource;
 use soul_player_backend::{AudioPlayer, Event, OutputConfig};
 
@@ -57,17 +65,18 @@ pub enum ExclusiveStatus {
     Unavailable(String),
 }
 
-/// The chosen device sink: shared-mode cpal, or (Windows) a WASAPI exclusive-mode
-/// stream — `soul-audio-desktop`'s `wasapi-exclusive` feature is always enabled on
-/// Windows (see Cargo.toml), so `cfg(windows)` gates the exclusive arm. One concrete
+/// The chosen device sink: shared-mode cpal, or an exclusive-mode stream — WASAPI on
+/// Windows, CoreAudio (hog mode) on macOS. `soul-audio-desktop`'s `wasapi-exclusive` /
+/// `coreaudio-exclusive` feature is always enabled on that OS (see Cargo.toml), so
+/// `cfg(any(windows, target_os = "macos"))` gates the exclusive arm. One concrete
 /// type so the pump's
 /// `Fn` factory returns a single `Sink` impl whichever mode wins — the engine
 /// never sees which it got (it reads truth back through [`Sink::exclusive`] /
 /// [`Sink::stream_info`]).
 enum DeviceSink {
     Shared(CpalSink),
-    #[cfg(windows)]
-    Exclusive(WasapiExclusiveSink),
+    #[cfg(any(windows, target_os = "macos"))]
+    Exclusive(ExclusiveSink),
     /// A device-FREE placeholder: owns no hardware and discards writes. Used to PARK
     /// the deck during a live output change — swapping this in drops the real sink,
     /// which releases its device, so the new sink can acquire it (exclusive WASAPI is
@@ -94,7 +103,7 @@ impl Sink for DeviceSink {
     fn stream_info(&self) -> StreamInfo {
         match self {
             DeviceSink::Shared(s) => s.stream_info(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             DeviceSink::Exclusive(s) => s.stream_info(),
             DeviceSink::Silent { rate, channels } => StreamInfo {
                 sample_rate: *rate,
@@ -107,7 +116,7 @@ impl Sink for DeviceSink {
     fn exclusive(&self) -> bool {
         match self {
             DeviceSink::Shared(s) => s.exclusive(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             DeviceSink::Exclusive(s) => s.exclusive(),
             DeviceSink::Silent { .. } => false,
         }
@@ -116,7 +125,7 @@ impl Sink for DeviceSink {
     fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
         match self {
             DeviceSink::Shared(s) => s.write(frames),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             DeviceSink::Exclusive(s) => s.write(frames),
             // Device-free placeholder: discard (never actually reached — the pump
             // swaps it out before pumping).
@@ -127,7 +136,7 @@ impl Sink for DeviceSink {
     fn flush(&mut self) -> Result<(), SinkError> {
         match self {
             DeviceSink::Shared(s) => s.flush(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             DeviceSink::Exclusive(s) => s.flush(),
             DeviceSink::Silent { .. } => Ok(()),
         }
@@ -136,7 +145,7 @@ impl Sink for DeviceSink {
     fn discard(&mut self) -> Result<(), SinkError> {
         match self {
             DeviceSink::Shared(s) => s.discard(),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             DeviceSink::Exclusive(s) => s.discard(),
             DeviceSink::Silent { .. } => Ok(()),
         }
@@ -145,7 +154,7 @@ impl Sink for DeviceSink {
     fn set_volume(&mut self, volume: f32) {
         match self {
             DeviceSink::Shared(s) => s.set_volume(volume),
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             DeviceSink::Exclusive(s) => s.set_volume(volume),
             DeviceSink::Silent { .. } => {}
         }
@@ -156,7 +165,7 @@ impl Sink for DeviceSink {
             // A shared sink keeps its fixed rate (default no-op) — the deck resamples.
             DeviceSink::Shared(s) => s.reopen(rate),
             // The exclusive sink releases + re-acquires the device at the new rate.
-            #[cfg(windows)]
+            #[cfg(any(windows, target_os = "macos"))]
             DeviceSink::Exclusive(s) => s.reopen(rate),
             // Placeholder adopts the requested rate (no device to reopen).
             DeviceSink::Silent { rate: r, .. } => {
@@ -272,8 +281,9 @@ fn device_sink_factory(
 }
 
 /// Open the device sink, honoring `exclusive` when possible and recording the outcome
-/// in `status`. Exclusive is attempted only on Windows (via WASAPI), at the device's
-/// native rate. On an exclusive failure:
+/// in `status`. Exclusive is attempted on Windows (WASAPI) and macOS (CoreAudio hog
+/// mode), at the device's current rate — per-track native-rate switching then reopens
+/// it in place. On an exclusive failure:
 ///
 /// - non-`strict`: fall back to a shared `CpalSink` — never silent — and record
 ///   [`ExclusiveStatus::FellBack`];
@@ -292,7 +302,7 @@ fn open_device_sink(
         // The exclusive-open failure reason (set on either platform below), used to
         // decide strict-stop vs shared-fallback once, after the attempt.
         let reason: String;
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         {
             match try_open_exclusive(output_device.clone()) {
                 Ok(sink) => {
@@ -302,7 +312,7 @@ fn open_device_sink(
                 Err(r) => reason = r,
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             reason = "exclusive output is not available on this platform".to_string();
         }
@@ -328,15 +338,23 @@ fn open_device_sink(
     Ok(DeviceSink::Shared(shared))
 }
 
-/// Open the WASAPI exclusive sink at the device's native (shared mix-format) rate —
+/// Open the platform exclusive sink at the device's native (shared mix-format) rate —
 /// the rate a DAC also accepts exclusively. Per-track native-rate switching then
 /// reopens this same sink in place. Returns the failure reason as a string so the
 /// caller can record it and fall back to shared.
-#[cfg(windows)]
-fn try_open_exclusive(name: Option<String>) -> Result<WasapiExclusiveSink, String> {
-    let (rate, channels) = default_output_config(name.as_deref())
-        .ok_or_else(|| "output device unavailable".to_string())?;
-    WasapiExclusiveSink::open(name, rate, channels).map_err(|e| e.to_string())
+#[cfg(any(windows, target_os = "macos"))]
+fn try_open_exclusive(name: Option<String>) -> Result<ExclusiveSink, String> {
+    // On macOS cpal can't read the config of a device ANOTHER process hogs, which would
+    // surface as a vague "unavailable". Fall back to the HAL's own nominal rate (stereo)
+    // and let the sink's open — which checks hog ownership first — report the precise
+    // reason (device in use / not found).
+    #[cfg(target_os = "macos")]
+    let config = default_output_config(name.as_deref())
+        .or_else(|| soul_audio_desktop::nominal_rate(name.as_deref()).map(|r| (r, 2)));
+    #[cfg(windows)]
+    let config = default_output_config(name.as_deref());
+    let (rate, channels) = config.ok_or_else(|| "output device unavailable".to_string())?;
+    ExclusiveSink::open(name, rate, channels).map_err(|e| e.to_string())
 }
 
 /// A [`Sink`] that discards output — no device, no backpressure.

@@ -20,9 +20,10 @@ use soul_audio_desktop::OwnedDecoder;
 use soul_audio_engine::{Engine, Provided};
 
 use crate::driver::{
-    OutputConfig, OutputSwap, RgInfo, ServicePlayer, VolumeState, apply_command, apply_replay_gain,
-    maybe_apply_output_change, maybe_switch_native_rate, project_queue, project_signal_path,
-    project_tick, queue_for, rebuild_output_sink,
+    OutputConfig, OutputSwap, PumpFailure, RgInfo, ServicePlayer, VolumeState, apply_command,
+    apply_replay_gain, classify_pump_error, handle_device_lost, maybe_apply_output_change,
+    maybe_switch_native_rate, project_queue, project_signal_path, project_tick, queue_for,
+    rebuild_output_sink,
 };
 use crate::library::TrackSource;
 use crate::loudness::LoudnessCache;
@@ -457,10 +458,26 @@ fn pump_thread<K, Mk, Pk, Ev>(
         let progress = if output_live {
             match player.pump() {
                 Ok(p) => p,
-                Err(e) => {
-                    tracing::error!(error = ?e, "pump error");
-                    Progress::Idle
-                }
+                Err(e) => match classify_pump_error(&e) {
+                    PumpFailure::DeviceLost => {
+                        // The device vanished (unplugged DAC / dead exclusive stream):
+                        // pause + park, then let the parked-recovery path above re-open
+                        // the output on its retry timer. Playback stays paused until the
+                        // user resumes — never a surprise blast on another device.
+                        tracing::warn!(error = ?e, "output device lost; paused and parked");
+                        if let Err(pe) = handle_device_lost(&mut player, &make_park) {
+                            tracing::error!(error = %format!("{pe:#}"), "could not park after device loss");
+                        }
+                        output_live = false;
+                        last_output_retry = Instant::now();
+                        changed = true;
+                        Progress::Idle
+                    }
+                    PumpFailure::Transient => {
+                        tracing::error!(error = ?e, "pump error");
+                        Progress::Idle
+                    }
+                },
             }
         } else {
             Progress::Idle

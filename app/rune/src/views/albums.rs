@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use rune::{
-    Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
+    Align, Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
     text_input,
 };
 use soul_player_host::{Command, TrackView};
@@ -435,6 +435,7 @@ pub(crate) fn detail_track_row(
         )
         .focusable(true)
         .gap(space::MD)
+        .center_y()
         .px(space::MD)
         .py(space::SM)
         .radius(radius::SM)
@@ -454,6 +455,7 @@ pub(crate) fn detail_track_row(
             })
             .font(type_::ITEM)
             .color(if playing { p.accent } else { p.text_secondary })
+            .align(Align::Center)
             .w(28.0),
         )
         .child(
@@ -543,6 +545,7 @@ fn detail_track_header(p: &Palette) -> El {
     row()
         .key("album-tracks-header")
         .gap(space::MD)
+        .center_y()
         .px(space::MD)
         .py(space::XS)
         .child(el().key("album-tracks-header-index").w(28.0))
@@ -744,7 +747,7 @@ mod tests {
 
     #[test]
     fn total_duration_rounds_to_whole_minutes_and_formats_hours() {
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         assert_eq!(fmt_total_dur(45.0 * 60.0), "45 min");
         assert_eq!(fmt_total_dur(83.0 * 60.0), "1 h 23 min");
         assert_eq!(fmt_total_dur(0.0), "0 min");
@@ -820,7 +823,7 @@ mod tests {
 
     #[test]
     fn albums_of_artist_folds_only_that_artists_albums_first_seen() {
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let lib = vec![
             atv(1, "Bach", "Cello Suites"),
             atv(2, "Satie", "Gymnopedies"),
@@ -845,7 +848,7 @@ mod tests {
     #[test]
     fn discography_sorts_by_the_selected_date() {
         use crate::config::AlbumYearSource::*;
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let mut a = atv(1, "Artist", "A");
         a.original_date = 1990u32 << 9;
         a.release_date = 2010u32 << 9;
@@ -888,7 +891,7 @@ mod tests {
             albums_page(s, &p, cx, scale)
         }
 
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let mut dated = atv(1, "Pavement", "Crooked Rain");
         dated.original_date = 1973u32 << 9;
         let undated = atv(2, "NoYear", "Mystery");
@@ -933,7 +936,7 @@ mod tests {
             albums_page(s, &p, cx, scale)
         }
 
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         let dr_track = |id: u32, album: &str, dr: Option<f32>| {
             let mut t = atv(id, "A", album);
             t.loudness = dr.map(|d| soul_player_host::TrackLoudness {
@@ -1171,7 +1174,7 @@ mod tests {
             s
         }
 
-        rust_i18n::set_locale("en");
+        let _locale = crate::config::use_test_locale("en");
         use crate::config::AlbumYearSource::{Original, Release};
 
         // The bug case: same year, different precision (a year-only
