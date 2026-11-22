@@ -801,6 +801,43 @@ mod tests {
         assert_eq!(format_family_color("M4A", &p), p.text_secondary);
     }
 
+    /// The Tracks search predicate: a case-insensitive substring over title /
+    /// artist / album (the caller lowercases the query). The whole Tracks search
+    /// path was previously untested — unlike the Artists/Genres in-page searches.
+    #[test]
+    fn track_matches_searches_title_artist_and_album_but_not_genre() {
+        let t = TrackView {
+            title: Some("Blue in Green".into()),
+            artist: Some("Miles Davis".into()),
+            album: Some("Kind of Blue".into()),
+            ..tv(1, None) // genre = Some("Rock")
+        };
+
+        // Each searchable field matches as a SUBSTRING (not a prefix/exact), and the
+        // field side is lowercased so mixed-case metadata matches a lowercase query.
+        assert!(track_matches(&t, "green"), "title substring");
+        assert!(track_matches(&t, "miles"), "artist substring");
+        assert!(track_matches(&t, "kind of"), "album substring");
+        // An empty query matches everything (the "no filter" case).
+        assert!(track_matches(&t, ""));
+        // A term in none of the three searched fields does not match …
+        assert!(!track_matches(&t, "zebra"));
+        // … and GENRE is deliberately not searched (the row carries Some("Rock")).
+        assert!(
+            !track_matches(&t, "rock"),
+            "genre is not one of the searched fields"
+        );
+
+        // All-None metadata never matches and never panics.
+        let empty = TrackView {
+            title: None,
+            artist: None,
+            album: None,
+            ..tv(2, None)
+        };
+        assert!(!track_matches(&empty, "anything"));
+    }
+
     /// End to end through the real Tracks table: a seeded library with a
     /// lossless, a lossy, a DSD and an unknown-format track shows a FORMAT
     /// badge for every track that carries one, with the label text present,
