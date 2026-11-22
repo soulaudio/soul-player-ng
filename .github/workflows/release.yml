@@ -39,6 +39,10 @@ on:
         description: "Build + e2e every platform, publish nothing (installers stay as run artifacts)"
         type: boolean
         default: false
+      rehearsal:
+        description: "Dry run + a real DRAFT release under a throwaway tag (uploaded and verified, then deleted). Never published."
+        type: boolean
+        default: false
 
 # One release at a time, and never cancel one half-way through publishing.
 concurrency:
@@ -48,9 +52,14 @@ concurrency:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash # -eo pipefail everywhere, Windows included
+
 env:
   CARGO_TERM_COLOR: always
   DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
+  REHEARSAL: ${{ github.event.inputs.rehearsal == 'true' }}
 
 jobs:
   guard:
@@ -63,6 +72,8 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
       previous: ${{ steps.v.outputs.previous }}
+      # The release the draft job creates: the tag, or a throwaway one for a rehearsal.
+      release_tag: ${{ steps.v.outputs.release_tag }}
     steps:
       - uses: actions/checkout@v4.4.0
         with:
@@ -78,7 +89,8 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             tag="$INPUT_TAG"
             if [ -z "$tag" ]; then
-              [ "$DRY_RUN" = "true" ] || { echo "::error::a tag is required unless dry_run is set"; exit 1; }
+              [ "$DRY_RUN" = "true" ] || [ "$REHEARSAL" = "true" ] \
+                || { echo "::error::a tag is required unless dry_run or rehearsal is set"; exit 1; }
               tag="v$cargo_ver"
             fi
           else
@@ -90,7 +102,7 @@ jobs:
           [ "$ver" = "$cargo_ver" ] || {
             echo "::error::tag $tag implies $ver but app/rune/Cargo.toml is $cargo_ver — bump it and retag"; exit 1; }
 
-          if [ "$DRY_RUN" != "true" ]; then
+          if [ "$DRY_RUN" != "true" ] && [ "$REHEARSAL" != "true" ]; then
             sha=$(git rev-parse "$tag^{commit}") || { echo "::error::tag $tag does not exist"; exit 1; }
             # Only ship what is on main and went green there.
             git merge-base --is-ancestor "$sha" origin/main \
@@ -117,6 +129,11 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "previous=$prev" >> "$GITHUB_OUTPUT"
+          if [ "$REHEARSAL" = "true" ]; then
+            echo "release_tag=$tag-rehearsal.$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+          fi
           echo "Releasing $tag (previous latest: ${prev:-none}; dry run: $DRY_RUN)" >> "$GITHUB_STEP_SUMMARY"
 
   build:
@@ -322,7 +339,7 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ needs.guard.outputs.tag }}
+      TAG: ${{ needs.guard.outputs.release_tag }}
       VERSION: ${{ needs.guard.outputs.version }}
     steps:
       - uses: actions/checkout@v4.4.0
@@ -360,7 +377,13 @@ jobs:
 
           Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`.
           EOF
-          gh release create "$TAG" --draft --verify-tag --title "Soul Player $TAG" \
+          if [ "$REHEARSAL" = "true" ]; then
+            # A draft creates no git tag until it is published, so nothing leaks.
+            where=(--target "$GITHUB_SHA")
+          else
+            where=(--verify-tag)
+          fi
+          gh release create "$TAG" --draft "${where[@]}" --title "Soul Player $TAG" \
             --notes-file notes.md --generate-notes dist/*
 
       # The draft must hold exactly the bytes the e2e job tested.
@@ -370,9 +393,24 @@ jobs:
           gh release download "$TAG" --dir check
           diff <(ls dist) <(ls check)
           (cd check && sha256sum -c SHA256SUMS)
+          # The manifest's URLs must name exactly the uploaded assets.
+          jq -r '.platforms[].url' check/latest.json | while read -r url; do
+            case "$url" in "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/"*) ;;
+              *) echo "::error::manifest URL $url is not under $TAG"; exit 1 ;; esac
+            [ -f "check/${url##*/}" ] || { echo "::error::manifest names ${url##*/}, not uploaded"; exit 1; }
+          done
+          jq -e '.platforms | length == 4' check/latest.json >/dev/null
+
+      - name: Delete the rehearsal draft
+        if: always() && env.REHEARSAL == 'true'
+        run: |
+          gh release delete "$TAG" --yes 2>/dev/null && echo "rehearsal draft $TAG deleted" || true
+          ! git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/$TAG" \
+            || { echo "::error::rehearsal left a tag $TAG"; exit 1; }
 
   publish:
     needs: [guard, draft]
+    if: github.event.inputs.rehearsal != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Add required reviewers to this environment (Settings → Environments) to make
@@ -424,7 +462,7 @@ jobs:
   rollback:
     needs: [guard, draft, publish, verify]
     if: >-
-      always() && github.event.inputs.dry_run != 'true' &&
+      always() && github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true' &&
       (needs.draft.result == 'failure' || needs.publish.result == 'failure' || needs.verify.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
