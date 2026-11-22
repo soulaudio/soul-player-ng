@@ -242,6 +242,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         artist.remote_source.clone(),
         None,
         meta,
+        None, // no clock: artist meta is "albums, tracks", not a duration
         detail_actions("artist-play-all", artist.ids.clone(), p),
     );
 

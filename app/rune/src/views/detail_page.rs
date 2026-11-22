@@ -91,6 +91,7 @@ pub(crate) fn detail_hero(
     remote_source: Option<String>,
     subtitle: Option<String>,
     meta: String,
+    meta_icon: Option<&'static Icon>,
     actions: El,
 ) -> El {
     let title_el = text(title).font(type_::DISPLAY).color(p.fg).truncate();
@@ -113,7 +114,11 @@ pub(crate) fn detail_hero(
         .gap(space::XS)
         .grow(1.0)
         .min_w(0.0)
-        .center_y()
+        // Left-align the heading block (eyebrow/title/subtitle/meta/actions) hard
+        // against the cover, like the original's detail hero. `center_y()` here was
+        // `align-items: center` on a COLUMN, i.e. the CROSS (horizontal) axis, which
+        // floated the whole block into the middle of the pane.
+        .items_start()
         .child(text(eyebrow).font(type_::SECTION).color(p.text_secondary))
         .child(title_row);
     if let Some(sub) = subtitle {
@@ -124,9 +129,19 @@ pub(crate) fn detail_hero(
                 .truncate(),
         );
     }
-    info = info
-        .child(text(meta).font(type_::CAPTION).color(p.text_secondary))
-        .child(actions);
+    // The meta line (track/duration counts). A `meta_icon` (the clock on
+    // duration-bearing pages) sits before the text, like the original's hero.
+    let meta_text = text(meta).font(type_::CAPTION).color(p.text_secondary);
+    let meta_el: El = match meta_icon {
+        Some(ic) => row()
+            .key(format!("{prefix}-meta-line"))
+            .center_y()
+            .gap(space::XS)
+            .child(icon(ic, 14.0).color(p.text_secondary))
+            .child(meta_text),
+        None => meta_text,
+    };
+    info = info.child(meta_el).child(actions);
 
     row()
         .key(format!("{prefix}-header"))

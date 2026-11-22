@@ -640,6 +640,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         album.remote_source.clone(),
         album_subtitle(&album, s.album_year),
         meta,
+        Some(&crate::views::icons::CLOCK),
         detail_actions("album-play-all", album.ids.clone(), p),
     );
 
@@ -1130,6 +1131,36 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.contains("DR9")),
             "the detail header meta includes the album DR; got {texts:?}"
+        );
+    }
+
+    /// The album hero puts a clock icon before its "{n} tracks, {dur}" meta
+    /// (the original's hero), rendered as an `album-meta-line` row. Guards the
+    /// `meta_icon` threading through the shared `detail_hero`.
+    #[test]
+    fn album_detail_hero_has_the_clock_meta_line() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![atv(1, "Artist", "An Album"), atv(2, "Artist", "An Album")];
+        s.route = crate::Route::Album;
+        s.open_album = Some("An Album".into());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("album-meta-line").is_some(),
+            "the album hero meta renders as a clock-icon row"
         );
     }
 
