@@ -345,8 +345,8 @@ mod tests {
     /// Each playlist row shows its name and its track count.
     #[test]
     fn playlists_page_lists_names_and_counts() {
+        let _locale = crate::config::use_test_locale("en");
         let _g = crate::config::use_test_config_dir();
-        rust_i18n::set_locale("en");
         let mut rt = runtime_with_playlists(&[("Road Trip", 3), ("Focus", 0)]);
         rt.update(|st: &mut State, _tx: &mut Tx| st.route = Route::Playlists);
         rt.frame(0.0);
@@ -358,8 +358,8 @@ mod tests {
     /// playlist (persisted to disk) and shows it in the list.
     #[test]
     fn new_playlist_creates_and_persists() {
+        let _locale = crate::config::use_test_locale("en");
         let _g = crate::config::use_test_config_dir();
-        rust_i18n::set_locale("en");
         let mut rt = empty_runtime();
         rt.update(|st: &mut State, _tx: &mut Tx| {
             st.route = Route::Playlists;

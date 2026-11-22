@@ -576,6 +576,46 @@ where
     Ok(())
 }
 
+/// What a failed `pump()` means for the actor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PumpFailure {
+    /// The output device is gone (an unplugged DAC, a dead exclusive stream): park and
+    /// pause, then recover the output the same way a failed open does.
+    DeviceLost,
+    /// Anything else (a decode hiccup, an unsupported channel layout): log and carry on.
+    Transient,
+}
+
+/// Classify a pump error. Only [`SinkError::Closed`](soul_audio_core::SinkError::Closed)
+/// means the device itself is gone — a sink reports it when its device stopped being
+/// alive, instead of blocking forever on a buffer nobody drains.
+pub fn classify_pump_error(e: &DeckError) -> PumpFailure {
+    match e {
+        DeckError::Sink(soul_audio_core::SinkError::Closed) => PumpFailure::DeviceLost,
+        _ => PumpFailure::Transient,
+    }
+}
+
+/// React to a lost output device: **pause** (Apple Music behaviour on unplug — never
+/// auto-resume onto another device, e.g. laptop speakers at headphone volume) and park
+/// the deck on the device-free placeholder, which drops the dead sink. The position is
+/// held, so Play resumes where it stopped once an output is back.
+pub fn handle_device_lost<K, D, FPark>(
+    player: &mut ServicePlayer<K, D>,
+    park: FPark,
+) -> anyhow::Result<()>
+where
+    K: Sink,
+    D: SeekableDecoder,
+    FPark: FnOnce() -> K,
+{
+    player.pause();
+    player
+        .deck_mut()
+        .swap_sink(park())
+        .map_err(|e| anyhow::anyhow!("park after device loss: {e:?}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1542,6 +1582,87 @@ mod tests {
             !p.deck().sink().exclusive,
             "the silent placeholder is not an exclusive device"
         );
+    }
+
+    #[test]
+    fn classify_pump_error_separates_a_lost_device_from_transient_failures() {
+        assert_eq!(
+            classify_pump_error(&DeckError::Sink(soul_audio_core::SinkError::Closed)),
+            PumpFailure::DeviceLost
+        );
+        assert_eq!(
+            classify_pump_error(&DeckError::Sink(soul_audio_core::SinkError::Unsupported)),
+            PumpFailure::Transient
+        );
+        assert_eq!(
+            classify_pump_error(&DeckError::ChannelMismatch),
+            PumpFailure::Transient
+        );
+    }
+
+    #[test]
+    fn a_lost_device_pauses_and_parks_the_deck_holding_the_position() {
+        // The DAC is unplugged mid-play (an exclusive sink reports `Closed`). Apple Music
+        // behaviour: PAUSE (never auto-resume onto the speakers at full volume), park on
+        // the device-free placeholder, keep the position so Play resumes where it was.
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let unplugged = Arc::new(AtomicBool::new(false));
+        let deck = Deck::new(
+            ConfigSink::new(Some("USB DAC".into()), true, 48_000, 2, Arc::clone(&frames))
+                .with_unplug(Arc::clone(&unplugged)),
+            Quality::Hq,
+        );
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+        let pos = project_tick(&p, 1.0, false).position_secs;
+
+        unplugged.store(true, Ordering::Relaxed);
+        let err = p.pump().expect_err("a write to an unplugged DAC fails");
+        assert_eq!(classify_pump_error(&err), PumpFailure::DeviceLost);
+
+        let park = || {
+            ConfigSink::new(
+                Some("__silent__".into()),
+                false,
+                48_000,
+                2,
+                Arc::clone(&frames),
+            )
+        };
+        handle_device_lost(&mut p, park).expect("parks");
+
+        let t = project_tick(&p, 1.0, false);
+        assert_eq!(t.state, PlayState::Paused, "paused, not silently 'playing'");
+        assert_eq!(p.deck().sink().device, Some("__silent__".into()), "parked");
+        assert!(
+            (t.position_secs - pos).abs() < 0.5,
+            "position held ({pos} → {})",
+            t.position_secs
+        );
+        // Pumping while parked + paused writes nothing and errors nothing.
+        let before = frames.load(Ordering::Relaxed);
+        p.pump().expect("no more errors once parked");
+        assert_eq!(frames.load(Ordering::Relaxed), before);
     }
 
     /// Recovery: a deck parked on the silent placeholder (a build failed) rebuilds to a

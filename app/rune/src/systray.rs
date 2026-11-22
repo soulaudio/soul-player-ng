@@ -2,6 +2,8 @@
 //! can be driven while its window is hidden or backgrounded. Menu picks route to
 //! player [`Command`]s or window actions; the primary click brings the window up.
 #![forbid(unsafe_code)]
+// On macOS this module is compiled for its tests only (no tray backend there).
+#![cfg_attr(all(target_os = "macos", test), allow(dead_code))]
 
 use rune::{AppHandle, Tray, TrayEvent, TrayIcon, TrayItem, TraySpec};
 use soul_player_host::{Command, PlayerHandle};

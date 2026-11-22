@@ -5,7 +5,7 @@
 //! signal path reports a **bit-perfect** (no-resample) exclusive stream.
 //!
 //! `#[ignore]`d — it touches the real default output device and makes (silent)
-//! sound, so CI (headless) never runs it. Windows only (exclusive output is WASAPI).
+//! sound, so CI (headless) never runs it. Windows (WASAPI) and macOS (CoreAudio).
 //! Run manually:
 //!
 //! ```text
@@ -14,7 +14,7 @@
 //!
 //! This proves the whole stack engages exclusive mode at the track's native rate on
 //! real hardware. It does NOT prove digital bit-exactness (that needs a DAC/loopback).
-#![cfg(windows)]
+#![cfg(any(windows, target_os = "macos"))]
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
