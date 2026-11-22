@@ -8,14 +8,23 @@
 //!
 //! Flow (owned by `main`/`views::settings`, not here, so this stays Rune-free):
 //! on launch a background thread calls [`available`]; if a newer signed release
-//! exists it flips a flag and Settings surfaces an "Install & Restart" button,
-//! which calls [`install`]. We deliberately do **not** auto-install on launch —
-//! yanking a music player out from under a playing track is worse than letting
-//! the user pick the moment.
+//! exists it flips a flag and Settings surfaces an "Install & Restart" button.
+//! Pressing it [`download`]s and verifies the update, then quits the app the
+//! normal way (quit hooks run, the session is marked clean); once the run loop
+//! has returned, `main` calls [`apply_pending`], which installs it and starts the
+//! new build. We deliberately do **not** auto-install on launch — yanking a music
+//! player out from under a playing track is worse than letting the user pick the
+//! moment — except when `SOUL_PLAYER_AUTO_INSTALL_UPDATE` asks for it
+//! ([`auto_install`]), which is how the release e2e drives a real update.
 #![forbid(unsafe_code)]
 
+use std::path::PathBuf;
+use std::sync::Mutex;
+
 use anyhow::Result;
-use cargo_packager_updater::{Config, WindowsConfig, WindowsUpdateInstallMode, check_update};
+use cargo_packager_updater::{
+    Config, Update, WindowsConfig, WindowsUpdateInstallMode, check_update,
+};
 
 /// Updater public key — pairs with the private key in `.signing/` (held as a CI
 /// secret, never committed). Every downloaded update is verified against this
@@ -80,16 +89,70 @@ fn try_available(endpoint: &str) -> Result<Option<String>> {
     Ok(check_update(current, config(endpoint)?)?.map(|u| u.version))
 }
 
-/// Download + install the latest signed release, verify its signature against
-/// [`PUBKEY`], then relaunch. Blocks; on success the running process is replaced,
-/// so this returns only on error or when already up to date. Call it off the UI
-/// thread.
-pub fn install() -> Result<()> {
+/// Whether to install an available update unattended, right after the launch
+/// check finds it, instead of waiting for "Install & Restart". Off unless
+/// `SOUL_PLAYER_AUTO_INSTALL_UPDATE` is set (the release e2e sets it to drive a
+/// real update; it also suits unattended/managed machines).
+pub fn auto_install() -> bool {
+    std::env::var_os("SOUL_PLAYER_AUTO_INSTALL_UPDATE").is_some()
+}
+
+/// A downloaded, signature-verified update, held until the app has quit cleanly.
+struct Staged {
+    update: Update,
+    bytes: Vec<u8>,
+}
+
+static STAGED: Mutex<Option<Staged>> = Mutex::new(None);
+
+/// Check for, download and **verify** (against [`PUBKEY`]) the latest signed
+/// release, and stage it for [`apply_pending`]. Returns its version, or `None`
+/// when already up to date. Blocks on the network: call it off the UI thread,
+/// then quit the app so `main` can apply it.
+pub fn download() -> Result<Option<String>> {
+    download_from(&endpoint())
+}
+
+fn download_from(endpoint: &str) -> Result<Option<String>> {
     let current = env!("CARGO_PKG_VERSION").parse()?;
-    if let Some(update) = check_update(current, config(&endpoint())?)? {
-        update.download_and_install()?;
+    let Some(update) = check_update(current, config(endpoint)?)? else {
+        return Ok(None);
+    };
+    let bytes = update.download()?;
+    let version = update.version.clone();
+    *STAGED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Staged { update, bytes });
+    Ok(Some(version))
+}
+
+/// Install the update [`download`] staged, if any, and start the new build. Call
+/// once the run loop has returned (the quit hooks have run). Windows hands over
+/// to the NSIS installer, which replaces the app and restarts it (`/R`), and
+/// exits this process; macOS and Linux replace the bundle / AppImage in place,
+/// so the new build is started here.
+pub fn apply_pending() {
+    let Some(Staged { update, bytes }) = STAGED.lock().unwrap_or_else(|e| e.into_inner()).take()
+    else {
+        return;
+    };
+    tracing::info!(version = %update.version, "installing update");
+    if let Err(e) = update.install(bytes) {
+        tracing::error!("update install failed: {e}");
+        return;
     }
-    Ok(())
+    match relaunch_target().map(|exe| std::process::Command::new(&exe).spawn()) {
+        Some(Ok(child)) => tracing::info!(pid = child.id(), "started the updated app"),
+        Some(Err(e)) => tracing::error!("update installed, but restarting failed: {e}"),
+        None => tracing::error!("update installed, but the app's path is unknown"),
+    }
+}
+
+/// What to start after an in-place update: the AppImage file itself on Linux
+/// (`current_exe` is inside its now-stale mount), else this executable's path,
+/// which now holds the new build (the macOS updater swaps the whole bundle).
+fn relaunch_target() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
 }
 
 #[cfg(test)]
@@ -231,6 +294,43 @@ mod tests {
             update.download().is_err(),
             "a tampered artifact must fail signature verification"
         );
+    }
+
+    /// "Install & Restart" stages only a verified download, and only once: a tampered
+    /// artifact stages nothing, a good one stages exactly one update for
+    /// `apply_pending` to take. (One test, since `STAGED` is process-global.)
+    #[test]
+    fn download_stages_only_a_verified_update() {
+        let take = || {
+            STAGED
+                .lock()
+                .unwrap()
+                .take()
+                .map(|s| (s.update.version, s.bytes))
+        };
+        let mut tampered = FIXTURE.to_vec();
+        tampered[0] ^= 0xFF;
+        assert!(download_from(&serve_update(tampered, FIXTURE_SIG.trim())).is_err());
+        assert!(take().is_none(), "a failed verification stages nothing");
+
+        let version = download_from(&serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim()))
+            .expect("verifies")
+            .expect("99.0.0 is newer");
+        assert_eq!(version, "99.0.0");
+        assert_eq!(
+            take(),
+            Some(("99.0.0".to_string(), FIXTURE.to_vec())),
+            "the verified bytes are staged"
+        );
+        assert!(take().is_none(), "staged once; applying takes it");
+
+        let older: &'static str = Box::leak(manifest("0.0.1").into_boxed_str());
+        assert_eq!(
+            download_from(&serve(older)).unwrap(),
+            None,
+            "nothing newer, nothing staged"
+        );
+        assert!(take().is_none());
     }
 
     /// Live smoke test against the real published GitHub release: fetch the live

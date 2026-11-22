@@ -322,11 +322,14 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --tag "${{ needs.guard.outputs.tag }}" --version "$VERSION" \
             --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --out latest.json
 
-      - name: Install → run → uninstall; upgrade → rollback
+      # The auto-update leg re-hosts this build's own signed updater artifact (from its
+      # sidecar) and lets the installed app update itself through the real OS mechanism.
+      - name: Install → run → auto-update → uninstall; upgrade → rollback
         run: |
           installer=$(ls dist/${{ matrix.installer }})
           args=(.github/scripts/release-e2e.py --installer "$installer" --version "$VERSION"
                 --target-key ${{ matrix.target_key }} --manifest latest.json --out e2e-out
+                --update-meta dist/${{ matrix.target_key }}.meta.json
                 --previous-manifest "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/latest.json")
           if [ "$RUNNER_OS" = "Linux" ]; then
             xvfb-run -a -s "-screen 0 1920x1080x24" python "${args[@]}"

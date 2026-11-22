@@ -69,6 +69,14 @@ with a new key**, so rotate only with a plan (e.g. a one-time manual download).
 - `SOUL_PLAYER_NO_UPDATE=1` turns the check off (the e2e harness sets it).
 - `SOUL_PLAYER_UPDATE_ENDPOINT=<url>` overrides the manifest URL — for a
   self-hosted update server, and how the updater tests point at a local one.
+- `SOUL_PLAYER_AUTO_INSTALL_UPDATE=1` installs a found update unattended instead
+  of waiting for **Install & Restart** (the release e2e drives real updates with it).
+
+"Install & Restart" downloads and verifies the update, quits the app normally
+(quit hooks run, so the next launch reports no crash), then installs it once the
+run loop has returned: Windows hands over to the NSIS installer in passive mode,
+which restarts the app (`/R`); macOS swaps the `.app` bundle and Linux the
+AppImage in place, and the app starts the new build itself.
 - Debug builds never check (no matching published release).
 
 ## Cutting a release
@@ -86,7 +94,7 @@ until every earlier stage is green:
 | --- | --- |
 | `guard` | tag == `Cargo.toml` version; the commit is on `main` and its `CI success` check passed (waits for it if still running); the tag isn't already published |
 | `build` | per platform (Windows x64, macOS Apple silicon, macOS Intel, Linux x64): `cargo build --release --locked`, `cargo packager` + updater signature, the sidecar for `latest.json` (`write-meta.py`); macOS also builds the DMG and runs the static bundle checks (`verify-macos-bundle.sh`: sealed signature, architecture, identity, launch); SHA-256 of every installer |
-| `e2e` | on a fresh runner of each OS, with the exact installer that will ship (`.github/scripts/release-e2e.py`): **fresh install** → headless renders + the real app autoplaying a generated library (stays up, logs the right version, starts playback, no panic, quits cleanly) → **uninstall** leaves nothing behind; then **upgrade** from the currently published release (whose updater must pick up the new `latest.json`, served locally) → **rollback** to that release (it must still run on the config the new one wrote) → uninstall |
+| `e2e` | on a fresh runner of each OS, with the exact installer that will ship (`.github/scripts/release-e2e.py`): **fresh install** → headless renders + the real app autoplaying a generated library (stays up, logs the right version, starts playback, no panic, quits cleanly) → **auto-update**: the installed app, pointed at a local server offering a newer version whose download is this release's own signed updater artifact, must download + verify it, quit, install it through the OS's real mechanism and come back up on the replaced files with no crash reported → **uninstall** leaves nothing behind; then **upgrade** from the currently published release (whose updater must pick up the new `latest.json`, served locally, and — for releases after 0.3.0 — install it itself) → **rollback** to that release (it must still run on the config the new one wrote) → uninstall |
 | `draft` | a draft GitHub Release with the installers, `latest.json` (`gen-latest-json.py`) and `SHA256SUMS`; the uploaded assets are downloaded again and checked against the tested bytes |
 | `publish` | undraft + mark latest (the `release` environment — add required reviewers there to make this a manual approval) |
 | `verify` | the public `releases/latest/download/latest.json` serves the new version, covers all 4 platforms, and every URL in it downloads the tested bytes |
@@ -94,7 +102,9 @@ until every earlier stage is green:
 
 Run the e2e locally (it installs into `/Applications` / the registry / `~/Applications`,
 so use a VM or a throwaway account):
-`python .github/scripts/release-e2e.py --installer <dmg|setup.exe|AppImage> --version X.Y.Z --target-key macos-aarch64`.
+`python .github/scripts/release-e2e.py --installer <dmg|setup.exe|AppImage> --version X.Y.Z --target-key macos-aarch64`
+(add `--update-meta <key>.meta.json` for the auto-update leg; on macOS
+`SOUL_E2E_APPS_DIR=<dir>` installs somewhere other than `/Applications`).
 
 The in-app updater reads `…/releases/latest/download/latest.json`; `latest/`
 always points at the newest release, so the endpoint never changes.

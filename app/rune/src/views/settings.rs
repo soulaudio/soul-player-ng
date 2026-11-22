@@ -3512,12 +3512,10 @@ fn about_card(s: &State, p: &Palette) -> El {
                         .center()
                         .cursor(Cursor::Pointer)
                         .child(text(t!("settings.installRestart").to_string()).color(p.bg))
-                        .on_press(|_s: &mut State| {
-                            std::thread::spawn(|| {
-                                if let Err(e) = crate::update::install() {
-                                    tracing::error!("update install failed: {e}");
-                                }
-                            });
+                        .on_press(|s: &mut State| {
+                            if let Some(ah) = s.app_handle.clone() {
+                                crate::install_update(ah);
+                            }
                         }),
                 ),
         );
