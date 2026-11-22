@@ -5,7 +5,7 @@
 //! thin wrappers over this.
 #![forbid(unsafe_code)]
 
-use rune::{Color, Cursor, El, col, el, icon, row, text};
+use rune::{Align, Color, Cursor, El, col, el, icon, row, text};
 use soul_player_host::Command;
 
 use crate::State;
@@ -101,48 +101,62 @@ pub(crate) fn media_card(
         .is_some_and(|id| spec.play_ids.contains(&id))
         && s.playing;
 
-    let cover_area = el()
+    let mut cover_area = el()
         .key("cover-area")
         .size(card_w, card_w)
         .radius(corner)
         .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
-        .child(cover(s, Some(spec.cover_id), card_w, corner, p, scale))
-        .child(
-            // The old app's `opacity-0 group-hover:opacity-100` overlay: ONLY this
-            // button plays/pauses; the card body navigates.
-            el().key("play-overlay")
+        .child(cover(s, Some(spec.cover_id), card_w, corner, p, scale));
+    // Artist cards (circular) overlay a person silhouette over a subtle scrim, so
+    // the avatar reads as a profile the way the original's artist cards do; the
+    // artwork stays faintly visible behind the glyph.
+    if spec.circular {
+        cover_area = cover_area.child(
+            el().key("artist-glyph")
                 .size(card_w, card_w)
                 .absolute(0.0, 0.0)
+                .radius(corner)
                 .center()
-                .group_opacity(0.0, 1.0)
-                .child(
-                    el().key("play-btn")
-                        .role("button")
-                        .label(t!("player.play").to_string())
-                        .focusable(true)
-                        .size(PLAY_BTN, PLAY_BTN)
-                        .radius(radius::LG)
-                        .fill(Color::BLACK.alpha(0.5))
-                        .hover(Color::BLACK.alpha(0.3))
-                        .cursor(Cursor::Pointer)
-                        .center()
-                        .on_press(move |st: &mut State| {
-                            st.host
-                                .send(card_play_command(st.now_playing_id, &overlay_ids))
-                        })
-                        .child(
-                            icon(
-                                if show_pause {
-                                    &icons::PAUSE
-                                } else {
-                                    &icons::PLAY
-                                },
-                                32.0,
-                            )
-                            .color(Color::WHITE),
-                        ),
-                ),
+                .fill(Color::BLACK.alpha(0.35))
+                .child(icon(&icons::USER, (card_w * 0.42).round()).color(Color::WHITE.alpha(0.9))),
         );
+    }
+    let cover_area = cover_area.child(
+        // The old app's `opacity-0 group-hover:opacity-100` overlay: ONLY this
+        // button plays/pauses; the card body navigates.
+        el().key("play-overlay")
+            .size(card_w, card_w)
+            .absolute(0.0, 0.0)
+            .center()
+            .group_opacity(0.0, 1.0)
+            .child(
+                el().key("play-btn")
+                    .role("button")
+                    .label(t!("player.play").to_string())
+                    .focusable(true)
+                    .size(PLAY_BTN, PLAY_BTN)
+                    .radius(radius::LG)
+                    .fill(Color::BLACK.alpha(0.5))
+                    .hover(Color::BLACK.alpha(0.3))
+                    .cursor(Cursor::Pointer)
+                    .center()
+                    .on_press(move |st: &mut State| {
+                        st.host
+                            .send(card_play_command(st.now_playing_id, &overlay_ids))
+                    })
+                    .child(
+                        icon(
+                            if show_pause {
+                                &icons::PAUSE
+                            } else {
+                                &icons::PLAY
+                            },
+                            32.0,
+                        )
+                        .color(Color::WHITE),
+                    ),
+            ),
+    );
 
     // An album's DR rides in the cover's corner, so a browser can spot a compressed
     // (loudness-war) master vs a dynamic one at a glance across the grid.
@@ -152,10 +166,18 @@ pub(crate) fn media_card(
         cover_area
     };
 
+    // Artist (circular) cards center their caption under the avatar, like the
+    // original; album (square) cards keep the title left-aligned under the cover.
+    let text_align = if spec.circular {
+        Align::Center
+    } else {
+        Align::Start
+    };
     let title_el = text(spec.title)
         .font(type_::CARD_TITLE)
         .color(p.fg)
         .truncate()
+        .align(text_align)
         .group_opacity(1.0, 0.8);
     // A local/mixed-source card (the common case) keeps the plain title; only a
     // card whose tracks all stream from one remote host gains the badge, same
@@ -181,7 +203,8 @@ pub(crate) fn media_card(
             text(sub)
                 .font(type_::ITEM)
                 .color(p.text_secondary)
-                .truncate(),
+                .truncate()
+                .align(text_align),
         );
     }
 
