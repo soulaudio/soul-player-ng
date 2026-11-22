@@ -104,11 +104,13 @@ device profiles are identical across images and are checked in as captured fixtu
   suites serially against BlackHole (cubeb-coreaudio-rs does exactly this).
 - ✅ Bit-perfect loopback (BlackHole out → in, sample-exact compare); blocking (the hosted
   runners grant the microphone permission).
-- ⏳ **Next** (the hardware-free way to cover more devices): custom-built BlackHole with a restricted `kSampleRates` ladder (44.1/48/96/192k) to
-  exercise in-family fallback on the real AUHAL path.
+- ✅ Custom-built BlackHole offering only **44.1k + 96k** (soul-audio-core#114): the real
+  AUHAL path exercises the closest-same-family fallback on a restricted ladder; 12/12 incl.
+  bit-identical loopback at both rates, on macos-15 and macos-26; gates. The spike's open
+  question is answered: **hosted runners load ad-hoc-signed HAL plug-ins.**
 - ⏳ libASPL / tympan-aspl "ProfileDevice" HAL plug-in loading fixture profiles (Int24,
-  Int32-384k, 48k-only, no-hog) — blocked on a signing spike (do ad-hoc-signed HAL plug-ins
-  load on macOS 15/26 runners?).
+  Int32-384k, 48k-only, no-hog) — now unblocked (ad-hoc signing works). It would cover what
+  BlackHole can't: integer formats, no-hog devices, fixed-rate devices.
 
 ## Phase 5 — Native macOS integration 🔨
 
@@ -161,12 +163,32 @@ Original plan:
 - **App Nap / power**: keep playback unthrottled while playing.
 - **Headphones unplugged → pause** (default-device-change handling in shared mode).
 
+## Phase 5b — Library polish ✅
+
+- ✅ Generated covers for art-less albums / artists (#268): seeded from the normalized name,
+  Oklab gradient + film grain, `libm` for bit-identical output on every OS (golden digests
+  on macOS/Linux/Windows CI); album cards, rows, queue, artist avatars and Now Playing.
+- ✅ AAC stays **off** in the player (#269): core's `aac` is patent-gated and shipped products
+  must not enable it; a compile-time `AAC_ENABLED` guard in backend + host fails the build
+  if anything turns it on. (#258 had wrongly enabled it.)
+
+## Phase 8 — iOS 🔨
+
+Rune doesn't run on iOS yet (its plan: desktop → web → iOS), so the UI waits; the audio side
+is proven first.
+- ✅ The decode core and cpal playback cross-compile for `aarch64-apple-ios` and
+  `aarch64-apple-ios-sim` (soul-audio-core#115, hosted runner with the iOS SDK).
+- ⏳ A minimal iOS harness that plays a file in the simulator (AVAudioSession playback
+  category, background audio), then native-rate output to a USB-C DAC via
+  `setPreferredSampleRate` — the iOS counterpart of exclusive mode (no hog mode on iOS).
+
 ## Phase 6 — Packaging 🔨
 
-✅ `cargo packager -f app` builds `Soul Player.app` (`co.datadir.soulplayer`,
+✅ Proper `.icns` (16–1024 px, Apple grid) (#265). ✅ `cargo packager -f app` builds `Soul Player.app` (`co.datadir.soulplayer`,
 `public.app-category.music`). ✅ `-f dmg` builds a drag-to-Applications DMG (verified:
-mounts, correct bundle id, arm64); release.yml ships it on macOS. ⏳ Developer ID signing +
-notarization need the team's Apple Developer account (decision for the owner).
+mounts, correct bundle id, arm64); release.yml ships it on macOS. ⏸ Developer ID signing +
+notarization — **later** (owner, 2026-11-22). Note: `cargo packager` only wraps the existing
+binary — always `cargo build --release` first (release.yml does).
 
 ## Phase 7 — Hardware-in-the-loop ❎
 
