@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use rune::{
-    Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
+    Align, Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
     text_input,
 };
 use soul_player_host::{Command, TrackView};
@@ -435,6 +435,7 @@ pub(crate) fn detail_track_row(
         )
         .focusable(true)
         .gap(space::MD)
+        .center_y()
         .px(space::MD)
         .py(space::SM)
         .radius(radius::SM)
@@ -454,6 +455,7 @@ pub(crate) fn detail_track_row(
             })
             .font(type_::ITEM)
             .color(if playing { p.accent } else { p.text_secondary })
+            .align(Align::Center)
             .w(28.0),
         )
         .child(
@@ -543,6 +545,7 @@ fn detail_track_header(p: &Palette) -> El {
     row()
         .key("album-tracks-header")
         .gap(space::MD)
+        .center_y()
         .px(space::MD)
         .py(space::XS)
         .child(el().key("album-tracks-header-index").w(28.0))

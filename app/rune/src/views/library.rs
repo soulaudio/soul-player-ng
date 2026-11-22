@@ -4,8 +4,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Color, Cursor, Cx, El, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon,
-    row, text,
+    Align, Color, Cursor, Cx, El, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col,
+    el, icon, row, text,
 };
 use soul_player_host::{BrowseAxis, Command, TrackView};
 
@@ -196,6 +196,7 @@ fn track_row(
         .label(row_label)
         .focusable(true)
         .gap(space::MD)
+        .center_y()
         .px(space::MD)
         .py(space::SM)
         .radius(radius::SM)
@@ -219,6 +220,7 @@ fn track_row(
                 text(format!("{}", index + 1)).color(p.text_secondary)
             }
             .font(type_::ITEM)
+            .align(Align::Center)
             .w(28.0),
         )
         .child(title_col);
@@ -379,6 +381,7 @@ fn track_header_row(p: &Palette, width: RowWidth) -> El {
     let mut r = row()
         .key("tracks-header")
         .gap(space::MD)
+        .center_y()
         .px(space::MD)
         .py(space::XS)
         .child(el().key("tracks-header-index").w(28.0))
@@ -642,6 +645,7 @@ fn sort_bar(s: &State, p: &Palette) -> El {
         .key("sort-bar")
         .gap(space::SM)
         .padding(space::SM)
+        .center_y()
         .flex_wrap()
         .child(text(t!("library.sort").to_string()).color(p.text_secondary))
         .child(sort_button(
