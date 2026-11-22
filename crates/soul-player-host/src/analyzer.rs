@@ -56,6 +56,35 @@ impl Default for SpectrumFrame {
 /// writes it, the UI (frame loop) reads it.
 pub type SpectrumShared = Arc<Mutex<SpectrumFrame>>;
 
+/// A published live-loudness snapshot: the current momentary (400 ms) and short-term (3 s)
+/// loudness in LUFS plus the recent sample peak in dBFS, all `f32::NEG_INFINITY` at silence.
+/// `seq` bumps each publish so the UI can tell a fresh frame from a repeat. Fed by the
+/// [`LiveLoudnessMeter`](soul_audio_loudness::LiveLoudnessMeter) in the `DspSink` from the
+/// pre-chain signal (same tap as the spectrum), the real-time counterpart to the signal
+/// path's whole-track loudness readouts.
+#[derive(Debug, Clone, Copy)]
+pub struct LiveLoudnessFrame {
+    pub momentary_lufs: f32,
+    pub short_term_lufs: f32,
+    pub peak_dbfs: f32,
+    pub seq: u64,
+}
+
+impl Default for LiveLoudnessFrame {
+    fn default() -> Self {
+        Self {
+            momentary_lufs: f32::NEG_INFINITY,
+            short_term_lufs: f32::NEG_INFINITY,
+            peak_dbfs: f32::NEG_INFINITY,
+            seq: 0,
+        }
+    }
+}
+
+/// A shared handle to the latest [`LiveLoudnessFrame`]: the meter (pump thread) writes it,
+/// the UI (frame loop) reads it.
+pub type LiveLoudnessShared = Arc<Mutex<LiveLoudnessFrame>>;
+
 /// How a display column reads the FFT bins: interpolate a fractional bin where the
 /// column is narrower than one bin (the sparse low end), or take the max over a
 /// span of bins where it covers several (the dense high end).

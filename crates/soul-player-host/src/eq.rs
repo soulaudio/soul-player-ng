@@ -23,7 +23,9 @@ pub use soul_audio_dsp::{
     eq_magnitude_db, format_autoeq, parse_autoeq,
 };
 
-use crate::analyzer::{Analyzer, SpectrumShared};
+use soul_audio_loudness::LiveLoudnessMeter;
+
+use crate::analyzer::{Analyzer, LiveLoudnessFrame, LiveLoudnessShared, SpectrumShared};
 
 /// Canonical sample bound: the deck normalises to signed 24-bit (±2²³).
 const CANONICAL_MAX: f32 = 8_388_607.0;
@@ -57,15 +59,26 @@ pub struct DspSink<K: Sink> {
     /// Kept so [`reopen`](Sink::reopen) can rebuild the analyzer for a new device rate
     /// (its bin→frequency map is rate-dependent).
     spectrum: SpectrumShared,
+    /// Live loudness meter fed the same pre-chain signal as the spectrum analyzer; its
+    /// momentary/short-term/peak readings are published to `live_shared` each block.
+    live_meter: LiveLoudnessMeter,
+    live_shared: LiveLoudnessShared,
+    live_seq: u64,
 }
 
 impl<K: Sink> DspSink<K> {
-    /// Wrap `inner`, reading the chain from `shared` and publishing the analyzer
-    /// spectrum to `spectrum`. The filters and the analyzer are set up for `inner`'s
-    /// sample rate.
-    pub fn new(inner: K, shared: DspShared, spectrum: SpectrumShared) -> Self {
+    /// Wrap `inner`, reading the chain from `shared`, publishing the analyzer spectrum to
+    /// `spectrum` and the live loudness to `live`. The filters, analyzer, and meter are set up
+    /// for `inner`'s sample rate.
+    pub fn new(
+        inner: K,
+        shared: DspShared,
+        spectrum: SpectrumShared,
+        live: LiveLoudnessShared,
+    ) -> Self {
         let info = inner.stream_info();
         let rate = info.sample_rate;
+        let channels = usize::from(info.channels.max(1));
         Self {
             inner,
             units: Vec::new(),
@@ -73,11 +86,14 @@ impl<K: Sink> DspSink<K> {
             shared,
             applied_gen: None,
             rate,
-            channels: usize::from(info.channels.max(1)),
+            channels,
             buf_f32: Vec::new(),
             buf_i32: Vec::new(),
             analyzer: Analyzer::new(rate as f32, spectrum.clone()),
             spectrum,
+            live_meter: LiveLoudnessMeter::new(rate, channels as u8),
+            live_shared: live,
+            live_seq: 0,
         }
     }
 
@@ -145,6 +161,7 @@ impl<K: Sink> Sink for DspSink<K> {
             self.preamps.clear();
             self.applied_gen = None;
             self.analyzer = Analyzer::new(self.rate as f32, self.spectrum.clone());
+            self.live_meter = LiveLoudnessMeter::new(self.rate, self.channels as u8);
         }
         Ok(())
     }
@@ -153,6 +170,18 @@ impl<K: Sink> Sink for DspSink<K> {
         // Feed the analyzer the pre-chain signal (the track's own content) whether
         // or not the chain is engaged — the UI overlays the response to show it.
         self.analyzer.feed(frames, self.channels);
+        // The same tap drives the live loudness meter: publish its momentary / short-term /
+        // peak readings to the shared frame each block for the UI's real-time meter.
+        self.live_meter.feed(frames);
+        self.live_seq += 1;
+        if let Ok(mut f) = self.live_shared.lock() {
+            *f = LiveLoudnessFrame {
+                momentary_lufs: self.live_meter.momentary_lufs(),
+                short_term_lufs: self.live_meter.short_term_lufs(),
+                peak_dbfs: self.live_meter.peak_dbfs(),
+                seq: self.live_seq,
+            };
+        }
         if !self.sync() {
             // Empty/flat/off → bit-exact passthrough (no i32↔f32 round-trip).
             return self.inner.write(frames);
@@ -270,6 +299,7 @@ mod tests {
             inner,
             shared,
             Arc::new(Mutex::new(SpectrumFrame::default())),
+            Arc::new(Mutex::new(LiveLoudnessFrame::default())),
         )
     }
 
@@ -306,10 +336,12 @@ mod tests {
             }
         }
         let spectrum = || Arc::new(Mutex::new(SpectrumFrame::default()));
+        let live = || Arc::new(Mutex::new(LiveLoudnessFrame::default()));
         let exclusive = DspSink::new(
             Inner(true),
             Arc::new(Mutex::new(DspChain::default())),
             spectrum(),
+            live(),
         );
         assert!(
             exclusive.exclusive(),
@@ -319,10 +351,51 @@ mod tests {
             Inner(false),
             Arc::new(Mutex::new(DspChain::default())),
             spectrum(),
+            live(),
         );
         assert!(
             !shared.exclusive(),
             "a shared inner sink reports shared through the wrapper"
+        );
+    }
+
+    /// The DSP sink's live meter publishes the current loudness/peak of the pre-chain signal:
+    /// after a few seconds of a known tone the shared frame carries a finite short-term LUFS
+    /// and a peak near the tone's level.
+    #[test]
+    fn dsp_sink_publishes_live_loudness() {
+        let live = Arc::new(Mutex::new(LiveLoudnessFrame::default()));
+        let mut sink = DspSink::new(
+            Capture {
+                info: info(48_000, 2),
+                out: Vec::new(),
+            },
+            Arc::new(Mutex::new(DspChain::default())), // empty chain = passthrough
+            Arc::new(Mutex::new(SpectrumFrame::default())),
+            live.clone(),
+        );
+        // ~4 s of a -6 dBFS 1 kHz stereo tone fills the 3 s short-term window.
+        let dph = 2.0 * PI * 1_000.0 / 48_000.0;
+        let n = 48_000 * 4;
+        let mut buf = Vec::with_capacity(n * 2);
+        for i in 0..n {
+            let s = (0.5 * 8_388_607.0 * (i as f32 * dph).sin()) as i32;
+            buf.push(s);
+            buf.push(s);
+        }
+        sink.write(&buf).unwrap();
+
+        let f = *live.lock().unwrap();
+        assert!(f.seq > 0, "the meter published frames");
+        assert!(
+            f.short_term_lufs.is_finite() && f.short_term_lufs < 0.0,
+            "a steady tone yields a finite (negative) short-term LUFS, got {}",
+            f.short_term_lufs
+        );
+        assert!(
+            (f.peak_dbfs - (-6.02)).abs() < 1.0,
+            "a half-scale tone peaks near -6 dBFS, got {}",
+            f.peak_dbfs
         );
     }
 
