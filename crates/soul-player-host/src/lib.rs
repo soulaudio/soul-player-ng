@@ -29,7 +29,9 @@ use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 use remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer, TokenStore};
 
-pub use analyzer::{SPECTRUM_COLS, SpectrumFrame, SpectrumShared};
+pub use analyzer::{
+    LiveLoudnessFrame, LiveLoudnessShared, SPECTRUM_COLS, SpectrumFrame, SpectrumShared,
+};
 pub use eq::{
     Band, BandKind, DspChain, DspKind, DspShared, DspUnit, EqUnit, FREQ_MAX, FREQ_MIN,
     GAIN_LIMIT_DB, MAX_BANDS, Profile, ProfileSet, Q_MAX, Q_MIN, band_magnitude_db, default_bands,
@@ -575,6 +577,9 @@ struct Inner {
     /// The latest spectrum-analyzer snapshot, written by the sink (pump thread) and
     /// polled by the UI. The same `Arc` is handed to each new sink across respawns.
     spectrum: SpectrumShared,
+    /// The latest live-loudness snapshot (momentary/short-term LUFS + peak), written by the
+    /// sink's meter (pump thread) and polled by the UI. Same `Arc` across respawns.
+    live_loudness: LiveLoudnessShared,
 }
 
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
@@ -657,6 +662,7 @@ impl PlayerHandle {
                 recorder: Mutex::new(None),
                 dsp: Arc::new(Mutex::new(DspChain::default())),
                 spectrum: Arc::new(Mutex::new(SpectrumFrame::default())),
+                live_loudness: Arc::new(Mutex::new(LiveLoudnessFrame::default())),
             }),
         }
     }
@@ -1444,6 +1450,18 @@ impl PlayerHandle {
         (frame.seq, frame.cols)
     }
 
+    /// The latest live-loudness frame (momentary/short-term LUFS + peak dBFS), for the UI's
+    /// real-time meter. The UI polls this at frame rate; `seq` tells a fresh frame from a
+    /// repeat. All `f32::NEG_INFINITY` at silence / before any playback. Cheap — a brief lock.
+    #[must_use]
+    pub fn live_loudness(&self) -> LiveLoudnessFrame {
+        *self
+            .inner
+            .live_loudness
+            .lock()
+            .expect("live loudness mutex")
+    }
+
     /// Seed the backend's in-memory loudness cache from the app's persisted cache
     /// — `(path, computed track_gain_db)` pairs for previously-untagged tracks the
     /// hybrid-ReplayGain path analyzed in a past session. Call once at startup
@@ -2098,6 +2116,7 @@ impl PlayerHandle {
             exclusive_status,
             self.inner.dsp.clone(),
             self.inner.spectrum.clone(),
+            self.inner.live_loudness.clone(),
             ts,
             forward,
         );

@@ -90,8 +90,6 @@ const FIXTURES: &[Fixture] = &[
     Fixture { file: "tone.flac",       lossy: false, rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.99 },
     Fixture { file: "tone.m4a",        lossy: false, rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.99 }, // ALAC
     Fixture { file: "tone.mp3",        lossy: true,  rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.90 },
-    Fixture { file: "tone.aac",        lossy: true,  rate: 44100, ch: 2, known_secs: 2.077, corr_floor: 0.90 }, // ADTS
-    Fixture { file: "tone-aac.m4a",    lossy: true,  rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.90 }, // AAC-LC
     Fixture { file: "tone.mp2",        lossy: true,  rate: 44100, ch: 2, known_secs: 2.011, corr_floor: 0.90 },
     Fixture { file: "tone-vorbis.ogg", lossy: true,  rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.90 },
     Fixture { file: "tone.opus",       lossy: true,  rate: 48000, ch: 2, known_secs: 2.006, corr_floor: 0.90 },

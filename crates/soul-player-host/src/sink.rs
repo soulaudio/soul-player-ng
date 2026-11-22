@@ -21,7 +21,7 @@ use soul_audio_desktop::sink::CpalSink;
 use soul_player_backend::library::TrackSource;
 use soul_player_backend::{AudioPlayer, Event, OutputConfig};
 
-use crate::analyzer::SpectrumShared;
+use crate::analyzer::{LiveLoudnessShared, SpectrumShared};
 use crate::eq::{DspShared, DspSink};
 
 /// Which sink the actor plays through.
@@ -189,17 +189,19 @@ impl Sink for DeviceSink {
 /// aggregate ([`crate::remote::RemoteLibrary`]) can be spawned with it too —
 /// the same reason [`AudioPlayer::spawn`]'s own parameter is `Arc<dyn
 /// TrackSource>`.
+#[allow(clippy::too_many_arguments)] // cohesive actor wiring: sink mode + the shared handles it threads
 pub(crate) fn build_actor(
     mode: SinkMode,
     output_config: Arc<Mutex<OutputConfig>>,
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
+    live: LiveLoudnessShared,
     lib: Arc<dyn TrackSource>,
     on_event: impl Fn(Event) + Send + 'static,
 ) -> AudioPlayer {
     match mode {
-        // Offline/headless has no audible output, so the EQ/analyzer are moot there.
+        // Offline/headless has no audible output, so the EQ/analyzer/meter are moot there.
         SinkMode::Offline => AudioPlayer::spawn(
             |_cfg| Ok(NullSink::new(48_000, 2)),
             || NullSink::new(48_000, 2),
@@ -208,8 +210,8 @@ pub(crate) fn build_actor(
             on_event,
         ),
         SinkMode::Device => AudioPlayer::spawn(
-            device_sink_factory(status, dsp.clone(), spectrum.clone()),
-            device_park_factory(dsp, spectrum),
+            device_sink_factory(status, dsp.clone(), spectrum.clone(), live.clone()),
+            device_park_factory(dsp, spectrum, live),
             output_config,
             lib,
             on_event,
@@ -226,8 +228,16 @@ pub(crate) fn build_actor(
 fn device_park_factory(
     dsp: DspShared,
     spectrum: SpectrumShared,
+    live: LiveLoudnessShared,
 ) -> impl Fn() -> DspSink<DeviceSink> + Send + 'static {
-    move || DspSink::new(DeviceSink::silent(), dsp.clone(), spectrum.clone())
+    move || {
+        DspSink::new(
+            DeviceSink::silent(),
+            dsp.clone(),
+            spectrum.clone(),
+            live.clone(),
+        )
+    }
 }
 
 /// Build the pump-thread make-sink closure for the real device: for the given
@@ -243,6 +253,7 @@ fn device_sink_factory(
     status: Arc<Mutex<ExclusiveStatus>>,
     dsp: DspShared,
     spectrum: SpectrumShared,
+    live: LiveLoudnessShared,
 ) -> impl Fn(&OutputConfig) -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
     move |cfg: &OutputConfig| {
         let device = open_device_sink(cfg.device.clone(), cfg.exclusive, cfg.strict, &status)?;
@@ -260,7 +271,12 @@ fn device_sink_factory(
             status = ?status.lock().ok().map(|s| format!("{s:?}")),
             "device sink opened"
         );
-        Ok(DspSink::new(device, dsp.clone(), spectrum.clone()))
+        Ok(DspSink::new(
+            device,
+            dsp.clone(),
+            spectrum.clone(),
+            live.clone(),
+        ))
     }
 }
 

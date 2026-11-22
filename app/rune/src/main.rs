@@ -7856,6 +7856,61 @@ mod tests {
         );
     }
 
+    /// The signal-path panel adds the live loudness meter rows (#110): momentary +
+    /// short-term LUFS and the live peak, read from the host's `live_loudness()` tap.
+    /// They render only while a track plays, and are absent when stopped.
+    #[test]
+    fn signal_path_panel_shows_live_meter_rows_while_playing() {
+        use soul_player_host::{SignalPath, SourceFormat};
+        let _config_guard = config::use_test_config_dir();
+        // Whether the live meter rows render in the open panel at a given `playing`.
+        let live_rows_present = |playing: bool| {
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut s = populated_state();
+            scene_queue(&mut s);
+            s.playing = playing;
+            // loudness `None` isolates the LIVE rows from the static whole-track readouts.
+            s.signal_path = Some(SignalPath {
+                source: SourceFormat::Pcm { bits: 24 },
+                codec: SourceCodec::Flac,
+                decoded_rate: 44_100,
+                decoded_bits: 24,
+                channels: 2,
+                replay_gain_db: 0.0,
+                device_rate: 48_000,
+                resampling: true,
+                output_bits: 24,
+                exclusive: false,
+                loudness: None,
+            });
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            click_key(&mut rt, "signal-path");
+            rt.settle_all();
+            rt.frame(0.0);
+            assert!(rt.find("signal-path-panel").is_some(), "the panel renders");
+            [
+                "signal-path-live-heading",
+                "signal-path-momentary",
+                "signal-path-shortterm",
+                "signal-path-livepeak",
+            ]
+            .iter()
+            .all(|k| rt.find(k).is_some())
+        };
+        assert!(
+            live_rows_present(true),
+            "the live meter rows render while a track plays"
+        );
+        assert!(
+            !live_rows_present(false),
+            "the live meter rows are absent when not playing"
+        );
+    }
+
     /// The language picker is the themed `views::dropdown`: pressing the trigger
     /// opens a floating panel (mounted at the root, escaping the settings scroll
     /// clip), the choices render, and picking one commits the locale + closes.
