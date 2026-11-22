@@ -119,7 +119,7 @@ fn genre_tile(p: &Palette, slot: usize, g: &Genre, card_w: f32) -> El {
         .press(p.fg.alpha(fx::PRESS))
         .child(title_row)
         .child(
-            text(t!("genre.trackCount", count => g.ids.len()).to_string())
+            text(crate::views::library::tracks_label(g.ids.len()))
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
         )
@@ -223,12 +223,11 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         .filter_map(|id| s.library.iter().find(|t| t.id == *id))
         .map(|t| t.duration_secs)
         .sum();
-    let meta = t!(
-        "detail.tracksAndDuration",
-        count => genre.ids.len(),
-        dur => fmt_total_dur(total)
-    )
-    .to_string();
+    let meta = format!(
+        "{} · {}",
+        crate::views::library::tracks_label(genre.ids.len()),
+        fmt_total_dur(total)
+    );
 
     let hero = detail_hero(
         s,
@@ -442,8 +441,8 @@ mod tests {
             "Rock's track count renders, got: {texts:?}"
         );
         assert!(
-            texts.iter().any(|t| t == "1 tracks"),
-            "Jazz's track count renders too, got: {texts:?}"
+            texts.iter().any(|t| t == "1 track"),
+            "Jazz's track count renders too (singular), got: {texts:?}"
         );
     }
 
