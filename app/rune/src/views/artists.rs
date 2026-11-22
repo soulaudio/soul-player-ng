@@ -253,6 +253,8 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 &artist.ids,
                 i,
                 t,
+                false, // one artist: artist column is constant
+                true,  // but the top songs span albums
             ));
         }
     }
