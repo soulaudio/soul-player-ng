@@ -34,6 +34,8 @@ mod config;
 #[cfg(test)]
 mod i18n_tests;
 mod logging;
+#[cfg(unix)]
+mod signal_quit;
 // macOS-only at runtime; still compiled for tests everywhere so its pure mapping is
 // unit-tested on Linux/Windows CI too.
 #[cfg(any(target_os = "macos", test))]
@@ -3722,6 +3724,12 @@ fn main() -> anyhow::Result<()> {
         .on_focus(|s: &mut State, focused: bool, _tx: &mut Tx| s.focused = focused);
     let ah = app.handle();
     let _ = media_ah_cell.set(app.handle());
+    // kill / Ctrl-C / a closed terminal quit like ⌘Q (quit hooks run, no crash report).
+    #[cfg(unix)]
+    {
+        let qh = ah.clone();
+        signal_quit::spawn(move |_| qh.quit());
+    }
     // Stash a self-handle in State (once, on the main thread) so the managed-library
     // organize flow can post plan/apply progress back from its worker threads. This
     // self-posting update runs on the first frame; `update` only borrows `ah`, so it
