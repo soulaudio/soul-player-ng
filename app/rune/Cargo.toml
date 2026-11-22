@@ -136,3 +136,11 @@ formats = ["nsis"]
 # (anomalyco/rune#157): receiving Finder's open-documents event needs AppKit code the app
 # won't carry itself (`unsafe_code = "forbid"`). `open_files` already handles the files once
 # they arrive; launch arguments work today. The removed setup is in git history (#265).
+
+[package.metadata.packager.macos]
+# Ad-hoc signature ("-") until Developer ID signing + notarization (deferred). The linker
+# signs only the executable; this seals the whole bundle (Info.plist and resources bound
+# to the code, hardened runtime), so `codesign --verify --deep --strict` passes, the DMG
+# and the updater's .app.tar.gz carry an intact signature, and a downloaded copy gets
+# Gatekeeper's "Open Anyway" path. No identity, keychain or secret is involved.
+signing-identity = "-"

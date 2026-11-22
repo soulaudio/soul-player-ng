@@ -36,6 +36,12 @@ def main() -> int:
     ap.add_argument("--format", required=True, help="nsis | app | appimage | wix")
     ap.add_argument("--stage-dir", required=True, help="dir to copy the artifact into")
     ap.add_argument("--meta-out", required=True, help="path to write <key>.meta.json")
+    ap.add_argument(
+        "--asset-name",
+        help="stage under this (GitHub-safe) name instead of the artifact's own — needed "
+        "when two targets produce the same file name (e.g. macOS aarch64 + x86_64 both "
+        "emit `Soul Player.app.tar.gz`)",
+    )
     a = ap.parse_args()
 
     sigs = sorted(Path(a.out_dir).rglob("*.sig"))
@@ -52,7 +58,7 @@ def main() -> int:
         print(f"error: signed artifact {artifact} is missing", file=sys.stderr)
         return 1
 
-    safe_name = github_safe(artifact.name)
+    safe_name = github_safe(a.asset_name or artifact.name)
     stage = Path(a.stage_dir)
     stage.mkdir(parents=True, exist_ok=True)
     shutil.copy2(artifact, stage / safe_name)

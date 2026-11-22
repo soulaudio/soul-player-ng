@@ -1,9 +1,9 @@
 name: Release
 
-# TAG-TRIGGERED ONLY. This never runs on push/PR, so it does not consume the
-# day-to-day Actions budget (the reason the CI workflows are disabled). Cut a
-# release by bumping app/rune/Cargo.toml, committing, then pushing a matching
-# `vX.Y.Z` tag — or run it manually with the tag as input.
+# TAG-TRIGGERED ONLY — never on push/PR. Cut a release by bumping
+# app/rune/Cargo.toml, committing, then pushing a matching `vX.Y.Z` tag, or run it
+# manually with the tag as input. `dry_run: true` builds, packages and verifies
+# everything but publishes nothing (see app/rune/PACKAGING.md).
 #
 # It builds + SIGNS the bundles for each OS with the updater private key (a repo
 # secret, independent of OS code-signing — see app/rune/src/update.rs), then
@@ -16,8 +16,12 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to build (e.g. v0.2.0) — must match app/rune/Cargo.toml"
-        required: true
+        description: "Release tag to build (e.g. v0.2.0) — must match app/rune/Cargo.toml. Empty with dry_run: the manifest version."
+        required: false
+      dry_run:
+        description: "Build, package and verify every platform, but publish nothing (artifacts stay on the run)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write # create the release and upload assets
@@ -46,9 +50,18 @@ jobs:
       - id: v
         shell: bash
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          ver="${tag#v}"
           cargo_ver=$(grep -m1 '^version' app/rune/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ github.event.inputs.tag }}"
+            if [ -z "$tag" ]; then
+              [ "${{ github.event.inputs.dry_run }}" = "true" ] \
+                || { echo "::error::a tag is required unless dry_run is set"; exit 1; }
+              tag="v$cargo_ver"
+            fi
+          else
+            tag="${{ github.ref_name }}"
+          fi
+          ver="${tag#v}"
           if [ "$ver" != "$cargo_ver" ]; then
             echo "::error::tag $tag implies version $ver but app/rune/Cargo.toml is $cargo_ver — bump the manifest and retag."
             exit 1
@@ -65,9 +78,20 @@ jobs:
           - os: windows-latest
             target_key: windows-x86_64
             format: nsis
-          - os: macos-latest # Apple Silicon runner
+          # macOS ships per architecture (no universal binary): Apple silicon and Intel.
+          # Unsigned by Apple for now — the bundle carries a sealed ad-hoc signature
+          # (Cargo.toml `packager.macos.signing-identity = "-"`); Developer ID +
+          # notarization come later.
+          - os: macos-15
             target_key: macos-aarch64
             format: app
+            arch: arm64
+            asset_arch: aarch64
+          - os: macos-15-intel
+            target_key: macos-x86_64
+            format: app
+            arch: x86_64
+            asset_arch: x86_64
           - os: ubuntu-latest
             target_key: linux-x86_64
             format: appimage
@@ -125,17 +149,30 @@ jobs:
             --target-key ${{ matrix.target_key }} \
             --format ${{ matrix.format }} \
             --stage-dir dist \
-            --meta-out dist/${{ matrix.target_key }}.meta.json
+            --meta-out dist/${{ matrix.target_key }}.meta.json \
+            ${{ runner.os == 'macOS' && format('--asset-name Soul-Player_{0}_{1}.app.tar.gz', needs.guard.outputs.version, matrix.asset_arch) || '' }}
 
       # macOS: also ship a drag-to-Applications DMG for first installs (the updater
-      # keeps using the signed .app.tar.gz above). Same .app, so no rebuild. Renamed
+      # keeps using the signed .app.tar.gz above). Same binary, so no rebuild. Renamed
       # without spaces so the release asset URL is stable.
       - name: Package DMG (macOS)
         if: runner.os == 'macOS'
         working-directory: app/rune
         run: |
+          rm -f target/release/*.dmg
           cargo packager --release -f dmg
-          cp target/release/*.dmg "../../dist/Soul-Player_${{ needs.guard.outputs.version }}_aarch64.dmg"
+          cp target/release/*.dmg "../../dist/Soul-Player_${{ needs.guard.outputs.version }}_${{ matrix.asset_arch }}.dmg"
+
+      # Nothing ships unverified: the app inside the DMG must carry an intact sealed
+      # signature, the right architecture / identity / version, and actually launch and
+      # render; the updater tarball's signature must be intact too.
+      - name: Verify the macOS bundle
+        if: runner.os == 'macOS'
+        run: |
+          .github/scripts/verify-macos-bundle.sh \
+            "${{ needs.guard.outputs.version }}" "${{ matrix.arch }}" \
+            "dist/Soul-Player_${{ needs.guard.outputs.version }}_${{ matrix.asset_arch }}.dmg" \
+            "dist/Soul-Player_${{ needs.guard.outputs.version }}_${{ matrix.asset_arch }}.app.tar.gz"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -144,6 +181,7 @@ jobs:
 
   publish:
     needs: [guard, package]
+    if: ${{ github.event.inputs.dry_run != 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -180,3 +218,10 @@ jobs:
             dist/latest.json
           fail_on_unmatched_files: false
           generate_release_notes: true # grouped per .github/release.yml
+          # Prepended to the generated notes.
+          body: |
+            ## Install
+
+            - **macOS** — download the DMG for your Mac (`aarch64` = Apple silicon, `x86_64` = Intel) and drag Soul Player to Applications. The app isn't notarized by Apple yet, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Soul Player.app"`). Later updates install in-app.
+            - **Windows** — run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
+            - **Linux** — `chmod +x` the AppImage and run it.
