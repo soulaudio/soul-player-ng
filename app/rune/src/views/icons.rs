@@ -37,6 +37,14 @@ pub static SHUFFLE: Icon = stroke_icon!(
 /// indicator; it pulses (opacity) while a library scan runs.
 pub static ACTIVITY: Icon = stroke_icon!("activity", r#"<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>"#);
 
+/// Lucide "user": a person silhouette, for the circular artist-card avatar
+/// (the original overlays this profile glyph on the artist's artwork). Source:
+/// lucide.dev/icons/user.
+pub static USER: Icon = stroke_icon!(
+    "user",
+    r#"<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>"#
+);
+
 pub static SKIP_BACK: Icon = stroke_icon!(
     "skip-back",
     r#"<polygon points="19 20 9 12 19 4 19 20"/><line x1="5" x2="5" y1="19" y2="5"/>"#
