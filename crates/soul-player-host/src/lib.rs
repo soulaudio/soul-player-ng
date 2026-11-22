@@ -3,6 +3,16 @@
 //! `PlayerHandle` the Rune UI head binds to.
 #![forbid(unsafe_code)]
 
+// Licensing guard: AAC is a Via LA patent pool and a clean-room decoder doesn't clear it, so
+// soul-audio-core keeps AAC decode behind an opt-in `aac` feature that shipped soul products
+// (this player included) must leave OFF. Cargo unifies features across the whole graph, so
+// this fails the BUILD if anything in it turns AAC on.
+const _: () = assert!(
+    !soul_audio_core::AAC_ENABLED,
+    "soul-audio-core's `aac` feature is on: shipped soul products must not decode AAC (patent \
+     licensing). Remove `features = [\"aac\"]` wherever it was added."
+);
+
 pub mod analyzer;
 pub mod device_transport;
 pub mod eq;
