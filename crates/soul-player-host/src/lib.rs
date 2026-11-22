@@ -2123,6 +2123,23 @@ impl PlayerHandle {
         *guard = Some(actor);
     }
 
+    /// The library track id for each of `paths` (`None` where the file isn't in the library),
+    /// matched on canonicalized paths so symlinks / `..` / case-preserving spellings still hit.
+    /// Used when the OS asks the app to open files (Finder "Open With", a launch argument).
+    pub fn track_ids_for_paths(&self, paths: &[PathBuf]) -> Vec<Option<u32>> {
+        let canon =
+            |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+        let index: std::collections::HashMap<PathBuf, u32> = self
+            .analysis_jobs()
+            .into_iter()
+            .map(|(id, p)| (canon(&p), id))
+            .collect();
+        paths
+            .iter()
+            .map(|p| index.get(&canon(p)).copied())
+            .collect()
+    }
+
     /// `(track_id, absolute_path)` for every track in the current library — the batch the
     /// background loudness sweep enqueues. Empty if no library is loaded.
     fn analysis_jobs(&self) -> Vec<(u32, PathBuf)> {
@@ -3112,6 +3129,25 @@ mod tests {
         let up = h.remove_folder(a.path()).unwrap();
         assert_eq!(up.views.len(), 1, "only b remains");
         assert_eq!(h.watched_folders(), vec![b.path().to_path_buf()]);
+    }
+
+    #[test]
+    fn track_ids_for_paths_finds_library_files_by_canonical_path() {
+        let a = folder_with("open_paths", &["a.wav", "b.wav"]);
+        let h = PlayerHandle::offline();
+        h.set_folders(&[a.path().to_path_buf()]).unwrap();
+        let a_wav = a.path().join("a.wav");
+        // The same file through a `..` detour still resolves (Finder hands over real paths,
+        // a launch argument may not be canonical).
+        let detour = a
+            .path()
+            .join("..")
+            .join(a.path().file_name().unwrap())
+            .join("b.wav");
+        let ids = h.track_ids_for_paths(&[a_wav, detour, a.path().join("missing.wav")]);
+        assert!(ids[0].is_some() && ids[1].is_some(), "{ids:?}");
+        assert_ne!(ids[0], ids[1], "two files, two ids");
+        assert_eq!(ids[2], None, "not in the library");
     }
 
     #[test]
