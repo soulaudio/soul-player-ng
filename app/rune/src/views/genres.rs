@@ -16,7 +16,7 @@ use soul_player_host::TrackView;
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::albums::{detail_track_row, fmt_total_dur};
+use crate::views::albums::{detail_track_header, detail_track_row, fmt_total_dur};
 use crate::views::detail_page::{HeroArt, detail_actions, detail_hero};
 use crate::views::grid;
 use crate::views::icons;
@@ -291,17 +291,25 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
                     &shown,
                     i,
                     t,
+                    true, // a genre spans many artists
+                    true, // and many albums
                 ));
             }
         }
     }
 
+    let mut content = col()
+        .key("genre-detail-content")
+        .padding(space::PANE)
+        .child(hero)
+        .child(search);
+    // A column header above the track list (the old app's TrackList header), but
+    // only when there are rows to label.
+    if !shown.is_empty() {
+        content = content.child(detail_track_header(p, true, true));
+    }
     col().key("genre-detail").grow(1.0).min_h(0.0).child(
-        col()
-            .key("genre-detail-content")
-            .padding(space::PANE)
-            .child(hero)
-            .child(search)
+        content
             .child(list)
             .scroll(ScrollSpec {
                 stick_bottom: false,
