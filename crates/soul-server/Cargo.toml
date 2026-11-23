@@ -11,7 +11,7 @@ argon2 = "0.5"
 axum = "0.7"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 rand = "0.8"
 ring = "0.17"
 rpassword = "7"
