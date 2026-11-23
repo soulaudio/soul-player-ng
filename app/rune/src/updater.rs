@@ -66,6 +66,10 @@ pub(crate) struct UpdateUi {
     /// Whether this build updates at all (release build, no
     /// `SOUL_PLAYER_NO_UPDATE`). Off, the page says so instead of offering buttons.
     pub(crate) supported: bool,
+    /// When `supported` is false, whether that is because a package manager
+    /// owns this install (apt / dnf / flatpak) rather than because the build
+    /// has updates compiled out. The page says different things.
+    pub(crate) managed_elsewhere: bool,
     /// The version already announced with an OS notification this session, so
     /// the scheduled re-checks don't repeat it.
     notified: Option<String>,
@@ -81,6 +85,7 @@ impl UpdateUi {
             auto_check,
             auto_install,
             supported: update::enabled(),
+            managed_elsewhere: update::managed_elsewhere(),
             notified: None,
         }
     }

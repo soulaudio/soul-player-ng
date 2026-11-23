@@ -114,6 +114,22 @@ fn manager_owned(in_flatpak: bool, is_appimage: bool, exe: Option<&std::path::Pa
     exe.is_some_and(|p| p.starts_with("/usr") || p.starts_with("/opt"))
 }
 
+/// Whether something else is responsible for updating this install — a package
+/// manager or Flatpak, rather than the app itself.
+///
+/// [`enabled`] already refuses to update in that case; this exists so the
+/// Settings page can say WHICH case it is. "Updates are turned off for this
+/// build" is true of a debug build and misleading on a .deb: that user's
+/// updates are not off, they arrive through `apt`. Telling them otherwise
+/// invites a bug report about an update button that is working as designed.
+pub fn managed_elsewhere() -> bool {
+    manager_owned(
+        crate::in_flatpak(),
+        std::env::var_os("APPIMAGE").is_some(),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
 /// The manifest URL to check. `SOUL_PLAYER_UPDATE_ENDPOINT` overrides it — handy
 /// for a self-hosted update server, and how the tests point the updater at a
 /// local one; otherwise the stable GitHub Releases [`ENDPOINT`].
