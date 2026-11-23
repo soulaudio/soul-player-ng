@@ -14,15 +14,29 @@ Downloads are on the [releases page](https://github.com/soulaudio/soul-player-ng
 | | | updates via |
 |---|---|---|
 | `.deb` | Debian 12+, Ubuntu 22.04+ | `apt upgrade` |
-| `.rpm` | Fedora, openSUSE, RHEL | `dnf upgrade` |
+| `.rpm` | Fedora, openSUSE, RHEL 10+ | `dnf upgrade` |
 | `.AppImage` | anything with glibc 2.35+ | the app itself |
 | Flatpak | anything with Flatpak | `flatpak update` |
 
-The glibc floor is **2.35**, verified by installing and running on Ubuntu 22.04
-(2.35), Debian 12 (2.36) and Ubuntu 24.04 (2.39). The binary also references two
-glibc 2.39 symbols (`pidfd_spawnp`, `pidfd_getpid`, from Rust's process
-spawning), but they are *weak* — glibc falls back to the older path when they
-are absent, which is why older releases work.
+The glibc floor is **2.35**. The binary also references two glibc 2.39 symbols
+(`pidfd_spawnp`, `pidfd_getpid`, from Rust's process spawning), but those are
+*weak* — glibc falls back when they are absent — so 2.35 is the real
+requirement, and both packages declare it so an older system is refused rather
+than left with something that cannot start. **RHEL 9 is below the floor**
+(glibc 2.34); RHEL 10 is fine.
+
+Verified by installing the package and rendering a frame on each of:
+
+| distro | glibc | |
+|---|---|---|
+| Ubuntu 22.04 | 2.35 | `.deb` |
+| Debian 12 | 2.36 | `.deb` |
+| Ubuntu 24.04 | 2.39 | `.deb` |
+| Fedora 45 | 2.42 | `.rpm` |
+| openSUSE Tumbleweed | 2.42 | `.rpm` |
+
+Debian 11 (2.31) and RHEL 9 (2.34) are correctly refused by the package
+manager.
 
 ```sh
 sudo apt install ./soul-player-rune_*_amd64.deb     # Debian / Ubuntu (arm64 for ARM)

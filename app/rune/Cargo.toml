@@ -221,7 +221,17 @@ section = "sound"
 # Ubuntu 24.04+ and Debian 13 ship the `t64` names, Debian 12 and Ubuntu 22.04
 # the untagged ones. Listing both keeps one package installable on both.
 depends = [
-    "libc6",
+    # The glibc floor, stated rather than implied. Without a version here apt
+    # will happily install onto an older release and leave the user with a
+    # binary that cannot load — the .rpm refuses in that situation, because
+    # rpm derives versioned glibc requires from the ELF automatically, and the
+    # two package types should behave the same.
+    #
+    # 2.35 is the highest NON-WEAK glibc version the binary references (the
+    # 2.39 ones — pidfd_spawnp, pidfd_getpid — are weak and fall back).
+    # `packaging/build-linux.sh` re-derives that from the built binary and
+    # fails if it no longer matches, so this cannot quietly go stale.
+    "libc6 (>= 2.35)",
     "libgcc-s1",
     # Audio: cpal's ALSA backend (the Linux sink, shared and exclusive).
     "libasound2t64 | libasound2",
