@@ -405,6 +405,12 @@ fn os_transport_controls_drive_playback() {
 /// content is irrelevant here (this measures the clock, not the audio). Silence
 /// also keeps a developer running these locally from being blasted by a tone.
 fn staged_long_track(seconds: u32) -> tempfile::TempDir {
+    staged_long_tracks(seconds, 1)
+}
+
+/// `staged_long_track` with `count` identical tracks, for a test that needs
+/// somewhere to advance TO without reintroducing short-track boundaries.
+fn staged_long_tracks(seconds: u32, count: usize) -> tempfile::TempDir {
     const RATE: u32 = 44_100;
     const CHANNELS: u16 = 2;
     const BITS: u16 = 16;
@@ -430,7 +436,10 @@ fn staged_long_track(seconds: u32) -> tempfile::TempDir {
     wav.extend_from_slice(&data_len.to_le_bytes());
     wav.resize(wav.len() + data_len as usize, 0);
 
-    std::fs::write(album.join("timing.wav"), &wav).expect("write the timing fixture");
+    for i in 0..count {
+        std::fs::write(album.join(format!("timing-{i:04}.wav")), &wav)
+            .expect("write the timing fixture");
+    }
     dir
 }
 
@@ -488,7 +497,15 @@ fn playback_advances_at_wall_clock_rate() {
 #[test]
 #[ignore = "needs a D-Bus session bus and a display; see the module docs"]
 fn next_advances_the_queue() {
-    let library = staged_library("meta.flac", "flac", 1.5);
+    // TWO LONG tracks, not the 1.5 s fixture copies. With short tracks the
+    // position cycles 0 -> 1.5 s continuously, so "the position dropped below
+    // 0.4 s" is indistinguishable from the track simply ending on its own, and
+    // the window in which the reading is meaningful is a fraction of a second
+    // wide. That ambiguity made this test the only flaky one in the suite (it
+    // timed out once on main having passed on the branch). A 60 s track cannot
+    // advance by itself within the test, so a restarted position can ONLY be
+    // the Next we sent.
+    let library = staged_long_tracks(60, 2);
     let _app = App::launch(library.path(), true);
     let conn = session_bus();
     wait_for_mpris(&conn);
@@ -501,9 +518,24 @@ fn next_advances_the_queue() {
         (position_us(&conn) > 400_000).then_some(())
     });
     call(&conn, "Next");
-    wait_for("Next to restart the position on a new track", || {
-        (position_us(&conn) < 400_000).then_some(())
-    });
+
+    // Hand-rolled rather than `wait_for` so a timeout can SAY what the player
+    // was doing. The one failure on record reported only "timed out", which was
+    // not enough to tell a stalled deck from a player that had stopped.
+    let deadline = Instant::now() + SETTLE;
+    loop {
+        let pos = position_us(&conn);
+        if pos < 400_000 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Next did not restart the position on a new track within {SETTLE:?}; \
+             status={}, position={pos} us",
+            playback_status(&conn)
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
     assert_eq!(
         playback_status(&conn),
         "Playing",
