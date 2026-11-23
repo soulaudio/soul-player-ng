@@ -5,6 +5,35 @@ all-Rust UI — [Rune] (GPU-rendered, no webview) over the [`soul-audio-core`][c
 engine: a from-scratch `no_std` / no-alloc / `forbid(unsafe_code)` decode →
 resample → playback library.
 
+## Install
+
+Downloads are on the [releases page](https://github.com/soulaudio/soul-player-ng/releases/latest).
+
+**Linux** — four options, all x86_64:
+
+| | | updates via |
+|---|---|---|
+| `.deb` | Debian 12+, Ubuntu 22.04+ | `apt upgrade` |
+| `.rpm` | Fedora, openSUSE, RHEL | `dnf upgrade` |
+| `.AppImage` | anything with glibc 2.39+ | the app itself |
+| Flatpak | anything with Flatpak | `flatpak update` |
+
+```sh
+sudo apt install ./soul-player-rune_*_amd64.deb     # Debian / Ubuntu
+sudo dnf install ./soul-player-0.4.0-1.x86_64.rpm   # Fedora
+chmod +x Soul-Player*.AppImage && ./Soul-Player*.AppImage
+```
+
+Only the AppImage updates itself. The others are owned by their package
+manager, so the app does not offer an in-app update there — it would have to
+overwrite a root-owned file, which cannot work.
+
+Bit-perfect exclusive output needs direct access to the sound card. Under
+Flatpak that is the `--device=all` permission; revoking it in Flatseal leaves
+shared playback working and only disables exclusive mode.
+
+**Windows** — the `-setup.exe` installer. **macOS** — the `.dmg`.
+
 ## Layout
 
 | Path | Role |
