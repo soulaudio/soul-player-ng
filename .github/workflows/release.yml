@@ -212,8 +212,12 @@ jobs:
         run: cargo packager --release -f ${{ matrix.format }}
 
       # The AppImage runs on any distro whose glibc is at least the build's. Keep the floor
-      # at Ubuntu 24.04 LTS (2.39): v0.3.0, built on a newer image, needed 2.43 and does not
-      # start on 24.04 (the release e2e caught it).
+      # at Ubuntu 24.04 LTS (2.39). BOTH published releases predate this check and are built
+      # against 2.43 (new libm float symbols — asinf/acosf/atan2f/…), so neither v0.2.0 nor
+      # v0.3.0 starts on 24.04: `libm.so.6: version 'GLIBC_2.43' not found`. That is the
+      # whole reason this gate exists — the e2e's "previous release runs here" leg reports
+      # it as a warning rather than a failure, because a published artifact cannot be fixed
+      # retroactively and blocking every future release on it would be worse.
       - name: glibc floor (Linux)
         if: runner.os == 'Linux'
         run: |
