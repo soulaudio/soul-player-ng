@@ -2815,6 +2815,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     overlays.extend(views::titlebar::overlay(s, &p));
     overlays.extend(views::add_to_playlist::overlay(s, &p));
     overlays.extend(views::artwork_crop::overlay(s, &p, cx));
+    overlays.extend(views::playlists::new_playlist_overlay(s, &p));
     // The crash-report modal draws over everything, on any route — last, so it
     // stacks above any panel still mounted beneath it.
     if let Some(dialog) = crash_overlay(s, &p) {
