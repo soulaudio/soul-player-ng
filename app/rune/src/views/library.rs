@@ -572,7 +572,34 @@ fn search_bar(s: &State, p: &Palette) -> El {
                 }),
         );
     }
-    page_search_bar("tracks", field, None)
+    page_search_bar("tracks", field, Some(sort_toggle(s, p)))
+}
+
+/// The "Sort" toggle in the Tracks top bar (mirrors the Albums "Filters" button):
+/// reveals/hides the sort-pill bar, so the pills aren't shown by default. Lit while
+/// open or while a client-side loudness sort is active (so it reads as "a non-default
+/// sort is on" even when collapsed).
+fn sort_toggle(s: &State, p: &Palette) -> El {
+    let lit = s.tracks_sort_open || s.loudness_sort.is_some();
+    row()
+        .key("tracks-sort-toggle")
+        .role("button")
+        .label(t!("library.sort").to_string())
+        .focusable(true)
+        .center_y()
+        .gap(space::XS)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if lit { p.accent.alpha(0.2) } else { p.muted })
+        .hover(p.fg.alpha(fx::HOVER))
+        .child(
+            text(t!("library.sort").to_string())
+                .font(type_::ITEM)
+                .color(if lit { p.accent } else { p.fg }),
+        )
+        .on_press(|st: &mut State| st.tracks_sort_open = !st.tracks_sort_open)
 }
 
 /// The library's ~38-track testdata set fits comfortably in a plain scrolled
@@ -668,13 +695,18 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             p,
         )
     };
-    col()
+    let mut page = col()
         .key("library-page")
         .grow(1.0)
         .min_h(0.0)
-        .child(search_bar(s, p))
-        .child(sort_bar(s, p))
-        .child(track_header_row(p, width, s.show_loudness_columns))
+        .child(search_bar(s, p));
+    // The sort-pill bar is revealed by the top bar's "Sort" toggle, so the Tracks
+    // page opens clean like the other browse pages rather than showing a row of
+    // pills by default.
+    if s.tracks_sort_open {
+        page = page.child(sort_bar(s, p));
+    }
+    page.child(track_header_row(p, width, s.show_loudness_columns))
         .child(body)
 }
 
