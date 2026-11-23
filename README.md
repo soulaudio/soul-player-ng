@@ -45,7 +45,7 @@ the other two platforms ship in their SDKs. On Debian/Ubuntu:
 ```sh
 sudo apt-get install -y pkg-config \
   libasound2-dev libdbus-1-dev libssl-dev \
-  libxkbcommon-dev libwayland-dev mesa-vulkan-drivers
+  libxkbcommon-dev libwayland-dev libxcb1-dev mesa-vulkan-drivers
 ```
 
 | Package | Pulled in by |
@@ -54,10 +54,38 @@ sudo apt-get install -y pkg-config \
 | `libdbus-1-dev` | `keyring` → Secret Service (remote-source tokens) |
 | `libssl-dev` | `reqwest` → `native-tls` → `openssl-sys` |
 | `libxkbcommon-dev`, `libwayland-dev` | `winit` (Rune head only) |
+| `libxcb1-dev` | libX11's transport — the binary **links** `-lxcb`, so the runtime `libxcb1` alone is not enough |
 | `mesa-vulkan-drivers` | a Vulkan ICD for `wgpu` — any hardware driver also does |
 
 Running the Rune head's tests headlessly (what CI does) needs `xvfb` on top, and
 a software adapter if the box has no GPU: `xvfb-run -a cargo test`.
+
+#### Desktop-session E2E
+
+`app/rune/tests/linux_session_e2e.rs` launches the real binary and checks what it
+presents to the desktop — the MPRIS session, its metadata and artwork, the
+transport controls a media key drives, playback advancing at wall-clock rate, the
+window's `app_id`, and a clean exit on SIGTERM. These are the failures that only
+exist at the session boundary, where no unit test can reach.
+
+They need a session bus and a display, so they are `#[ignore]`d by default:
+
+```sh
+cd app/rune
+dbus-run-session -- xvfb-run -a cargo test --test linux_session_e2e -- --ignored
+```
+
+Two caveats. The `app_id` test reads the compositor's window tree, so it needs a
+**sway** session rather than Xvfb; elsewhere it prints a notice and skips, and
+CI's headless Wayland job is what actually enforces it. And the suite needs a
+working audio sink: on a machine without one, start a null sink first —
+
+```sh
+pulseaudio -D --exit-idle-time=-1 -n --load="module-null-sink sink_name=ci_sink" \
+  --load="module-always-sink"
+```
+
+CI runs the whole thing inside headless sway; see the `rune (Wayland)` job.
 
 #### Nix / NixOS
 

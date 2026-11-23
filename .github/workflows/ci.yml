@@ -43,8 +43,12 @@ jobs:
       # soul-player-host links cpal → ALSA on Linux. Windows uses WASAPI and macOS
       # CoreAudio, which need no extra packages. It also links keyring →
       # dbus-secret-service → libdbus-sys (the OS keychain / Secret Service),
-      # which needs libdbus-1-dev at build time on Linux.
-      - name: Audio + keychain build deps (cpal/ALSA, D-Bus — Linux only)
+      # which needs libdbus-1-dev at build time on Linux, and reqwest →
+      # native-tls → openssl-sys, which needs libssl-dev. (libssl-dev happens to
+      # be preinstalled on ubuntu-latest, so the build passed here without it
+      # while failing on a clean Linux box — it is declared explicitly so this
+      # list is the real dependency set, not the runner image's leftovers.)
+      - name: Audio + keychain + TLS build deps (cpal/ALSA, D-Bus, OpenSSL — Linux only)
         if: runner.os == 'Linux'
         run: |
           # Ubuntu's apt mirrors intermittently stall under GitHub Actions fleet
@@ -55,7 +59,7 @@ jobs:
           for attempt in 1 2 3 4 5; do
             if sudo apt-get update \
               && sudo apt-get install -y -o Acquire::Retries=3 \
-                   libasound2-dev libdbus-1-dev pkg-config; then
+                   libasound2-dev libdbus-1-dev libssl-dev pkg-config; then
               exit 0
             fi
             echo "::warning::apt attempt $attempt failed, retrying in $((attempt * 5))s"
@@ -165,8 +169,8 @@ jobs:
           for attempt in 1 2 3 4 5; do
             if sudo apt-get update \
               && sudo apt-get install -y -o Acquire::Retries=3 \
-                   libxkbcommon-x11-0 libxkbcommon-dev libwayland-dev \
-                   mesa-vulkan-drivers vulkan-tools libasound2-dev libdbus-1-dev pkg-config xvfb; then
+                   libxkbcommon-x11-0 libxkbcommon-dev libwayland-dev libxcb1-dev \
+                   mesa-vulkan-drivers vulkan-tools libasound2-dev libdbus-1-dev libssl-dev pkg-config xvfb; then
               exit 0
             fi
             echo "::warning::apt attempt $attempt failed, retrying in $((attempt * 5))s"
@@ -215,17 +219,161 @@ jobs:
           scripts/e2e-now-playing-macos.sh
           EXCLUSIVE=1 scripts/e2e-now-playing-macos.sh
 
+  rune-wayland:
+    name: rune (Wayland)
+    # The `rune` job above runs under Xvfb — X11 only. Wayland is the default
+    # session on most current Linux desktops AND a materially different path:
+    # winit picks a different backend, wgpu a different surface, and (the reason
+    # this job exists) Rune places no window controls there, so the app draws its
+    # own. A Wayland-specific regression is invisible to an Xvfb run by
+    # construction, which is exactly how the "no _ [] X on Wayland" bug shipped.
+    #
+    # wlroots' headless backend gives a real compositor with no monitor and no
+    # input hardware; `WLR_RENDERER=pixman` keeps the COMPOSITOR off the GPU,
+    # while the app still gets software Vulkan from mesa (Lavapipe).
+    runs-on: ubuntu-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+      CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: app/rune
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - name: Authenticate the private soul-audio-core git dependency
+        if: ${{ env.CORE_REPO_TOKEN != '' }}
+        working-directory: .
+        run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - name: Wayland compositor + build deps
+        working-directory: .
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update \
+              && sudo apt-get install -y -o Acquire::Retries=3 \
+                   sway \
+                   libxkbcommon-dev libwayland-dev libxcb1-dev \
+                   mesa-vulkan-drivers vulkan-tools \
+                   xwayland pulseaudio pulseaudio-utils libasound2-plugins dbus-x11 \
+                   libasound2-dev libdbus-1-dev libssl-dev pkg-config; then
+              exit 0
+            fi
+            echo "::warning::apt attempt $attempt failed, retrying in $((attempt * 5))s"
+            sleep $((attempt * 5))
+          done
+          echo "::error::apt-get failed after 5 attempts"; exit 1
+
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: app/rune
+
+      - name: Test (headless Wayland)
+        # The suite runs as a CHILD of sway (its config's `exec`) so it inherits
+        # the compositor's full session environment — both WAYLAND_DISPLAY and
+        # the Xwayland DISPLAY. That matters: a real Wayland desktop always has
+        # Xwayland running, winit still prefers Wayland when WAYLAND_DISPLAY is
+        # set, and parts of the suite wedge in a Wayland session with no X at
+        # all — a configuration no actual user has.
+        #
+        # Presetting WAYLAND_DISPLAY instead would make sway try to NEST inside
+        # an existing compositor rather than take its headless backend.
+        #
+        # `timeout` bounds the whole thing: a wedged compositor or test must
+        # FAIL the job, never hang it until GitHub's own limit.
+        run: |
+          # A runner has no XDG_RUNTIME_DIR of its own, and BOTH the audio server
+          # and the compositor put their sockets there — if they disagree, the app
+          # finds no sink and the session E2E sees a player that never plays.
+          export XDG_RUNTIME_DIR=/tmp/soul-ci-runtime
+          mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+          export WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1
+          unset WAYLAND_DISPLAY DISPLAY
+          rm -f /tmp/test-status
+
+          # The whole session — audio server included — runs inside ONE
+          # `dbus-run-session`, as a script file rather than a nested-quoted
+          # `sh -c`. PulseAudio is a session service: started outside this bus it
+          # is a different session, and clients inside it get "Connection
+          # refused" however healthy the daemon looks from the step that spawned
+          # it. That is exactly what the first version of this job did.
+          cat > /tmp/run-tests.sh <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -o pipefail
+          cd "$GITHUB_WORKSPACE/app/rune"
+
+          # A CI runner has NO sound card, and the session E2E needs playback to
+          # really run: the player's offline sink can't stand in, because it
+          # discards writes with no backpressure, so a track "plays" instantly and
+          # there is never a playing state to observe. A PulseAudio null sink is
+          # the portable answer — `snd-dummy` is not in the runner image's kernel
+          # modules. `libasound2-plugins` supplies the ALSA->Pulse bridge cpal opens.
+          # Started in the FOREGROUND, backgrounded by the shell, with its log on
+          # stderr: `pulseaudio -D` daemonizes through a fork whose startup
+          # failures never reached this log, which is why the first attempts here
+          # failed with a bare "Connection refused" and nothing to diagnose.
+          # `module-native-protocol-unix` is NOT optional here: `-n` skips
+          # `default.pa`, which is what normally loads it, so without this the
+          # daemon starts and runs happily while listening on nothing at all —
+          # every client gets "Connection refused" from a process that looks
+          # perfectly healthy in `ps`. That is precisely what failed here before.
+          pulseaudio --exit-idle-time=-1 --disallow-exit -n \
+            --log-target=stderr --log-level=notice \
+            --load="module-native-protocol-unix" \
+            --load="module-null-sink sink_name=ci_sink" \
+            --load="module-always-sink" &
+          pulse_pid=$!
+
+          # Poll rather than assume readiness: the daemon has to bind its socket
+          # and load both modules before a client can connect, and a race here
+          # looks exactly like a broken sink.
+          # `pactl info` is the real check — it proves a CLIENT in this session
+          # can reach the daemon, which `pulseaudio --check` does not.
+          for _ in $(seq 1 30); do
+            pactl info >/dev/null 2>&1 && break
+            kill -0 "$pulse_pid" 2>/dev/null || break
+            sleep 1
+          done
+          if ! pactl info; then
+            echo "::error::no reachable PulseAudio sink in this session"
+            # Without a sink every playback assertion fails for a reason that is
+            # not a code bug, so stop here — and say what was actually running.
+            jobs -l || true
+            exit 1
+          fi
+
+          cargo test --locked \
+            && cargo test --locked --test linux_session_e2e -- --ignored --test-threads=1
+          SCRIPT
+          chmod +x /tmp/run-tests.sh
+
+          # `dbus-run-session` gives the app a session bus: without one it
+          # publishes no MPRIS session, and every assertion in the session E2E
+          # would have nothing to read.
+          cat > /tmp/sway-ci.conf <<'CONF'
+          default_border none
+          exec "dbus-run-session -- /tmp/run-tests.sh; echo $? > /tmp/test-status; swaymsg exit"
+          CONF
+          timeout 30m sway -c /tmp/sway-ci.conf || true
+          status=$(cat /tmp/test-status 2>/dev/null || echo 1)
+          echo "cargo test exited $status"
+          exit "$status"
+
   ci-success:
     name: CI success
     runs-on: ubuntu-latest
-    needs: [rust, rune]
+    needs: [rust, rune, rune-wayland]
     if: always()
     steps:
       - name: Require all checks to pass
         # For a matrix job, `needs.<job>.result` is success only when EVERY matrix
         # leg (ubuntu/windows/macos) succeeded — so this gate covers all platforms.
         run: |
-          if [ "${{ needs.rust.result }}" != "success" ] || [ "${{ needs.rune.result }}" != "success" ]; then
+          if [ "${{ needs.rust.result }}" != "success" ] \
+            || [ "${{ needs.rune.result }}" != "success" ] \
+            || [ "${{ needs.rune-wayland.result }}" != "success" ]; then
             echo "::error::a required CI job failed"
             exit 1
           fi
