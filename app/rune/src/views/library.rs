@@ -79,6 +79,37 @@ pub(crate) fn search_box(
         )
 }
 
+/// How wide the browse-page search may grow. The search is a *bounded* field, not
+/// a full-pane bar: it grows with the pane up to this cap, then stops (and shrinks
+/// below it on a narrow pane), so it stays comfortable to read on a wide window
+/// rather than stretching edge to edge.
+pub(crate) const SEARCH_MAX_W: f32 = 360.0;
+
+/// The shared browse-page top bar, reused by Albums / Artists / Genres / Tracks /
+/// Playlists so every list page opens with the same search in the same place. A
+/// left-aligned `search` field bounded to [`SEARCH_MAX_W`] (responsive — it grows
+/// with the pane up to that cap, not the full width), plus optional `trailing`
+/// controls (e.g. the Albums Filters button, the Playlists New button) pinned to
+/// the right edge by a growing spacer between them. Keyed `{page}-search-bar`, so
+/// each page's existing finders/tests (`albums-search-bar`, …) keep resolving.
+pub(crate) fn page_search_bar(page: &str, search: El, trailing: Option<El>) -> El {
+    let mut bar = row()
+        .key(format!("{page}-search-bar"))
+        .px(space::PANE)
+        .pt(space::SM)
+        .gap(space::SM)
+        .center_y()
+        .child(search.grow(1.0).max_w(SEARCH_MAX_W));
+    if let Some(trailing) = trailing {
+        // A growing spacer pushes the trailing control to the pane's right edge,
+        // so the search stays left-aligned and bounded regardless of pane width.
+        bar = bar
+            .child(el().key(format!("{page}-search-spacer")).grow(1.0))
+            .child(trailing);
+    }
+    bar
+}
+
 /// The Integrated-LUFS cell for a track row: `-14.0`, or `·` until the track is analyzed
 /// (or if it is below the measurement gate / silent).
 fn lufs_cell(t: &TrackView, p: &Palette) -> El {
@@ -480,9 +511,12 @@ fn track_header_row(p: &Palette, width: RowWidth, show_loudness: bool) -> El {
     )
 }
 
-/// The search bar: shows the current filter and, while active, a cursor. Click
-/// it (or press `/`) to start typing; the ✕ clears it. No focused text field —
-/// `main::handle_key` routes keystrokes into `State::search`.
+/// The Tracks search bar: a bounded, left-aligned field in the shared
+/// [`page_search_bar`] top (keyed `tracks-search-bar`), matching the
+/// Albums/Artists/Genres/Playlists search shape. The field itself shows the
+/// current filter and, while active, a cursor; clicking it (or pressing `/`)
+/// starts typing and the inline ✕ clears it. No focused text widget — this is
+/// keyboard-driven: `main::handle_key` routes keystrokes into `State::search`.
 fn search_bar(s: &State, p: &Palette) -> El {
     let (shown, dim) = if s.search.is_empty() && !s.searching {
         (t!("library.searchPlaceholder").to_string(), true)
@@ -491,36 +525,43 @@ fn search_bar(s: &State, p: &Palette) -> El {
     } else {
         (s.search.clone(), false)
     };
-    let mut bar = row()
-        .key("search-bar")
-        .gap(space::SM)
-        .padding(space::SM)
+    // The search "box": a magnifier + the query/placeholder in a muted rounded
+    // field, mirroring `search_box`'s shape so the Tracks search reads the same as
+    // the other browse pages'. `page_search_bar` bounds it to `SEARCH_MAX_W`.
+    let mut field = row()
+        .key("tracks-search")
+        .role("button")
+        .label(t!("library.searchPlaceholder").to_string())
+        .focusable(true)
         .center_y()
+        .gap(space::SM)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
         .child(icon(&icons::SEARCH, 16.0).color(p.text_secondary))
         .child(
-            el().key("search-field")
-                .role("button")
-                .label(t!("library.searchPlaceholder").to_string())
-                .focusable(true)
+            text(shown)
+                .font(type_::ITEM)
+                .color(if dim { p.text_secondary } else { p.fg })
+                .truncate()
                 .grow(1.0)
-                .padding(space::SNUG)
-                .radius(radius::SM)
-                .fill(p.muted)
-                .cursor(Cursor::Pointer)
-                .hover(p.fg.alpha(fx::HOVER))
-                .press(p.fg.alpha(fx::PRESS))
-                .child(text(shown).color(if dim { p.text_secondary } else { p.fg }))
-                .on_press(|st: &mut State| st.searching = true),
-        );
+                .min_w(0.0),
+        )
+        .on_press(|st: &mut State| st.searching = true);
+    // An inline ✕ clears the filter, nested in the field (Rune hit-tests the
+    // innermost target, so pressing it clears without entering search mode).
     if !s.search.is_empty() {
-        bar = bar.child(
-            el().key("search-clear")
+        field = field.child(
+            el().key("tracks-search-clear")
                 .role("button")
                 .label(t!("queue.clear").to_string())
                 .focusable(true)
-                .padding(space::SNUG)
+                .padding(space::XS)
                 .radius(radius::SM)
-                .fill(p.muted)
                 .cursor(Cursor::Pointer)
                 .hover(p.fg.alpha(fx::HOVER))
                 .press(p.fg.alpha(fx::PRESS))
@@ -531,7 +572,7 @@ fn search_bar(s: &State, p: &Palette) -> El {
                 }),
         );
     }
-    bar
+    page_search_bar("tracks", field, None)
 }
 
 /// The library's ~38-track testdata set fits comfortably in a plain scrolled

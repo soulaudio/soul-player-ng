@@ -179,6 +179,8 @@ pub(crate) fn navigate_to(
     // wherever we land next (including back onto the same detail page via a
     // fresh open).
     s.playlist_new_buf = rune::TextEdit::new("");
+    s.playlist_search = rune::TextEdit::new("");
+    s.playlists_adding = false;
     s.playlist_renaming = None;
     s.playlist_rename_buf = rune::TextEdit::new("");
     s.playlist_delete_confirm = None;
@@ -194,6 +196,8 @@ pub(crate) fn go_back(s: &mut State) {
     s.albums_filters_open = false;
     s.album_genre_filter.clear();
     s.playlist_new_buf = rune::TextEdit::new("");
+    s.playlist_search = rune::TextEdit::new("");
+    s.playlists_adding = false;
     s.playlist_renaming = None;
     s.playlist_rename_buf = rune::TextEdit::new("");
     s.playlist_delete_confirm = None;
@@ -295,6 +299,15 @@ struct State {
     /// resurfaces. One dedicated buffer per inline editor, like
     /// `dsp_rename_buf`/`remote_url_buf`.
     playlist_new_buf: rune::TextEdit,
+    /// The Playlists grid's in-page search box (ephemeral): filters the grid by
+    /// playlist name. Same convention as `album_search`/`genre_search`, reset
+    /// whenever we navigate (see [`navigate_to`]/[`go_back`]).
+    playlist_search: rune::TextEdit,
+    /// Whether the Playlists page's inline "New playlist" name field is revealed
+    /// (toggled by the top bar's New-playlist button). Page-scoped ephemeral UI,
+    /// reset on nav like `playlist_new_buf`; confirming a new playlist navigates
+    /// away, which clears it.
+    playlists_adding: bool,
     /// Which playlist's inline rename field (on its detail page) is open, or
     /// `None`. Mirrors `dsp_rename`; its buffer is `playlist_rename_buf`. Reset
     /// (not committed) on cancel and whenever `navigate_to`/`go_back` leaves the
@@ -802,6 +815,8 @@ impl State {
             playlists,
             covers,
             playlist_new_buf: rune::TextEdit::new(""),
+            playlist_search: rune::TextEdit::new(""),
+            playlists_adding: false,
             playlist_renaming: None,
             playlist_rename_buf: rune::TextEdit::new(""),
             playlist_delete_confirm: None,
@@ -2823,7 +2838,7 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
         Route::Artist => views::artists::artist_detail(s, p, cx, scale).grow(1.0),
         Route::Genres => views::genres::genres_page(s, p, cx).grow(1.0),
         Route::Genre => views::genres::genre_detail(s, p, scale).grow(1.0),
-        Route::Playlists => views::playlists::page(s, p, scale).grow(1.0),
+        Route::Playlists => views::playlists::page(s, p, cx, scale).grow(1.0),
         Route::Playlist => views::playlist_detail::page(s, p, scale).grow(1.0),
         Route::Settings => views::settings::settings_page(s, p, cx).grow(1.0),
     };
@@ -5448,9 +5463,15 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
 
-        // Create "Mix" through the real inline New-playlist field: click to
-        // focus, type via IME commit, confirm with Enter (the same mechanics
-        // `views::playlists`' own `trigger_new_playlist` test helper drives).
+        // Create "Mix" through the real inline New-playlist field: reveal it via
+        // the top bar's "New playlist" button, click to focus, type via IME
+        // commit, confirm with Enter (the same mechanics `views::playlists`' own
+        // `trigger_new_playlist` test helper drives).
+        click_key(&mut rt, "playlists-new");
+        rt.frame(0.0);
+        // The field drops in animated; settle so it is hittable/focusable.
+        rt.settle_all();
+        rt.frame(0.0);
         let (x, y) = rt
             .find("playlist-new-input")
             .expect("the new-playlist field renders");
@@ -5640,7 +5661,7 @@ mod tests {
 
         // Back into the detail page (a fresh mid-session insert again):
         // settle before pressing Remove cover.
-        click_key(&mut rt, &format!("playlist-row-{pid}"));
+        click_key(&mut rt, &format!("playlist-card-{pid}"));
         rt.settle_all();
         rt.frame(0.0);
         click_key(&mut rt, "playlist-remove-cover");
@@ -6216,6 +6237,12 @@ mod tests {
         rt.settle_all();
         rt.frame(0.0);
 
+        // The inline New-playlist field lives behind the top bar's "New playlist"
+        // button now; reveal it (and settle its drop-in animation) before typing.
+        click_key(&mut rt, "playlists-new");
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
         click_key(&mut rt, "playlist-new-input");
         rt.ime(rune::Ime::Commit("Summer Mix".to_string()));
         rt.frame(0.0);
@@ -6245,7 +6272,7 @@ mod tests {
             shows(&rt, "Summer Mix"),
             "the new playlist shows on the Playlists list"
         );
-        assert!(rt.find(&format!("playlist-row-{pid}")).is_some());
+        assert!(rt.find(&format!("playlist-card-{pid}")).is_some());
 
         // ---- 2. Add from two surfaces ----
 
@@ -6302,7 +6329,7 @@ mod tests {
         click_key(&mut rt, "nav-playlists");
         rt.settle_all();
         rt.frame(0.0);
-        click_key(&mut rt, &format!("playlist-row-{pid}"));
+        click_key(&mut rt, &format!("playlist-card-{pid}"));
         rt.settle_all();
         rt.frame(0.0);
         assert!(rt.find("playlist-row-0").is_some());
@@ -6391,7 +6418,7 @@ mod tests {
             "the old name no longer shows anywhere"
         );
 
-        click_key(&mut rt, &format!("playlist-row-{pid}"));
+        click_key(&mut rt, &format!("playlist-card-{pid}"));
         rt.settle_all();
         rt.frame(0.0);
 
@@ -6472,7 +6499,7 @@ mod tests {
             "the list row's thumbnail does not show the removed cover either"
         );
 
-        click_key(&mut rt2, &format!("playlist-row-{pid}"));
+        click_key(&mut rt2, &format!("playlist-card-{pid}"));
         rt2.settle_all();
         rt2.frame(0.0);
         let reloaded = rt2
@@ -6513,7 +6540,7 @@ mod tests {
             "confirming delete returns to the list"
         );
         assert!(
-            rt2.find(&format!("playlist-row-{pid}")).is_none(),
+            rt2.find(&format!("playlist-card-{pid}")).is_none(),
             "the deleted playlist no longer shows on the list"
         );
         assert!(
@@ -11892,11 +11919,51 @@ mod tests {
         let mut s = State::new(PlayerHandle::offline());
         s.route = Route::Playlists;
         s.playlist_new_buf = rune::TextEdit::new("half typed");
+        s.playlist_search = rune::TextEdit::new("road");
+        s.playlists_adding = true;
         navigate_to(&mut s, Route::Albums, None, None, None, None);
         assert_eq!(s.playlist_new_buf.text, "");
+        assert_eq!(s.playlist_search.text, "", "the grid search clears too");
+        assert!(!s.playlists_adding, "the New-playlist toggle resets");
         s.playlist_new_buf = rune::TextEdit::new("again");
+        s.playlist_search = rune::TextEdit::new("focus");
         go_back(&mut s);
         assert_eq!(s.playlist_new_buf.text, "");
+        assert_eq!(s.playlist_search.text, "");
+    }
+
+    /// The shared browse-page search is BOUNDED, not full-width: on a wide
+    /// window the search box caps at `SEARCH_MAX_W` rather than stretching edge
+    /// to edge (the user-reported "search shouldn't be full width"). Checked on
+    /// two pages that route through the shared `page_search_bar`.
+    #[test]
+    fn browse_search_is_bounded_not_full_width() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let cap = views::library::SEARCH_MAX_W;
+        for (route, bar_key, box_key) in [
+            (Route::Albums, "albums-search-bar", "albums-search-box"),
+            (Route::Artists, "artists-search-bar", "artists-search-box"),
+        ] {
+            let mut s = populated_state();
+            s.route = route;
+            // A wide window so an unbounded search would stretch far past the cap.
+            let mut rt = Runtime::new(s, view, (1280.0, 800.0), env);
+            rt.frame(0.0);
+            assert!(rt.find(bar_key).is_some(), "{bar_key} renders");
+            let w = el_info(&rt, box_key).rect[2];
+            assert!(
+                w <= cap + 1.0,
+                "{box_key} width {w} should be bounded to <= {cap} on a wide window"
+            );
+            assert!(
+                w > 200.0,
+                "{box_key} width {w} should still grow to a usable width"
+            );
+        }
     }
 
     /// The Albums/Artists grid search boxes are ephemeral, same convention as
@@ -13162,7 +13229,10 @@ mod tests {
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        assert!(rt.find("search-bar").is_some(), "the search bar renders");
+        assert!(
+            rt.find("tracks-search-bar").is_some(),
+            "the search bar renders"
+        );
         assert!(
             rt.find(&format!("track-{}", first.id)).is_some(),
             "the matching track stays visible"
@@ -14639,15 +14709,18 @@ mod tests {
         rt.frame(0.0);
         assert!(rt.find("crash-dialog").is_some(), "crash dialog is shown");
 
-        // Playlists list page.
-        let rt = a11y_surface(scene_playlists);
+        // Playlists grid page.
+        let mut rt = a11y_surface(scene_playlists);
         assert!(
-            rt.find("playlist-row-0").is_some(),
-            "playlists list shows playlist rows"
+            rt.find("playlist-card-0").is_some(),
+            "playlists page shows playlist cards"
         );
+        // The inline new-playlist field is revealed by the top bar's button.
+        click_key(&mut rt, "playlists-new");
+        rt.frame(0.0);
         assert!(
             rt.find("playlist-new-input").is_some(),
-            "and the inline new-playlist field"
+            "and the inline new-playlist field after pressing New"
         );
 
         // Playlist detail page.

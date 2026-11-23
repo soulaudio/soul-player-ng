@@ -155,13 +155,8 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         t!("genres.searchPlaceholder").to_string(),
         p,
         |st: &mut State| &mut st.genre_search,
-    )
-    .w_full();
-    let search_bar = row()
-        .key("genres-search-bar")
-        .px(space::PANE)
-        .pt(space::SM)
-        .child(search);
+    );
+    let search_bar = crate::views::library::page_search_bar("genres", search, None);
 
     let mut tiles = row()
         .key("genres-grid")
