@@ -561,9 +561,27 @@ def mark_stale(inst: Install) -> None:
     Mach-O would break its signature)."""
     if IS_MAC:
         (inst.app / "Contents" / "Resources" / "soul-e2e-stale").write_bytes(STALE)
+    elif IS_WIN:
+        # The previous run's exe can stay locked for a moment after it exits.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                with open(inst.exe, "ab") as f:
+                    f.write(STALE)
+                return
+            except PermissionError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.5)
     else:
-        with open(inst.exe, "ab") as f:
+        # Write a marked copy and swap it in: appending in place fails with ETXTBSY
+        # while the previous run's AppImage runtime (its FUSE mount) is still
+        # winding down, whereas a rename just gives the path a new inode.
+        tmp = inst.exe.with_name(inst.exe.name + ".e2e-stale")
+        shutil.copy2(inst.exe, tmp)
+        with open(tmp, "ab") as f:
             f.write(STALE)
+        os.replace(tmp, inst.exe)
 
 
 def is_stale(inst: Install) -> bool:
