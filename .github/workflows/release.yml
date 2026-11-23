@@ -323,12 +323,21 @@ jobs:
       - name: Screenshots for the software centres (Linux x86_64)
         if: matrix.target_key == 'linux-x86_64'
         run: |
-          sudo apt-get install -y -o Acquire::Retries=3 xvfb xauth
+          # The release job builds the binary but never RUNS it, so it installs
+          # no runtime graphics stack. A headless render needs an X server, an
+          # xauth cookie for xvfb-run, and a Vulkan ICD — Lavapipe, since a
+          # runner has no GPU. wgpu has no GL fallback compiled in, so without
+          # an ICD there is no adapter and nothing renders.
+          sudo apt-get install -y -o Acquire::Retries=3 \
+            xvfb xauth mesa-vulkan-drivers libvulkan1 libxkbcommon-x11-0
           shot() {
+            # stderr is kept: a failed render otherwise reports only a missing
+            # file, which says nothing about why.
             xvfb-run -a -s "-screen 0 1600x1000x24" \
               env SOUL_PLAYER_FOLDER=testdata SOUL_PLAYER_NO_UPDATE=1 \
               app/rune/target/release/soul-player-rune \
-                --snap "dist/screenshot-$1.png" --size 1400x900 ${2:+--scene "$2"}
+                --snap "dist/screenshot-$1.png" --size 1400x900 ${2:+--scene "$2"} \
+              >"$RUNNER_TEMP/shot-$1.log" 2>&1 || true
           }
           shot library
           shot albums albums
@@ -336,8 +345,14 @@ jobs:
           # A zero-byte or missing file would publish a broken image, so check
           # rather than trust the exit status of a GPU render under Xvfb.
           for f in library albums settings; do
-            [ -s "dist/screenshot-$f.png" ] \
-              || { echo "::error::screenshot-$f.png was not rendered"; exit 1; }
+            if [ ! -s "dist/screenshot-$f.png" ]; then
+              echo "::error::screenshot-$f.png was not rendered"
+              echo "--- render output ---"
+              cat "$RUNNER_TEMP/shot-$f.log" 2>/dev/null | tail -30 || echo "(none)"
+              echo "--- vulkan ICDs present ---"
+              ls /usr/share/vulkan/icd.d/ 2>&1 | head
+              exit 1
+            fi
           done
           ls -la dist/screenshot-*.png
 
