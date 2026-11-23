@@ -3036,8 +3036,43 @@ pub(crate) fn apply_media_event(s: &mut State, tx: &mut Tx, event: souvlaki::Med
     match media_session::map_event(event, s.position_secs, s.duration_secs) {
         Some(SessionAction::Command(cmd)) => s.host.send(cmd),
         Some(SessionAction::Quit) => tx.quit(),
-        // Raising the window from the OS widget is a follow-up.
-        Some(SessionAction::Raise) | None => {}
+        Some(SessionAction::Raise) => raise_window(),
+        None => {}
+    }
+}
+
+/// Bring the window to the user: MPRIS `Raise`, sent when someone clicks the
+/// player's name in a media applet (GNOME's media controls, KDE's, waybar …).
+///
+/// Worth implementing rather than ignoring because souvlaki advertises
+/// `CanRaise = true` unconditionally — the desktop is *told* the player can be
+/// raised, so dropping the event makes a control that looks live do nothing.
+///
+/// `show()` before `focus()`: the window may be hidden to the tray, in which
+/// case focusing something invisible achieves nothing.
+///
+/// **This cannot raise the window on Wayland**, and that is a protocol rule
+/// rather than something to fix here. Wayland prevents focus stealing: a client
+/// is activated only by presenting an `xdg_activation_v1` token minted by
+/// whoever asked for it, and an MPRIS `Raise` carries no token — the interface
+/// has no field for one. winit's `focus_window()` is documented as a no-op
+/// there, and measured as one: driving `Raise` against a real headless sway
+/// session with a second window holding focus moved nothing, and set no urgency
+/// hint either. Rune's own activation path (`platform/activation.rs`) needs the
+/// same token, and its `reopen::front` is macOS-only.
+///
+/// It is still worth doing rather than dropping the event. On X11 —
+/// including an Xwayland session — `focus_window()` works and the window comes
+/// forward; and `show()` un-hides a window that was put away to the tray on
+/// every backend. The alternative is a control the desktop is *told* is live
+/// (souvlaki hardcodes `CanRaise = true`) that provably does nothing at all.
+fn raise_window() {
+    let Ok(guard) = WINDOW.lock() else {
+        return;
+    };
+    if let Some(w) = guard.as_ref() {
+        w.show();
+        w.focus();
     }
 }
 
