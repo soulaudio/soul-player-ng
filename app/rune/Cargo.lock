@@ -5272,6 +5272,7 @@ dependencies = [
  "soul-player-host",
  "souvlaki",
  "sys-locale",
+ "tempfile",
  "toml 0.9.12+spec-1.1.0",
  "tracing",
  "tracing-appender",
@@ -5280,6 +5281,7 @@ dependencies = [
  "urlencoding",
  "windows 0.62.2",
  "windows-registry",
+ "zbus 5.19.0",
 ]
 
 [[package]]
