@@ -12,7 +12,7 @@
 //! buttons) — see the note on `bar` for why hover-to-reveal can't work here.
 #![forbid(unsafe_code)]
 
-use rune::{Align, Cursor, Cx, El, Icon, Side, col, el, icon, row, text};
+use rune::{Align, Cursor, Cx, El, Icon, Side, Tx, col, el, icon, row, text};
 use soul_player_host::{ScanPhase, ScanProgress, SourceKind, SourceStatus};
 
 use crate::theme::Palette;
@@ -31,6 +31,27 @@ pub(crate) const TRAFFIC_LIGHTS: (f32, f32) = (19.0, (HEIGHT - 12.0) / 2.0);
 /// Caption-glyph icon size, in points. The glyphs' marks fill ~16 of their 24-unit
 /// viewbox, so this lands them near the native ~10 pt Windows 11 symbol.
 const GLYPH_SIZE: f32 = 15.0;
+
+/// Whether this platform needs the app to draw its own working window controls.
+///
+/// Windows gets real native buttons under our glyphs and macOS its traffic
+/// lights, both placed by Rune. Linux gets neither (Rune's custom titlebar is
+/// macOS/Windows-only), and on Wayland — where client-side decorations are the
+/// norm and tiling compositors draw no titlebar at all — that means no window
+/// controls exist unless we draw them.
+///
+/// Unconditional on Linux rather than probed: nothing in the winit/Rune surface
+/// reports whether the compositor actually granted server-side decorations
+/// (`is_decorated` only echoes what was requested), so there is no honest
+/// runtime test. On a desktop that does decorate, this shows our buttons in the
+/// app's own band below the system titlebar; having them twice is a far smaller
+/// problem than having none.
+const DRAWS_OWN_CAPTION_BUTTONS: bool = cfg!(target_os = "linux");
+
+/// A caption button's width in points — Rune's own
+/// `Titlebar::CAPTION_BUTTON_WIDTH` (Windows' and Electron's 46), so the band's
+/// trailing controls measure the same whether the platform or the app drew them.
+const CAPTION_BUTTON_W: f32 = 46.0;
 
 /// Aggregate health across every ENABLED remote source — the title-bar
 /// indicator's at-a-glance color, computed by [`remote_health_summary`].
@@ -172,9 +193,8 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>, mobile: bool) -> E
         .window_drag()
         .child(content);
 
-    // Windows only (`trailing` is 0 where the native frame stays, e.g. macOS/Linux):
-    // our three always-visible caption glyphs span the trailing gutter, one per
-    // native button.
+    // Windows (`trailing` > 0): our three always-visible caption glyphs span the
+    // trailing gutter, one per native button, which takes the clicks underneath.
     if chrome.trailing > 0.0 {
         let cell = chrome.trailing / 3.0;
         strip.child(
@@ -182,12 +202,50 @@ pub(crate) fn bar(s: &State, p: &Palette, cx: &mut Cx<State>, mobile: bool) -> E
                 .key("caption-glyphs")
                 .h_full()
                 .child(caption_glyph("caption-min", &icons::CAPTION_MIN, cell, p))
-                .child(caption_glyph("caption-max", &icons::CAPTION_MAX, cell, p))
+                .child(caption_glyph("caption-max", maximize_glyph(s), cell, p))
                 .child(caption_glyph(
                     "caption-close",
                     &icons::CAPTION_CLOSE,
                     cell,
                     p,
+                )),
+        )
+    } else if DRAWS_OWN_CAPTION_BUTTONS {
+        // Linux: Rune's custom-titlebar mode is implemented for macOS and Windows
+        // only ("elsewhere the native frame stays and ChromeInsets is zero"), so
+        // nothing reserves a trailing gutter here and no native control exists to
+        // sit under a glyph. On the modern Linux desktop that leaves the window
+        // with NO controls at all: Wayland compositors mostly expect the client to
+        // draw its own, and a tiling one (Hyprland, sway) draws no titlebar
+        // whatsoever. So draw real buttons that carry their own presses.
+        //
+        // They live inside the `.window_drag()` strip; a child with its own
+        // `on_press` keeps the press rather than moving the window (same rule the
+        // remote-health indicator below relies on).
+        strip.child(
+            row()
+                .key("caption-buttons")
+                .h_full()
+                .child(caption_button(
+                    "caption-min",
+                    &icons::CAPTION_MIN,
+                    t!("titlebar.minimize").to_string(),
+                    p,
+                    |_s: &mut State, tx: &mut Tx| tx.minimize(),
+                ))
+                .child(caption_button(
+                    "caption-max",
+                    maximize_glyph(s),
+                    maximize_label(s),
+                    p,
+                    crate::toggle_maximized_from_titlebar,
+                ))
+                .child(caption_button(
+                    "caption-close",
+                    &icons::CAPTION_CLOSE,
+                    t!("titlebar.close").to_string(),
+                    p,
+                    |_s: &mut State, tx: &mut Tx| tx.close_window(),
                 )),
         )
     } else {
@@ -411,6 +469,60 @@ fn caption_glyph(key: &'static str, glyph: &'static Icon, width: f32, p: &Palett
         .child(icon(glyph, GLYPH_SIZE).color(p.fg))
 }
 
+/// One WORKING caption button, for platforms with no native control to sit under
+/// a glyph (see [`DRAWS_OWN_CAPTION_BUTTONS`]). Unlike [`caption_glyph`] — a
+/// purely visual overlay on Windows' real buttons — this carries the press.
+///
+/// Styled as the ordinary ghost control the rest of the app uses (a foreground
+/// wash on hover, one step up on press) rather than inventing a treatment: it
+/// stays legible in both themes, including the close button, which a red fill
+/// would not reliably do under the light palette's dark foreground.
+/// The middle caption button's glyph: the restore mark while the window is
+/// maximized or full screen, else maximize — the swap Windows makes on its own
+/// caption button, and which the app's overlay glyph has to make too (it covers
+/// the native symbol, so a static glyph pins it to "maximize" forever).
+fn maximize_glyph(s: &State) -> &'static Icon {
+    if s.maximized {
+        &icons::CAPTION_RESTORE
+    } else {
+        &icons::CAPTION_MAX
+    }
+}
+
+/// The matching accessible name, so the button doesn't announce "Maximize"
+/// while it would actually restore.
+fn maximize_label(s: &State) -> String {
+    if s.maximized {
+        t!("titlebar.restore").to_string()
+    } else {
+        t!("titlebar.maximize").to_string()
+    }
+}
+
+/// `label` is the accessible name — a bare glyph has no text for a screen
+/// reader to read, and unlike Windows' native caption buttons (which the OS
+/// names for us) nothing else here supplies one.
+fn caption_button(
+    key: &'static str,
+    glyph: &'static Icon,
+    label: String,
+    p: &Palette,
+    on_press: impl Fn(&mut State, &mut Tx) + 'static,
+) -> El {
+    el().key(key)
+        .role("button")
+        .label(label)
+        .focusable(true)
+        .w(CAPTION_BUTTON_W)
+        .h_full()
+        .center()
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .on_press_tx(on_press)
+        .child(icon(glyph, GLYPH_SIZE).color(p.fg))
+}
+
 /// Width-responsive thresholds (band width, pt) for the scan-activity widget: at or
 /// above each, one more element joins the icon. Below the narrowest, only the pulsing
 /// icon shows (the `smallest width → just the animated icon` case). The band is the
@@ -524,6 +636,29 @@ mod tests {
     use soul_player_host::RemoteHealth;
 
     use super::*;
+
+    /// The maximize button's glyph and name both follow the window state. The
+    /// glyph can't be read back off a rendered element (Rune's `ElementInfo`
+    /// carries no icon), so the decision is asserted here, at the pure helpers,
+    /// and its wiring through the view is covered by `main`'s
+    /// `the_maximize_button_relabels_itself_while_maximized`.
+    #[test]
+    fn maximize_becomes_restore_while_the_window_is_maximized() {
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+
+        s.maximized = false;
+        assert_eq!(maximize_glyph(&s).name, "caption-max");
+        assert_eq!(maximize_label(&s), "Maximize");
+
+        s.maximized = true;
+        assert_eq!(
+            maximize_glyph(&s).name,
+            "caption-restore",
+            "a maximized window must offer RESTORE, not another maximize"
+        );
+        assert_eq!(maximize_label(&s), "Restore");
+    }
 
     /// A remote `SourceStatus` with just the two fields [`remote_health_summary`]
     /// reads (`enabled`, and the probe's `online`) — everything else is a
