@@ -214,7 +214,10 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             circular: false,
             play_ids: a.ids.clone(),
             remote_source: a.remote_source.clone(),
-            dr: a.dr,
+            // The DR badge follows the same loudness-columns toggle the Tracks
+            // page uses (Settings -> Appearance), so turning loudness off hides
+            // it on the album grid cards too.
+            dr: s.show_loudness_columns.then_some(a.dr).flatten(),
         },
         card_w,
         scale,
@@ -980,6 +983,7 @@ mod tests {
             dr_track(3, "Y", None),
         ];
         s.route = crate::Route::Albums;
+        s.show_loudness_columns = true; // DR badges follow this toggle
 
         let env = Env {
             system_dark: true,
@@ -994,6 +998,23 @@ mod tests {
             dr_badges,
             vec!["DR9"],
             "exactly the analyzed album shows its mean-DR badge; got {texts:?}"
+        );
+
+        // The DR badge follows the loudness-columns toggle, same as the Tracks
+        // page: turning it off hides the badge on the album grid cards.
+        rt.update(|st: &mut State, _tx: &mut rune::Tx| st.show_loudness_columns = false);
+        rt.frame(0.0);
+        // Skip `exiting` elements: the removed badge lingers mid exit-animation
+        // with its stale "DR9" text until it settles.
+        let after: Vec<String> = rt
+            .elements()
+            .into_iter()
+            .filter(|e| !e.exiting)
+            .filter_map(|e| e.text)
+            .collect();
+        assert!(
+            !after.iter().any(|t| t.starts_with("DR")),
+            "loudness off -> no DR badge on the album cards; got {after:?}"
         );
     }
 
