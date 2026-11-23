@@ -58,7 +58,6 @@ fn hero_artwork(
                     .clip_rounded(corner)
                     .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
                     .child(cover(s, Some(id), DETAIL_COVER, corner, p, scale)),
-                s,
                 p,
                 corner,
                 artwork,
@@ -77,7 +76,6 @@ fn hero_artwork(
                     .clip_rounded(corner)
                     .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
                     .child(cover_from_path(s, &path, DETAIL_COVER, corner, p, scale)),
-                s,
                 p,
                 corner,
                 artwork,
@@ -100,31 +98,29 @@ fn hero_artwork(
 /// fades in on hover ([`El::group_opacity`]) while staying keyboard-reachable.
 fn with_artwork_overlay(
     container: El,
-    s: &State,
     p: &Palette,
     corner: f32,
     artwork: Option<ArtworkTarget>,
 ) -> El {
     match artwork {
-        Some(target) => container.child(artwork_hover_overlay(s, p, corner, target)),
+        // `.hover_group()` makes the cover track hover so the overlay's
+        // `group_opacity` fades in when the pointer is over the cover (the same
+        // pattern a grid card uses for its play-overlay); without it the overlay
+        // would never leave its rest opacity of 0.
+        Some(target) => container
+            .hover_group()
+            .child(artwork_hover_overlay(p, corner, target)),
         None => container,
     }
 }
 
-/// The hover scrim over a hero cover carrying the Edit-Artwork control (and a
-/// Remove control once a custom cover is set). Hidden at rest and revealed when the
-/// cover is hovered; the controls keep their roles/labels/focus so the a11y sweep and
-/// keyboard users reach them regardless of hover state (same pattern as a card's
-/// play-overlay).
-fn artwork_hover_overlay(s: &State, p: &Palette, corner: f32, target: ArtworkTarget) -> El {
-    let mut controls = row()
-        .key(format!("{}-artwork-controls", target.key_prefix()))
-        .gap(space::SM)
-        .center()
-        .child(edit_artwork_control(p, target.clone()));
-    if target.cover_path(s).is_some() {
-        controls = controls.child(remove_artwork_control(p, target.clone()));
-    }
+/// The hover scrim over a hero cover carrying the single Edit-Artwork control
+/// (a pencil). Hidden at rest and revealed when the cover is hovered; the control
+/// keeps its role/label/focus so the a11y sweep and keyboard users reach it
+/// regardless of hover state (same pattern as a card's play-overlay). Removing a
+/// cover lives inside the edit dialogue (a trash control), not here, so the hover
+/// affordance stays a single clear action.
+fn artwork_hover_overlay(p: &Palette, corner: f32, target: ArtworkTarget) -> El {
     el().key(format!("{}-artwork-overlay", target.key_prefix()))
         .size(DETAIL_COVER, DETAIL_COVER)
         .absolute(0.0, 0.0)
@@ -132,7 +128,12 @@ fn artwork_hover_overlay(s: &State, p: &Palette, corner: f32, target: ArtworkTar
         .center()
         .fill(Color::BLACK.alpha(0.5))
         .group_opacity(0.0, 1.0)
-        .child(controls)
+        .child(
+            row()
+                .key(format!("{}-artwork-controls", target.key_prefix()))
+                .center()
+                .child(edit_artwork_control(p, target)),
+        )
 }
 
 /// The shared detail header: artwork left, a text block right (eyebrow, title,
@@ -333,7 +334,7 @@ impl ArtworkTarget {
     }
 
     /// Clear this target's custom cover.
-    fn clear_cover(&self, s: &mut State) {
+    pub(crate) fn clear_cover(&self, s: &mut State) {
         match self {
             ArtworkTarget::Album(name) => s.covers.clear_album_cover(name),
             ArtworkTarget::Artist(name) => s.covers.clear_artist_cover(name),
@@ -416,7 +417,7 @@ fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
     artwork_btn(
         format!("{}-edit-artwork", target.key_prefix()),
         t!("artwork.edit").to_string(),
-        &icons::UPLOAD,
+        &icons::PENCIL,
         p,
     )
     .on_press_tx(move |_s: &mut State, tx: &mut Tx| {
@@ -441,7 +442,7 @@ fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
                     return;
                 };
                 // Start at the cover scale so the image fills the frame; the
-                // dialogue's zoom buttons take it from there.
+                // dialogue's zoom slider takes it from there.
                 let scale = crate::views::artwork_crop::FRAME / (src_w.min(src_h).max(1) as f32);
                 s.artwork_crop = Some(ArtworkCrop {
                     target: target.clone(),
@@ -453,24 +454,5 @@ fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
                 });
             },
         );
-    })
-}
-
-/// The "Remove Artwork" control: clears `target`'s custom cover, falling its
-/// art back to the generated/embedded default. Only rendered when a custom
-/// cover is actually set (see [`artwork_hover_overlay`]).
-fn remove_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
-    artwork_btn(
-        format!("{}-remove-artwork", target.key_prefix()),
-        t!("artwork.remove").to_string(),
-        &icons::X,
-        p,
-    )
-    .on_press(move |s: &mut State| {
-        let old = target.cover_path(s);
-        target.clear_cover(s);
-        if let Some(old) = old {
-            s.art.forget_path(&old);
-        }
     })
 }

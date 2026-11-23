@@ -1,7 +1,8 @@
 //! The "Edit Artwork" CROP dialogue (the old Soul Player's cover-crop step):
-//! after a file is picked, the user PANS (drag) and ZOOMS (+/- buttons) the
-//! picked image behind a fixed frame — a CIRCLE for an artist avatar, a SQUARE
-//! for an album cover — then confirms to crop + store it.
+//! after a file is picked, the user PANS (drag) and ZOOMS (a slider) the picked
+//! image behind a fixed frame — a CIRCLE for an artist avatar, a SQUARE for an
+//! album cover — then confirms to crop + store it (or removes the current cover
+//! via the dialogue's trash control).
 //!
 //! Storage stays NON-DESTRUCTIVE: confirming crops the source to a square,
 //! re-encodes it to a fresh temp PNG, and copies THAT into the custom-cover
@@ -15,13 +16,14 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
-use rune::{Color, Cursor, Drag, El, Phase, SurfaceFit, col, el, icon, row, text};
+use rune::{Color, Cursor, Cx, Drag, El, Phase, SurfaceFit, col, el, icon, row, text};
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::detail_page::ArtworkCrop;
 use crate::views::icons;
+use crate::views::slider::slider;
 
 /// The pan/zoom VIEW area side, in points (the square window the image shows
 /// through).
@@ -35,13 +37,13 @@ const HALF: f32 = VIEW / 2.0;
 /// Half the frame side — how far the frame reaches from the centre. The image
 /// must always cover this on each side (`|offset| <= disp/2 - HALF_FRAME`).
 const HALF_FRAME: f32 = FRAME / 2.0;
-/// One zoom step.
-const ZOOM_STEP: f32 = 1.2;
 /// The deepest zoom-in, as a multiple of the cover (min) scale.
 const MAX_ZOOM: f32 = 6.0;
 /// The cropped cover is re-encoded at this side, in pixels — generous for the
 /// 176 pt detail hero and the grid cards while staying a small PNG.
 const OUTPUT_PX: u32 = 512;
+/// The round in-dialogue icon button side, in points (the trash control).
+const ROUND_BTN: f32 = 36.0;
 
 thread_local! {
     /// The image offset at the moment a pan drag started. `Drag::dx/dy` are the
@@ -75,27 +77,44 @@ fn clamp_offset(crop: &mut ArtworkCrop) {
     crop.offset.1 = crop.offset.1.clamp(-by, by);
 }
 
-/// Multiply the scale by `factor`, clamped to `[min_scale, MAX_ZOOM × min_scale]`
-/// (so the image never shrinks below frame coverage nor zooms past the ceiling),
-/// then re-clamp the pan to the new scale's bounds.
-fn apply_zoom(crop: &mut ArtworkCrop, factor: f32) {
+/// Map a zoom-slider value `v01` (0 = the cover scale, 1 = `MAX_ZOOM` × the cover
+/// scale) to `crop`'s live scale, clamped to `[min_scale, MAX_ZOOM × min_scale]` so
+/// the image never shrinks below frame coverage nor zooms past the ceiling, then
+/// re-clamp the pan to the new scale's bounds.
+fn apply_zoom01(crop: &mut ArtworkCrop, v01: f32) {
     let min = min_scale(crop);
-    crop.scale = (crop.scale * factor).clamp(min, min * MAX_ZOOM);
+    let max = min * MAX_ZOOM;
+    crop.scale = (min + v01.clamp(0.0, 1.0) * (max - min)).clamp(min, max);
     clamp_offset(crop);
 }
 
-/// Zoom out one step (never below the cover scale).
-fn zoom_out(s: &mut State) {
+/// The slider's `on_scrub`/`on_commit`: apply the slider value to the live crop.
+fn set_zoom01(s: &mut State, v01: f32) {
     if let Some(crop) = s.artwork_crop.as_mut() {
-        apply_zoom(crop, 1.0 / ZOOM_STEP);
+        apply_zoom01(crop, v01);
     }
 }
 
-/// Zoom in one step (never past `MAX_ZOOM` × the cover scale).
-fn zoom_in(s: &mut State) {
-    if let Some(crop) = s.artwork_crop.as_mut() {
-        apply_zoom(crop, ZOOM_STEP);
+/// The current scale as a 0..1 zoom-slider value (the inverse of [`set_zoom01`]).
+fn zoom01(crop: &ArtworkCrop) -> f32 {
+    let min = min_scale(crop);
+    let max = min * MAX_ZOOM;
+    ((crop.scale - min) / (max - min)).clamp(0.0, 1.0)
+}
+
+/// Clear the crop target's custom cover (back to the generated/embedded art) and
+/// close the dialogue. The in-dialogue trash control calls this; it is only shown
+/// when the target already has a cover to remove.
+fn remove_cover(s: &mut State) {
+    if let Some(crop) = s.artwork_crop.as_ref() {
+        let target = crop.target.clone();
+        let old = target.cover_path(s);
+        target.clear_cover(s);
+        if let Some(old) = old {
+            s.art.forget_path(&old);
+        }
     }
+    crate::close_artwork_crop(s);
 }
 
 /// Apply one pan-drag event to the live offset: anchor at `Down`, then add the
@@ -178,8 +197,9 @@ fn footer_button(
     b.on_press(on_press)
 }
 
-/// A round zoom button (`-` / `+`).
-fn zoom_button(
+/// A round icon button, [`ROUND_BTN`] wide — the in-dialogue trash (remove)
+/// control.
+fn round_icon_button(
     key: &str,
     label: String,
     glyph: &'static rune::Icon,
@@ -188,9 +208,10 @@ fn zoom_button(
 ) -> El {
     el().key(key.to_string())
         .role("button")
-        .label(label)
+        .label(label.clone())
+        .help(label)
         .focusable(true)
-        .size(36.0, 36.0)
+        .size(ROUND_BTN, ROUND_BTN)
         .center()
         .radius(radius::FULL)
         .fill(p.muted)
@@ -245,47 +266,71 @@ fn crop_view(s: &State, crop: &ArtworkCrop, p: &Palette) -> El {
 
 /// The crop dialogue, mounted in `main.rs`'s overlay layer. `None` while
 /// `State::artwork_crop` is `None` (closed).
-pub fn overlay(s: &State, p: &Palette) -> Option<El> {
+pub fn overlay(s: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
     let crop = s.artwork_crop.as_ref()?;
 
+    // Zoom is a continuous slider (the same hand-built `slider` as seek/volume):
+    // `-` at the left, `+` at the right as static end-caps, the value mapped to
+    // the live scale between the cover scale and `MAX_ZOOM`× it.
+    let dragging = s.dragging_slider.as_deref() == Some("artwork-crop-zoom");
     let zoom_row = row()
         .key("artwork-crop-zoom")
-        .center()
-        .gap(space::MD)
-        .child(zoom_button(
-            "artwork-crop-zoom-out",
-            t!("artwork.zoomOut").to_string(),
-            &icons::MINUS,
+        .w_full()
+        .center_y()
+        .gap(space::SM)
+        .child(icon(&icons::MINUS, 16.0).color(p.text_secondary))
+        .child(slider(
+            "artwork-crop-zoom",
+            zoom01(crop),
+            dragging,
+            cx,
             p,
-            zoom_out,
+            set_zoom01,
+            set_zoom01,
         ))
-        .child(zoom_button(
-            "artwork-crop-zoom-in",
-            t!("artwork.zoomIn").to_string(),
-            &icons::PLUS,
+        .child(icon(&icons::PLUS, 16.0).color(p.text_secondary));
+
+    // A trash control to remove the current cover lives in the dialogue (not on
+    // the hover overlay), shown only when the target already has one. A same-size
+    // spacer keeps Cancel/Set-as-cover parked right when there is nothing to remove.
+    let remove_slot: El = if crop.target.cover_path(s).is_some() {
+        round_icon_button(
+            "artwork-crop-remove",
+            t!("artwork.remove").to_string(),
+            &icons::TRASH,
             p,
-            zoom_in,
-        ));
+            remove_cover,
+        )
+    } else {
+        el().key("artwork-crop-remove-spacer")
+            .size(ROUND_BTN, ROUND_BTN)
+    };
 
     let footer = row()
         .key("artwork-crop-footer")
         .w_full()
         .center_y()
         .justify_between()
-        .child(footer_button(
-            "artwork-crop-cancel",
-            t!("common.cancel").to_string(),
-            false,
-            p,
-            |st: &mut State| crate::close_artwork_crop(st),
-        ))
-        .child(footer_button(
-            "artwork-crop-confirm",
-            t!("artwork.setCover").to_string(),
-            true,
-            p,
-            confirm,
-        ));
+        .child(remove_slot)
+        .child(
+            row()
+                .gap(space::SM)
+                .center_y()
+                .child(footer_button(
+                    "artwork-crop-cancel",
+                    t!("common.cancel").to_string(),
+                    false,
+                    p,
+                    |st: &mut State| crate::close_artwork_crop(st),
+                ))
+                .child(footer_button(
+                    "artwork-crop-confirm",
+                    t!("artwork.setCover").to_string(),
+                    true,
+                    p,
+                    confirm,
+                )),
+        );
 
     Some(
         col()
@@ -469,7 +514,7 @@ mod tests {
     }
 
     #[test]
-    fn zoom_in_grows_and_zoom_out_floors_at_the_cover_scale() {
+    fn zoom_slider_maps_0_to_the_cover_scale_and_1_to_the_ceiling() {
         let mut c = crop(
             ArtworkTarget::Album("A".into()),
             PathBuf::from("x"),
@@ -477,23 +522,36 @@ mod tests {
             300,
         );
         let floor = min_scale(&c);
-        apply_zoom(&mut c, ZOOM_STEP);
-        assert!(c.scale > floor, "zoom in grows scale");
-        // Many zoom-outs can't drop below the cover scale.
-        for _ in 0..20 {
-            apply_zoom(&mut c, 1.0 / ZOOM_STEP);
-        }
-        assert!(
-            (c.scale - floor).abs() < 1e-4,
-            "zoom out floors at the cover scale"
-        );
-        // Many zoom-ins can't exceed the MAX_ZOOM ceiling.
-        for _ in 0..40 {
-            apply_zoom(&mut c, ZOOM_STEP);
-        }
+        // At the cover scale the slider reads 0.
+        assert!(zoom01(&c) < 1e-6, "cover scale -> slider 0");
+
+        // 1 -> the MAX_ZOOM ceiling (and round-trips back to 1).
+        apply_zoom01(&mut c, 1.0);
         assert!(
             (c.scale - floor * MAX_ZOOM).abs() < 1e-3,
-            "zoom in caps at the ceiling"
+            "slider 1 -> the ceiling"
+        );
+        assert!((zoom01(&c) - 1.0).abs() < 1e-6, "ceiling -> slider 1");
+
+        // 0.5 sits strictly between floor and ceiling.
+        apply_zoom01(&mut c, 0.5);
+        assert!(
+            c.scale > floor && c.scale < floor * MAX_ZOOM,
+            "slider 0.5 is between"
+        );
+
+        // 0 returns to the cover scale.
+        apply_zoom01(&mut c, 0.0);
+        assert!(
+            (c.scale - floor).abs() < 1e-4,
+            "slider 0 -> the cover scale"
+        );
+
+        // Out-of-range values are clamped to the ceiling.
+        apply_zoom01(&mut c, 5.0);
+        assert!(
+            (c.scale - floor * MAX_ZOOM).abs() < 1e-3,
+            "a value above 1 clamps to the ceiling"
         );
     }
 

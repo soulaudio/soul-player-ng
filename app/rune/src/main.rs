@@ -2756,7 +2756,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     overlays.extend(views::signal_path::overlay(s, &p));
     overlays.extend(views::titlebar::overlay(s, &p));
     overlays.extend(views::add_to_playlist::overlay(s, &p));
-    overlays.extend(views::artwork_crop::overlay(s, &p));
+    overlays.extend(views::artwork_crop::overlay(s, &p, cx));
     // The crash-report modal draws over everything, on any route — last, so it
     // stacks above any panel still mounted beneath it.
     if let Some(dialog) = crash_overlay(s, &p) {
@@ -5695,7 +5695,7 @@ mod tests {
     }
 
     /// The crop flow end-to-end: Edit Artwork → file dialog → the CROP dialogue
-    /// opens → zoom in (scale grows) → Set-as-cover crops + stores the result.
+    /// opens → the zoom slider is present → Set-as-cover crops + stores the result.
     /// Picking no longer sets the cover directly; the crop step does, and it
     /// stores a freshly-encoded PNG (never touching the source music files).
     #[test]
@@ -5717,13 +5717,11 @@ mod tests {
             "no cover is stored until the crop is confirmed"
         );
 
-        // Zoom in grows the displayed scale.
-        let before = rt.state.artwork_crop.as_ref().unwrap().scale;
-        click_key(&mut rt, "artwork-crop-zoom-in");
-        let after = rt.state.artwork_crop.as_ref().unwrap().scale;
+        // Zoom is a slider now; it is present in the dialogue. (Its value->scale
+        // mapping is covered by the `zoom01`/`set_zoom01` unit tests.)
         assert!(
-            after > before,
-            "zoom in grew the scale: {before} -> {after}"
+            rt.find("artwork-crop-zoom").is_some(),
+            "the crop dialogue has a zoom slider"
         );
 
         // Confirm: crop + store.
@@ -5762,6 +5760,216 @@ mod tests {
         assert!(
             rt.state.covers.album_cover_path(&album_name).is_none(),
             "cancelling stored no cover"
+        );
+    }
+
+    /// The detail-hero Edit Artwork affordance is revealed ON HOVER (like the old
+    /// app), not parked in the actions row: the overlay rests at opacity 0 and
+    /// fades in while the pointer is over the cover. Guards the `hover_group`
+    /// wiring on the hero cover, without which the overlay never leaves opacity 0.
+    #[test]
+    fn hovering_an_artist_hero_reveals_the_edit_artwork_overlay() {
+        let _g = config::use_test_config_dir();
+        let mut s = populated_state();
+        let artist = s
+            .library
+            .iter()
+            .filter_map(|t| t.artist.clone())
+            .find(|a| !a.is_empty())
+            .expect("the testdata library has a named artist");
+        // A plain avatar (no custom cover) so the hero is the circular
+        // `artist-cover`, and sibling tests can't leave a cover behind.
+        s.covers.clear_artist_cover(&artist);
+        s.route = Route::Artist;
+        s.open_artist = Some(artist);
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        let overlay_opacity = |rt: &Runtime<State>| {
+            rt.elements()
+                .iter()
+                .find(|e| e.key.as_deref() == Some("artist-artwork-overlay"))
+                .map(|e| e.opacity)
+        };
+        assert!(
+            matches!(overlay_opacity(&rt), Some(o) if o < 0.01),
+            "at rest the Edit Artwork overlay is hidden, got {:?}",
+            overlay_opacity(&rt)
+        );
+
+        // Move the pointer onto the hero cover: the overlay fades in.
+        let (cx, cy) = rt
+            .find("artist-cover")
+            .expect("the artist hero cover is on screen");
+        rt.pointer_move(cx, cy);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            matches!(overlay_opacity(&rt), Some(o) if o > 0.5),
+            "hovering the cover reveals the Edit Artwork overlay, got {:?}",
+            overlay_opacity(&rt)
+        );
+    }
+
+    /// The whole artist-artwork journey end-to-end through the real `view`: open
+    /// an artist page, HOVER the cover to reveal Edit Artwork, click it, pick an
+    /// image, the crop dialogue opens, confirm it — the artist gains a stored
+    /// custom cover and the hero switches from the generated avatar to that image.
+    /// Ties together the hover reveal, the crop pipeline, and the cover store.
+    #[test]
+    fn e2e_artist_hover_edit_crop_sets_the_cover() {
+        let _g = config::use_test_config_dir();
+        let mut s = populated_state();
+        let artist = s
+            .library
+            .iter()
+            .filter_map(|t| t.artist.clone())
+            .find(|a| !a.is_empty())
+            .expect("the testdata library has a named artist");
+        s.covers.clear_artist_cover(&artist);
+        s.route = Route::Artist;
+        s.open_artist = Some(artist.clone());
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        // A plain avatar hero (no custom cover yet); its Edit Artwork overlay rests hidden.
+        assert!(
+            rt.find("artist-cover").is_some(),
+            "the hero is the generated circular avatar"
+        );
+        let overlay_opacity = |rt: &Runtime<State>| {
+            rt.elements()
+                .iter()
+                .find(|e| e.key.as_deref() == Some("artist-artwork-overlay"))
+                .map(|e| e.opacity)
+        };
+        assert!(
+            matches!(overlay_opacity(&rt), Some(o) if o < 0.01),
+            "Edit Artwork rests hidden, got {:?}",
+            overlay_opacity(&rt)
+        );
+
+        // 1. Hover the cover -> the Edit Artwork overlay fades in.
+        let (cx, cy) = rt.find("artist-cover").unwrap();
+        rt.pointer_move(cx, cy);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            matches!(overlay_opacity(&rt), Some(o) if o > 0.5),
+            "hovering the cover reveals Edit Artwork, got {:?}",
+            overlay_opacity(&rt)
+        );
+
+        // 2. Click Edit Artwork -> an image file dialog -> pick -> the crop dialogue opens.
+        click_key(&mut rt, "artist-edit-artwork");
+        rt.frame(0.0);
+        let (kind, _opts) = rt
+            .file_dialog()
+            .expect("Edit Artwork opens an image file dialog");
+        assert_eq!(kind, FileDialogKind::Open);
+        rt.resolve_file_dialog(Some(write_temp_real_png())).unwrap();
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.state.artwork_crop.is_some() && rt.find("artwork-crop-dialog").is_some(),
+            "picking an image opens the crop dialogue"
+        );
+
+        // 3. Confirm the crop -> the artist gains a stored custom cover (a re-encoded PNG).
+        click_key(&mut rt, "artwork-crop-confirm");
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            rt.state.artwork_crop.is_none(),
+            "confirming closes the crop dialogue"
+        );
+        let stored = rt
+            .state
+            .covers
+            .artist_cover_path(&artist)
+            .expect("the artist now has a stored custom cover");
+        assert!(stored.exists(), "the stored cover file exists on disk");
+        assert_eq!(
+            stored.extension().and_then(|e| e.to_str()),
+            Some("png"),
+            "the stored cover is the re-encoded PNG crop"
+        );
+
+        // 4. The hero now renders the custom image, not the generated avatar.
+        assert!(
+            rt.find("artist-hero-image").is_some(),
+            "the hero switched to the custom cover image"
+        );
+    }
+
+    /// Removing a cover lives INSIDE the edit dialogue (a trash control), not on
+    /// the hover overlay: with a cover already set, opening Edit Artwork offers a
+    /// Remove control that clears the cover and closes. Without a cover, no Remove
+    /// control is shown (guarded by the crop-dialogue snap scene's a11y sweep).
+    #[test]
+    fn e2e_crop_dialogue_remove_clears_an_existing_cover() {
+        let _g = config::use_test_config_dir();
+        let album_name = first_album_name(&populated_state());
+
+        let mut s = populated_state();
+        // Pre-set a custom cover so the edit dialogue offers Remove.
+        assert!(
+            s.covers
+                .set_album_cover(&album_name, &write_temp_real_png()),
+            "the test PNG is a valid cover"
+        );
+        assert!(s.covers.album_cover_path(&album_name).is_some());
+        s.route = Route::Album;
+        s.open_album = Some(album_name.clone());
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        // Open the crop dialogue (Edit Artwork -> pick an image).
+        click_key(&mut rt, "album-edit-artwork");
+        rt.frame(0.0);
+        rt.resolve_file_dialog(Some(write_temp_real_png())).unwrap();
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.state.artwork_crop.is_some(), "the crop dialogue is open");
+        assert!(
+            rt.find("artwork-crop-remove").is_some(),
+            "the dialogue offers Remove because a cover is set"
+        );
+
+        // Click Remove -> the cover is cleared and the dialogue closes.
+        click_key(&mut rt, "artwork-crop-remove");
+        rt.frame(0.0);
+        assert!(
+            rt.state.artwork_crop.is_none(),
+            "removing closes the dialogue"
+        );
+        assert!(
+            rt.state.covers.album_cover_path(&album_name).is_none(),
+            "Remove cleared the custom cover"
         );
     }
 
