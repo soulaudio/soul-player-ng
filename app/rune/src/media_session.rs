@@ -96,7 +96,28 @@ use souvlaki::{MediaControls, MediaMetadata, MediaPlayback, MediaPosition, Platf
 
 use crate::State;
 
-const DBUS_NAME: &str = "soul_player";
+/// The MPRIS bus-name suffix: the app registers as
+/// `org.mpris.MediaPlayer2.{DBUS_NAME}`.
+///
+/// It is the BINARY name on purpose, which is also the basename of the installed
+/// desktop entry (`soul-player-rune.desktop`) and the window's `app_id`. MPRIS
+/// has an optional `DesktopEntry` root property for exactly this — "which
+/// .desktop file is this player" — but souvlaki does not implement it (0.9.3
+/// serves Identity/CanQuit/CanRaise/SupportedUriSchemes/SupportedMimeTypes and
+/// nothing else). Without it, desktops that want the player's ICON fall back to
+/// matching the bus-name suffix against installed desktop files, which only
+/// works if the two agree. They previously did not: the suffix was
+/// `soul_player` while the entry is `soul-player-rune`, so a media applet had
+/// nothing to resolve and showed a generic icon.
+///
+/// Hyphens are legal here. D-Bus forbids them in object paths and interface
+/// names, but bus-name elements allow `[A-Za-z0-9_-]` (just not a leading
+/// digit), and souvlaki interpolates this straight into the name.
+///
+/// Taken from `CARGO_BIN_NAME` rather than written out so it cannot drift from
+/// the binary — which is what cargo-packager names the desktop entry after, and
+/// what `rune::set_app_id` publishes to the compositor.
+const DBUS_NAME: &str = env!("CARGO_BIN_NAME");
 const DISPLAY_NAME: &str = "Soul Player";
 
 // ---- artwork --------------------------------------------------------------------
