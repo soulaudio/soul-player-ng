@@ -70,8 +70,8 @@ pub use soul_audio_playlist::{
 };
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, LoudnessAnalysisMode, PlayState, QueueState, RepeatMode,
-    ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath,
-    SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
+    ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath, SkipReason,
+    SkippedGroup, SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -86,6 +86,22 @@ type ScanProgressSubscriber = Box<dyn Fn(Option<ScanProgress>) + Send>;
 /// Deletions from one rescan: `(root, removed file paths)` for each root that lost
 /// files since its prior cache.
 type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
+/// Files one rescan walked past without importing: `(root, groups)` for each root
+/// that skipped any, counted per extension with the reason.
+type Skips = Vec<(PathBuf, Vec<SkippedGroup>)>;
+
+/// What one rescan produced: the library refresh to broadcast, plus the two
+/// after-the-fact notices a UI reports — what vanished, and what was passed over.
+///
+/// A struct rather than a widening tuple because the notices are emitted by the
+/// CALLER, deliberately after the refresh is broadcast (so the list already
+/// reflects a deletion when the "N removed" notice lands), and an unnamed
+/// `(_, _, _)` at four call sites makes that ordering contract easy to get wrong.
+struct ScanReport {
+    update: WatchUpdate,
+    removed: Deletions,
+    skipped: Skips,
+}
 /// Remote sources added so far: each authenticated server alongside its
 /// last-fetched per-root index blobs (see [`Inner::remotes`]).
 type RemoteSources = Vec<(Arc<RemoteServer>, Vec<Vec<u8>>)>;
@@ -709,19 +725,21 @@ impl PlayerHandle {
     /// Either way it lists with a 0 `track_count`. An empty / all-disabled /
     /// all-unavailable set yields an empty library, not an error.
     fn rescan(&self) -> anyhow::Result<WatchUpdate> {
-        let (up, removed) = self.rescan_compute()?;
+        let report = self.rescan_compute()?;
+        let up = report.update;
         // Warn about genuine deletions after the scan: each scanned (hence
         // available) root reports files gone since its prior cache. An offline root
         // was never scanned, so it contributes nothing (no mass-removal when a drive
         // is unplugged). The live watcher emits these AFTER broadcasting the library
         // refresh (see [`start_watching`]), so the deletion warning always lands
         // once the list already reflects the removal.
-        for (root, gone) in &removed {
+        for (root, gone) in &report.removed {
             self.emit(Event::TracksRemoved {
                 root: root.clone(),
                 count: gone.len(),
             });
         }
+        self.emit_skips(report.skipped);
         // A user source change (set_sources / set_folders / toggle) funnels through
         // here; re-arm the live watcher over the new root set if it is running. The
         // watcher's own background rescans call `rescan_compute`, not this, so they
@@ -744,10 +762,21 @@ impl PlayerHandle {
             .collect()
     }
 
+    /// Report what a scan passed over, one event per affected root.
+    ///
+    /// Never emits an empty notice: `skipped` only carries roots that actually
+    /// skipped something, so a library this build fully decodes stays silent
+    /// rather than nagging about nothing.
+    fn emit_skips(&self, skipped: Skips) {
+        for (root, groups) in skipped {
+            self.emit(Event::TracksSkipped { root, groups });
+        }
+    }
+
     /// A full rescan of every enabled + reachable root — the entry for a source
     /// change, a manual Rescan, and the deferred startup scan. See
     /// [`rescan_build`](Self::rescan_build).
-    fn rescan_compute(&self) -> anyhow::Result<(WatchUpdate, Deletions)> {
+    fn rescan_compute(&self) -> anyhow::Result<ScanReport> {
         self.rescan_build(None)
     }
 
@@ -759,7 +788,7 @@ impl PlayerHandle {
     fn rescan_scoped(
         &self,
         affected: &std::collections::HashSet<PathBuf>,
-    ) -> anyhow::Result<(WatchUpdate, Deletions)> {
+    ) -> anyhow::Result<ScanReport> {
         self.rescan_build(Some(affected))
     }
 
@@ -773,7 +802,7 @@ impl PlayerHandle {
     fn rescan_build(
         &self,
         affected: Option<&std::collections::HashSet<PathBuf>>,
-    ) -> anyhow::Result<(WatchUpdate, Deletions)> {
+    ) -> anyhow::Result<ScanReport> {
         use std::collections::HashSet;
         let cfg = self.inner.folders.lock().expect("folders mutex").clone();
         let to_scan: Vec<PathBuf> = cfg
@@ -850,6 +879,7 @@ impl PlayerHandle {
             library: scanned,
             caches: fresh,
             removed,
+            skipped,
             bytes: fresh_bytes,
         } = build?;
         drop(sampler); // stop the sampler as soon as the scan is done
@@ -969,7 +999,11 @@ impl PlayerHandle {
         // The library changed; (re)enqueue it for background loudness analysis so new tracks
         // get a loudness/DR value. No-op if no actor is running yet (single-flight when it is).
         self.start_library_analysis();
-        Ok((WatchUpdate { views, sources }, removed))
+        Ok(ScanReport {
+            update: WatchUpdate { views, sources },
+            removed,
+            skipped,
+        })
     }
 
     /// Seed the configured-source set from `(path, enabled)` pairs, replacing any
@@ -1622,14 +1656,15 @@ impl PlayerHandle {
             };
             // Broadcast the library refresh BEFORE the deletion warning, so the list
             // already reflects the removal when the "N removed" notice arrives.
-            if let Ok((up, removed)) = result {
-                handle.broadcast_watch(up);
-                for (root, gone) in removed {
+            if let Ok(report) = result {
+                handle.broadcast_watch(report.update);
+                for (root, gone) in report.removed {
                     handle.emit(Event::TracksRemoved {
                         root,
                         count: gone.len(),
                     });
                 }
+                handle.emit_skips(report.skipped);
             }
         }) {
             Ok(d) => d,
@@ -2833,7 +2868,8 @@ mod tests {
         // what a full rescan would produce.
         std::fs::write(aroot.join("a2.wav"), wav(48_000, 96_000)).unwrap();
         let affected: std::collections::HashSet<PathBuf> = std::iter::once(aroot.clone()).collect();
-        let (scoped, removed) = h.rescan_scoped(&affected).expect("scoped rescan");
+        let report = h.rescan_scoped(&affected).expect("scoped rescan");
+        let (scoped, removed) = (report.update, report.removed);
         assert_eq!(
             scoped.views.len(),
             4,
@@ -2880,6 +2916,90 @@ mod tests {
         assert!(
             !snap.contains_key(&broot),
             "dropped source's cache is pruned"
+        );
+    }
+
+    /// A scan that passes over files the build cannot decode must SAY so, with
+    /// the reason, through the same event channel the deletion warning uses.
+    ///
+    /// The silent alternative is the actual user-facing bug: `.aac` rips that
+    /// never appear look identical to a broken scan. A count alone is not enough
+    /// either — the two reasons differ in what the user can do about them, so the
+    /// per-extension reason has to survive the trip to the UI.
+    #[test]
+    fn a_scan_reports_the_files_it_skipped_with_the_reason() {
+        let a = folder_with("warn_skip", &["a.wav"]);
+        let aroot = a.path().to_path_buf();
+        // A gated-decoder format (AAC, behind an opt-in feature — patent) and one
+        // this build does not decode at all, so BOTH reasons are exercised.
+        std::fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/tone.aac"),
+            aroot.join("gated.aac"),
+        )
+        .expect("copy tone.aac");
+        std::fs::write(aroot.join("old.wma"), b"not really wma").expect("write wma");
+        // Not audio: must never be reported, or any library with cover art shows
+        // a "skip" notice the user cannot act on.
+        std::fs::write(aroot.join("cover.jpg"), b"jpeg").expect("write jpg");
+
+        let h = PlayerHandle::offline();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        {
+            let ev = Arc::clone(&events);
+            h.subscribe(move |e| ev.lock().expect("ev mutex").push(e));
+        }
+        h.set_sources(&[(aroot.clone(), true)]).unwrap();
+
+        let skips: Vec<(PathBuf, Vec<SkippedGroup>)> = events
+            .lock()
+            .expect("ev mutex")
+            .iter()
+            .filter_map(|e| match e {
+                Event::TracksSkipped { root, groups } => Some((root.clone(), groups.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(skips.len(), 1, "one notice for the one affected root");
+        let (root, groups) = &skips[0];
+        assert_eq!(root, &aroot);
+
+        let by_ext = |ext: &str| groups.iter().find(|g| g.extension == ext);
+        assert_eq!(
+            by_ext("aac").map(|g| (g.count, g.reason)),
+            Some((1, SkipReason::DecoderDisabled)),
+            "AAC is skipped because this build's decoder is gated off — a \
+             different build would play it, and the notice must say so"
+        );
+        assert_eq!(
+            by_ext("wma").map(|g| (g.count, g.reason)),
+            Some((1, SkipReason::UnsupportedFormat))
+        );
+        assert!(
+            by_ext("jpg").is_none(),
+            "a cover image is not audio and must never be reported"
+        );
+    }
+
+    /// The complement: a library this build fully decodes must emit NO skip
+    /// notice at all. Without this, a notice that fires unconditionally (or on an
+    /// empty group list) would still pass the test above while nagging every user.
+    #[test]
+    fn a_fully_decodable_library_reports_no_skips() {
+        let a = folder_with("warn_noskip", &["a.wav", "b.wav"]);
+        let h = PlayerHandle::offline();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        {
+            let ev = Arc::clone(&events);
+            h.subscribe(move |e| ev.lock().expect("ev mutex").push(e));
+        }
+        h.set_sources(&[(a.path().to_path_buf(), true)]).unwrap();
+        assert!(
+            events
+                .lock()
+                .expect("ev mutex")
+                .iter()
+                .all(|e| !matches!(e, Event::TracksSkipped { .. })),
+            "nothing was skipped, so nothing should be reported"
         );
     }
 

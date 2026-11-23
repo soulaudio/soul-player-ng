@@ -24,8 +24,8 @@ use parley_engine as _;
 use soul_player_host::{
     Band, BandKind, BrowseAxis, Command, DspUnit, EqUnit, Event, FREQ_MAX, FREQ_MIN, GAIN_LIMIT_DB,
     IndexingMode, LoudnessAnalysisMode, MAX_BANDS, PlayState, PlayerHandle, Q_MAX, Q_MIN,
-    RepeatMode, ReplayGainMode, SPECTRUM_COLS, ScanProgress, SignalPath, SourceCodec, SourceFormat,
-    SourceKind, SourceStatus, TrackLoudness, TrackView, WatchUpdate, default_bands,
+    RepeatMode, ReplayGainMode, SPECTRUM_COLS, ScanProgress, SignalPath, SkippedGroup, SourceCodec,
+    SourceFormat, SourceKind, SourceStatus, TrackLoudness, TrackView, WatchUpdate, default_bands,
     organize::{self, Strategy},
     remote::{KeyringStore, TokenStore},
 };
@@ -467,6 +467,12 @@ struct State {
     /// (`(root, count)`). Cleared on the next Sources refresh ([`apply_watch`]) so
     /// it reads as a notice about the *last* scan, not a permanent banner.
     removal_notice: Option<(PathBuf, usize)>,
+    /// What the most recent scan passed over, for the Sources page: the source
+    /// root and the per-extension groups with their reason, from the host's
+    /// [`Event::TracksSkipped`]. `None` when the last scan imported everything it
+    /// found. Cleared on the next Sources refresh ([`apply_watch`]) so it reads as
+    /// a notice about the *last* scan rather than a permanent banner.
+    skip_notice: Option<(PathBuf, Vec<SkippedGroup>)>,
     /// Whether the Remote server connect form is open (Settings → Add Source →
     /// Remote server). Opened by `open_remote_form` (which also closes the
     /// add-source menu), closed by Cancel/Escape/a successful connect.
@@ -831,6 +837,7 @@ impl State {
             remote_health_refreshing: false,
             remote_health_open: false,
             removal_notice: None,
+            skip_notice: None,
             remote_form_open: false,
             remote_url_buf: rune::TextEdit::new(""),
             remote_error: None,
@@ -992,6 +999,11 @@ impl State {
             Event::TracksRemoved { root, count } => {
                 self.removal_notice = Some((root.clone(), *count));
             }
+            // A rescan walked past files it could not import. Same lifecycle as the
+            // deletion warning: a notice about THIS scan, cleared by the next one.
+            Event::TracksSkipped { root, groups } => {
+                self.skip_notice = Some((root.clone(), groups.clone()));
+            }
         }
     }
 }
@@ -1006,6 +1018,10 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     // any) is applied right after and re-sets it, so the notice always reflects the
     // most recent scan rather than lingering.
     s.removal_notice = None;
+    // Same for the skip notice: this scan's own `TracksSkipped` (if any) lands
+    // right after and re-sets it, so a format fixed since the last scan stops
+    // being reported rather than lingering forever.
+    s.skip_notice = None;
     // A WatchUpdate marks a scan complete — retire the title-bar activity widget.
     s.scan_progress = None;
 }
@@ -3341,6 +3357,29 @@ fn scene_crash_dialog(s: &mut State) {
 /// German settings scenes: the longest-label locale we ship, for catching text
 /// overflow in `--snap`. `apply_locale` (not `set_locale_pref`) so the snapshot
 /// never writes the user's persisted language.
+/// Music Data with a skip report: the Sources card after a scan that passed over
+/// files it could not import. A dedicated scene because the notice only ever
+/// exists transiently (it is cleared by the next refresh), so there is otherwise
+/// no way to snapshot the wording or catch it overflowing its card.
+fn scene_settings_music_skips(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::MusicData;
+    s.skip_notice = Some((
+        PathBuf::from("/music/Bootlegs"),
+        vec![
+            SkippedGroup {
+                extension: "aac".into(),
+                reason: soul_player_host::SkipReason::DecoderDisabled,
+                count: 2,
+            },
+            SkippedGroup {
+                extension: "wma".into(),
+                reason: soul_player_host::SkipReason::UnsupportedFormat,
+                count: 1,
+            },
+        ],
+    ));
+}
 fn scene_settings_music_de(s: &mut State) {
     apply_locale("de");
     s.route = Route::Settings;
@@ -3829,6 +3868,7 @@ fn main() -> anyhow::Result<()> {
             ("settings-appearance", scene_settings_appearance),
             ("add-source-open", scene_add_source_open),
             ("crash-dialog", scene_crash_dialog),
+            ("settings-music-skips", scene_settings_music_skips),
             ("settings-music-de", scene_settings_music_de),
             ("settings-audio-de", scene_settings_audio_de),
             ("settings-appearance-de", scene_settings_appearance_de),
@@ -6238,6 +6278,112 @@ mod tests {
         assert!(
             rt2.find("removal-notice").is_none(),
             "no warning when there were no deletions"
+        );
+    }
+
+    /// The clearing in `apply_watch` and the setting from `TracksSkipped` are
+    /// ordered: the refresh lands FIRST and wipes the previous scan's notice, then
+    /// this scan's own event re-sets it. Asserted because the two are a hair apart
+    /// from cancelling each other out — if the clear ever ran last, the notice
+    /// would be computed, emitted, and then silently thrown away, which is
+    /// indistinguishable from the bug this whole feature exists to fix.
+    #[test]
+    fn a_skip_event_after_the_refresh_survives() {
+        let mut s = populated_state();
+        let groups = vec![SkippedGroup {
+            extension: "aac".into(),
+            reason: soul_player_host::SkipReason::DecoderDisabled,
+            count: 2,
+        }];
+        // Previous scan's notice, then this scan's refresh + event, in order.
+        s.skip_notice = Some((PathBuf::from("/music/old"), groups.clone()));
+        apply_watch(&mut s, WatchUpdate::default());
+        s.apply(&Event::TracksSkipped {
+            root: PathBuf::from("/music/new"),
+            groups: groups.clone(),
+        });
+        assert_eq!(
+            s.skip_notice,
+            Some((PathBuf::from("/music/new"), groups)),
+            "the notice reflects THIS scan, not the previous one, and is not \
+             wiped by the refresh that precedes it"
+        );
+    }
+
+    #[test]
+    fn apply_watch_clears_the_skip_notice() {
+        let mut s = populated_state();
+        s.skip_notice = Some((
+            PathBuf::from("/music/rips"),
+            vec![SkippedGroup {
+                extension: "aac".into(),
+                reason: soul_player_host::SkipReason::DecoderDisabled,
+                count: 4,
+            }],
+        ));
+        apply_watch(&mut s, WatchUpdate::default());
+        assert_eq!(
+            s.skip_notice, None,
+            "a Sources refresh clears the previous scan's skip notice, so a \
+             format that is no longer skipped stops being reported"
+        );
+    }
+
+    /// The skip report renders in Settings → Music Data with the count, the
+    /// folder and the offending extension — proving the notice is actually wired
+    /// into the view, which the formatter's own unit test cannot show.
+    #[test]
+    fn skip_notice_renders_in_the_sources_page() {
+        // Same locale discipline as `removal_notice_renders_in_the_sources_page`.
+        let _guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.route = Route::Settings;
+        s.settings_tab = SettingsTab::MusicData;
+        s.skip_notice = Some((
+            PathBuf::from("/music/Bootlegs"),
+            vec![SkippedGroup {
+                extension: "wma".into(),
+                reason: soul_player_host::SkipReason::UnsupportedFormat,
+                count: 5,
+            }],
+        ));
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.set_live_waker(std::sync::Arc::new(|| {}));
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        // Folder, count and extension appear in every translation (the reason text
+        // does not), so this stays locale-independent like the deletion test.
+        let notice = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("skip-notice"))
+            .and_then(|e| e.text)
+            .expect("the skip report renders when set");
+        assert!(
+            notice.contains("Bootlegs") && notice.contains('5') && notice.contains("wma"),
+            "the notice names the folder, the count and the format: {notice:?}"
+        );
+
+        // Absent when the scan imported everything it found — a library this build
+        // fully decodes must show no notice at all.
+        let mut s2 = populated_state();
+        s2.route = Route::Settings;
+        s2.settings_tab = SettingsTab::MusicData;
+        s2.skip_notice = None;
+        let mut rt2 = Runtime::new(s2, view, (1100.0, 720.0), env);
+        rt2.set_live_waker(std::sync::Arc::new(|| {}));
+        rt2.frame(0.0);
+        rt2.settle_all();
+        rt2.frame(0.0);
+        assert!(
+            rt2.find("skip-notice").is_none(),
+            "nothing was skipped, so no notice"
         );
     }
 

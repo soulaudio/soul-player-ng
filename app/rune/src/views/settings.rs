@@ -11,6 +11,8 @@
 //! shows while Settings is routed.
 #![forbid(unsafe_code)]
 
+use std::path::Path;
+
 use rune::{
     Align, Color, Cursor, Cx, Drag, El, FileDialogOptions, Icon, Live, Phase, ScrollSpec, Shadow,
     Tx, WheelEvent, col, el, icon, row, text, text_input,
@@ -18,7 +20,8 @@ use rune::{
 use soul_player_host::device_transport::Transport;
 use soul_player_host::organize;
 use soul_player_host::{
-    BandKind, DspUnit, GAIN_LIMIT_DB, RemoteHealth, ReplayGainMode, SourceKind, SourceStatus,
+    BandKind, DspUnit, GAIN_LIMIT_DB, RemoteHealth, ReplayGainMode, SkipReason, SkippedGroup,
+    SourceKind, SourceStatus,
 };
 
 use crate::config::AlbumYearSource;
@@ -1809,6 +1812,18 @@ fn music_data_card(s: &State, p: &Palette) -> El {
                 .wrap(),
         );
     }
+    // What the last scan passed over (host `Event::TracksSkipped`), cleared on the
+    // next Sources refresh like the deletion warning above. Secondary colour, not
+    // accent: nothing is broken and no action is required — it exists so a user
+    // whose files are missing can see WHY instead of assuming a broken scan.
+    if let Some((root, groups)) = &s.skip_notice {
+        c = c.child(
+            text(skip_notice_text(root, groups))
+                .key("skip-notice")
+                .color(p.text_secondary)
+                .wrap(),
+        );
+    }
     let rows = merged_source_rows(s);
     if rows.is_empty() {
         c = c.child(text(t!("settings.noSources").to_string()).color(p.text_secondary));
@@ -1821,6 +1836,60 @@ fn music_data_card(s: &State, p: &Palette) -> El {
     c.child(indexing_section(s, p))
         // How the scan-time loudness/DR sweep runs (Off / Throttled / Full).
         .child(loudness_analysis_section(s, p))
+}
+
+/// The human-readable reason a format was passed over.
+///
+/// The two cases are genuinely different advice, which is the whole reason the
+/// reason travels with the count: a disabled decoder means *this build* won't
+/// play the file (another one would), while an unsupported format means no build
+/// here will. Collapsing them into "skipped" throws that away.
+fn skip_reason_label(reason: SkipReason) -> String {
+    match reason {
+        SkipReason::DecoderDisabled => t!("settings.skipDecoderDisabled").to_string(),
+        SkipReason::UnsupportedFormat => t!("settings.skipUnsupportedFormat").to_string(),
+    }
+}
+
+/// "3 files skipped in Rips: 2 .aac (decoder not enabled in this build), 1 .wma
+/// (format not supported)".
+///
+/// The headline count is the SUM over groups, not the group count — with two
+/// formats and three files those differ, and the number a user compares against
+/// "what's missing from my library" is the file count.
+///
+/// A pure function over `(root, groups)` so the wording is testable without
+/// standing up a UI: the assertion worth making here is about what the sentence
+/// SAYS, not about how it is laid out.
+fn skip_notice_text(root: &Path, groups: &[SkippedGroup]) -> String {
+    let total: usize = groups.iter().map(|g| g.count).sum();
+    // The folder's own name: the Sources card is narrow, and a full path pushes
+    // the per-format reasons — the actionable part — off the end.
+    let folder = root
+        .file_name()
+        .and_then(|f| f.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let detail = groups
+        .iter()
+        .map(|g| {
+            t!(
+                "settings.skipGroup",
+                count => g.count,
+                ext => g.extension,
+                reason => skip_reason_label(g.reason),
+            )
+            .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    t!(
+        "settings.filesSkipped",
+        count => total,
+        folder => folder,
+        detail => detail,
+    )
+    .to_string()
 }
 
 // ── Managed Library (the write-path organizer: configure half) ───────────────
@@ -4163,6 +4232,71 @@ mod tests {
         // The three kinds are genuinely distinct, so applied never looks like idle.
         assert_ne!(StatusKind::Active, StatusKind::Neutral);
         assert_ne!(StatusKind::Active, StatusKind::Attention);
+    }
+
+    /// The skip notice has to answer "how many, which formats, and why" — a bare
+    /// count is the thing users already complain about, because it does not say
+    /// whether the files are unplayable everywhere or just in this build.
+    #[test]
+    fn skip_notice_names_every_format_and_its_reason() {
+        use std::path::Path;
+
+        use super::skip_notice_text;
+        use soul_player_host::{SkipReason, SkippedGroup};
+        let _locale = crate::config::use_test_locale("en");
+
+        let groups = vec![
+            SkippedGroup {
+                extension: "aac".into(),
+                reason: SkipReason::DecoderDisabled,
+                count: 2,
+            },
+            SkippedGroup {
+                extension: "wma".into(),
+                reason: SkipReason::UnsupportedFormat,
+                count: 1,
+            },
+        ];
+        let text = skip_notice_text(Path::new("/music/Rips"), &groups);
+        // The total is the SUM across groups, not the number of groups — the two
+        // differ exactly when it matters (here: 3 files, 2 formats).
+        assert!(
+            text.starts_with("3 files skipped in Rips: "),
+            "expected a total and the folder name, got {text:?}"
+        );
+        assert!(
+            text.contains("2 .aac (decoder not enabled in this build)"),
+            "the gated-decoder reason must be stated — these files WOULD play in \
+             another build, and the user can act on that; got {text:?}"
+        );
+        assert!(
+            text.contains("1 .wma (format not supported)"),
+            "an unsupported format must be named too; got {text:?}"
+        );
+    }
+
+    /// The folder shown is the source's own name, not its whole path — the card
+    /// is already narrow and the full path pushes the reason off the end.
+    #[test]
+    fn skip_notice_shows_the_folder_name_not_the_whole_path() {
+        use std::path::Path;
+
+        use super::skip_notice_text;
+        use soul_player_host::{SkipReason, SkippedGroup};
+        let _locale = crate::config::use_test_locale("en");
+
+        let groups = vec![SkippedGroup {
+            extension: "ape".into(),
+            reason: SkipReason::UnsupportedFormat,
+            count: 7,
+        }];
+        let text = skip_notice_text(Path::new("/home/me/Music/Lossless Archive"), &groups);
+        assert!(text.contains("Lossless Archive"), "got {text:?}");
+        assert!(
+            !text.contains("/home/me"),
+            "the leading path must not be shown; got {text:?}"
+        );
+        assert!(text.contains("7 .ape"), "got {text:?}");
     }
 
     /// The output picker says up front which devices can never be bit-perfect.

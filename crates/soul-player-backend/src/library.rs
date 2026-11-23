@@ -20,7 +20,7 @@ use std::sync::atomic::AtomicUsize;
 use embedded_io_adapters::std::FromStd;
 use soul_audio_catalog::{BrowseAxis, Catalog, StrRef};
 use soul_audio_desktop::{OwnedDecoder, open_track};
-use soul_audio_import::{ScanCache, ScanProgress};
+use soul_audio_import::{ScanCache, ScanProgress, SkippedGroup};
 use soul_audio_index::IndexReader;
 use soul_audio_multicatalog::{MultiCatalog, pack, unpack};
 
@@ -39,6 +39,15 @@ pub struct IncrementalBuild {
     /// only for roots that had any. These are genuine per-file removals (the host
     /// only scans *available* roots, so an offline drive never lands here).
     pub removed: Vec<(PathBuf, Vec<PathBuf>)>,
+    /// Audio files the scan walked past without importing, as `(root, groups)`
+    /// for each root that skipped any — counts per extension, with the reason.
+    ///
+    /// Carried out of the scan rather than dropped because a silent skip is
+    /// indistinguishable from a broken scan: a user whose `.aac` rips never
+    /// appear has no way to learn that this build's decoder is gated off. Shaped
+    /// like [`removed`](Self::removed) — per affected root, empty otherwise — so
+    /// the host can surface it the same way it surfaces deletions.
+    pub skipped: Vec<(PathBuf, Vec<SkippedGroup>)>,
     /// The baked `.soulidx` bytes per root, **parallel to the `roots`** passed in.
     /// Each root bakes independently, so these can be cached and later fed back to
     /// [`Library::from_source_bytes`] to rebuild an unaffected root without
@@ -142,6 +151,7 @@ impl Library {
         let mut caches = Vec::with_capacity(roots.len());
         let mut all_bytes = Vec::with_capacity(roots.len());
         let mut removed = Vec::new();
+        let mut skipped = Vec::new();
         for (i, root) in roots.iter().enumerate() {
             let prior = priors.get(i).cloned().unwrap_or_default();
             let mut outcome = soul_audio_import::scan_incremental_throttled(
@@ -174,6 +184,12 @@ impl Library {
             if !outcome.removed.is_empty() {
                 removed.push((root.clone(), outcome.removed));
             }
+            // Only roots that actually skipped something: an empty entry per root
+            // would make "did this scan skip anything?" a search rather than a
+            // `is_empty()`, and the UI asks exactly that question.
+            if !outcome.skipped.is_empty() {
+                skipped.push((root.clone(), std::mem::take(&mut outcome.skipped)));
+            }
             caches.push(outcome.cache);
         }
         Ok(IncrementalBuild {
@@ -184,6 +200,7 @@ impl Library {
             },
             caches,
             removed,
+            skipped,
             bytes: all_bytes,
         })
     }
@@ -490,7 +507,7 @@ fn real_name(s: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use soul_audio_import::ScanPhase;
+    use soul_audio_import::{ScanPhase, SkipReason};
 
     /// A minimal valid PCM WAV of `frames` stereo frames at `rate` (silence).
     fn wav(rate: u32, frames: u32) -> Vec<u8> {
@@ -765,6 +782,68 @@ mod tests {
             lib.len(),
             0,
             "a .aac file must not be imported while AAC decode is gated off"
+        );
+    }
+
+    /// Not importing a file is only half the job: the scan has to SAY it skipped
+    /// it, and why. A user whose AAC rips simply never appear cannot tell a
+    /// deliberate limitation from a broken scan, which is the actual complaint.
+    ///
+    /// Asserts the reason reaches the caller too, not just a count — "12 files
+    /// skipped" with no cause is barely better than silence, and the two reasons
+    /// mean different things to a user: `DecoderDisabled` says a different build
+    /// of this app would play them, `UnsupportedFormat` says none would.
+    #[test]
+    fn an_incremental_scan_reports_what_it_skipped_and_why() {
+        let root = tmpdir("skips_reported");
+        // One importable track, so this is a normal library that happens to hold
+        // files we pass over — not a degenerate all-skipped case.
+        std::fs::copy(fixture("tone.wav"), root.join("good.wav")).expect("copy tone.wav");
+        // Gated decoder (AAC is behind an opt-in feature — patent).
+        std::fs::copy(fixture("tone.aac"), root.join("a.aac")).expect("copy tone.aac");
+        std::fs::copy(fixture("tone.aac"), root.join("b.aac")).expect("copy tone.aac");
+        // A format nothing here decodes. Contents are irrelevant — the scan
+        // classifies by extension before it ever opens the file.
+        std::fs::write(root.join("old.wma"), b"not really wma").expect("write wma");
+        // Not audio at all: must never be mentioned, or every library with a
+        // cover image reports a "skip" the user cannot act on.
+        std::fs::write(root.join("cover.jpg"), b"jpeg").expect("write jpg");
+
+        let roots = vec![root.clone()];
+        let build = Library::scan_many_incremental(
+            &roots,
+            &[ScanCache::default()],
+            4,
+            &AtomicUsize::new(4),
+            &mut |_| {},
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        assert_eq!(build.library.len(), 1, "only the .wav is importable");
+
+        let (skipped_root, groups) = build
+            .skipped
+            .iter()
+            .find(|(r, _)| r == &root)
+            .expect("the root that skipped files is reported");
+        assert_eq!(skipped_root, &root);
+
+        let by_ext = |ext: &str| groups.iter().find(|g| g.extension == ext);
+        let aac = by_ext("aac").expect("the .aac files are reported");
+        assert_eq!(aac.count, 2, "both .aac files counted");
+        assert_eq!(
+            aac.reason,
+            SkipReason::DecoderDisabled,
+            "AAC is skipped because its decoder is gated off in this build, \
+             not because the format is unknown"
+        );
+        let wma = by_ext("wma").expect("the .wma file is reported");
+        assert_eq!(wma.count, 1);
+        assert_eq!(wma.reason, SkipReason::UnsupportedFormat);
+        assert!(
+            by_ext("jpg").is_none(),
+            "a cover image is not audio and must never be reported as a skip"
         );
     }
 
