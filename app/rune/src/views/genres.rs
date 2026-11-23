@@ -242,6 +242,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         meta,
         Some(&icons::CLOCK),
         detail_actions("genre-play-all", genre.ids.clone(), p),
+        None, // genres have no editable artwork (icon tile)
     );
 
     let q = s.genre_search.text.to_lowercase();

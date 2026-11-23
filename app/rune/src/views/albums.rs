@@ -16,7 +16,7 @@ use soul_player_host::{Command, TrackView};
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::detail_page::{ArtworkTarget, HeroArt, detail_actions_with_artwork, detail_hero};
+use crate::views::detail_page::{ArtworkTarget, HeroArt, detail_actions, detail_hero};
 use crate::views::grid;
 use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
@@ -669,13 +669,8 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         album_subtitle(&album, s.album_year),
         meta,
         Some(&crate::views::icons::CLOCK),
-        detail_actions_with_artwork(
-            s,
-            p,
-            "album-play-all",
-            album.ids.clone(),
-            ArtworkTarget::Album(album.name.clone()),
-        ),
+        detail_actions("album-play-all", album.ids.clone(), p),
+        Some(ArtworkTarget::Album(album.name.clone())),
     );
 
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
