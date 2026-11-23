@@ -247,6 +247,19 @@ pub static CAPTION_MAX: Icon = Icon {
     body: r#"<g fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4.5" y="4.5" width="15" height="15" rx="0.5"/></g>"#,
 };
 
+/// Windows caption **restore** glyph, shown in place of [`CAPTION_MAX`] while
+/// the window is maximized: the front square plus the top-right corner of one
+/// behind it, as Windows 11 draws its restore mark.
+///
+/// Both squares are smaller than [`CAPTION_MAX`]'s single one so the pair
+/// occupies the same ~16-unit optical box — matching Windows, where maximize
+/// and restore read as the same weight in the same cell.
+pub static CAPTION_RESTORE: Icon = Icon {
+    name: "caption-restore",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.5"><rect x="4.5" y="7.5" width="12" height="12" rx="0.5"/><path d="M7.5 4.5h12v12"/></g>"#,
+};
+
 /// Windows caption close glyph: a thin, square-capped cross.
 pub static CAPTION_CLOSE: Icon = Icon {
     name: "caption-close",
