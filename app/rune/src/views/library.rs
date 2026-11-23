@@ -95,8 +95,11 @@ pub(crate) const SEARCH_MAX_W: f32 = 360.0;
 pub(crate) fn page_search_bar(page: &str, search: El, trailing: Option<El>) -> El {
     let mut bar = row()
         .key(format!("{page}-search-bar"))
+        // Give the top bar the old app's `p-4`-style top breathing room instead of
+        // sitting cramped against the top of the pane; the grid's own top padding
+        // provides the gap below, so no bottom padding here.
         .px(space::PANE)
-        .pt(space::SM)
+        .pt(space::PANE)
         .gap(space::SM)
         .center_y()
         .child(search.grow(1.0).max_w(SEARCH_MAX_W));
