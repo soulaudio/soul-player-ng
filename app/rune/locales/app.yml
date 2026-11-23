@@ -432,6 +432,13 @@ artwork.edit:
   zh: '编辑封面'
   cs: 'Upravit obálku'
   ja: 'アートワークを編集'
+artwork.change:
+  en: 'Change Image'
+  de: 'Bild ändern'
+  es: 'Cambiar imagen'
+  zh: '更换图片'
+  cs: 'Změnit obrázek'
+  ja: '画像を変更'
 artwork.editDialog:
   en: 'Choose a cover image'
   de: 'Cover-Bild auswählen'
