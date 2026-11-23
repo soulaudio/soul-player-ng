@@ -5857,6 +5857,63 @@ mod tests {
         );
     }
 
+    /// Albums get the SAME Edit Artwork path as artists: hovering the square album
+    /// hero reveals the pencil, and clicking it opens the manage dialogue (Change /
+    /// Cancel). Guards that `album_detail` wires the artwork target like
+    /// `artist_detail` does, so album covers can be changed the same way.
+    #[test]
+    fn hovering_an_album_hero_reveals_edit_artwork_and_opens_the_manage_dialogue() {
+        let _g = config::use_test_config_dir();
+        let mut s = populated_state();
+        let album = first_album_name(&s);
+        s.covers.clear_album_cover(&album);
+        s.route = Route::Album;
+        s.open_album = Some(album);
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        let overlay_opacity = |rt: &Runtime<State>| {
+            rt.elements()
+                .iter()
+                .find(|e| e.key.as_deref() == Some("album-artwork-overlay"))
+                .map(|e| e.opacity)
+        };
+        assert!(
+            matches!(overlay_opacity(&rt), Some(o) if o < 0.01),
+            "at rest the album Edit Artwork overlay is hidden, got {:?}",
+            overlay_opacity(&rt)
+        );
+
+        // Hover the album cover -> the pencil overlay fades in.
+        let (cx, cy) = rt
+            .find("album-cover")
+            .expect("the album hero cover is on screen");
+        rt.pointer_move(cx, cy);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            matches!(overlay_opacity(&rt), Some(o) if o > 0.5),
+            "hovering the album cover reveals Edit Artwork, got {:?}",
+            overlay_opacity(&rt)
+        );
+
+        // Click the pencil -> the same manage dialogue (Change / Cancel) opens.
+        click_key(&mut rt, "album-edit-artwork");
+        rt.frame(0.0);
+        assert!(
+            rt.state.artwork_edit.is_some() && rt.find("artwork-edit-change").is_some(),
+            "the album pencil opens the manage dialogue"
+        );
+    }
+
     /// The detail-hero Edit Artwork affordance is revealed ON HOVER (like the old
     /// app), not parked in the actions row: the overlay rests at opacity 0 and
     /// fades in while the pointer is over the cover. Guards the `hover_group`
