@@ -154,3 +154,45 @@ fn the_deb_extra_files_exist() {
         "the RPM and Flatpak take their desktop entry and icon from here"
     );
 }
+
+/// The release workflow's `PLATFORMS` count and its `build` matrix have to
+/// agree: `PLATFORMS` is what `latest.json` is checked against before a release
+/// is published, and the matrix is what actually produces the entries.
+///
+/// A mismatch IS caught at release time — the manifest check fails — but a
+/// release run takes half an hour and is rare, so catching it here instead
+/// turns a late, expensive failure into an immediate one. The specific accident
+/// this guards is adding a platform to the matrix and forgetting the count,
+/// which would block the release at the very last gate.
+#[test]
+fn the_release_platform_count_matches_the_build_matrix() {
+    let src = read(&repo_root().join(".github/workflows/release.yml"));
+
+    let declared: usize = src
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("PLATFORMS:"))
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .expect("release.yml declares PLATFORMS")
+        .parse()
+        .expect("PLATFORMS is a number");
+
+    // Count the `target_key:` entries inside the `build` job's matrix: each one
+    // is a platform the release produces. Bounded by the next job so the `e2e`
+    // matrix (which mirrors it) is not counted twice.
+    let build = src
+        .split_once("\n  build:")
+        .expect("release.yml has a build job")
+        .1;
+    let build = build.split_once("\n  e2e:").map_or(build, |(b, _)| b);
+    let legs = build
+        .lines()
+        .filter(|l| l.trim().starts_with("target_key:"))
+        .count();
+
+    assert_eq!(
+        declared, legs,
+        "release.yml declares PLATFORMS={declared} but the build matrix has \
+         {legs} legs; `latest.json` is verified against PLATFORMS before a \
+         release publishes, so these must agree"
+    );
+}
