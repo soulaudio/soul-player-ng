@@ -14578,9 +14578,9 @@ mod tests {
         rt.on_key = Some(handle_key);
         rt.frame(0.0);
         assert_eq!(
-            el_info(&rt, "tracks").role,
+            el_info(&rt, "tracks-rows").role,
             "list",
-            "the track list is a list group for assistive tech"
+            "the (virtualized) track list is a list group for assistive tech"
         );
         let first = el_info(&rt, "track-1");
         assert!(first.focusable, "each track row is keyboard-focusable");
