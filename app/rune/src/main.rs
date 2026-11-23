@@ -742,6 +742,12 @@ struct State {
     /// frame by `views::reveal::tick` so a Settings toggle fades-then-collapses the
     /// item instead of snapping. An id absent from the map sits at its target.
     nav_reveal: std::collections::HashMap<&'static str, f32>,
+    /// Reveal progress (0 = collapsed, 1 = shown) for the Albums genre-filter chip
+    /// row, advanced each poll frame by `views::reveal::tick` toward
+    /// `albums_filters_open`. A dedicated f32 (not a `nav_reveal` entry) because the
+    /// chips are NOT a nav item: their resting default is 0 (closed), whereas
+    /// `nav_reveal`'s default for any non-hidden id is 1 (shown).
+    albums_filters_reveal: f32,
     /// The absolute poll clock seen last frame, so [`views::reveal::frame_delta`]
     /// can recover the real per-frame delta (Rune's poll arg is the absolute clock,
     /// not a delta). Drives every manual, time-based animation (the nav reveal).
@@ -945,6 +951,7 @@ impl State {
             mobile_show_content: false,
             nav_hidden: config::load_nav_hidden(),
             nav_reveal: std::collections::HashMap::new(),
+            albums_filters_reveal: 0.0,
             reveal_clock: 0.0,
             locale_pref,
             open_dropdown: None,
@@ -2434,13 +2441,13 @@ fn spectrum_poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     }
     // The Albums genre-filter chips fade+collapse the SAME way (reuse `reveal`), so
     // toggling Filters off fades the chips out at full height first, then collapses
-    // the space, instead of the row vanishing instantly.
-    let chips_shown = s.albums_filters_open;
-    let chips_progress = s
-        .nav_reveal
-        .entry("albums-filters")
-        .or_insert(if chips_shown { 1.0 } else { 0.0 });
-    let chips_animating = views::reveal::tick(chips_progress, chips_shown, frame_dt);
+    // the space, instead of the row vanishing instantly. Its own f32 (resting at 0 =
+    // closed), NOT a `nav_reveal` entry whose default would be 1 (shown).
+    let chips_animating = views::reveal::tick(
+        &mut s.albums_filters_reveal,
+        s.albums_filters_open,
+        frame_dt,
+    );
     if chips_animating {
         tx.wake_after(std::time::Duration::from_millis(16));
     }

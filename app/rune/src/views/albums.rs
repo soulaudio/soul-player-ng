@@ -309,10 +309,13 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         .on_press(|st: &mut State| st.albums_filters_open = !st.albums_filters_open);
     let search_bar = crate::views::library::page_search_bar("albums", search, Some(filters_btn));
     // The expandable genre-chip row (one toggle chip per library genre). Built while
-    // the reveal is at all open (progress > 0) so it stays present to fade OUT after
-    // Filters is toggled off, instead of the row vanishing instantly.
-    let chips_progress = s.nav_reveal("albums-filters");
-    let chips = (chips_progress > 0.0).then(|| {
+    // Filters is open OR still fading out after a toggle-off (reveal progress > 0),
+    // so the row stays present to fade rather than vanishing instantly. `open` keeps
+    // it fully shown + interactive the instant it opens (the poll animates only the
+    // fade-OUT; a poll-less test still sees it at full strength).
+    let filters_open = s.albums_filters_open;
+    let chips_progress = s.albums_filters_reveal;
+    let chips = (filters_open || chips_progress > 0.0).then(|| {
         let mut genres: Vec<&str> = s
             .library
             .iter()
@@ -376,10 +379,18 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     }
     let mut page = col().key("albums").grow(1.0).min_h(0.0).child(search_bar);
     if let Some(chip_row) = chips {
-        // Reveal wrapper (the shared `reveal` fade+collapse, same as the sidebar):
-        // fades the chips out AT FULL HEIGHT first, then collapses the space. Measure
-        // the row's natural height so the collapse scales it; the first frame (no
-        // prior layout) just hugs the content at full height.
+        // Fully shown while open; the shared `reveal` fade+collapse (same as the
+        // sidebar) drives only the fade-OUT (open=false, progress 1->0): fade at full
+        // height first, then collapse. Measure the row's natural height so the
+        // collapse scales it; the first frame (no prior layout) hugs the content.
+        let (op, hf) = if filters_open {
+            (1.0, 1.0)
+        } else {
+            (
+                crate::views::reveal::opacity(chips_progress),
+                crate::views::reveal::height_factor(chips_progress),
+            )
+        };
         let natural_h = cx
             .layout_size("albums-genre-chips")
             .map(|[_, h]| h)
@@ -388,10 +399,10 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             .key("albums-genre-chips-reveal")
             .w_full()
             .clip_rounded(radius::SM)
-            .opacity(crate::views::reveal::opacity(chips_progress))
+            .opacity(op)
             .child(chip_row);
         if let Some(h) = natural_h {
-            wrapper = wrapper.h(h * crate::views::reveal::height_factor(chips_progress));
+            wrapper = wrapper.h(h * hf);
         }
         page = page.child(wrapper);
     }
