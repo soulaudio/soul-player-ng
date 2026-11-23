@@ -16,10 +16,15 @@ use crate::domain::UserId;
 
 /// One issued, not-yet-redeemed authorization code.
 pub struct AuthCode {
+    /// The opaque authorization code string.
     pub code: String,
+    /// The user the code was issued to.
     pub user: UserId,
+    /// The PKCE code challenge the `/token` redemption's verifier must satisfy.
     pub code_challenge: String,
+    /// The redirect URI the redemption must match.
     pub redirect_uri: String,
+    /// Expiry time, unix seconds.
     pub expires_at: u64,
 }
 
@@ -34,6 +39,8 @@ pub struct CodeStore {
 }
 
 impl CodeStore {
+    /// An empty authorization-code store.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             codes: Mutex::new(Vec::new()),
