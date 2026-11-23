@@ -8,8 +8,11 @@ use serde::Deserialize;
 /// Server configuration loaded from a TOML file.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
+    /// The socket address to bind the HTTP server to (e.g. `0.0.0.0:8080`).
     pub bind: String,
+    /// The library root directories the server indexes and serves.
     pub roots: Vec<PathBuf>,
+    /// Path to the server's database file (users / credentials).
     pub db: PathBuf,
 }
 
