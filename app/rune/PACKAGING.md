@@ -136,6 +136,22 @@ with a new key**, so rotate only with a plan (e.g. a one-time manual download).
   self-hosted update server, and how the updater tests point at a local one.
 - `SOUL_PLAYER_AUTO_INSTALL_UPDATE=1` installs a found update unattended instead
   of waiting for **Install & Restart** (the release e2e drives real updates with it).
+- `SOUL_PLAYER_UPDATE_INTERVAL_SECS=<n>` overrides the re-check interval (tests).
+
+### Settings → Updates
+
+The policy follows Sparkle / VS Code / GitHub Desktop:
+
+- **Check for updates automatically** (default **on**, `update_auto_check` in
+  `config.toml`): at launch, then every 12 h while the app is open (±10 % jitter so
+  clients don't check in lockstep; a failed check retries after 30 min; never more
+  often than hourly). A found release is offered on the page and announced once
+  with a notification.
+- **Install updates automatically** (default **off**, `update_auto_install`):
+  download + verify in the background and install when the user next quits — the
+  app is never restarted out from under a playing track, and does not reopen.
+- **Check Now** and **Install & Restart** on the page, with the release notes
+  from `latest.json` and the time of the last check.
 
 "Install & Restart" downloads and verifies the update, quits the app normally
 (quit hooks run, so the next launch reports no crash), then installs it once the
@@ -159,7 +175,7 @@ until every earlier stage is green:
 | --- | --- |
 | `guard` | tag == `Cargo.toml` version; the commit is on `main` and its `CI success` check passed (waits for it if still running); the tag isn't already published |
 | `build` | per platform (Windows x64, macOS Apple silicon, macOS Intel, Linux x64): `cargo build --release --locked`, `cargo packager` + updater signature, the sidecar for `latest.json` (`write-meta.py`); macOS also builds the DMG and runs the static bundle checks (`verify-macos-bundle.sh`: sealed signature, architecture, identity, launch); SHA-256 of every installer |
-| `e2e` | on a fresh runner of each OS, with the exact installer that will ship (`.github/scripts/release-e2e.py`): **fresh install** → headless renders + the real app autoplaying a generated library (stays up, logs the right version, starts playback, no panic, quits cleanly) → **auto-update**: the installed app, pointed at a local server offering a newer version whose download is this release's own signed updater artifact, must download + verify it, quit, install it through the OS's real mechanism and come back up on the replaced files with no crash reported → **uninstall** leaves nothing behind; then **upgrade** from the currently published release (whose updater must pick up the new `latest.json`, served locally, and — for releases after 0.3.0 — install it itself) → **rollback** to that release (it must still run on the config the new one wrote) → uninstall |
+| `e2e` | on a fresh runner of each OS, with the exact installer that will ship (`.github/scripts/release-e2e.py`): **fresh install** → headless renders + the real app autoplaying a generated library (stays up, logs the right version, starts playback, no panic, quits cleanly) → **auto-update**: the installed app, pointed at a local server offering a newer version whose download is this release's own signed updater artifact, must download + verify it, quit, install it through the OS's real mechanism and come back up on the replaced files with no crash reported → **update settings** (set through the real `config.toml`): a release published while the app runs is found by a scheduled re-check and not installed on its own; with automatic checks off there is no update traffic at all; with automatic install on it downloads in the background, installs nothing mid-session, installs on quit and stays closed → **uninstall** leaves nothing behind; then **upgrade** from the currently published release (whose updater must pick up the new `latest.json`, served locally, and — for releases after 0.3.0 — install it itself) → **rollback** to that release (it must still run on the config the new one wrote) → uninstall |
 | `draft` | a draft GitHub Release with the installers, `latest.json` (`gen-latest-json.py`) and `SHA256SUMS`; the uploaded assets are downloaded again and checked against the tested bytes |
 | `publish` | undraft + mark latest (the `release` environment — add required reviewers there to make this a manual approval) |
 | `verify` | the public `releases/latest/download/latest.json` serves the new version, covers all 4 platforms, and every URL in it downloads the tested bytes |

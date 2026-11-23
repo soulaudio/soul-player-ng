@@ -689,8 +689,9 @@ mod tests {
             artists_page(s, &p, cx, cx.env().scale)
         }
 
-        let _cfg = crate::config::use_test_config_dir();
+        // Locale before config, the order every test takes them in (no deadlock).
         let _locale = crate::config::use_test_locale("en");
+        let _cfg = crate::config::use_test_config_dir();
         let mut s = State::new(soul_player_host::PlayerHandle::offline());
         s.library = vec![tv_album(1, "Bjork", "Debut")];
         s.route = crate::Route::Artists;
