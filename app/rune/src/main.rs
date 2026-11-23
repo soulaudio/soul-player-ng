@@ -718,14 +718,10 @@ struct State {
     /// Set at startup (`logging::begin_session`) when the previous session ended
     /// without a clean exit — surfaces the dismissible "report this crash" banner.
     crashed_last_session: bool,
-    /// Library filter query (case-insensitive substring over title/artist/album);
-    /// empty = no filter. Rune has no text widget yet, so it's typed into via the
-    /// key handler (`/` to start), not a focused input field.
-    search: String,
-    /// Whether typed characters currently build `search` (vs. driving the
-    /// transport shortcuts). `/` or clicking the search bar turns it on; Esc/Enter
-    /// turn it off.
-    searching: bool,
+    /// The Tracks page filter: a live text field like the other browse pages'
+    /// search (case-insensitive substring over title/artist/album; empty = no
+    /// filter). `/` on the Tracks page focuses it.
+    library_search: rune::TextEdit,
     /// The resizable sidebar's width (clamped 240–480) and whether it's collapsed
     /// to a thin rail. Persisted via [`config::load_sidebar`]/[`config::save_sidebar`]
     /// and driven by the drag handle in `views::sidebar`.
@@ -941,8 +937,7 @@ impl State {
             update_available: None,
             // Set from `logging::begin_session()` in `main`; `false` in tests.
             crashed_last_session: false,
-            search: String::new(),
-            searching: false,
+            library_search: rune::TextEdit::new(""),
             sidebar_width,
             sidebar_collapsed,
             ui_zoom: sane_zoom(config::load_ui_zoom()),
@@ -3329,24 +3324,9 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         close_dropdown(s);
         return true;
     }
-    // Search-input mode: typed characters build the library filter instead of
-    // driving the transport. `/` enters it; Esc clears + exits, Enter just exits
-    // (keeping the filter), Backspace edits.
-    if s.searching {
-        match &ev.key {
-            Key::Escape => {
-                s.search.clear();
-                s.searching = false;
-            }
-            Key::Enter => s.searching = false,
-            Key::Backspace => {
-                s.search.pop();
-            }
-            Key::Text(t) => s.search.push_str(t),
-            _ => return false,
-        }
-        return true;
-    }
+    // The Tracks filter is a focused text input now (`library_search`), which
+    // handles its own typing/Backspace/Escape when focused; a focused field
+    // consumes keys before this handler, so no search-mode branch is needed here.
     match &ev.key {
         // Ctrl-chord playback bindings, matching the original soul-player's
         // Keyboard settings tab (Play/Pause, Next, Prev, Volume Up/Down, Mute).
@@ -3361,7 +3341,9 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
         Key::Text(t) if ev.mods.ctrl && t.eq_ignore_ascii_case("m") => {
             s.host.send(Command::ToggleMute)
         }
-        Key::Text(t) if t == "/" && matches!(s.route, Route::Library) => s.searching = true,
+        Key::Text(t) if t == "/" && matches!(s.route, Route::Library) => {
+            s.library_search.focused = true
+        }
         Key::Text(t) if t == " " => s.host.send(Command::TogglePlay),
         Key::Right => s.host.send(Command::Next),
         Key::Left => s.host.send(Command::Prev),
@@ -3682,10 +3664,10 @@ fn scene_album_detail(s: &mut State) {
     s.playing = true;
 }
 fn scene_search(s: &mut State) {
-    s.search = "aria".to_string();
+    s.library_search = rune::TextEdit::new("aria");
 }
 fn scene_no_match(s: &mut State) {
-    s.search = "zzz-no-such-track".to_string();
+    s.library_search = rune::TextEdit::new("zzz-no-such-track");
 }
 fn scene_collapsed(s: &mut State) {
     s.sidebar_collapsed = true;
@@ -13310,7 +13292,7 @@ mod tests {
             .clone()
             .or_else(|| first.artist.clone())
             .expect("first track has a title or artist to search for");
-        s.search = needle;
+        s.library_search = rune::TextEdit::new(&needle);
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -13334,7 +13316,7 @@ mod tests {
         host.open_folder(&testdata_dir()).expect("scan testdata");
         let mut s = State::new(host);
         let first_id = s.library[0].id;
-        s.search = "zzz-no-such-track-zzz".to_string();
+        s.library_search = rune::TextEdit::new("zzz-no-such-track-zzz");
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -15063,37 +15045,31 @@ mod tests {
     /// `/` on the Library route enters search mode; typing builds the query,
     /// Backspace edits it, Esc clears + exits.
     #[test]
-    fn slash_enters_search_and_typing_builds_the_query() {
+    fn tracks_search_uses_the_shared_live_search_box() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        let mut rt = Runtime::new(
-            State::new(PlayerHandle::offline()),
-            view,
-            (1100.0, 720.0),
-            env,
-        );
-        rt.on_key = Some(handle_key);
+        let mut s = State::new(host);
+        s.route = Route::Library;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
-        let press = |rt: &mut Runtime<State>, key: Key| {
-            rt.key(KeyEvent {
-                key,
-                mods: Mods::default(),
-            });
-            rt.frame(0.0); // keys dispatch on the next frame (Rune's own on_key tests)
-        };
-        press(&mut rt, Key::Text("/".into()));
-        assert!(rt.state.searching, "/ enters search mode");
-        press(&mut rt, Key::Text("a".into()));
-        press(&mut rt, Key::Text("b".into()));
-        assert_eq!(rt.state.search, "ab", "typed characters build the query");
-        press(&mut rt, Key::Backspace);
-        assert_eq!(rt.state.search, "a", "Backspace edits the query");
-        press(&mut rt, Key::Escape);
+        // The Tracks filter is the SAME live `search_box` the other browse pages use
+        // (keyed `tracks-search`), not a bespoke click-to-type button.
         assert!(
-            !rt.state.searching && rt.state.search.is_empty(),
-            "Esc clears the query and exits search mode"
+            rt.find("tracks-search").is_some(),
+            "the Tracks search is the shared live search box"
+        );
+        // And it drives the same filter: a no-match query shows the empty state.
+        rt.update(|st: &mut State, _tx: &mut Tx| {
+            st.library_search = rune::TextEdit::new("zzz-no-such-track-zzz");
+        });
+        rt.frame(0.0);
+        assert!(
+            rt.find("no-matches").is_some(),
+            "typing into it filters the list (library_search drives the filter)"
         );
     }
 
