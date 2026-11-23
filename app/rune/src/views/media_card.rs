@@ -111,12 +111,10 @@ pub(crate) fn media_card(
     // album card its cover-track art. A circular card blurs its base art either
     // way, so the person silhouette + scrim overlay below still reads on top.
     let base_art = if let Some(path) = &spec.cover_override {
-        let art = cover_from_path(s, path, card_w, corner, p, scale);
-        if spec.circular {
-            art.blur(card_w * 0.05)
-        } else {
-            art
-        }
+        // A user-uploaded cover is the real photo: show it crisp, clipped to the
+        // card shape. No blur + no silhouette overlay (those dress up the seeded
+        // avatar); once a real image is set the card reads as a plain photo.
+        cover_from_path(s, path, card_w, corner, p, scale)
     } else if spec.circular {
         // Artist avatar: real art, else the artist-seeded generated cover,
         // softly blurred so the person silhouette reads on top (the original's
@@ -137,8 +135,9 @@ pub(crate) fn media_card(
         .child(base_art);
     // Artist cards (circular) overlay a person silhouette over a subtle scrim, so
     // the avatar reads as a profile the way the original's artist cards do; the
-    // artwork stays faintly visible behind the glyph.
-    if spec.circular {
+    // artwork stays faintly visible behind the glyph. A user-set custom cover is a
+    // real photo, so it drops the silhouette + scrim and shows the image cleanly.
+    if spec.circular && spec.cover_override.is_none() {
         cover_area = cover_area.child(
             el().key("artist-glyph")
                 .size(card_w, card_w)
