@@ -29,8 +29,14 @@ verify_sig() {
 }
 
 mnt="$(mktemp -d)"
-hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg" >/dev/null
-trap 'hdiutil detach "$mnt" -quiet -force || true' EXIT
+# `diskutil image` (macOS 26+) replaces the deprecated `hdiutil attach`; the macOS 15
+# hosted runners don't have it yet.
+if diskutil image attach --help >/dev/null 2>&1; then
+  diskutil image attach --readOnly --nobrowse --mountPoint "$mnt" "$dmg" >/dev/null
+else
+  hdiutil attach -nobrowse -readonly -mountpoint "$mnt" "$dmg" >/dev/null
+fi
+trap 'diskutil eject "$mnt" >/dev/null || true' EXIT
 app="$mnt/Soul Player.app"
 [ -d "$app" ] || fail "DMG has no Soul Player.app"
 [ "$(readlink "$mnt/Applications")" = "/Applications" ] || fail "DMG has no /Applications link"

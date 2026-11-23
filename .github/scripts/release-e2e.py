@@ -282,6 +282,28 @@ class WindowsInstall(Install):
         self.exe = exes[0]
 
 
+def has_diskutil_image() -> bool:
+    """`diskutil image` (macOS 26+) replaces the deprecated `hdiutil attach`."""
+    return subprocess.run(["diskutil", "image", "attach", "--help"], capture_output=True).returncode == 0
+
+
+def attach_dmg(dmg: Path, mnt: Path) -> None:
+    """Mount a DMG read-only, hidden from Finder, at `mnt`."""
+    if has_diskutil_image():
+        run(["diskutil", "image", "attach", "--readOnly", "--nobrowse", "--mountPoint", str(mnt), str(dmg)])
+    else:  # macOS 15 (the hosted runners): no `diskutil image` yet
+        run(["hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", str(mnt), str(dmg)])
+
+
+def eject_dmg(mnt: Path) -> None:
+    """Unmount and detach the image (`diskutil eject` does both on every macOS)."""
+    for _ in range(3):
+        if subprocess.run(["diskutil", "eject", str(mnt)], capture_output=True).returncode == 0:
+            return
+        time.sleep(2)
+    log(f"::warning::could not eject the DMG mounted at {mnt}")
+
+
 def install(installer: Path, work: Path, verify_sig: bool = True) -> Install:
     log(f"  installing {installer.name}")
     if IS_WIN:
@@ -295,12 +317,12 @@ def install(installer: Path, work: Path, verify_sig: bool = True) -> Install:
             shutil.rmtree(app)  # what a drag-to-Applications "Replace" does
         if installer.name.endswith(".dmg"):
             mnt = Path(tempfile.mkdtemp(dir=work))
-            run(["hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", str(mnt), str(installer)])
+            attach_dmg(installer, mnt)
             try:
                 check(os.readlink(mnt / "Applications") == "/Applications", "DMG lacks /Applications")
                 run(["ditto", str(mnt / f"{APP_NAME}.app"), str(app)])
             finally:
-                subprocess.run(["hdiutil", "detach", str(mnt), "-force", "-quiet"], check=False)
+                eject_dmg(mnt)
         else:  # the updater's .app.tar.gz
             run(["tar", "-xzf", str(installer), "-C", str(APPS_DIR)])
         check(app.is_dir(), f"{app} missing after install")
