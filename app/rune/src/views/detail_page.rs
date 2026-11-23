@@ -246,8 +246,10 @@ pub(crate) enum ArtworkTarget {
 impl ArtworkTarget {
     /// This target's current custom-cover path, if one is set and the file
     /// still exists ([`crate::covers::CoverStore`] returns `None` for a
-    /// vanished file).
-    fn cover_path(&self, s: &State) -> Option<PathBuf> {
+    /// vanished file). `pub(crate)` so the crop dialogue
+    /// (`views::artwork_crop`) can invalidate the art cache for the same
+    /// old/new paths this control does.
+    pub(crate) fn cover_path(&self, s: &State) -> Option<PathBuf> {
         match self {
             ArtworkTarget::Album(name) => s.covers.album_cover_path(name),
             ArtworkTarget::Artist(name) => s.covers.artist_cover_path(name),
@@ -255,8 +257,9 @@ impl ArtworkTarget {
     }
 
     /// Apply `src` as this target's custom cover (validated + copied by the
-    /// store). Returns whether it applied.
-    fn set_cover(&self, s: &mut State, src: &Path) -> bool {
+    /// store). Returns whether it applied. `pub(crate)` so the crop dialogue
+    /// (`views::artwork_crop`) can store the CROPPED temp PNG the same way.
+    pub(crate) fn set_cover(&self, s: &mut State, src: &Path) -> bool {
         match self {
             ArtworkTarget::Album(name) => s.covers.set_album_cover(name, src),
             ArtworkTarget::Artist(name) => s.covers.set_artist_cover(name, src),
@@ -279,6 +282,40 @@ impl ArtworkTarget {
             ArtworkTarget::Artist(_) => "artist",
         }
     }
+
+    /// Whether this target's crop frame is a CIRCLE (an artist avatar) rather
+    /// than a SQUARE (an album cover) — matches how each kind renders
+    /// everywhere else (artist heroes/cards clip to a circle, albums to a
+    /// rounded square).
+    pub(crate) fn is_circular(&self) -> bool {
+        matches!(self, ArtworkTarget::Artist(_))
+    }
+}
+
+/// An in-progress "Edit Artwork" crop (the old Soul Player's cover-crop step):
+/// the picked source image plus the live pan/zoom the user is applying to it
+/// behind the fixed frame. `Some` in [`crate::State::artwork_crop`] opens the
+/// crop dialogue ([`crate::views::artwork_crop::overlay`]); confirming crops the
+/// source to a square and stores it (non-destructively) as `target`'s custom
+/// cover, cancelling drops it. `scale` maps source pixels to displayed points
+/// (`disp = src * scale`) and `offset` pans the image within the frame, in
+/// points, clamped so the image always covers the frame.
+pub(crate) struct ArtworkCrop {
+    /// Which album/artist this crop sets the cover for.
+    pub target: ArtworkTarget,
+    /// The absolute path to the picked source image (any decodable format).
+    pub source: PathBuf,
+    /// The source image's pixel dimensions (read once, cheaply, at pick time
+    /// via `image::image_dimensions`).
+    pub src_w: u32,
+    pub src_h: u32,
+    /// Source-pixels → displayed-points factor. Starts at the cover scale
+    /// (`FRAME / min(src_w, src_h)`) so the image fills the frame; the zoom
+    /// buttons multiply/divide it.
+    pub scale: f32,
+    /// Pan of the image's centre from the frame's centre, in points. Clamped so
+    /// the displayed image always covers the frame on both axes.
+    pub offset: (f32, f32),
 }
 
 /// A circular icon button in the hero actions row, [`ARTWORK_BTN`] wide, muted
@@ -301,14 +338,14 @@ fn artwork_btn(key: String, label: String, glyph: &'static Icon, p: &Palette) ->
 }
 
 /// The "Edit Artwork" control (the old app's per-album/artist cover upload):
-/// opens an image-file dialog and, on a pick, applies it as `target`'s custom
-/// cover via [`crate::covers::CoverStore`]. A set cover always wins over the
-/// generated/embedded art everywhere that album/artist shows, so from here on
-/// its grid card and this hero show exactly what was picked. Mirrors the
-/// playlist "Set cover" control (`views::playlist_detail::set_cover_control`),
-/// including forgetting the art cache's path-keyed memo so a same-extension
-/// replace (which overwrites the file in place) re-decodes instead of serving
-/// the stale image.
+/// opens an image-file dialog and, on a pick, opens the CROP dialogue
+/// ([`crate::views::artwork_crop::overlay`]) where the user pans/zooms the
+/// picked image behind a fixed frame (a circle for an artist, a square for an
+/// album) before confirming. Confirming crops + stores it as `target`'s custom
+/// cover via [`crate::covers::CoverStore`] (non-destructive — the music files
+/// are never touched); a set cover always wins over the generated/embedded art
+/// everywhere that album/artist shows. Picking no longer sets the cover
+/// directly (that moved into the crop step).
 fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
     artwork_btn(
         format!("{}-edit-artwork", target.key_prefix()),
@@ -328,22 +365,26 @@ fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
                 &["jpg", "jpeg", "png", "webp", "gif"],
             ),
             move |s: &mut State, result, _tx| {
-                if let Ok(Some(path)) = result {
-                    // A replaced cover may overwrite the same `<stem>.<ext>`
-                    // path in place, so drop the art cache's path-keyed memo
-                    // for both the old and new path, otherwise the hero and
-                    // grid card keep showing the stale decode until restart
-                    // (see `views::player::ArtCache::forget_path`).
-                    let old = target.cover_path(s);
-                    if target.set_cover(s, &path) {
-                        if let Some(old) = old {
-                            s.art.forget_path(&old);
-                        }
-                        if let Some(new) = target.cover_path(s) {
-                            s.art.forget_path(&new);
-                        }
-                    }
-                }
+                let Ok(Some(path)) = result else {
+                    return;
+                };
+                // Read the picked image's pixel size cheaply (header only, no
+                // full decode). A file we can't even measure isn't an image we
+                // can crop, so skip it rather than opening an empty dialogue.
+                let Ok((src_w, src_h)) = image::image_dimensions(&path) else {
+                    return;
+                };
+                // Start at the cover scale so the image fills the frame; the
+                // dialogue's zoom buttons take it from there.
+                let scale = crate::views::artwork_crop::FRAME / (src_w.min(src_h).max(1) as f32);
+                s.artwork_crop = Some(ArtworkCrop {
+                    target: target.clone(),
+                    source: path,
+                    src_w,
+                    src_h,
+                    scale,
+                    offset: (0.0, 0.0),
+                });
             },
         );
     })

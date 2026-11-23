@@ -131,6 +131,9 @@ pub static KEYBOARD: Icon = stroke_icon!(
 
 pub static PLUS: Icon = stroke_icon!("plus", r#"<path d="M5 12h14"/><path d="M12 5v14"/>"#);
 
+/// lucide `minus` — the artwork-crop zoom-out button. Source: lucide.dev/icons/minus.
+pub static MINUS: Icon = stroke_icon!("minus", r#"<path d="M5 12h14"/>"#);
+
 /// lucide `copy` — Duplicate profile. Source: lucide.dev/icons/copy.
 pub static COPY: Icon = stroke_icon!(
     "copy",
