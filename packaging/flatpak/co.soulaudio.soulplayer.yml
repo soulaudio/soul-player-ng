@@ -12,7 +12,7 @@
 # Building Rust inside flatpak-builder would mean vendoring the whole crate
 # graph into a sources list, and would compile the app a second time in CI for
 # no benefit — the bytes we want to ship are the ones already built and tested.
-app-id: co.datadir.soulplayer
+app-id: co.soulaudio.soulplayer
 # 26.08 is the current Freedesktop runtime (a new major lands each August with a
 # two-year support window).
 runtime: org.freedesktop.Platform
@@ -60,12 +60,12 @@ modules:
     buildsystem: simple
     build-commands:
       - install -Dm755 soul-player-rune /app/bin/soul-player-rune
-      - install -Dm644 co.datadir.soulplayer.desktop
-        /app/share/applications/co.datadir.soulplayer.desktop
-      - install -Dm644 co.datadir.soulplayer.png
-        /app/share/icons/hicolor/128x128/apps/co.datadir.soulplayer.png
-      - install -Dm644 co.datadir.soulplayer.metainfo.xml
-        /app/share/metainfo/co.datadir.soulplayer.metainfo.xml
+      - install -Dm644 co.soulaudio.soulplayer.desktop
+        /app/share/applications/co.soulaudio.soulplayer.desktop
+      - install -Dm644 co.soulaudio.soulplayer.png
+        /app/share/icons/hicolor/128x128/apps/co.soulaudio.soulplayer.png
+      - install -Dm644 co.soulaudio.soulplayer.metainfo.xml
+        /app/share/metainfo/co.soulaudio.soulplayer.metainfo.xml
     sources:
       # Staged by `packaging/flatpak/stage.sh`, which takes the binary and the
       # desktop entry/icon out of the built .deb so the Flatpak cannot drift
@@ -73,8 +73,8 @@ modules:
       - type: file
         path: soul-player-rune
       - type: file
-        path: co.datadir.soulplayer.desktop
+        path: co.soulaudio.soulplayer.desktop
       - type: file
-        path: co.datadir.soulplayer.png
+        path: co.soulaudio.soulplayer.png
       - type: file
-        path: co.datadir.soulplayer.metainfo.xml
+        path: co.soulaudio.soulplayer.metainfo.xml

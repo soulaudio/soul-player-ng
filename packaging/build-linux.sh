@@ -39,6 +39,26 @@ echo "    $(numfmt --to=iec "$before") -> $(numfmt --to=iec "$(stat -c%s "$bin")
 # lintian errors. Generated rather than committed so it cannot go stale against
 # the version actually being built, and `-n` keeps gzip from embedding a
 # timestamp so the package stays reproducible.
+# The .deb declares `libc6 (>= X)`. That number is a promise about which
+# releases the binary loads on, and it is only true by inspection — so check it
+# against the binary rather than trusting whoever edited Cargo.toml last.
+#
+# The floor is the highest NON-WEAK glibc version referenced: weak versioned
+# symbols (Rust's std uses pidfd_spawnp/pidfd_getpid from 2.39) resolve to an
+# older fallback when absent, so counting them would overstate the requirement
+# and turn away users whose machines are fine.
+echo "==> glibc floor"
+need=$(objdump -T "$bin" | awk '$2!="w" && /GLIBC_/ {
+         for (i=1;i<=NF;i++) if ($i ~ /^\(GLIBC_/) { gsub(/[()]|GLIBC_/,"",$i); print $i }
+       }' | sort -uV | tail -1)
+declared=$(grep -oE '"libc6 \(>= [0-9.]+\)"' "$app/Cargo.toml" | grep -oE '[0-9]+\.[0-9]+' | head -1)
+echo "    binary needs glibc $need; .deb declares $declared"
+[ "$need" = "$declared" ] || {
+  echo "mismatch: the .deb promises libc6 >= $declared but the binary needs $need." >&2
+  echo "Update [package.metadata.packager.deb] depends in app/rune/Cargo.toml." >&2
+  exit 1
+}
+
 echo "==> changelog"
 mkdir -p "$root/packaging/deb/generated"
 {

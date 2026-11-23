@@ -60,6 +60,13 @@ env:
   CARGO_TERM_COLOR: always
   DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
   REHEARSAL: ${{ github.event.inputs.rehearsal == 'true' }}
+  # How many platforms a complete release covers — one entry per leg of the
+  # `build` matrix, and the number `latest.json` must carry for the in-app
+  # updater to reach every user. Defined once because it was previously written
+  # out as a literal `4` in three separate checks, which is three places to
+  # forget when a platform is added (and the failure mode is a release that
+  # verifies clean while silently offering no update to the new one).
+  PLATFORMS: "5"
 
 jobs:
   guard:
@@ -156,9 +163,20 @@ jobs:
             format: app
             arch: x86_64
             asset_arch: x86_64
+          # Linux ships per architecture too. `ubuntu-24.04-arm` is a standard
+          # GitHub-hosted runner (free on public repos), so this is a native
+          # build rather than a cross-compile — which matters for a project that
+          # links ALSA, D-Bus, OpenSSL and a GPU stack through `-sys` crates.
           - os: ubuntu-24.04
             target_key: linux-x86_64
             format: appimage
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - os: ubuntu-24.04-arm
+            target_key: linux-aarch64
+            format: appimage
+            deb_arch: arm64
+            rpm_arch: aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -225,8 +243,14 @@ jobs:
         working-directory: app/rune
         run: cargo packager --release -f ${{ matrix.format }}
 
-      # The AppImage runs on any distro whose glibc is at least the build's. Keep the floor
-      # at Ubuntu 24.04 LTS (2.39). BOTH published releases predate this check and are built
+      # Keep the BUILD host at Ubuntu 24.04 LTS (2.39) so the binary never references a
+      # glibc newer than that. The effective RUNTIME floor is lower — 2.35, measured by
+      # installing and running on Ubuntu 22.04, Debian 12 and Ubuntu 24.04 — because the
+      # only 2.39 symbols the binary carries (`pidfd_spawnp`, `pidfd_getpid`, from Rust's
+      # process spawning) are WEAK, and glibc falls back when they are absent. This gate
+      # is therefore a ceiling on the build, not a claim about where it runs.
+      #
+      # BOTH published releases predate this check and are built
       # against 2.43 (new libm float symbols — asinf/acosf/atan2f/…), so neither v0.2.0 nor
       # v0.3.0 starts on 24.04: `libm.so.6: version 'GLIBC_2.43' not found`. That is the
       # whole reason this gate exists — the e2e's "previous release runs here" leg reports
@@ -239,25 +263,6 @@ jobs:
           echo "binary needs $need"
           [ "$(printf '%s\nGLIBC_2.39\n' "$need" | sort -V | tail -1)" = "GLIBC_2.39" ] \
             || { echo "::error::binary needs $need, above the GLIBC_2.39 floor (Ubuntu 24.04)"; exit 1; }
-
-      # Distro-native packages, alongside the AppImage. For a lot of Linux users
-      # "not in my package manager" means "not available", so the AppImage alone
-      # is not distribution.
-      #
-      # These are NOT updater artifacts: `latest.json` keeps pointing at the
-      # AppImage, because that is the only layout the in-app updater can
-      # actually replace. A .deb/.rpm installs to /usr/bin, owned by root, so
-      # the app disables self-update there and defers to apt/dnf (see
-      # `update::manager_owned`).
-      - name: Package .deb + .rpm (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          cargo install cargo-generate-rpm --locked
-          packaging/build-linux.sh --skip-build
-          mkdir -p dist
-          cp app/rune/target/release/*.deb dist/
-          cp app/rune/target/generate-rpm/*.rpm dist/
-          ls -la dist/
 
       # Stage under a GitHub-safe name (so the manifest URL matches the uploaded asset)
       # and write the updater sidecar for latest.json.
@@ -273,6 +278,203 @@ jobs:
           # Without the updater key the sidecar has no signature and the update can never
           # install — fail here, not after publishing.
           python -c "import json,sys; m=json.load(open('dist/${{ matrix.target_key }}.meta.json')); sys.exit(0 if m['signature'] else 'empty updater signature — is UPDATER_PRIVATE_KEY set?')"
+
+      # Distro-native packages, alongside the AppImage. For a lot of Linux users
+      # "not in my package manager" means "not available", so the AppImage alone
+      # is not distribution.
+      #
+      # These are NOT updater artifacts: `latest.json` keeps pointing at the
+      # AppImage, because that is the only layout the in-app updater can
+      # actually replace. A .deb/.rpm installs to /usr/bin, owned by root, so
+      # the app disables self-update there and defers to apt/dnf (see
+      # `update::manager_owned`).
+      - name: Package .deb + .rpm (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-generate-rpm --locked
+          # The updater key is UNSET for this step, not blanked. cargo-packager
+          # signs every package it builds, and a second `.sig` under
+          # target/release breaks the staging step, which requires exactly one
+          # (the AppImage's — the only artifact the updater verifies). A signed
+          # .deb would mean nothing anyway: apt and dnf authenticate through
+          # repository signing.
+          #
+          # `env -u` rather than setting the variable to "": an empty value is
+          # still a value, and cargo-packager parses it as a key and dies with
+          # "Missing comment in secret key". That is exactly how the first run
+          # of this step failed.
+          env -u CARGO_PACKAGER_SIGN_PRIVATE_KEY \
+              -u CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD \
+              packaging/build-linux.sh --skip-build
+          cp app/rune/target/release/*.deb dist/
+          cp app/rune/target/generate-rpm/*.rpm dist/
+          ls -la dist/
+
+      # Building a package is not evidence that it installs, and a dependency
+      # list is only right if a package manager agrees. This installs both on
+      # the runner — which is the SAME architecture as the build, so the ARM
+      # packages get a genuinely native check rather than being shipped on the
+      # strength of having compiled.
+      #
+      # The .deb goes in natively (the runner is Ubuntu); the .rpm goes into a
+      # Fedora container, which inherits the host architecture.
+      - name: Install-check the .deb and .rpm (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "::group::.deb installs and runs"
+          sudo apt-get install -y -o Acquire::Retries=3 ./dist/*.deb
+          command -v soul-player-rune >/dev/null \
+            || { echo "::error::soul-player-rune is not on PATH after installing the .deb"; exit 1; }
+          # `ldd` naming an unresolved library is the failure a dependency list
+          # exists to prevent, and it is silent until the app is launched.
+          missing=$(ldd "$(command -v soul-player-rune)" | grep -c "not found" || true)
+          [ "$missing" = "0" ] \
+            || { echo "::error::$missing libraries unresolved after install"; \
+                 ldd "$(command -v soul-player-rune)" | grep "not found"; exit 1; }
+          soul-player-rune --help >/dev/null 2>&1 \
+            || { echo "::error::the installed binary does not run"; exit 1; }
+          sudo apt-get remove -y -qq soul-player
+          echo "ok: .deb installs, resolves every library, runs, and uninstalls"
+          echo "::endgroup::"
+
+          echo "::group::.rpm installs and runs (Fedora container, host arch)"
+          docker run --rm -v "$PWD/dist:/w:ro" fedora:latest bash -c '
+            set -e
+            dnf install -y -q /w/*.rpm
+            m=$(ldd /usr/bin/soul-player-rune | grep -c "not found" || true)
+            [ "$m" = "0" ] || { ldd /usr/bin/soul-player-rune | grep "not found"; exit 1; }
+            # `--help` writes to stderr, so both streams go to /dev/null;
+            # the exit status is what is being checked.
+            /usr/bin/soul-player-rune --help >/dev/null 2>&1
+            echo "ok: .rpm installs, resolves every library, and runs"
+          '
+          echo "::endgroup::"
+
+      # The screenshots the AppStream metadata points at. Flathub requires them
+      # to be reachable over HTTPS, and `co.soulaudio.soulplayer.metainfo.xml`
+      # names them under `releases/latest/download/`, so they have to ship as
+      # release assets or software centres show an app with no pictures.
+      #
+      # Rendered by the app itself (`--snap`, the same offscreen path the UI
+      # tests use) against the repo's own fixtures, so they always show the
+      # version being released rather than a screenshot someone took once. x86_64
+      # only: the two architectures render identically, and uploading both would
+      # collide on the asset name.
+      - name: Screenshots for the software centres (Linux x86_64)
+        if: matrix.target_key == 'linux-x86_64'
+        run: |
+          # The release job builds the binary but never RUNS it, so it installs
+          # no runtime graphics stack. A headless render needs an X server, an
+          # xauth cookie for xvfb-run, and a Vulkan ICD — Lavapipe, since a
+          # runner has no GPU. wgpu has no GL fallback compiled in, so without
+          # an ICD there is no adapter and nothing renders.
+          sudo apt-get install -y -o Acquire::Retries=3 \
+            xvfb xauth mesa-vulkan-drivers libvulkan1 libxkbcommon-x11-0
+          shot() {
+            # stderr is kept: a failed render otherwise reports only a missing
+            # file, which says nothing about why.
+            xvfb-run -a -s "-screen 0 1600x1000x24" \
+              env SOUL_PLAYER_FOLDER=testdata SOUL_PLAYER_NO_UPDATE=1 \
+              app/rune/target/release/soul-player-rune \
+                --snap "dist/screenshot-$1.png" --size 1400x900 ${2:+--scene "$2"} \
+              >"$RUNNER_TEMP/shot-$1.log" 2>&1 || true
+          }
+          shot library
+          shot albums albums
+          shot settings settings-music
+          # A zero-byte or missing file would publish a broken image, so check
+          # rather than trust the exit status of a GPU render under Xvfb.
+          for f in library albums settings; do
+            if [ ! -s "dist/screenshot-$f.png" ]; then
+              echo "::error::screenshot-$f.png was not rendered"
+              echo "--- render output ---"
+              cat "$RUNNER_TEMP/shot-$f.log" 2>/dev/null | tail -30 || echo "(none)"
+              echo "--- vulkan ICDs present ---"
+              ls /usr/share/vulkan/icd.d/ 2>&1 | head
+              exit 1
+            fi
+          done
+          ls -la dist/screenshot-*.png
+
+      # The Flatpak, built from the SAME staged files the .rpm uses, so all four
+      # Linux packages agree about the app's identity and icon.
+      #
+      # It is built and then RUN here rather than only built: a Flatpak that
+      # builds, installs and validates can still fail at startup inside the
+      # sandbox, and the only way to know is to start it and ask the session bus
+      # whether it owns its MPRIS name. That name is the whole reason the app
+      # reads `FLATPAK_ID` (Flatpak grants exactly
+      # `org.mpris.MediaPlayer2.$FLATPAK_ID` and nothing else), so if it is
+      # missing, media keys are silently dead and everything else looks fine.
+      - name: Package + verify Flatpak (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y -o Acquire::Retries=3 \
+            flatpak flatpak-builder appstream xvfb dbus-x11
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub \
+            org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
+
+          stage=app/rune/target/release/linux-stage
+          cp packaging/flatpak/co.soulaudio.soulplayer.yml "$stage/"
+          appstreamcli validate --no-net "$stage/co.soulaudio.soulplayer.metainfo.xml"
+
+          # `--state-dir` is explicit and next to the target: flatpak-builder
+          # refuses to run when its state dir and target dir are on different
+          # filesystems, and the state dir otherwise defaults to
+          # `.flatpak-builder` in the CWD — which is the repo checkout, while
+          # the target is under RUNNER_TEMP. Those are not guaranteed to be the
+          # same mount.
+          ( cd "$stage" && flatpak-builder --user --force-clean --install \
+              --state-dir="$RUNNER_TEMP/fp-state" \
+              --repo="$RUNNER_TEMP/fp-repo" "$RUNNER_TEMP/fp-build" \
+              co.soulaudio.soulplayer.yml )
+
+          # Prove it actually runs sandboxed, and owns the one MPRIS name
+          # Flatpak's D-Bus policy allows it.
+          mkdir -p "$HOME/Music" && cp testdata/meta.flac "$HOME/Music/"
+          dbus-run-session -- bash -c '
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              flatpak run --user --socket=x11 \
+                --env=SOUL_PLAYER_FOLDER="$HOME/Music" \
+                --env=SOUL_PLAYER_NO_UPDATE=1 \
+                co.soulaudio.soulplayer >"$RUNNER_TEMP/fp-run.log" 2>&1 &
+            for i in $(seq 1 60); do
+              n=$(dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
+                    org.freedesktop.DBus.ListNames 2>/dev/null \
+                  | grep -oE "org\.mpris\.MediaPlayer2\.[A-Za-z0-9_.-]+" | head -1)
+              [ -n "$n" ] && { echo "MPRIS: $n"; break; }
+              sleep 1
+            done
+            if [ "$n" != "org.mpris.MediaPlayer2.co.soulaudio.soulplayer" ]; then
+              echo "::error::the Flatpak did not own its MPRIS name (saw ${n:-nothing}); the sandbox refused it or the app failed to start"
+              # Say WHY, rather than leaving the next person to re-run CI to
+              # learn nothing: the app logs to its sandboxed state dir, and a
+              # crash before logging shows up as an empty log plus whatever the
+              # process wrote to the console.
+              echo "--- console ---"; tail -40 "$RUNNER_TEMP/fp-run.log" 2>/dev/null || echo "(none)"
+              echo "--- app log ---"
+              find "$HOME/.var/app/co.soulaudio.soulplayer" -name "*.log*" -type f 2>/dev/null \
+                | head -1 | xargs -r tail -40 || echo "(no log written — died before logging started)"
+              echo "--- names on the bus ---"
+              dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
+                org.freedesktop.DBus.ListNames 2>/dev/null | grep -oE "[a-z][A-Za-z0-9_.-]+" | tail -20
+              exit 1
+            fi
+            # `flatpak kill`, NOT `pkill -f soul-player-rune`: the shell running
+            # this very script has that string in its own command line (right
+            # here), so pkill matches its parent, SIGTERMs it, and the step
+            # fails with 143 having already passed every assertion. That is
+            # exactly how the first run of this gate "failed" — after printing
+            # the MPRIS name it was checking for.
+            flatpak kill co.soulaudio.soulplayer || true
+          '
+
+          flatpak build-bundle "$RUNNER_TEMP/fp-repo" \
+            "dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak" co.soulaudio.soulplayer
+          ls -la dist/
+
 
       # macOS: a drag-to-Applications DMG for first installs (the updater keeps using the
       # .app.tar.gz above). Same binary, no rebuild.
@@ -323,6 +525,9 @@ jobs:
             installer: "*.dmg"
           - os: ubuntu-24.04
             target_key: linux-x86_64
+            installer: "*.AppImage"
+          - os: ubuntu-24.04-arm
+            target_key: linux-aarch64
             installer: "*.AppImage"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -456,7 +661,7 @@ jobs:
               *) echo "::error::manifest URL $url is not under $TAG"; exit 1 ;; esac
             [ -f "check/${url##*/}" ] || { echo "::error::manifest names ${url##*/}, not uploaded"; exit 1; }
           done
-          jq -e '.platforms | length == 4' check/latest.json >/dev/null
+          jq -e --argjson n "$PLATFORMS" '.platforms | length == $n' check/latest.json >/dev/null
 
       - name: Delete the rehearsal draft
         if: always() && env.REHEARSAL == 'true'
@@ -505,8 +710,8 @@ jobs:
           [ "$v" = "$VERSION" ] || { echo "::error::latest/download/latest.json never served $VERSION"; exit 1; }
           curl -fsSL "$base/latest/download/latest.json" -o latest.json
           curl -fsSL "$base/download/$TAG/SHA256SUMS" -o SHA256SUMS
-          jq -e '.platforms | length == 4' latest.json >/dev/null \
-            || { echo "::error::latest.json does not cover all 4 platforms"; jq . latest.json; exit 1; }
+          jq -e --argjson n "$PLATFORMS" '.platforms | length == $n' latest.json >/dev/null \
+            || { echo "::error::latest.json does not cover all $PLATFORMS platforms"; jq . latest.json; exit 1; }
           jq -r '.platforms | to_entries[] | "\(.key) \(.value.url) \(.value.signature | length)"' latest.json |
           while read -r key url siglen; do
             [ "$siglen" -gt 0 ] || { echo "::error::$key has no updater signature"; exit 1; }

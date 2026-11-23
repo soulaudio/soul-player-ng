@@ -311,13 +311,35 @@ fn publishes_cover_art_that_resolves_and_stays_bounded() {
         (playback_status(&conn) == "Playing").then_some(())
     });
 
-    let url = wait_for("cover art to be published", || {
+    wait_for("cover art to be published", || {
         metadata_str(&conn, "mpris:artUrl").filter(|u| !u.is_empty())
     });
-    let path = url
-        .strip_prefix("file://")
-        .unwrap_or_else(|| panic!("MPRIS requires a file:// URL for local art, got {url:?}"));
-    let path = percent_decode(path);
+
+    // PAUSE before inspecting the staged file. These fixtures are 0.2 s each, so
+    // a playing deck changes track several times a second, and `publish_artwork`
+    // prunes the previous cover as it writes the next — making "read artUrl,
+    // then stat it" a race the test loses whenever a boundary falls between the
+    // two. It did, in CI: `artUrl points at a file that does not exist:
+    // …/cover-0.png`. Paused, the advertised URL and the file on disk stay
+    // consistent, which is the property actually being asserted. (The same
+    // reasoning as `set_position_seeks_within_the_track`, which pauses so its
+    // read is deterministic.)
+    call(&conn, "Pause");
+    wait_for("Pause to take", || {
+        (playback_status(&conn) == "Paused").then_some(())
+    });
+
+    // Re-read AFTER pausing: the URL captured above may name a track the deck
+    // has already left behind.
+    let url = wait_for("a cover whose file is on disk", || {
+        let u = metadata_str(&conn, "mpris:artUrl").filter(|u| !u.is_empty())?;
+        let p = percent_decode(u.strip_prefix("file://")?);
+        Path::new(&p).is_file().then_some(u)
+    });
+    let path = percent_decode(
+        url.strip_prefix("file://")
+            .unwrap_or_else(|| panic!("MPRIS requires a file:// URL for local art, got {url:?}")),
+    );
     let staged = Path::new(&path);
     assert!(
         staged.is_file(),
