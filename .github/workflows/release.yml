@@ -240,6 +240,21 @@ jobs:
           [ "$(printf '%s\nGLIBC_2.39\n' "$need" | sort -V | tail -1)" = "GLIBC_2.39" ] \
             || { echo "::error::binary needs $need, above the GLIBC_2.39 floor (Ubuntu 24.04)"; exit 1; }
 
+      # Stage under a GitHub-safe name (so the manifest URL matches the uploaded asset)
+      # and write the updater sidecar for latest.json.
+      - name: Stage artifact + write updater sidecar
+        run: |
+          python .github/scripts/write-meta.py \
+            --out-dir app/rune/target/release \
+            --target-key ${{ matrix.target_key }} \
+            --format ${{ matrix.format }} \
+            --stage-dir dist \
+            --meta-out dist/${{ matrix.target_key }}.meta.json \
+            ${{ runner.os == 'macOS' && format('--asset-name Soul-Player_{0}_{1}.app.tar.gz', needs.guard.outputs.version, matrix.asset_arch) || '' }}
+          # Without the updater key the sidecar has no signature and the update can never
+          # install — fail here, not after publishing.
+          python -c "import json,sys; m=json.load(open('dist/${{ matrix.target_key }}.meta.json')); sys.exit(0 if m['signature'] else 'empty updater signature — is UPDATER_PRIVATE_KEY set?')"
+
       # Distro-native packages, alongside the AppImage. For a lot of Linux users
       # "not in my package manager" means "not available", so the AppImage alone
       # is not distribution.
@@ -251,10 +266,18 @@ jobs:
       # `update::manager_owned`).
       - name: Package .deb + .rpm (Linux)
         if: runner.os == 'Linux'
+        env:
+          # Deliberately EMPTY: cargo-packager signs every package it builds
+          # with this key, and the staging step requires exactly one `.sig`
+          # under target/release — the AppImage's, which the updater verifies.
+          # A signed .deb would be a second one and break staging, and the
+          # signature would mean nothing anyway: apt and dnf authenticate
+          # through repository signing, not a per-file updater key.
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ""
+          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ""
         run: |
           cargo install cargo-generate-rpm --locked
           packaging/build-linux.sh --skip-build
-          mkdir -p dist
           cp app/rune/target/release/*.deb dist/
           cp app/rune/target/generate-rpm/*.rpm dist/
           ls -la dist/
@@ -314,20 +337,6 @@ jobs:
             "dist/Soul-Player_${VERSION}_x86_64.flatpak" co.datadir.soulplayer
           ls -la dist/
 
-      # Stage under a GitHub-safe name (so the manifest URL matches the uploaded asset)
-      # and write the updater sidecar for latest.json.
-      - name: Stage artifact + write updater sidecar
-        run: |
-          python .github/scripts/write-meta.py \
-            --out-dir app/rune/target/release \
-            --target-key ${{ matrix.target_key }} \
-            --format ${{ matrix.format }} \
-            --stage-dir dist \
-            --meta-out dist/${{ matrix.target_key }}.meta.json \
-            ${{ runner.os == 'macOS' && format('--asset-name Soul-Player_{0}_{1}.app.tar.gz', needs.guard.outputs.version, matrix.asset_arch) || '' }}
-          # Without the updater key the sidecar has no signature and the update can never
-          # install — fail here, not after publishing.
-          python -c "import json,sys; m=json.load(open('dist/${{ matrix.target_key }}.meta.json')); sys.exit(0 if m['signature'] else 'empty updater signature — is UPDATER_PRIVATE_KEY set?')"
 
       # macOS: a drag-to-Applications DMG for first installs (the updater keeps using the
       # .app.tar.gz above). Same binary, no rebuild.
