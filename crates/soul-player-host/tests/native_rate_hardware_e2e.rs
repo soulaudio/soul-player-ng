@@ -5,8 +5,8 @@
 //! signal path reports a **bit-perfect** (no-resample) exclusive stream.
 //!
 //! `#[ignore]`d — it touches the real default output device and makes (silent)
-//! sound, so CI (headless) never runs it. Windows (WASAPI) and macOS (CoreAudio).
-//! Run manually:
+//! sound, so CI (headless) never runs it. Runs wherever an exclusive backend
+//! exists: Windows (WASAPI), macOS (CoreAudio) and Linux (ALSA). Run manually:
 //!
 //! ```text
 //! cargo test -p soul-player-host --test native_rate_hardware_e2e -- --ignored --nocapture
@@ -14,7 +14,16 @@
 //!
 //! This proves the whole stack engages exclusive mode at the track's native rate on
 //! real hardware. It does NOT prove digital bit-exactness (that needs a DAC/loopback).
-#![cfg(any(windows, target_os = "macos"))]
+//!
+//! The rate is discovered rather than assumed. Plenty of cards run exactly one rate
+//! (this was written against an Intel SOF HDA that is 48 kHz only), and on those a
+//! hardcoded 44.1 kHz expectation fails for a reason that is not a bug. So the test
+//! asks for 44.1 kHz first — the interesting case, where the device default differs
+//! and the engine must switch — and if the card refuses, retries at the rate the card
+//! actually chose and still demands a bit-perfect, non-resampling exclusive stream
+//! there. Either way the claim is the same: exclusive engaged, at the track's native
+//! rate, with nothing resampling.
+#![cfg(any(windows, target_os = "macos", target_os = "linux"))]
 
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -48,10 +57,6 @@ fn silent_wav(rate: u32, frames: u32) -> Vec<u8> {
 #[test]
 #[ignore = "touches the real default output device; run manually with --ignored"]
 fn native_rate_switch_engages_on_real_hardware() {
-    // A 2-second silent 44.1 kHz track.
-    let dir = tempfile::tempdir().expect("tempdir");
-    std::fs::write(dir.path().join("a.wav"), silent_wav(44_100, 88_200)).expect("write wav");
-
     let h = PlayerHandle::new(); // Device mode (SOUL_PLAYER_OFFLINE unset)
     if h.default_output_device().is_none() {
         eprintln!("no default output device on this host — skipping hardware e2e");
@@ -67,41 +72,67 @@ fn native_rate_switch_engages_on_real_hardware() {
         }
     });
 
+    // Phase 1: a 44.1 kHz track. On a device whose default is 48 kHz this is the
+    // native-rate SWITCH — the case worth proving.
+    let (matched, observed) = play_and_watch(&h, 44_100, &rx);
+    if matched {
+        println!("native-rate switch engaged: exclusive @ 44.1 kHz, no resampling");
+        assert_eq!(h.exclusive_status(), ExclusiveStatus::Active);
+        return;
+    }
+
+    // Phase 2: the card would not run 44.1 kHz. That is a real hardware limit, not a
+    // code bug — but exclusive must still have engaged at whatever rate it chose, and
+    // a track AT that rate must then pass through without resampling.
+    let device_rate = observed.map(|sp| sp.device_rate).unwrap_or_else(|| {
+        panic!(
+            "no exclusive signal path at all — exclusive never engaged on this \
+             hardware; status {:?}",
+            h.exclusive_status()
+        )
+    });
+    println!("card refused 44.1 kHz; retrying at its own {device_rate} Hz");
+    let (matched, observed) = play_and_watch(&h, device_rate, &rx);
+    assert!(
+        matched,
+        "expected a bit-perfect exclusive stream at the card's own {device_rate} Hz \
+         (no resample); last saw {observed:?}, status {:?}",
+        h.exclusive_status()
+    );
+    assert_eq!(
+        h.exclusive_status(),
+        ExclusiveStatus::Active,
+        "exclusive_status should be Active after a successful open"
+    );
+}
+
+/// Play a silent track at `rate` and watch the signal path for a bit-perfect
+/// exclusive stream at that rate. Returns `(matched, last_exclusive_path_seen)`.
+fn play_and_watch(
+    h: &PlayerHandle,
+    rate: u32,
+    rx: &mpsc::Receiver<soul_player_host::SignalPath>,
+) -> (bool, Option<soul_player_host::SignalPath>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("a.wav"), silent_wav(rate, rate * 2)).expect("write wav");
     h.open_folder(dir.path())
         .expect("open_folder plays from track 0");
 
-    // Wait (bounded) for a signal path showing exclusive active at the track's native
-    // 44.1 kHz with no resampling — i.e. the native-rate switch engaged on hardware.
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut last = None;
-    let mut matched = false;
+    let mut last_exclusive = None;
     while Instant::now() < deadline {
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(sp) => {
-                last = Some(sp);
-                if sp.exclusive && sp.device_rate == 44_100 && !sp.resampling {
-                    matched = true;
-                    break;
+                if sp.exclusive {
+                    last_exclusive = Some(sp);
+                    if sp.device_rate == rate && !sp.resampling {
+                        return (true, last_exclusive);
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
-
-    println!("final signal path: {last:?}");
-    println!("exclusive status:  {:?}", h.exclusive_status());
-    assert!(
-        matched,
-        "expected exclusive @ 44.1 kHz (bit-perfect, no resample) after the \
-         native-rate switch on real hardware; last saw {last:?}, status {:?}. \
-         (If this device can't open exclusive at 44.1 kHz, that's a real fallback, \
-         not a code bug — check the wasapi_device_probe output.)",
-        h.exclusive_status()
-    );
-    // Sanity: the status cell agrees the stream is exclusive (active at some rate).
-    assert!(
-        matches!(h.exclusive_status(), ExclusiveStatus::Active),
-        "exclusive_status should be Active after a successful switch"
-    );
+    (false, last_exclusive)
 }

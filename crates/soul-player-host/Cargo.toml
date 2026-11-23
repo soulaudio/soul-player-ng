@@ -105,6 +105,15 @@ git = "https://github.com/soulaudio/soul-audio-core"
 branch = "main"
 features = ["wasapi-exclusive"]
 
+# On Linux, the ALSA exclusive / bit-perfect backend: the card opened directly as
+# `hw:CARD,DEV`, claimed from PipeWire/PulseAudio over the D-Bus device-reservation
+# protocol first. Same feature-union trick as the Windows block above; `alsa` is
+# already linked via cpal, so this adds no new system dependency.
+[target.'cfg(target_os = "linux")'.dependencies.soul-audio-desktop]
+git = "https://github.com/soulaudio/soul-audio-core"
+branch = "main"
+features = ["alsa-exclusive"]
+
 # On macOS, the CoreAudio exclusive / bit-perfect backend (hog mode + per-track native
 # nominal-rate switching + widest physical format). Same feature-union trick as the
 # Windows block above; it adds only `coreaudio-rs`, the same 0.11 cpal already links.

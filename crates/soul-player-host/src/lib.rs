@@ -48,7 +48,7 @@ pub use eq::{
     GAIN_LIMIT_DB, MAX_BANDS, Profile, ProfileSet, Q_MAX, Q_MIN, band_magnitude_db, default_bands,
     eq_magnitude_db, format_autoeq, parse_autoeq,
 };
-pub use sink::{ExclusiveStatus, SinkMode};
+pub use sink::{EXCLUSIVE_SUPPORTED, ExclusiveStatus, SinkMode};
 /// The portable audio-profile exchange format (the `*Cfg` serde structs), re-exported
 /// so a UI head reaches it through the one host contract. The desktop persists/exports
 /// through these; the DAP reads the same shapes.

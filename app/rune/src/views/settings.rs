@@ -2095,15 +2095,30 @@ enum ExclusiveDisplay {
     Stopped(String),
     /// Requested but nothing has opened a device yet (applies next session).
     Pending,
+    /// This build has no exclusive backend at all, so the switch can't do
+    /// anything — said up front rather than after the user flips it and gets
+    /// shared output (or, under strict, silence).
+    Unsupported,
 }
 
+/// `supported` is the build's exclusive capability
+/// ([`soul_player_host::EXCLUSIVE_SUPPORTED`]). Passed in rather than read from
+/// the constant here so BOTH branches stay testable on any platform — reading
+/// it inside would make every case below unreachable (and the tests vacuous) on
+/// a build without an exclusive backend, which is every Linux and macOS CI run.
 fn exclusive_display(
+    supported: bool,
     exclusive: bool,
     signal_path: Option<soul_player_host::SignalPath>,
     status: soul_player_host::ExclusiveStatus,
 ) -> ExclusiveDisplay {
     use crate::views::signal_path::exclusive_value;
     use soul_player_host::ExclusiveStatus;
+    // Capability first: with no exclusive backend the request's outcome is
+    // already known, whatever the toggle or the last spawn said.
+    if !supported {
+        return ExclusiveDisplay::Unsupported;
+    }
     if !exclusive {
         return ExclusiveDisplay::Shared;
     }
@@ -2160,6 +2175,12 @@ fn exclusive_status(display: &ExclusiveDisplay) -> (String, StatusKind) {
             t!("settings.exclusivePending").to_string(),
             StatusKind::Attention,
         ),
+        // Neutral, not Attention: nothing is wrong and there is nothing to fix
+        // — this platform simply has no bit-perfect path yet.
+        ExclusiveDisplay::Unsupported => (
+            format!("{} · {}", output_api(), t!("settings.exclusiveUnsupported")),
+            StatusKind::Neutral,
+        ),
     }
 }
 
@@ -2168,6 +2189,7 @@ fn exclusive_card(s: &State, p: &Palette) -> El {
     // was requested but isn't active, the host status carries the real reason (device
     // in use, no exclusive format, …) — far more useful than a generic message.
     let (status, kind) = exclusive_status(&exclusive_display(
+        soul_player_host::EXCLUSIVE_SUPPORTED,
         s.exclusive,
         s.signal_path,
         s.host.exclusive_status(),
@@ -2232,14 +2254,19 @@ fn exclusive_card(s: &State, p: &Palette) -> El {
 
 /// The Exclusive on/off switch (a filled pill), persisted via [`set_exclusive`].
 /// Filled `primary` when on, muted when off — matching the nav show/hide toggles.
+///
+/// Inert and dimmed where the build has no exclusive backend: flipping it there
+/// can only produce shared output, or — with strict on — no playback at all, so
+/// offering a live switch would be a trap rather than a feature.
 fn exclusive_toggle(on: bool, p: &Palette) -> El {
-    el().key("exclusive-toggle")
+    let supported = soul_player_host::EXCLUSIVE_SUPPORTED;
+    let el = el()
+        .key("exclusive-toggle")
         .role("button")
         .label(t!("player.signalPath.exclusive").to_string())
-        .focusable(true)
+        .focusable(supported)
         .padding(space::SM)
         .radius(radius::SM)
-        .cursor(Cursor::Pointer)
         .fill(if on { p.primary } else { p.muted })
         .child(
             text(if on {
@@ -2248,7 +2275,11 @@ fn exclusive_toggle(on: bool, p: &Palette) -> El {
                 t!("settings.exclusiveOff").to_string()
             })
             .color(if on { p.bg } else { p.fg }),
-        )
+        );
+    if !supported {
+        return el.opacity(fx::DISABLED);
+    }
+    el.cursor(Cursor::Pointer)
         .on_press(move |s: &mut State| set_exclusive(s, !s.exclusive))
 }
 
@@ -4021,14 +4052,14 @@ mod tests {
         use ExclusiveDisplay::*;
         // Not requested → shared by choice (the status is irrelevant).
         assert_eq!(
-            exclusive_display(false, None, ExclusiveStatus::Shared),
+            exclusive_display(true, false, None, ExclusiveStatus::Shared),
             Shared
         );
         // Active: the live signal path says exclusive → show the backend + device format.
         // The API name is platform-specific (CI runs on Linux/macOS too), so assert via
         // the same helper instead of hardcoding "WASAPI".
         assert_eq!(
-            exclusive_display(true, Some(sp(true)), ExclusiveStatus::Active),
+            exclusive_display(true, true, Some(sp(true)), ExclusiveStatus::Active),
             Active(format!(
                 "{} exclusive · 96 kHz · 24-bit",
                 crate::views::signal_path::output_api()
@@ -4037,6 +4068,7 @@ mod tests {
         // Requested, fell back to shared → surface the DEVICE'S reason verbatim.
         assert_eq!(
             exclusive_display(
+                true,
                 true,
                 Some(sp(false)),
                 ExclusiveStatus::FellBack("device is in use by another app".into()),
@@ -4047,6 +4079,7 @@ mod tests {
         assert_eq!(
             exclusive_display(
                 true,
+                true,
                 None,
                 ExclusiveStatus::Unavailable("no exclusive format".into()),
             ),
@@ -4054,9 +4087,35 @@ mod tests {
         );
         // Requested, but no device has spawned yet → pending (applies next session).
         assert_eq!(
-            exclusive_display(true, None, ExclusiveStatus::Shared),
+            exclusive_display(true, true, None, ExclusiveStatus::Shared),
             Pending
         );
+
+        // No exclusive backend in this build: the answer is the same whatever
+        // the toggle, the signal path or the last spawn said — the user must be
+        // told the feature isn't there, not shown a stale "fell back" reason or
+        // a hopeful "pending" for something that will never apply.
+        for (requested, path, status) in [
+            (false, None, ExclusiveStatus::Shared),
+            (true, None, ExclusiveStatus::Shared),
+            (true, Some(sp(true)), ExclusiveStatus::Active),
+            (
+                true,
+                Some(sp(false)),
+                ExclusiveStatus::FellBack("not available on this platform".into()),
+            ),
+            (
+                true,
+                None,
+                ExclusiveStatus::Unavailable("not available on this platform".into()),
+            ),
+        ] {
+            assert_eq!(
+                exclusive_display(false, requested, path, status),
+                Unsupported,
+                "an unsupported build always reports Unsupported (requested={requested})"
+            );
+        }
     }
 
     /// The status badge must make "applied right now" visually distinct from "idle"
