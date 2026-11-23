@@ -42,8 +42,50 @@ const ENDPOINT: &str =
 /// when `SOUL_PLAYER_NO_UPDATE` is set (the e2e harness sets it, so tests neither
 /// hit the network nor restart mid-run). Debug builds skip it too — there is no
 /// matching published release to pull.
+///
+/// It is also off wherever a PACKAGE MANAGER owns the install — see
+/// [`manager_owned`]. The updater works by downloading a new build and swapping
+/// the running binary for it, which is right for an AppImage the user dropped
+/// in `~/Applications` and wrong, or outright impossible, for anything else.
 pub fn enabled() -> bool {
-    !cfg!(debug_assertions) && std::env::var_os("SOUL_PLAYER_NO_UPDATE").is_none()
+    !cfg!(debug_assertions)
+        && std::env::var_os("SOUL_PLAYER_NO_UPDATE").is_none()
+        && !manager_owned(
+            crate::in_flatpak(),
+            std::env::var_os("APPIMAGE").is_some(),
+            std::env::current_exe().ok().as_deref(),
+        )
+}
+
+/// Whether something other than this app is responsible for updating it.
+///
+/// Three cases, and the order matters:
+///
+/// * **Flatpak** — the app is installed read-only from a remote the user chose,
+///   `flatpak update` replaces it, and the sandbox would refuse the write in any
+///   case.
+/// * **AppImage** — NOT manager-owned: this is the one layout the updater is
+///   built for, and it is checked BEFORE the path test below because a running
+///   AppImage mounts itself at `/tmp/.mount_XXXX/usr/bin/…`, which contains
+///   `/usr` and would otherwise be mistaken for a system install. The runtime
+///   sets `APPIMAGE` to the image's own path, which is what distinguishes them.
+/// * **A system path** — a `.deb` or `.rpm` installs to `/usr/bin`, owned by
+///   root. A user-run app cannot replace that file, so attempting it would
+///   download a few tens of megabytes and then fail on a permission error,
+///   which is a worse outcome than not offering it: `apt upgrade` /
+///   `dnf upgrade` is the real update path there.
+///
+/// Taking its inputs as arguments rather than reading the environment directly
+/// keeps it testable — `std::env::set_var` is `unsafe` as of the 2024 edition
+/// and races other threads.
+fn manager_owned(in_flatpak: bool, is_appimage: bool, exe: Option<&std::path::Path>) -> bool {
+    if in_flatpak {
+        return true;
+    }
+    if is_appimage {
+        return false;
+    }
+    exe.is_some_and(|p| p.starts_with("/usr") || p.starts_with("/opt"))
 }
 
 /// The manifest URL to check. `SOUL_PLAYER_UPDATE_ENDPOINT` overrides it — handy
@@ -161,6 +203,58 @@ mod tests {
     use std::net::TcpListener;
 
     use super::*;
+
+    /// Who owns the install decides whether the updater may run at all, and the
+    /// AppImage case is the trap: a running AppImage mounts itself under
+    /// `/tmp/.mount_XXXX/usr/bin/`, so a naive "is it under /usr" test would
+    /// classify the one layout the updater IS for as manager-owned and silently
+    /// disable self-update for every AppImage user.
+    #[test]
+    fn package_manager_owned_installs_do_not_self_update() {
+        use std::path::Path;
+
+        // AppImage: the updater's home ground. The mount path contains /usr, so
+        // this only passes because `APPIMAGE` is checked first.
+        assert!(
+            !manager_owned(
+                false,
+                true,
+                Some(Path::new("/tmp/.mount_soulpl123/usr/bin/soul-player-rune"))
+            ),
+            "an AppImage must keep self-update despite its /usr-shaped mount path"
+        );
+
+        // .deb / .rpm: /usr/bin is root-owned, so an install would fail on
+        // permissions after downloading tens of megabytes.
+        assert!(manager_owned(
+            false,
+            false,
+            Some(Path::new("/usr/bin/soul-player-rune"))
+        ));
+        assert!(manager_owned(
+            false,
+            false,
+            Some(Path::new("/opt/soul-player/soul-player-rune"))
+        ));
+
+        // Flatpak: read-only install, sandboxed; `flatpak update` owns it. The
+        // flag wins regardless of path.
+        assert!(manager_owned(
+            true,
+            false,
+            Some(Path::new("/app/bin/soul-player-rune"))
+        ));
+
+        // A loose build the user put somewhere writable keeps self-update.
+        assert!(!manager_owned(
+            false,
+            false,
+            Some(Path::new("/home/me/Applications/soul-player-rune"))
+        ));
+        // Unknown path: assume self-update works rather than silently disabling
+        // it — the install can still fail loudly, which is more debuggable.
+        assert!(!manager_owned(false, false, None));
+    }
 
     // A tiny stand-in "installer" and its real minisign signature (made with the
     // updater key, committed). The .sig verifies against PUBKEY, so download()

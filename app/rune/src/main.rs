@@ -2999,6 +2999,48 @@ pub(crate) fn set_nav_visible(s: &mut State, id: &str, visible: bool) {
 /// before exit). `None` in headless tests.
 static WINDOW: std::sync::Mutex<Option<rune::WindowHandle>> = std::sync::Mutex::new(None);
 
+/// Whether this process is running inside a Flatpak sandbox.
+///
+/// `FLATPAK_ID` is set by the Flatpak runtime for every app it starts, and is
+/// the documented way to detect it from inside.
+pub(crate) fn in_flatpak() -> bool {
+    std::env::var_os("FLATPAK_ID").is_some()
+}
+
+/// How this app identifies itself to the desktop: the Wayland `app_id` / X11
+/// `WM_CLASS`, and the MPRIS bus-name suffix. Those two and the installed
+/// `.desktop` file's basename must all be the SAME string — that equality is
+/// the only thing letting a compositor resolve a window, or a media applet
+/// resolve a player, to this app's icon.
+///
+/// Normally the binary name, which is what cargo-packager names the entry
+/// after (`{main_binary_name}.desktop`) for the .deb and the AppImage.
+///
+/// Inside a **Flatpak** it must instead be `$FLATPAK_ID`, and not merely as a
+/// convention: Flatpak installs the entry as `$FLATPAK_ID.desktop`, and its
+/// D-Bus policy auto-grants exactly one MPRIS name —
+/// `org.mpris.MediaPlayer2.$FLATPAK_ID`. Keeping the binary name there would
+/// mean the sandbox silently refuses the bus name the app asks for, so media
+/// keys and the desktop's media controls would not see the player at all,
+/// while everything else kept working. The alternative — asking for a broader
+/// `--own-name` in the manifest — is both unnecessary and something Flathub
+/// review pushes back on.
+pub(crate) fn desktop_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| resolve_desktop_id(std::env::var("FLATPAK_ID").ok().as_deref()))
+        .as_str()
+}
+
+/// The pure half of [`desktop_id`], split out so the fallback is testable
+/// without mutating the process environment (which is racy across threads, and
+/// `unsafe` as of the 2024 edition).
+fn resolve_desktop_id(flatpak_id: Option<&str>) -> String {
+    match flatpak_id.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => id.to_string(),
+        None => env!("CARGO_BIN_NAME").to_string(),
+    }
+}
+
 /// Refresh [`State::maximized`] from the live window, so the title bar's
 /// maximize button can show the restore glyph while maximized.
 ///
@@ -4281,14 +4323,8 @@ fn main() -> anyhow::Result<()> {
     // the app at all.
     //
     // The value must equal the basename of the shipped `.desktop` entry, which
-    // is how a compositor resolves a window to its icon. cargo-packager names
-    // that file after the main BINARY (`{main_binary_name}.desktop`), so this
-    // reads the binary name rather than hardcoding a string the two could drift
-    // apart on. (A reverse-DNS id like the packager `identifier` is the broader
-    // convention and what Flatpak would want, but it would need a custom
-    // desktop-entry template to rename the file to match — a packaging change,
-    // not a runtime one.)
-    rune::set_app_id(env!("CARGO_BIN_NAME"));
+    // is how a compositor resolves a window to its icon — see [`desktop_id`].
+    rune::set_app_id(desktop_id());
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
     // installer uses the same icons via [package.metadata.packager]).
     // macOS: the tiled Dock icon (matches the bundle's .icns); elsewhere the bare mark.
@@ -6736,6 +6772,33 @@ mod tests {
             "the notice reflects THIS scan, not the previous one, and is not \
              wiped by the refresh that precedes it"
         );
+    }
+
+    /// The desktop identity must be the Flatpak id inside a Flatpak and the
+    /// binary name everywhere else.
+    ///
+    /// This is not cosmetic. Flatpak's D-Bus policy auto-grants exactly one
+    /// MPRIS name — `org.mpris.MediaPlayer2.$FLATPAK_ID` — so keeping the
+    /// binary name there means the sandbox refuses the name the app asks for,
+    /// and media keys plus the desktop's media controls stop seeing the player
+    /// while the rest of the app carries on looking healthy.
+    #[test]
+    fn desktop_identity_follows_the_flatpak_id_when_sandboxed() {
+        assert_eq!(
+            resolve_desktop_id(Some("co.datadir.soulplayer")),
+            "co.datadir.soulplayer",
+            "inside a Flatpak the id IS the desktop entry's basename"
+        );
+        assert_eq!(
+            resolve_desktop_id(None),
+            env!("CARGO_BIN_NAME"),
+            "outside, cargo-packager names the entry after the binary"
+        );
+        // An empty or whitespace-only value is not an identity. Falling through
+        // to the binary name beats registering `org.mpris.MediaPlayer2.` — which
+        // is not a legal bus name, so the session would fail to publish at all.
+        assert_eq!(resolve_desktop_id(Some("")), env!("CARGO_BIN_NAME"));
+        assert_eq!(resolve_desktop_id(Some("   ")), env!("CARGO_BIN_NAME"));
     }
 
     #[test]
