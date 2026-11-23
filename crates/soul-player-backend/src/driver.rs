@@ -475,15 +475,23 @@ where
         return OutputSwap::Applied;
     }
     tracing::info!(from = ?applied, to = ?desired, "applying live output change");
-    // Release-then-acquire whenever EXCLUSIVE is involved on either side: the current
-    // sink is exclusive (it holds the device, one-client-per-device, so it must release
-    // before anything else opens), OR the DESIRED mode is exclusive (opening the exclusive
-    // stream while our OWN still-live shared stream holds the same device intermittently
-    // fails with AUDCLNT_E_DEVICE_IN_USE: WASAPI sometimes lets exclusive preempt shared
-    // and sometimes reports the device busy, which is exactly the flaky shared->exclusive
-    // toggle). Dropping the current sink first frees the device so the exclusive open is
-    // deterministic. A shared->shared device change still uses build-first below (no gap).
-    if player.deck().sink().exclusive() || desired.exclusive {
+    // Release-then-acquire is only REQUIRED for a SAME-DEVICE exclusive transition. Exclusive
+    // output is one-client-per-device: you cannot open a second stream on the SAME endpoint
+    // while the old one still holds it (AUDCLNT_E_DEVICE_IN_USE — the flaky shared->exclusive
+    // toggle), and a same-device exclusive->shared release has the same constraint (the old
+    // exclusive stream must let go first). So for that case we park (go silent) first, drop the
+    // old sink to free the endpoint, then open the new one.
+    //
+    // A DIFFERENT device has no such contention (a different endpoint is a different stream),
+    // so it takes the gapless OPEN-NEW-BEFORE-CLOSE path below, exactly like a shared change:
+    // the old device keeps playing out its ring buffer while the new one opens — which is slow
+    // (hundreds of ms for a WASAPI/CoreAudio/ALSA exclusive open) — and audio only crosses over
+    // at the instant of the swap. THIS is the fix for "switching the output device halts the
+    // track": previously ANY exclusive involvement parked first, so even picking a different DAC
+    // went silent for the whole device-open. Now only a same-device exclusive switch does.
+    let same_device = applied.device == desired.device;
+    let exclusive_involved = player.deck().sink().exclusive() || desired.exclusive;
+    if exclusive_involved && same_device {
         // Park on the device-free placeholder first (drops the old sink, frees the
         // device), then build the new sink on the freed device and swap it in.
         if let Err(e) = player.deck_mut().swap_sink(park()) {
@@ -522,13 +530,13 @@ where
             }
         }
     } else {
-        // SHARED to SHARED (a plain device change, no exclusive). Build the new sink FIRST,
-        // while the old shared stream is still alive, then swap it in (the old sink drops on
-        // swap). Shared mode allows multiple clients per device, so the new open never
-        // contends; and crucially this does NOT drop a working shared stream only to
-        // immediately re-open on the same device, which some devices reject with "device no
-        // longer available" (the release-then-acquire park path triggered exactly that). On
-        // a build failure the old sink is untouched, so playback simply continues.
+        // DIFFERENT device, or shared->shared: OPEN-NEW-BEFORE-CLOSE (gapless). Build the new
+        // sink FIRST, while the old one is still alive and draining its ~200 ms ring buffer to
+        // the device, then swap it in (the old sink drops on swap). No endpoint contention: a
+        // different device is a different stream, and shared mode allows multiple clients per
+        // device. Crucially this also does NOT drop a working stream only to immediately re-open
+        // the same device (which some devices reject with "device no longer available"). The old
+        // audio keeps flowing until the instant of the swap, so the slow device open is inaudible.
         match build(desired) {
             Ok(new_sink) => match player.deck_mut().swap_sink(new_sink) {
                 Ok(()) => {
@@ -539,7 +547,19 @@ where
                     OutputSwap::KeptCurrent(anyhow::anyhow!("swap_sink for output change: {e:?}"))
                 }
             },
-            Err(e) => OutputSwap::KeptCurrent(e),
+            // The new device wouldn't open. Under STRICT exclusive the stop must be real, so
+            // park (go silent) rather than keep the old device playing; otherwise the old sink
+            // is untouched and playback simply continues on it.
+            Err(e) => {
+                if desired.exclusive && desired.strict {
+                    match player.deck_mut().swap_sink(park()) {
+                        Ok(()) => OutputSwap::Parked(e),
+                        Err(_) => OutputSwap::KeptCurrent(e),
+                    }
+                } else {
+                    OutputSwap::KeptCurrent(e)
+                }
+            }
         }
     }
 }
@@ -1120,14 +1140,16 @@ mod tests {
         );
     }
 
-    /// RELEASE-THEN-ACQUIRE (current sink is EXCLUSIVE): the OLD sink must be dropped
-    /// (its device freed) BEFORE the new sink is built — exclusive WASAPI is
-    /// one-client-per-device, so opening the new stream while the old still held the
-    /// same device fails with device-in-use. We count live "device holders"; the build
-    /// closure records how many are live the instant it runs. A correct release-first
-    /// swap sees ZERO.
+    /// GAPLESS DIFFERENT-DEVICE EXCLUSIVE SWITCH (open-new-before-close): switching the
+    /// exclusive output to a DIFFERENT device must open the new device WHILE the old one is
+    /// still playing, then swap — so the slow exclusive open never silences the track. A
+    /// different endpoint is a different stream, so there is no one-client-per-device
+    /// contention forcing a release-first gap (that constraint binds only the SAME device,
+    /// covered by `a_shared_to_exclusive_change_releases_the_shared_device_before_opening_exclusive`).
+    /// We count live "device holders"; the build closure records how many are live the instant
+    /// it runs. Open-new-before-close sees the OLD device still live (1) during the build.
     #[test]
-    fn an_exclusive_output_change_releases_the_old_device_before_opening_the_new() {
+    fn an_exclusive_switch_to_a_different_device_opens_the_new_before_dropping_the_old() {
         use crate::testutil::ConfigSink;
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1190,7 +1212,7 @@ mod tests {
             "one device open while playing"
         );
 
-        // Switch the exclusive output to a different device — needs release-first.
+        // Switch the exclusive output to a DIFFERENT device — gapless open-new-before-close.
         live_at_build.store(usize::MAX, Ordering::Relaxed); // reset the probe
         let desired = OutputConfig {
             device: Some("DAC".into()),
@@ -1204,13 +1226,14 @@ mod tests {
 
         assert_eq!(
             live_at_build.load(Ordering::Relaxed),
-            0,
-            "the old exclusive device must be RELEASED before the new sink opens"
+            1,
+            "the OLD exclusive device must still be live (playing) while the NEW one opens — a \
+             different device has no one-client-per-device contention, so there is no silent gap"
         );
         assert_eq!(
             device_live.load(Ordering::Relaxed),
             1,
-            "exactly one device live after the swap (old released, new open)"
+            "exactly one device live after the swap (old dropped on swap, new open)"
         );
         assert_eq!(
             p.deck().sink().device,
@@ -1312,6 +1335,102 @@ mod tests {
         assert!(
             p.deck().sink().exclusive,
             "now driving the device exclusively"
+        );
+    }
+
+    /// GAPLESS SHARED -> EXCLUSIVE on a DIFFERENT device: enabling exclusive while also picking
+    /// a different device (the common "switch to my DAC, bit-perfect" move) must open the new
+    /// exclusive stream WHILE the old shared stream keeps playing, then swap — not go silent for
+    /// the whole exclusive open. One-client-per-device is per endpoint, and the old shared stream
+    /// is on a DIFFERENT device, so there is no contention to force a release-first gap.
+    #[test]
+    fn a_shared_to_exclusive_change_on_a_different_device_opens_the_new_before_dropping_the_old() {
+        use crate::testutil::ConfigSink;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let frames = Arc::new(AtomicUsize::new(0));
+        let device_live = Arc::new(AtomicUsize::new(0));
+        let live_at_build = Arc::new(AtomicUsize::new(usize::MAX));
+
+        let build = {
+            let frames = Arc::clone(&frames);
+            let device_live = Arc::clone(&device_live);
+            let live_at_build = Arc::clone(&live_at_build);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                live_at_build.store(device_live.load(Ordering::Relaxed), Ordering::Relaxed);
+                Ok(ConfigSink::new_counting(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                    Arc::clone(&device_live),
+                ))
+            }
+        };
+        let park = {
+            let frames = Arc::clone(&frames);
+            move || ConfigSink::new(None, false, 48_000, 2, Arc::clone(&frames))
+        };
+
+        // Current sink is SHARED on the default device.
+        let mut applied = OutputConfig {
+            device: None,
+            exclusive: false,
+            strict: false,
+        };
+        let deck = Deck::new(build(&applied).unwrap(), Quality::Hq); // device_live -> 1
+        let engine = Engine::new(deck, queue_for(Vec::new()));
+        let mut p: ServicePlayer<ConfigSink, ConstDecoder> = Player::new(engine, 48_000);
+        apply_command(
+            &mut p,
+            Command::PlayContext {
+                ids: vec![0],
+                start: 0,
+            },
+            0,
+        )
+        .unwrap();
+        while let Some(id) = p.poll_open() {
+            p.provide(id, ConstDecoder::new(48_000, 2, FRAMES, 7))
+                .unwrap();
+        }
+        for _ in 0..3 {
+            p.pump().unwrap();
+        }
+
+        // Switch to EXCLUSIVE on a DIFFERENT device — gapless open-new-before-close.
+        live_at_build.store(usize::MAX, Ordering::Relaxed);
+        let desired = OutputConfig {
+            device: Some("DAC".into()),
+            exclusive: true,
+            strict: false,
+        };
+        assert!(matches!(
+            maybe_apply_output_change(&mut p, &desired, &mut applied, &build, park),
+            OutputSwap::Applied
+        ));
+
+        assert_eq!(
+            live_at_build.load(Ordering::Relaxed),
+            1,
+            "the old SHARED device must still be playing while the new EXCLUSIVE device opens — a \
+             different endpoint has no one-client-per-device contention, so there is no silent gap"
+        );
+        assert_eq!(
+            device_live.load(Ordering::Relaxed),
+            1,
+            "exactly one device live after the swap (old shared dropped, new exclusive open)"
+        );
+        assert!(
+            p.deck().sink().exclusive,
+            "now driving the new device exclusively"
+        );
+        assert_eq!(
+            p.deck().sink().device,
+            Some("DAC".into()),
+            "installed on the new device"
         );
     }
 
