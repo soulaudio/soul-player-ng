@@ -259,6 +259,61 @@ jobs:
           cp app/rune/target/generate-rpm/*.rpm dist/
           ls -la dist/
 
+      # The Flatpak, built from the SAME staged files the .rpm uses, so all four
+      # Linux packages agree about the app's identity and icon.
+      #
+      # It is built and then RUN here rather than only built: a Flatpak that
+      # builds, installs and validates can still fail at startup inside the
+      # sandbox, and the only way to know is to start it and ask the session bus
+      # whether it owns its MPRIS name. That name is the whole reason the app
+      # reads `FLATPAK_ID` (Flatpak grants exactly
+      # `org.mpris.MediaPlayer2.$FLATPAK_ID` and nothing else), so if it is
+      # missing, media keys are silently dead and everything else looks fine.
+      - name: Package + verify Flatpak (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y -o Acquire::Retries=3 \
+            flatpak flatpak-builder appstream xvfb dbus-x11
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub \
+            org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
+
+          stage=app/rune/target/release/linux-stage
+          cp packaging/flatpak/co.datadir.soulplayer.yml "$stage/"
+          appstreamcli validate --no-net "$stage/co.datadir.soulplayer.metainfo.xml"
+
+          ( cd "$stage" && flatpak-builder --user --force-clean --install \
+              --repo="$RUNNER_TEMP/fp-repo" "$RUNNER_TEMP/fp-build" \
+              co.datadir.soulplayer.yml )
+
+          # Prove it actually runs sandboxed, and owns the one MPRIS name
+          # Flatpak's D-Bus policy allows it.
+          mkdir -p "$HOME/Music" && cp testdata/meta.flac "$HOME/Music/"
+          dbus-run-session -- bash -c '
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              flatpak run --user --socket=x11 \
+                --env=SOUL_PLAYER_FOLDER="$HOME/Music" \
+                --env=SOUL_PLAYER_NO_UPDATE=1 \
+                co.datadir.soulplayer >/dev/null 2>&1 &
+            for i in $(seq 1 60); do
+              n=$(dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
+                    org.freedesktop.DBus.ListNames 2>/dev/null \
+                  | grep -oE "org\.mpris\.MediaPlayer2\.[A-Za-z0-9_.-]+" | head -1)
+              [ -n "$n" ] && { echo "MPRIS: $n"; break; }
+              sleep 1
+            done
+            if [ "$n" != "org.mpris.MediaPlayer2.co.datadir.soulplayer" ]; then
+              echo "::error::the Flatpak did not own its MPRIS name (saw ${n:-nothing}); the sandbox refused it or the app failed to start"
+              exit 1
+            fi
+            pkill -f soul-player-rune || true
+          '
+
+          flatpak build-bundle "$RUNNER_TEMP/fp-repo" \
+            "dist/Soul-Player_${VERSION}_x86_64.flatpak" co.datadir.soulplayer
+          ls -la dist/
+
       # Stage under a GitHub-safe name (so the manifest URL matches the uploaded asset)
       # and write the updater sidecar for latest.json.
       - name: Stage artifact + write updater sidecar
