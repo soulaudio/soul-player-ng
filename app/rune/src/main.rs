@@ -2432,7 +2432,19 @@ fn spectrum_poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     if nav_animating {
         tx.wake_after(std::time::Duration::from_millis(16));
     }
-    spectrum_poll_inner(s, now, tx) || scanning || nav_animating
+    // The Albums genre-filter chips fade+collapse the SAME way (reuse `reveal`), so
+    // toggling Filters off fades the chips out at full height first, then collapses
+    // the space, instead of the row vanishing instantly.
+    let chips_shown = s.albums_filters_open;
+    let chips_progress = s
+        .nav_reveal
+        .entry("albums-filters")
+        .or_insert(if chips_shown { 1.0 } else { 0.0 });
+    let chips_animating = views::reveal::tick(chips_progress, chips_shown, frame_dt);
+    if chips_animating {
+        tx.wake_after(std::time::Duration::from_millis(16));
+    }
+    spectrum_poll_inner(s, now, tx) || scanning || nav_animating || chips_animating
 }
 
 /// The EQ spectrum half of [`spectrum_poll`] (kept separate so the scan-activity
