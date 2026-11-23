@@ -165,28 +165,52 @@ fn confirm_new_playlist(s: &mut State) {
     crate::navigate_to(s, crate::Route::Playlist, None, None, None, Some(id));
 }
 
-/// The inline "New playlist" affordance: a text field bound to
-/// `State::playlist_new_buf`, plus a button, either of which confirms
-/// (Enter in the field, or pressing the button).
-fn new_playlist_row(s: &State, p: &Palette) -> El {
-    row()
-        .key("playlist-new-group")
+/// The New-playlist dialogue's fixed width, in points.
+const NEW_PLAYLIST_W: f32 = 340.0;
+
+/// The "New playlist" dialogue (the old app's create flow): a centered modal with
+/// a name field + Create/Cancel, opened by the Playlists top bar's New button
+/// (`State::playlists_adding`) and mounted in `main.rs`'s overlay layer. `None`
+/// while closed. Confirming creates the playlist and jumps into it; Cancel / Esc /
+/// an outside press closes. The field + Create keys match the old inline affordance
+/// (`playlist-new-input` / `playlist-new-confirm`) so finders/tests keep resolving.
+pub fn new_playlist_overlay(s: &State, p: &Palette) -> Option<El> {
+    if !s.playlists_adding {
+        return None;
+    }
+    let field = text_input(&s.playlist_new_buf, type_::ITEM)
+        .key("playlist-new-input")
+        .label(t!("playlists.new").to_string())
+        .placeholder(t!("playlists.newPlaceholder").to_string(), p.text_secondary)
+        .single_line()
         .w_full()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .color(p.fg)
+        .on_edit(|st: &mut State| &mut st.playlist_new_buf)
+        .on_submit(|st: &mut State, _tx| confirm_new_playlist(st));
+    let footer = row()
+        .key("new-playlist-footer")
+        .w_full()
+        .center_y()
+        .justify_end()
         .gap(space::SM)
         .child(
-            text_input(&s.playlist_new_buf, type_::ITEM)
-                .key("playlist-new-input")
-                .label(t!("playlists.new").to_string())
-                .placeholder(t!("playlists.newPlaceholder").to_string(), p.text_secondary)
-                .single_line()
-                .grow(1.0)
-                .px(space::SM)
+            el().key("new-playlist-cancel")
+                .role("button")
+                .label(t!("common.cancel").to_string())
+                .focusable(true)
+                .px(space::MD)
                 .py(space::XS)
                 .radius(radius::SM)
                 .fill(p.muted)
-                .color(p.fg)
-                .on_edit(|st: &mut State| &mut st.playlist_new_buf)
-                .on_submit(|st: &mut State, _tx| confirm_new_playlist(st)),
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
+                .child(text(t!("common.cancel").to_string()).color(p.fg))
+                .on_press(|st: &mut State| st.playlists_adding = false),
         )
         .child(
             el().key("playlist-new-confirm")
@@ -198,9 +222,38 @@ fn new_playlist_row(s: &State, p: &Palette) -> El {
                 .radius(radius::SM)
                 .fill(p.primary)
                 .cursor(Cursor::Pointer)
+                .hover(p.bg.alpha(fx::HOVER_FILL))
+                .press(p.bg.alpha(fx::PRESS_FILL))
                 .child(text(t!("playlists.new").to_string()).color(p.bg))
                 .on_press(confirm_new_playlist),
-        )
+        );
+    Some(
+        col()
+            .key("new-playlist-modal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(Color::BLACK.alpha(0.45))
+            .child(
+                col()
+                    .key("new-playlist-dialog")
+                    .w(NEW_PLAYLIST_W)
+                    .fill(p.card)
+                    .radius(radius::LG)
+                    .border(1.0, p.border)
+                    .padding(space::LG)
+                    .gap(space::MD)
+                    .modal(true, |st: &mut State| st.playlists_adding = false)
+                    .child(
+                        text(t!("playlists.new").to_string())
+                            .font(type_::TITLE)
+                            .color(p.fg),
+                    )
+                    .child(field)
+                    .child(footer),
+            ),
+    )
 }
 
 /// The Playlists page: the shared browse-page top bar (a bounded search that
@@ -277,22 +330,13 @@ pub fn page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         grid_el
     };
 
-    let mut page = col()
+    let page = col()
         .key("playlists")
         .grow(1.0)
         .min_h(0.0)
         .child(search_bar);
-    // The inline New-playlist field drops in under the bar while adding; confirming
-    // it creates the playlist and navigates away (which resets `playlists_adding`).
-    if adding {
-        page = page.child(
-            col()
-                .key("playlists-new-group-wrap")
-                .px(space::PANE)
-                .pt(space::SM)
-                .child(new_playlist_row(s, p)),
-        );
-    }
+    // The New-playlist field now lives in a centered modal ([`new_playlist_overlay`],
+    // mounted in `main.rs`'s overlay layer) rather than dropping in under the bar.
     page.child(
         // Scroll on the growing wrapper, not the grid, see `albums_page`.
         col()
@@ -322,7 +366,13 @@ mod tests {
     fn test_view(s: &State, cx: &mut Cx<State>) -> El {
         let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
         let scale = cx.env().scale;
-        page(s, &p, cx, scale)
+        // Mirror `main.rs`'s view: the page plus the New-playlist modal overlay,
+        // so a test can reach the modal's field once "New playlist" opens it.
+        let mut root = col().key("test-root").child(page(s, &p, cx, scale));
+        if let Some(overlay) = new_playlist_overlay(s, &p) {
+            root = root.child(overlay);
+        }
+        root
     }
 
     fn env() -> Env {
