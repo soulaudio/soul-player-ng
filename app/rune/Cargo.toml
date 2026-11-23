@@ -87,8 +87,10 @@ os_info = "3"
 # we pull from Rune via `WindowHandle::with_raw_handle` using `raw-window-handle`.
 souvlaki = { version = "0.9", default-features = false, features = ["use_zbus"] }
 raw-window-handle = "0.6"
-# Decode the bundled app icon (PNG) to RGBA for the system-tray icon.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Decode the bundled app icon (PNG) to RGBA for the system-tray icon, and decode
+# user-picked cover images (jpeg/webp/gif in addition to png) for the Edit-Artwork
+# crop step, which crops + re-encodes the result back to PNG (png keeps encode).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 # Enumerate connected monitors (stateless `DisplayInfo::all()`, no event loop) to
 # clamp a restored window on-screen when a display was unplugged / resized. Its
 # Windows backend uses `windows 0.62` (our exact pin — no version split) and it's
