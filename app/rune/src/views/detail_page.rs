@@ -36,7 +36,14 @@ pub(crate) enum HeroArt {
     Icon(&'static Icon),
 }
 
-fn hero_artwork(s: &State, p: &Palette, scale: f32, prefix: &str, art: HeroArt) -> El {
+fn hero_artwork(
+    s: &State,
+    p: &Palette,
+    scale: f32,
+    prefix: &str,
+    art: HeroArt,
+    artwork: Option<ArtworkTarget>,
+) -> El {
     match art {
         HeroArt::Cover { id, circular } => {
             let corner = if circular {
@@ -44,10 +51,18 @@ fn hero_artwork(s: &State, p: &Palette, scale: f32, prefix: &str, art: HeroArt) 
             } else {
                 radius::MD
             };
-            el().key(format!("{prefix}-cover"))
-                .radius(corner)
-                .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
-                .child(cover(s, Some(id), DETAIL_COVER, corner, p, scale))
+            with_artwork_overlay(
+                el().key(format!("{prefix}-cover"))
+                    .size(DETAIL_COVER, DETAIL_COVER)
+                    .radius(corner)
+                    .clip_rounded(corner)
+                    .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
+                    .child(cover(s, Some(id), DETAIL_COVER, corner, p, scale)),
+                s,
+                p,
+                corner,
+                artwork,
+            )
         }
         HeroArt::Image { path, circular } => {
             let corner = if circular {
@@ -55,10 +70,18 @@ fn hero_artwork(s: &State, p: &Palette, scale: f32, prefix: &str, art: HeroArt) 
             } else {
                 radius::MD
             };
-            el().key(format!("{prefix}-hero-image"))
-                .radius(corner)
-                .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
-                .child(cover_from_path(s, &path, DETAIL_COVER, corner, p, scale))
+            with_artwork_overlay(
+                el().key(format!("{prefix}-hero-image"))
+                    .size(DETAIL_COVER, DETAIL_COVER)
+                    .radius(corner)
+                    .clip_rounded(corner)
+                    .shadow(4.0, 16.0, Color::BLACK.alpha(0.22))
+                    .child(cover_from_path(s, &path, DETAIL_COVER, corner, p, scale)),
+                s,
+                p,
+                corner,
+                artwork,
+            )
         }
         HeroArt::Icon(glyph) => el()
             .key(format!("{prefix}-cover"))
@@ -68,6 +91,48 @@ fn hero_artwork(s: &State, p: &Palette, scale: f32, prefix: &str, art: HeroArt) 
             .center()
             .child(icon(glyph, (ICON_TILE * 0.5).round()).color(p.text_secondary)),
     }
+}
+
+/// Add the Edit/Remove-Artwork hover overlay to a hero cover when the page has an
+/// artwork `target` (album + artist pages); a no-op otherwise (genre/playlist). The
+/// old Soul Player reveals its "Edit Artwork" affordance ON HOVER over the cover art
+/// rather than parking a button in the actions row, so the controls ride a scrim that
+/// fades in on hover ([`El::group_opacity`]) while staying keyboard-reachable.
+fn with_artwork_overlay(
+    container: El,
+    s: &State,
+    p: &Palette,
+    corner: f32,
+    artwork: Option<ArtworkTarget>,
+) -> El {
+    match artwork {
+        Some(target) => container.child(artwork_hover_overlay(s, p, corner, target)),
+        None => container,
+    }
+}
+
+/// The hover scrim over a hero cover carrying the Edit-Artwork control (and a
+/// Remove control once a custom cover is set). Hidden at rest and revealed when the
+/// cover is hovered; the controls keep their roles/labels/focus so the a11y sweep and
+/// keyboard users reach them regardless of hover state (same pattern as a card's
+/// play-overlay).
+fn artwork_hover_overlay(s: &State, p: &Palette, corner: f32, target: ArtworkTarget) -> El {
+    let mut controls = row()
+        .key(format!("{}-artwork-controls", target.key_prefix()))
+        .gap(space::SM)
+        .center()
+        .child(edit_artwork_control(p, target.clone()));
+    if target.cover_path(s).is_some() {
+        controls = controls.child(remove_artwork_control(p, target.clone()));
+    }
+    el().key(format!("{}-artwork-overlay", target.key_prefix()))
+        .size(DETAIL_COVER, DETAIL_COVER)
+        .absolute(0.0, 0.0)
+        .radius(corner)
+        .center()
+        .fill(Color::BLACK.alpha(0.5))
+        .group_opacity(0.0, 1.0)
+        .child(controls)
 }
 
 /// The shared detail header: artwork left, a text block right (eyebrow, title,
@@ -94,6 +159,7 @@ pub(crate) fn detail_hero(
     meta: String,
     meta_icon: Option<&'static Icon>,
     actions: El,
+    artwork: Option<ArtworkTarget>,
 ) -> El {
     let title_el = text(title).font(type_::DISPLAY).color(p.fg).truncate();
     // A local/mixed-source group (the common case) keeps the plain title; only a
@@ -149,7 +215,7 @@ pub(crate) fn detail_hero(
         .flex_wrap()
         .gap(space::XL)
         .pb(space::SECTION)
-        .child(hero_artwork(s, p, scale, prefix, art))
+        .child(hero_artwork(s, p, scale, prefix, art, artwork))
         .child(info)
 }
 
@@ -392,7 +458,7 @@ fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
 
 /// The "Remove Artwork" control: clears `target`'s custom cover, falling its
 /// art back to the generated/embedded default. Only rendered when a custom
-/// cover is actually set (see [`detail_actions_with_artwork`]).
+/// cover is actually set (see [`artwork_hover_overlay`]).
 fn remove_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
     artwork_btn(
         format!("{}-remove-artwork", target.key_prefix()),
@@ -407,29 +473,4 @@ fn remove_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
             s.art.forget_path(&old);
         }
     })
-}
-
-/// [`detail_actions`] plus an "Edit Artwork" control (and a "Remove Artwork"
-/// control once a custom cover is set) for the album/artist detail hero. The
-/// row wraps (`flex_wrap`) so the extra controls reflow under Play All on a
-/// narrow pane rather than overflowing it.
-pub(crate) fn detail_actions_with_artwork(
-    s: &State,
-    p: &Palette,
-    play_key: &str,
-    ids: Vec<u32>,
-    target: ArtworkTarget,
-) -> El {
-    let mut r = row()
-        .key(format!("{play_key}-actions"))
-        .flex_wrap()
-        .gap(space::SM)
-        .center_y()
-        .child(play_all_pill(play_key, ids.clone(), p))
-        .child(enqueue_all_button("detail-enqueue-all", ids, p))
-        .child(edit_artwork_control(p, target.clone()));
-    if target.cover_path(s).is_some() {
-        r = r.child(remove_artwork_control(p, target));
-    }
-    r
 }

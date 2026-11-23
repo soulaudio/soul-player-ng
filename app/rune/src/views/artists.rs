@@ -15,7 +15,7 @@ use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::albums::{Album, albums_of_artist, detail_track_row};
-use crate::views::detail_page::{ArtworkTarget, HeroArt, detail_actions_with_artwork, detail_hero};
+use crate::views::detail_page::{ArtworkTarget, HeroArt, detail_actions, detail_hero};
 use crate::views::grid;
 use crate::views::icons;
 use crate::views::media_card::{CardSpec, media_card};
@@ -232,13 +232,8 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         None,
         meta,
         None, // no clock: artist meta is "albums, tracks", not a duration
-        detail_actions_with_artwork(
-            s,
-            p,
-            "artist-play-all",
-            artist.ids.clone(),
-            ArtworkTarget::Artist(artist.name.clone()),
-        ),
+        detail_actions("artist-play-all", artist.ids.clone(), p),
+        Some(ArtworkTarget::Artist(artist.name.clone())),
     );
 
     // Top Songs: the first five (or all, expanded), as album-art track rows.
@@ -685,5 +680,67 @@ mod tests {
             texts.iter().any(|t| t == "1 album · 1 track"),
             "Satie's card shows its own counts too (singular), got: {texts:?}"
         );
+    }
+
+    /// A seeded artist avatar overlays a person silhouette, but a user-set custom
+    /// cover is a real photo, so the card drops the silhouette + scrim and shows the
+    /// image cleanly (the old app treats an uploaded artist image as the avatar).
+    #[test]
+    fn a_custom_cover_drops_the_artist_silhouette_glyph() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            artists_page(s, &p, cx, cx.env().scale)
+        }
+
+        let _cfg = crate::config::use_test_config_dir();
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![tv_album(1, "Bjork", "Debut")];
+        s.route = crate::Route::Artists;
+        s.covers.clear_artist_cover("Bjork");
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("artist-glyph").is_some(),
+            "a seeded avatar shows the person silhouette glyph"
+        );
+
+        // Upload a custom cover: the silhouette + scrim drop so the photo shows.
+        let png = write_tiny_png();
+        rt.update(move |st: &mut State, _tx: &mut rune::Tx| {
+            assert!(
+                st.covers.set_artist_cover("Bjork", &png),
+                "the test PNG is a valid cover"
+            );
+        });
+        rt.frame(0.0);
+        assert!(
+            rt.find("artist-glyph").is_none(),
+            "a custom cover drops the silhouette glyph (the photo is the avatar)"
+        );
+    }
+
+    /// A small valid PNG on disk, for the custom-cover test above (the covers store
+    /// validates the extension + that it is a real file before copying it in).
+    fn write_tiny_png() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "soul_glyph_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cover.png");
+        image::RgbImage::from_pixel(16, 16, image::Rgb([100, 120, 140]))
+            .save(&path)
+            .unwrap();
+        path
     }
 }
