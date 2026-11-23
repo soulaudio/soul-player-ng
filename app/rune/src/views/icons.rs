@@ -206,6 +206,10 @@ pub static CHEVRON_DOWN: Icon = stroke_icon!("chevron-down", r#"<path d="m6 9 6 
 
 /// lucide `check` — marks the selected row in the dropdown panel.
 pub static CHECK: Icon = stroke_icon!("check", r#"<path d="M20 6 9 17l-5-5"/>"#);
+pub static REFRESH: Icon = stroke_icon!(
+    "refresh-cw",
+    r#"<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>"#
+);
 
 /// lucide `grip-vertical` (six dots) — the drag affordance on a reorderable
 /// queue row. Filled circles so it reads at the 16 pt grip size.
