@@ -173,6 +173,7 @@ pub(crate) fn navigate_to(
     s.album_search = rune::TextEdit::new("");
     s.artist_search = rune::TextEdit::new("");
     s.albums_filters_open = false;
+    s.tracks_sort_open = false;
     s.album_genre_filter.clear();
     // A playlist's inline new/rename/delete-confirm fields are page-scoped
     // ephemeral UI, same as `genre_search` above; reset rather than carried to
@@ -194,6 +195,7 @@ pub(crate) fn go_back(s: &mut State) {
     s.album_search = rune::TextEdit::new("");
     s.artist_search = rune::TextEdit::new("");
     s.albums_filters_open = false;
+    s.tracks_sort_open = false;
     s.album_genre_filter.clear();
     s.playlist_new_buf = rune::TextEdit::new("");
     s.playlist_search = rune::TextEdit::new("");
@@ -432,6 +434,9 @@ struct State {
     album_search: rune::TextEdit,
     /// Whether the Albums page's genre-Filters chip row is expanded.
     albums_filters_open: bool,
+    /// Whether the Tracks page's sort-pill bar is revealed (the "Sort" toggle in
+    /// its top bar). Closed by default + on nav, so Tracks opens clean.
+    tracks_sort_open: bool,
     /// Genres selected in the Albums page's Filters (empty = no genre filter).
     album_genre_filter: std::collections::BTreeSet<String>,
     /// The Artists grid's in-page search box (ephemeral): filters the grid by
@@ -852,6 +857,7 @@ impl State {
             genre_search: rune::TextEdit::new(""),
             album_search: rune::TextEdit::new(""),
             albums_filters_open: false,
+            tracks_sort_open: false,
             album_genre_filter: std::collections::BTreeSet::new(),
             artist_search: rune::TextEdit::new(""),
             artist_top_expanded: false,
@@ -13037,7 +13043,7 @@ mod tests {
     }
 
     #[test]
-    fn library_shows_the_sort_bar_when_populated() {
+    fn library_sort_toggle_reveals_the_sort_bar() {
         let host = PlayerHandle::offline();
         host.open_folder(&testdata_dir()).expect("scan testdata");
         let env = Env {
@@ -13046,9 +13052,23 @@ mod tests {
         };
         let mut rt = Runtime::new(State::new(host), view, (1100.0, 720.0), env);
         rt.frame(0.0);
+        // The sort pills sit behind the top bar's Sort toggle now, so the Tracks
+        // page opens clean rather than showing a pill bar by default.
+        assert!(
+            rt.find("tracks-sort-toggle").is_some(),
+            "the Sort toggle is in the Tracks top bar"
+        );
+        assert!(
+            rt.find("sort-bar").is_none(),
+            "the sort bar is hidden until Sort is clicked"
+        );
+        click_key(&mut rt, "tracks-sort-toggle");
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
         assert!(
             rt.find("sort-bar").is_some(),
-            "populated library shows a sort bar"
+            "clicking Sort reveals the sort bar"
         );
         for key in ["sort-artist", "sort-album", "sort-title", "sort-folder"] {
             assert!(rt.find(key).is_some(), "sort option {key} present");
@@ -13067,6 +13087,11 @@ mod tests {
             scale: 2.0,
         };
         let mut rt = Runtime::new(State::new(host), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        // Reveal the sort bar (it's behind the Sort toggle) before its pills.
+        click_key(&mut rt, "tracks-sort-toggle");
+        rt.frame(0.0);
+        rt.settle_all();
         rt.frame(0.0);
         assert!(rt.find("sort-dr").is_some(), "the DR sort pill renders");
         assert!(
