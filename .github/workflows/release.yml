@@ -310,6 +310,44 @@ jobs:
           cp app/rune/target/generate-rpm/*.rpm dist/
           ls -la dist/
 
+      # Building a package is not evidence that it installs, and a dependency
+      # list is only right if a package manager agrees. This installs both on
+      # the runner — which is the SAME architecture as the build, so the ARM
+      # packages get a genuinely native check rather than being shipped on the
+      # strength of having compiled.
+      #
+      # The .deb goes in natively (the runner is Ubuntu); the .rpm goes into a
+      # Fedora container, which inherits the host architecture.
+      - name: Install-check the .deb and .rpm (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          echo "::group::.deb installs and runs"
+          sudo apt-get install -y -o Acquire::Retries=3 ./dist/*.deb
+          command -v soul-player-rune >/dev/null \
+            || { echo "::error::soul-player-rune is not on PATH after installing the .deb"; exit 1; }
+          # `ldd` naming an unresolved library is the failure a dependency list
+          # exists to prevent, and it is silent until the app is launched.
+          missing=$(ldd "$(command -v soul-player-rune)" | grep -c "not found" || true)
+          [ "$missing" = "0" ] \
+            || { echo "::error::$missing libraries unresolved after install"; \
+                 ldd "$(command -v soul-player-rune)" | grep "not found"; exit 1; }
+          soul-player-rune --help >/dev/null 2>&1 \
+            || { echo "::error::the installed binary does not run"; exit 1; }
+          sudo apt-get remove -y -qq soul-player
+          echo "ok: .deb installs, resolves every library, runs, and uninstalls"
+          echo "::endgroup::"
+
+          echo "::group::.rpm installs and runs (Fedora container, host arch)"
+          docker run --rm -v "$PWD/dist:/w:ro" fedora:latest bash -c '
+            set -e
+            dnf install -y -q /w/*.rpm
+            m=$(ldd /usr/bin/soul-player-rune | grep -c "not found" || true)
+            [ "$m" = "0" ] || { ldd /usr/bin/soul-player-rune | grep "not found"; exit 1; }
+            /usr/bin/soul-player-rune --help >/dev/null
+            echo "ok: .rpm installs, resolves every library, and runs"
+          '
+          echo "::endgroup::"
+
       # The screenshots the AppStream metadata points at. Flathub requires them
       # to be reachable over HTTPS, and `co.soulaudio.soulplayer.metainfo.xml`
       # names them under `releases/latest/download/`, so they have to ship as
