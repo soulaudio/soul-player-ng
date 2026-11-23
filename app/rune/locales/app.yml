@@ -306,6 +306,13 @@ playlists.title:
   zh: '播放列表'
   cs: 'Playlisty'
   ja: 'プレイリスト'
+playlists.searchPlaceholder:
+  en: 'Search playlists'
+  de: 'Playlists durchsuchen'
+  es: 'Buscar listas'
+  zh: '搜索播放列表'
+  cs: 'Hledat playlisty'
+  ja: 'プレイリストを検索'
 playlists.new:
   en: 'New playlist'
   de: 'Neue Playlist'

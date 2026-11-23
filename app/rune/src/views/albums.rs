@@ -272,8 +272,7 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         t!("albums.searchPlaceholder").to_string(),
         p,
         |st: &mut State| &mut st.album_search,
-    )
-    .grow(1.0);
+    );
     // A Filters button that toggles the genre-chip row (old app's "Filters").
     // Lit while open or while a genre filter is active.
     let filters_lit = s.albums_filters_open || !s.album_genre_filter.is_empty();
@@ -300,13 +299,7 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 .color(if filters_lit { p.accent } else { p.fg }),
         )
         .on_press(|st: &mut State| st.albums_filters_open = !st.albums_filters_open);
-    let search_bar = row()
-        .key("albums-search-bar")
-        .px(space::PANE)
-        .pt(space::SM)
-        .gap(space::SM)
-        .child(search)
-        .child(filters_btn);
+    let search_bar = crate::views::library::page_search_bar("albums", search, Some(filters_btn));
     // The expandable genre-chip row (one toggle chip per library genre).
     let chips = s.albums_filters_open.then(|| {
         let mut genres: Vec<&str> = s
