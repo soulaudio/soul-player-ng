@@ -202,6 +202,10 @@ pub(crate) fn albums_of_artist(
 /// artist. Clicking the body opens the album's detail page; the overlay plays.
 fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
     let name = a.name.clone();
+    // The right-click menu's play context + artwork target (cloned so the outer
+    // handler stays `Fn`, like the track row's menu above).
+    let menu_ids = a.ids.clone();
+    let menu_name = a.name.clone();
     media_card(
         s,
         p,
@@ -233,6 +237,31 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             );
         },
     )
+    // Right-click the grid card for the old app's album actions (Play the album,
+    // Edit Artwork). Mirrors the track row's `on_secondary_press` popup.
+    .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
+        let play_ids = menu_ids.clone();
+        let art_name = menu_name.clone();
+        tx.popup_menu(
+            PopupMenu::new()
+                .item(PopupItem::new("play", t!("player.play").to_string()))
+                .item(PopupItem::new(
+                    "edit-artwork",
+                    t!("artwork.edit").to_string(),
+                )),
+            press,
+            move |st: &mut State, picked, _tx: &mut Tx| match picked {
+                Some("play") => st.host.send(Command::PlayContext {
+                    ids: play_ids.clone(),
+                    start: 0,
+                }),
+                Some("edit-artwork") => {
+                    st.artwork_edit = Some(ArtworkTarget::Album(art_name.clone()));
+                }
+                _ => {}
+            },
+        );
+    })
 }
 
 /// The Albums page: an always-visible search box above a responsive grid of

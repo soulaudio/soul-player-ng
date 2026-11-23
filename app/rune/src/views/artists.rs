@@ -8,8 +8,11 @@
 
 use std::collections::HashMap;
 
-use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, icon, row, text};
-use soul_player_host::TrackView;
+use rune::{
+    Color, Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row,
+    text,
+};
+use soul_player_host::{Command, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
@@ -90,6 +93,10 @@ pub(crate) fn filter_artists(artists: Vec<Artist>, query: &str) -> Vec<Artist> {
 fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, scale: f32) -> El {
     let name = a.name.clone();
     let album_count = albums_of_artist(&s.library, &a.name, s.album_year).len();
+    // The right-click menu's play context (all of the artist's tracks) + artwork
+    // target, cloned so the outer handler stays `Fn`.
+    let menu_ids = a.ids.clone();
+    let menu_name = a.name.clone();
     media_card(
         s,
         p,
@@ -123,6 +130,31 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
             st.artist_top_expanded = false;
         },
     )
+    // Right-click the grid card for the old app's artist actions (Play everything
+    // by the artist, Edit Artwork). Mirrors the album card's `on_secondary_press`.
+    .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
+        let play_ids = menu_ids.clone();
+        let art_name = menu_name.clone();
+        tx.popup_menu(
+            PopupMenu::new()
+                .item(PopupItem::new("play", t!("player.play").to_string()))
+                .item(PopupItem::new(
+                    "edit-artwork",
+                    t!("artwork.edit").to_string(),
+                )),
+            press,
+            move |st: &mut State, picked, _tx: &mut Tx| match picked {
+                Some("play") => st.host.send(Command::PlayContext {
+                    ids: play_ids.clone(),
+                    start: 0,
+                }),
+                Some("edit-artwork") => {
+                    st.artwork_edit = Some(ArtworkTarget::Artist(art_name.clone()));
+                }
+                _ => {}
+            },
+        );
+    })
 }
 
 /// The Artists page: an always-visible search box above a responsive grid of
