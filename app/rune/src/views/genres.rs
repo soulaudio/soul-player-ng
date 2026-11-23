@@ -104,12 +104,11 @@ fn genre_tile(p: &Palette, slot: usize, g: &Genre, card_w: f32) -> El {
         .role("button")
         .label(g.name.clone())
         .focusable(true)
-        // A flex item like the album/artist cards: wrap at MIN_CARD (the same
-        // threshold `responsive_grid` counts columns by), then grow to fill the
-        // row, capped so a partial last row stays aligned with the rows above.
-        .min_w(grid::MIN_CARD)
-        .max_w(card_w + grid::FILL_SLOP)
-        .grow(1.0)
+        // Fixed to the computed column width (like the album/artist cards'
+        // `size(card_w, ..)`), so every tile is exactly the same width and a
+        // partial last row aligns left with the rows above rather than the last
+        // tile stretching to fill the leftover space.
+        .w(card_w)
         .fill(p.card)
         .radius(radius::MD)
         .padding(space::MD)
