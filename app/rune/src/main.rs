@@ -3481,6 +3481,44 @@ fn scene_settings_about(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::About;
 }
+/// Settings → Updates in each state the page can show.
+fn scene_settings_updates(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::Updates;
+    s.update.supported = true;
+    s.update.status = updater::UpdateStatus::UpToDate;
+    s.update.last_checked =
+        std::time::Instant::now().checked_sub(std::time::Duration::from_secs(5 * 60));
+}
+fn scene_update_found() -> update::Found {
+    update::Found {
+        version: "0.4.2".into(),
+        notes: Some(
+            "New\n• Settings → Updates: check on a schedule, install on quit\nFixed\n• A crash when a cover file was unreadable\nFaster\n• Library scans".into(),
+        ),
+    }
+}
+fn scene_settings_updates_available(s: &mut State) {
+    scene_settings_updates(s);
+    s.update.status = updater::UpdateStatus::Available(scene_update_found());
+}
+fn scene_settings_updates_ready(s: &mut State) {
+    scene_settings_updates(s);
+    s.update.auto_install = true;
+    s.update.status = updater::UpdateStatus::Ready(scene_update_found());
+}
+fn scene_settings_updates_failed(s: &mut State) {
+    scene_settings_updates(s);
+    s.update.status = updater::UpdateStatus::Failed(
+        "Could not fetch a valid release JSON from the remote".into(),
+    );
+}
+fn scene_settings_updates_off(s: &mut State) {
+    scene_settings_updates(s);
+    s.update.supported = false;
+    s.update.status = updater::UpdateStatus::Idle;
+    s.update.last_checked = None;
+}
 /// Settings → Appearance (the tab the sweep audits for theme + nav toggles).
 fn scene_settings_appearance(s: &mut State) {
     s.route = Route::Settings;
@@ -4023,6 +4061,14 @@ fn main() -> anyhow::Result<()> {
             ("settings-audio-eq", scene_settings_audio_eq),
             ("settings-audio-eq-off", scene_settings_audio_eq_off),
             ("settings-about", scene_settings_about),
+            ("settings-updates", scene_settings_updates),
+            (
+                "settings-updates-available",
+                scene_settings_updates_available,
+            ),
+            ("settings-updates-ready", scene_settings_updates_ready),
+            ("settings-updates-failed", scene_settings_updates_failed),
+            ("settings-updates-off", scene_settings_updates_off),
             ("settings-appearance", scene_settings_appearance),
             ("add-source-open", scene_add_source_open),
             ("crash-dialog", scene_crash_dialog),
@@ -13052,6 +13098,33 @@ mod tests {
     }
 
     #[test]
+    fn release_notes_render_as_headings_and_bullets() {
+        let lines = views::settings::release_note_lines(
+            "New\n• Settings → Updates page\n\nFixed\n- A crash\n* Another\n## Heading\nJust a sentence of prose that is long enough to not be a heading.",
+        );
+        assert_eq!(
+            lines,
+            vec![
+                (true, "New".to_string()),
+                (false, "• Settings → Updates page".to_string()),
+                (true, "Fixed".to_string()),
+                (false, "• A crash".to_string()),
+                (false, "• Another".to_string()),
+                (true, "Heading".to_string()),
+                (
+                    false,
+                    "Just a sentence of prose that is long enough to not be a heading.".to_string()
+                ),
+            ]
+        );
+        // A one-line note (the old manifests: "Soul Player v0.4.1") is plain text.
+        assert_eq!(
+            views::settings::release_note_lines("Soul Player v0.4.1"),
+            vec![(false, "Soul Player v0.4.1".to_string())]
+        );
+    }
+
+    #[test]
     fn update_status_and_last_checked_read_naturally() {
         let _locale = config::use_test_locale("en");
         use std::time::Duration;
@@ -13066,8 +13139,19 @@ mod tests {
             text(&s),
             "Version 1.2.3 is downloaded and installs when you quit Soul Player."
         );
-        s.update.status = updater::UpdateStatus::Failed("offline".into());
-        assert_eq!(text(&s), "Couldn't check for updates: offline");
+        s.update.status = updater::UpdateStatus::Failed(
+            "Could not fetch a valid release JSON from the remote".into(),
+        );
+        assert_eq!(
+            text(&s),
+            "Couldn't reach the update server. Check your internet connection and try again.",
+            "a network failure reads as one, not as the library's error"
+        );
+        s.update.status = updater::UpdateStatus::Failed("signature verification failed".into());
+        assert_eq!(
+            text(&s),
+            "The downloaded update failed its signature check, so it was not installed."
+        );
         let ago = views::settings::last_checked_text;
         assert_eq!(ago(Duration::from_secs(20)), "Last checked just now");
         assert_eq!(ago(Duration::from_secs(5 * 60)), "Last checked 5 min ago");

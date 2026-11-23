@@ -130,14 +130,42 @@ pub(crate) fn read_log_tail(path: &Path, max_lines: usize) -> String {
     lines[start..].join("\n")
 }
 
-/// Crash detection via a session sentinel: returns whether `sentinel` already
-/// existed (i.e. the previous session never removed it → it crashed or was
-/// killed), then ensures it exists for this session. [`begin_session`] /
-/// [`end_session`] wrap this against the real path.
-fn detect_and_mark(sentinel: &Path) -> bool {
+/// The running session's hold on the sentinel: an open handle with an exclusive
+/// OS lock, released by the OS if the process dies.
+static SESSION: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+
+/// What [`begin_at`] found.
+#[derive(Debug, PartialEq, Eq)]
+enum Begin {
+    /// We own the sentinel; `crashed` = it was left behind by a session that
+    /// never ended cleanly.
+    Owned { crashed: bool },
+    /// Another instance is running and holds it: not a crash, and not ours to
+    /// remove.
+    OtherInstance,
+}
+
+/// Crash detection via a locked session sentinel. A clean exit removes the file;
+/// a crash or kill leaves it behind (the OS drops the lock with the process), so
+/// finding it unlocked means the previous session died. Finding it *locked*
+/// means another instance is live (Linux/macOS allow several), which must
+/// neither show the crash prompt nor delete that instance's sentinel.
+fn begin_at(sentinel: &Path) -> (Begin, Option<std::fs::File>) {
     let existed = sentinel.exists();
-    let _ = std::fs::write(sentinel, b"");
-    existed
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(sentinel);
+    let Ok(file) = file else {
+        return (Begin::Owned { crashed: existed }, None);
+    };
+    match file.try_lock() {
+        Ok(()) => (Begin::Owned { crashed: existed }, Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => (Begin::OtherInstance, None),
+        // Locking unsupported here (some network filesystems): plain sentinel.
+        Err(std::fs::TryLockError::Error(_)) => (Begin::Owned { crashed: existed }, Some(file)),
+    }
 }
 
 /// The session sentinel file, alongside the logs.
@@ -149,16 +177,30 @@ fn running_sentinel() -> Option<PathBuf> {
 /// exit (crash or kill), and marks this session as running. Call once at startup,
 /// after [`init`]. Pair with [`end_session`] after the run loop returns.
 pub(crate) fn begin_session() -> bool {
-    running_sentinel()
-        .map(|s| detect_and_mark(&s))
-        .unwrap_or(false)
+    let Some(path) = running_sentinel() else {
+        return false;
+    };
+    let (begin, file) = begin_at(&path);
+    *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = file;
+    match begin {
+        Begin::Owned { crashed } => crashed,
+        Begin::OtherInstance => {
+            tracing::info!("another Soul Player instance is running");
+            false
+        }
+    }
 }
 
 /// End a session cleanly: removes the sentinel, so the next launch knows this
 /// session exited normally. Call after the run loop returns.
 pub(crate) fn end_session() {
-    if let Some(sentinel) = running_sentinel() {
-        let _ = std::fs::remove_file(sentinel);
+    // Only the instance that owns the sentinel removes it.
+    let owned = SESSION.lock().unwrap_or_else(|e| e.into_inner()).take();
+    if let Some(file) = owned {
+        drop(file); // release the lock before removing (Windows)
+        if let Some(sentinel) = running_sentinel() {
+            let _ = std::fs::remove_file(sentinel);
+        }
     }
 }
 
@@ -194,17 +236,37 @@ mod tests {
     }
 
     #[test]
-    fn detect_and_mark_reports_prior_sentinel_then_persists_it() {
+    fn a_left_behind_sentinel_is_a_crash_but_a_held_one_is_another_instance() {
         let dir = std::env::temp_dir().join(format!("soul-sentinel-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let s = dir.join("running.lock");
         std::fs::remove_file(&s).ok(); // clean slate
 
-        assert!(!detect_and_mark(&s), "first run: no prior sentinel");
-        assert!(s.exists(), "sentinel is created for this session");
+        let (first, held) = begin_at(&s);
+        assert_eq!(
+            first,
+            Begin::Owned { crashed: false },
+            "first run: no prior sentinel"
+        );
+        assert!(s.exists() && held.is_some(), "sentinel created and held");
+
+        let (second, none) = begin_at(&s);
+        assert_eq!(
+            second,
+            Begin::OtherInstance,
+            "a live instance is not a crash"
+        );
         assert!(
-            detect_and_mark(&s),
-            "second run: the prior sentinel is seen"
+            none.is_none(),
+            "the second instance doesn't own the sentinel"
+        );
+
+        drop(held); // the first instance dies without a clean exit: file stays
+        let (third, _h) = begin_at(&s);
+        assert_eq!(
+            third,
+            Begin::Owned { crashed: true },
+            "a dead session's sentinel is a crash"
         );
 
         std::fs::remove_dir_all(&dir).ok();
