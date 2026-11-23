@@ -593,6 +593,7 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
         meta,
         Some(&crate::views::icons::CLOCK),
         hero_actions(s, p, id, play_ids.clone()),
+        None, // playlists manage their cover via their own hero actions
     );
 
     let last = playlist.entries.len().saturating_sub(1);
