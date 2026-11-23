@@ -138,11 +138,23 @@ windows-registry = "0.6"
 # cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
 # installer today (SmartScreen nags); the signed updater + OS code-signing +
 # release CI are the deferred half of Phase 3. Build:  cargo packager --release
-# (from app/rune). name/version/description/authors come from [package] above.
+# (from app/rune). name/version/authors come from [package] above.
 [package.metadata.packager]
 product-name = "Soul Player"
 identifier = "co.datadir.soulplayer"
+# What a USER is shown, so it must not be the `[package] description` — that one
+# names the crate's role in this workspace ("Rune (native GPU) UI head for Soul
+# Player, over soul-player-host"), which is the right text for developers and
+# meaningless to anyone reading an application menu. cargo-packager only falls
+# back to the crate's description when this is unset (`cli/config.rs`), and it
+# becomes `Comment=` in the generated Linux desktop entry — the line GNOME shows
+# under the app in search results and KDE shows as its tooltip.
+description = "Play your music library — gapless, bit-perfect playback"
 # macOS: LSApplicationCategoryType (Finder / Launchpad / App Store "Music").
+# On Linux it also fills the desktop entry's `Categories=`, which is what places
+# the app under Sound & Video rather than nowhere at all: "Music" expands to the
+# freedesktop `AudioVideo;Audio;Music;` (`AudioVideo` being the registered main
+# category a multimedia app needs). Verified on the built AppImage.
 category = "Music"
 # macOS gets a proper `.icns` (the mark on a rounded tile, 16–1024 px; see icons/macos/).
 icons = ["icons/icon.ico", "icons/128x128.png", "icons/macos/icon.icns"]
