@@ -343,7 +343,9 @@ jobs:
             dnf install -y -q /w/*.rpm
             m=$(ldd /usr/bin/soul-player-rune | grep -c "not found" || true)
             [ "$m" = "0" ] || { ldd /usr/bin/soul-player-rune | grep "not found"; exit 1; }
-            /usr/bin/soul-player-rune --help >/dev/null
+            # `--help` writes to stderr, so both streams go to /dev/null;
+            # the exit status is what is being checked.
+            /usr/bin/soul-player-rune --help >/dev/null 2>&1
             echo "ok: .rpm installs, resolves every library, and runs"
           '
           echo "::endgroup::"
