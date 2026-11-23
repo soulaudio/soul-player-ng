@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rune::{Color, Cursor, El, FileDialogOptions, Icon, Tx, col, el, icon, row, text};
+use rune::{Color, Cursor, El, Icon, col, el, icon, row, text};
 use soul_player_host::Command;
 
 use crate::State;
@@ -404,15 +404,11 @@ fn artwork_btn(key: String, label: String, glyph: &'static Icon, p: &Palette) ->
         .child(icon(glyph, 18.0).color(p.text_secondary))
 }
 
-/// The "Edit Artwork" control (the old app's per-album/artist cover upload):
-/// opens an image-file dialog and, on a pick, opens the CROP dialogue
-/// ([`crate::views::artwork_crop::overlay`]) where the user pans/zooms the
-/// picked image behind a fixed frame (a circle for an artist, a square for an
-/// album) before confirming. Confirming crops + stores it as `target`'s custom
-/// cover via [`crate::covers::CoverStore`] (non-destructive — the music files
-/// are never touched); a set cover always wins over the generated/embedded art
-/// everywhere that album/artist shows. Picking no longer sets the cover
-/// directly (that moved into the crop step).
+/// The hero's "Edit Artwork" control (a pencil): opens the MANAGE dialogue
+/// ([`crate::views::artwork_crop::overlay`]'s select state) for `target`, where
+/// the user can Change the cover (pick an image, then the crop step) or, when one
+/// is already set, Delete it. The file pick, crop, and non-destructive store all
+/// live in the dialogue, not here.
 fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
     artwork_btn(
         format!("{}-edit-artwork", target.key_prefix()),
@@ -420,39 +416,7 @@ fn edit_artwork_control(p: &Palette, target: ArtworkTarget) -> El {
         &icons::PENCIL,
         p,
     )
-    .on_press_tx(move |_s: &mut State, tx: &mut Tx| {
-        let target = target.clone();
-        tx.open_file(
-            FileDialogOptions {
-                title: t!("artwork.editDialog").to_string(),
-                ..Default::default()
-            }
-            .filter(
-                "Images (*.jpg, *.jpeg, *.png, *.webp, *.gif)",
-                &["jpg", "jpeg", "png", "webp", "gif"],
-            ),
-            move |s: &mut State, result, _tx| {
-                let Ok(Some(path)) = result else {
-                    return;
-                };
-                // Read the picked image's pixel size cheaply (header only, no
-                // full decode). A file we can't even measure isn't an image we
-                // can crop, so skip it rather than opening an empty dialogue.
-                let Ok((src_w, src_h)) = image::image_dimensions(&path) else {
-                    return;
-                };
-                // Start at the cover scale so the image fills the frame; the
-                // dialogue's zoom slider takes it from there.
-                let scale = crate::views::artwork_crop::FRAME / (src_w.min(src_h).max(1) as f32);
-                s.artwork_crop = Some(ArtworkCrop {
-                    target: target.clone(),
-                    source: path,
-                    src_w,
-                    src_h,
-                    scale,
-                    offset: (0.0, 0.0),
-                });
-            },
-        );
+    .on_press(move |s: &mut State| {
+        s.artwork_edit = Some(target.clone());
     })
 }
