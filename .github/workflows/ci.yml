@@ -370,11 +370,44 @@ jobs:
       - name: Require all checks to pass
         # For a matrix job, `needs.<job>.result` is success only when EVERY matrix
         # leg (ubuntu/windows/macos) succeeded — so this gate covers all platforms.
+        #
+        # The gate stays strict: anything other than success fails it, because
+        # "we don't know" is not "it passed". What changed is that it now SAYS
+        # which job and in what way, because `cancelled` and `failure` call for
+        # opposite responses and the old message ("a required CI job failed")
+        # could not tell them apart.
+        #
+        # A cancelled job is usually a hosted-runner shortage — macOS especially:
+        # the job sits with zero steps until GitHub gives up. Nothing is wrong
+        # with the code and the remedy is `gh run rerun <id> --failed`. Reading
+        # that as a real failure sends you looking for a bug that is not there;
+        # it cost three separate diagnoses in one afternoon to learn that.
         run: |
-          if [ "${{ needs.rust.result }}" != "success" ] \
-            || [ "${{ needs.rune.result }}" != "success" ] \
-            || [ "${{ needs.rune-wayland.result }}" != "success" ]; then
-            echo "::error::a required CI job failed"
-            exit 1
-          fi
+          bad=0
+          for pair in "rust=${{ needs.rust.result }}" \
+                      "rune=${{ needs.rune.result }}" \
+                      "rune-wayland=${{ needs.rune-wayland.result }}"; do
+            job=${pair%%=*}
+            result=${pair#*=}
+            case "$result" in
+              success)
+                printf '  ok         %s\n' "$job"
+                ;;
+              cancelled)
+                echo "::error::$job was CANCELLED, not failed — it never ran to completion."
+                echo "           Usually a hosted-runner shortage (check whether the job has"
+                echo "           zero steps). Re-run it: gh run rerun \$GITHUB_RUN_ID --failed"
+                bad=1
+                ;;
+              skipped)
+                echo "::error::$job was SKIPPED — a required job must actually run."
+                bad=1
+                ;;
+              *)
+                echo "::error::$job: $result — a real failure; read its log."
+                bad=1
+                ;;
+            esac
+          done
+          [ "$bad" = 0 ] || exit 1
           echo "all green"
