@@ -140,7 +140,7 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let search = crate::views::library::search_box(
         &s.artist_search,
         "artists-search",
-        t!("artists.searchPlaceholder").to_string(),
+        t!("artists.searchPlaceholder", count => artists.len()).to_string(),
         p,
         |st: &mut State| &mut st.artist_search,
     );
