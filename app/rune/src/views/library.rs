@@ -88,24 +88,24 @@ pub(crate) const SEARCH_MAX_W: f32 = 360.0;
 /// The shared browse-page top bar, reused by Albums / Artists / Genres / Tracks /
 /// Playlists so every list page opens with the same search in the same place. A
 /// left-aligned `search` field bounded to [`SEARCH_MAX_W`] (responsive — it grows
-/// with the pane up to that cap, not the full width), plus optional `trailing`
-/// controls (e.g. the Albums Filters button, the Playlists New button) pinned to
-/// the right edge by a growing spacer between them. Keyed `{page}-search-bar`, so
-/// each page's existing finders/tests (`albums-search-bar`, …) keep resolving.
+/// with the pane up to that cap, not the full width), with any optional `trailing`
+/// control (the Albums Filters button, the Playlists New button, the Tracks Sort
+/// toggle) sitting RIGHT NEXT TO the search as one left-aligned group, like the old
+/// app's `flex items-center gap-4` header — not pinned to the far right. Keyed
+/// `{page}-search-bar`, so each page's finders/tests (`albums-search-bar`, …) resolve.
 pub(crate) fn page_search_bar(page: &str, search: El, trailing: Option<El>) -> El {
     let mut bar = row()
         .key(format!("{page}-search-bar"))
+        // Give the top bar the old app's `p-4`-style top breathing room instead of
+        // sitting cramped against the top of the pane; the grid's own top padding
+        // provides the gap below, so no bottom padding here.
         .px(space::PANE)
-        .pt(space::SM)
+        .pt(space::PANE)
         .gap(space::SM)
         .center_y()
         .child(search.grow(1.0).max_w(SEARCH_MAX_W));
     if let Some(trailing) = trailing {
-        // A growing spacer pushes the trailing control to the pane's right edge,
-        // so the search stays left-aligned and bounded regardless of pane width.
-        bar = bar
-            .child(el().key(format!("{page}-search-spacer")).grow(1.0))
-            .child(trailing);
+        bar = bar.child(trailing);
     }
     bar
 }
@@ -572,7 +572,34 @@ fn search_bar(s: &State, p: &Palette) -> El {
                 }),
         );
     }
-    page_search_bar("tracks", field, None)
+    page_search_bar("tracks", field, Some(sort_toggle(s, p)))
+}
+
+/// The "Sort" toggle in the Tracks top bar (mirrors the Albums "Filters" button):
+/// reveals/hides the sort-pill bar, so the pills aren't shown by default. Lit while
+/// open or while a client-side loudness sort is active (so it reads as "a non-default
+/// sort is on" even when collapsed).
+fn sort_toggle(s: &State, p: &Palette) -> El {
+    let lit = s.tracks_sort_open || s.loudness_sort.is_some();
+    row()
+        .key("tracks-sort-toggle")
+        .role("button")
+        .label(t!("library.sort").to_string())
+        .focusable(true)
+        .center_y()
+        .gap(space::XS)
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if lit { p.accent.alpha(0.2) } else { p.muted })
+        .hover(p.fg.alpha(fx::HOVER))
+        .child(
+            text(t!("library.sort").to_string())
+                .font(type_::ITEM)
+                .color(if lit { p.accent } else { p.fg }),
+        )
+        .on_press(|st: &mut State| st.tracks_sort_open = !st.tracks_sort_open)
 }
 
 /// The library's ~38-track testdata set fits comfortably in a plain scrolled
@@ -668,13 +695,18 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             p,
         )
     };
-    col()
+    let mut page = col()
         .key("library-page")
         .grow(1.0)
         .min_h(0.0)
-        .child(search_bar(s, p))
-        .child(sort_bar(s, p))
-        .child(track_header_row(p, width, s.show_loudness_columns))
+        .child(search_bar(s, p));
+    // The sort-pill bar is revealed by the top bar's "Sort" toggle, so the Tracks
+    // page opens clean like the other browse pages rather than showing a row of
+    // pills by default.
+    if s.tracks_sort_open {
+        page = page.child(sort_bar(s, p));
+    }
+    page.child(track_header_row(p, width, s.show_loudness_columns))
         .child(body)
 }
 
