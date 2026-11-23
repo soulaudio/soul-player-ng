@@ -814,6 +814,149 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// E2E GAPLESS DEVICE SWITCH (through the real actor + pump): switching the EXCLUSIVE output
+    /// to a DIFFERENT device mid-playback must open the new device sink WHILE the old one is
+    /// still installed and playing (open-new-before-close), driven through the exact shared
+    /// `output_desired` mutex the host mutates from Settings. We count live device holders and
+    /// snapshot how many were live the instant the pump builds the new device: the gapless
+    /// open-new-before-close sees the OLD device still live (1). This is precisely the case the
+    /// fix changed — the old code parked the deck (dropping the old sink → silence for the whole
+    /// device open) whenever exclusive was involved, so it would have shown 0 here. The
+    /// same-device exclusive reopen (the one case still parked) is covered in `driver::tests`.
+    #[test]
+    fn switching_to_a_different_exclusive_device_mid_play_is_gapless_end_to_end() {
+        use crate::testutil::ConfigSink;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let dir = std::env::temp_dir().join(format!("sas_actor_gapless_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = fixture_library(&dir);
+
+        // Live device holders (new_counting ++ on build, -- on drop), the frame counter, and a
+        // record of (device, live-holders-at-build) for every sink the pump opens.
+        let device_live = Arc::new(AtomicUsize::new(0));
+        let frames = Arc::new(AtomicUsize::new(0));
+        // (device, live-holders-at-build) recorded per make_sink call.
+        type BuildLog = Arc<Mutex<Vec<(Option<String>, usize)>>>;
+        let builds: BuildLog = Arc::new(Mutex::new(Vec::new()));
+        // Start in EXCLUSIVE mode on the default device — the case the old code would have
+        // parked (gone silent) for the whole device open when switching devices.
+        let desired = Arc::new(Mutex::new(OutputConfig {
+            device: None,
+            exclusive: true,
+            strict: false,
+        }));
+
+        let make_sink = {
+            let device_live = Arc::clone(&device_live);
+            let frames = Arc::clone(&frames);
+            let builds = Arc::clone(&builds);
+            move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
+                // Snapshot live holders BEFORE constructing the new one — open-new-before-close
+                // leaves the old sink live here; a release-first park would have dropped it.
+                let live = device_live.load(Ordering::Relaxed);
+                builds.lock().unwrap().push((cfg.device.clone(), live));
+                Ok(ConfigSink::new_counting(
+                    cfg.device.clone(),
+                    cfg.exclusive,
+                    48_000,
+                    2,
+                    Arc::clone(&frames),
+                    Arc::clone(&device_live),
+                ))
+            }
+        };
+        let make_park = {
+            let frames = Arc::clone(&frames);
+            move || ConfigSink::new(None, false, 48_000, 2, Arc::clone(&frames))
+        };
+
+        let (ev_tx, ev_rx) = mpsc::channel::<Event>();
+        let player = AudioPlayer::spawn(
+            make_sink,
+            make_park,
+            Arc::clone(&desired),
+            {
+                let c = Arc::clone(&lib);
+                let d: Arc<dyn TrackSource> = c;
+                d
+            },
+            move |ev| {
+                let _ = ev_tx.send(ev);
+            },
+        );
+
+        // Repeat::All so playback never ends under the no-backpressure test sink — the switch
+        // lands mid-stream and we can prove audio keeps flowing after it.
+        player.send(Command::SetRepeat(crate::types::RepeatMode::All));
+        player.send(Command::PlayContext {
+            ids: vec![0, 1],
+            start: 0,
+        });
+        assert!(
+            wait_for_now_playing(&ev_rx, 0, 2.0),
+            "track 0 never started"
+        );
+        assert!(
+            frames.load(Ordering::Relaxed) > 0,
+            "audio flowing before the switch"
+        );
+
+        // Host switches to a DIFFERENT device live (the exact Settings path).
+        desired.lock().unwrap().device = Some("Living Room DAC".to_string());
+
+        // Wait (bounded) for the pump to build the new device, capturing how many holders were
+        // live at that instant.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut live_at_dac_build = None;
+        while Instant::now() < deadline {
+            if let Some((_, live)) = builds
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(d, _)| d.as_deref() == Some("Living Room DAC"))
+            {
+                live_at_dac_build = Some(*live);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            live_at_dac_build,
+            Some(1),
+            "GAPLESS: the OLD device must still be live (playing) at the instant the NEW one is \
+             opened (open-new-before-close) — a release-first park would have shown 0; builds = {:?}",
+            builds.lock().unwrap()
+        );
+
+        // After the swap settles: exactly one device live (the old one dropped on swap) AND
+        // playback keeps flowing onto the new device.
+        let frames_at_switch = frames.load(Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut settled = false;
+        while Instant::now() < deadline {
+            if device_live.load(Ordering::Relaxed) == 1
+                && frames.load(Ordering::Relaxed) > frames_at_switch + 1000
+            {
+                settled = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            settled,
+            "after the swap exactly one device must be live and audio must keep flowing \
+             (device_live = {}, frames moved = {})",
+            device_live.load(Ordering::Relaxed),
+            frames
+                .load(Ordering::Relaxed)
+                .saturating_sub(frames_at_switch),
+        );
+
+        drop(player);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The STRICT-blocking regression: when the output sink can't be built at startup
     /// (e.g. strict exclusive-or-stop and the device is in use), the pump must NOT die —
     /// a dead pump can't observe the user toggling exclusive/strict off or the device
