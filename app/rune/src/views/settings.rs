@@ -196,6 +196,14 @@ fn category_nav(s: &State, p: &Palette) -> El {
             p,
         ))
         .child(category_item(
+            "cat-updates",
+            &icons::DOWNLOAD,
+            t!("settings.updates").to_string(),
+            SettingsTab::Updates,
+            tab == SettingsTab::Updates,
+            p,
+        ))
+        .child(category_item(
             "cat-about",
             &icons::INFO,
             t!("settings.about").to_string(),
@@ -3579,13 +3587,10 @@ fn support_row(p: &Palette) -> El {
         )
 }
 
-/// About: the running version, support actions (report a problem / open logs),
-/// and, when the launch-time check (`update::available`) found a newer signed
-/// release, an "Install & Restart" button. Install and the support actions run
-/// off the UI thread because they block (download/relaunch, or launching a
-/// browser/file manager).
-fn about_card(s: &State, p: &Palette) -> El {
-    let mut c = card("updates", p)
+/// About: the running version and the support actions (report a problem / open
+/// logs / star). Updates have their own category ([`updates_card`]).
+fn about_card(p: &Palette) -> El {
+    card("about", p)
         .child(heading(
             t!("settings.about").to_string(),
             t!("settings.aboutDesc").to_string(),
@@ -3595,37 +3600,207 @@ fn about_card(s: &State, p: &Palette) -> El {
             text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
                 .color(p.text_secondary),
         )
-        .child(support_row(p));
-    if let Some(version) = &s.update_available {
-        c = c.child(
-            row()
-                .gap(space::MD)
-                .center_y()
-                .child(
-                    text(t!("settings.updateAvailable", version => version).to_string())
-                        .color(p.fg)
-                        .grow(1.0),
-                )
-                .child(
-                    el().key("install-update")
-                        .role("button")
-                        .label(t!("settings.installRestart").to_string())
-                        .focusable(true)
-                        .padding(space::MD)
-                        .radius(radius::MD)
-                        .fill(p.primary)
-                        .center()
-                        .cursor(Cursor::Pointer)
-                        .child(text(t!("settings.installRestart").to_string()).color(p.bg))
-                        .on_press(|s: &mut State| {
-                            if let Some(ah) = s.app_handle.clone() {
-                                crate::install_update(ah);
-                            }
-                        }),
-                ),
+        .child(support_row(p))
+}
+
+// ── Updates ──────────────────────────────────────────────────────────────────
+
+/// The one-line status of the update flow (see `updater::UpdateStatus`).
+pub(crate) fn update_status_text(s: &State) -> String {
+    use crate::updater::UpdateStatus as U;
+    if !s.update.supported {
+        return t!("settings.updatesUnavailable").to_string();
+    }
+    match &s.update.status {
+        U::Idle => t!("settings.updateNotChecked").to_string(),
+        U::Checking => t!("settings.updateChecking").to_string(),
+        U::UpToDate => t!("settings.upToDate").to_string(),
+        U::Available(f) => t!("settings.updateAvailable", version => f.version).to_string(),
+        U::Downloading(f) => t!("settings.updateDownloading", version => f.version).to_string(),
+        U::Ready(f) => t!("settings.updateReady", version => f.version).to_string(),
+        U::Restarting(v) => t!("settings.updateRestarting", version => v).to_string(),
+        U::Failed(e) => t!("settings.updateFailed", error => e).to_string(),
+    }
+}
+
+/// "Last checked …", coarse and relative (no clock/timezone dependency).
+pub(crate) fn last_checked_text(since: std::time::Duration) -> String {
+    let mins = since.as_secs() / 60;
+    if mins < 1 {
+        t!("settings.lastCheckedNow").to_string()
+    } else if mins < 60 {
+        t!("settings.lastCheckedMinutes", n => mins).to_string()
+    } else {
+        t!("settings.lastCheckedHours", n => mins / 60).to_string()
+    }
+}
+
+/// Updates: the installed version, where the update flow stands, its release
+/// notes, and the actions — "Check Now" and, with a newer release on offer,
+/// "Install & Restart".
+fn updates_card(s: &State, p: &Palette) -> El {
+    use crate::updater::UpdateStatus as U;
+    let mut c = card("updates", p)
+        .child(heading(
+            t!("settings.updates").to_string(),
+            t!("settings.updatesDesc").to_string(),
+            p,
+        ))
+        .child(
+            text(t!("settings.version", version => env!("CARGO_PKG_VERSION")).to_string())
+                .font(type_::LABEL.mono())
+                .color(p.text_secondary),
+        );
+    let mut status = col().key("update-status").gap(space::XXS).child(
+        text(update_status_text(s))
+            .font(type_::ITEM)
+            .color(p.fg)
+            .wrap(),
+    );
+    if s.update.supported
+        && let Some(at) = s.update.last_checked
+    {
+        status = status.child(
+            text(last_checked_text(at.elapsed()))
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
         );
     }
-    c
+    c = c.child(status);
+    if let Some(notes) = s.update.status.found().and_then(|f| f.notes.clone()) {
+        c = c.child(
+            col()
+                .key("update-notes")
+                .gap(space::XS)
+                .padding(space::MD)
+                .radius(radius::MD)
+                .fill(p.muted)
+                .child(
+                    text(t!("settings.releaseNotes").to_string())
+                        .font(type_::SECTION)
+                        .color(p.text_secondary),
+                )
+                .child(text(notes).font(type_::BODY).color(p.fg).wrap()),
+        );
+    }
+    if !s.update.supported {
+        return c;
+    }
+    let busy = matches!(
+        s.update.status,
+        U::Checking | U::Downloading(_) | U::Restarting(_)
+    );
+    let mut actions = row().gap(space::SM).flex_wrap().center_y();
+    if s.update.status.found().is_some() && !busy {
+        actions = actions.child(
+            el().key("install-update")
+                .role("button")
+                .label(t!("settings.installRestart").to_string())
+                .focusable(true)
+                .padding(space::MD)
+                .radius(radius::MD)
+                .fill(p.primary)
+                .center()
+                .cursor(Cursor::Pointer)
+                .child(text(t!("settings.installRestart").to_string()).color(p.bg))
+                .on_press(crate::updater::install_now),
+        );
+    }
+    if !busy {
+        actions = actions.child(
+            support_button(
+                "check-updates",
+                t!("settings.checkNow").to_string(),
+                &icons::CHECK,
+                p,
+            )
+            .on_press(crate::updater::check_now),
+        );
+    }
+    c.child(actions)
+}
+
+/// Automatic updates: the two switches. Checking is on by default; installing
+/// on its own is opt-in, and even then waits until the user quits.
+fn automatic_updates_card(s: &State, p: &Palette) -> El {
+    card("automatic-updates", p)
+        .child(heading(
+            t!("settings.automaticUpdates").to_string(),
+            t!("settings.automaticUpdatesDesc").to_string(),
+            p,
+        ))
+        .child(switch_row(
+            "auto-check",
+            t!("settings.autoCheck").to_string(),
+            t!("settings.autoCheckDesc").to_string(),
+            s.update.auto_check,
+            |s: &mut State| {
+                let on = !s.update.auto_check;
+                crate::updater::set_auto_check(s, on);
+            },
+            p,
+        ))
+        .child(switch_row(
+            "auto-install",
+            t!("settings.autoInstall").to_string(),
+            t!("settings.autoInstallDesc").to_string(),
+            s.update.auto_install,
+            |s: &mut State| {
+                let on = !s.update.auto_install;
+                crate::updater::set_auto_install(s, on);
+            },
+            p,
+        ))
+}
+
+/// A labelled on/off setting: title + description on the left, an On/Off pill on
+/// the right (the same pill as the loudness-columns switch). Keys:
+/// `<key>-row` and `<key>-toggle`.
+fn switch_row(
+    key: &str,
+    title: String,
+    desc: String,
+    on: bool,
+    toggle: fn(&mut State),
+    p: &Palette,
+) -> El {
+    row()
+        .key(format!("{key}-row"))
+        .center_y()
+        .gap(space::SM)
+        .flex_wrap()
+        .child(
+            col()
+                .grow(1.0)
+                .min_w(0.0)
+                .gap(space::XXS)
+                .child(text(title.clone()).font(type_::ITEM).color(p.fg))
+                .child(
+                    text(desc)
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary)
+                        .wrap(),
+                ),
+        )
+        .child(
+            el().key(format!("{key}-toggle"))
+                .role("switch")
+                .label(title)
+                .focusable(true)
+                .padding(space::SM)
+                .radius(radius::SM)
+                .cursor(Cursor::Pointer)
+                .fill(if on { p.primary } else { p.muted })
+                .child(
+                    text(if on {
+                        t!("settings.on").to_string()
+                    } else {
+                        t!("settings.off").to_string()
+                    })
+                    .color(if on { p.bg } else { p.fg }),
+                )
+                .on_press(toggle),
+        )
 }
 
 // ── Keyboard shortcuts ───────────────────────────────────────────────────────
@@ -3712,10 +3887,15 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
             .child(managed_library_card(s, p)),
         SettingsTab::Audio => audio_pipeline(s, p, cx),
         SettingsTab::Keyboard => keyboard_settings(s, p),
+        SettingsTab::Updates => col()
+            .key("settings-content")
+            .gap(space::LG)
+            .child(updates_card(s, p))
+            .child(automatic_updates_card(s, p)),
         SettingsTab::About => col()
             .key("settings-content")
             .gap(space::LG)
-            .child(about_card(s, p)),
+            .child(about_card(p)),
     };
     // Padding lives INSIDE the scroll viewport (no fixed dead gap above the first
     // card; the bottom margin travels with the content). The top inset is `LG` —

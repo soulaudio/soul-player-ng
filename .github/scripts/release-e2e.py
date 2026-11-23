@@ -22,6 +22,13 @@ Scenarios
                 it with the OS's real mechanism (NSIS passive installer on Windows, bundle
                 swap on macOS, AppImage swap on Linux), and come back up as a new process
                 on the replaced files without reporting a crash.
+     schedule     the update settings (Settings → Updates), driven through the real
+                config file: a release that appears while the app is running is
+                found by a scheduled re-check (no restart) and NOT installed on its
+                own; with "Check for updates automatically" off the app never
+                contacts the server; with "Install updates automatically" on it
+                downloads in the background, installs nothing mid-session, and
+                installs when the user quits — without restarting the app.
   2. upgrade    install the PREVIOUS published release; check that it detects this release
                 as an update (its updater reads the new `latest.json`, served locally).
                 If that release can install updates unattended, let its own updater
@@ -564,9 +571,27 @@ def mark_stale(inst: Install) -> None:
     Mach-O would break its signature)."""
     if IS_MAC:
         (inst.app / "Contents" / "Resources" / "soul-e2e-stale").write_bytes(STALE)
+    elif IS_WIN:
+        # The previous run's exe can stay locked for a moment after it exits.
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                with open(inst.exe, "ab") as f:
+                    f.write(STALE)
+                return
+            except PermissionError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.5)
     else:
-        with open(inst.exe, "ab") as f:
+        # Write a marked copy and swap it in: appending in place fails with ETXTBSY
+        # while the previous run's AppImage runtime (its FUSE mount) is still
+        # winding down, whereas a rename just gives the path a new inode.
+        tmp = inst.exe.with_name(inst.exe.name + ".e2e-stale")
+        shutil.copy2(inst.exe, tmp)
+        with open(tmp, "ab") as f:
             f.write(STALE)
+        os.replace(tmp, inst.exe)
 
 
 def is_stale(inst: Install) -> bool:
@@ -614,6 +639,7 @@ class UpdateServer:
 
     def __init__(self, version: str, target_key: str, artifact: Path, signature: str, fmt: str):
         self.requests: list[str] = []
+        self.offering = True  # False: "no release yet" (404), until flipped
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -622,7 +648,8 @@ class UpdateServer:
 
             def do_GET(self):  # noqa: N802 (stdlib name)
                 outer.requests.append(self.path)
-                if self.path.startswith("/latest.json") and "/artifact" not in outer.requests:
+                if (self.path.startswith("/latest.json") and outer.offering
+                        and "/artifact" not in outer.requests):
                     body, ctype = json.dumps(outer.manifest).encode(), "application/json"
                 elif self.path == "/artifact":
                     body, ctype = artifact.read_bytes(), "application/octet-stream"
@@ -645,6 +672,9 @@ class UpdateServer:
             "platforms": {target_key: {"url": f"{base}/artifact", "signature": signature, "format": fmt}},
         }
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def manifest_requests(self) -> int:
+        return sum(1 for r in self.requests if r.startswith("/latest.json"))
 
     def close(self) -> None:
         self.srv.shutdown()
@@ -719,6 +749,144 @@ def auto_update(
         if pid_alive(pid):
             stop_pid(pid)
     return env.log_since(mark)
+
+
+# ---------------------------------------------------------------- update settings
+
+
+def config_file(env: AppEnv) -> Path:
+    """The app's settings file (`config.rs`: `<config dir>/soul-player/config.toml`)."""
+    if IS_WIN:
+        return Path(os.environ["APPDATA"]) / "soul-player" / "config.toml"
+    if IS_MAC:
+        return env.home / "Library" / "Application Support" / "soul-player" / "config.toml"
+    return env.home / ".config" / "soul-player" / "config.toml"
+
+
+def set_config(env: AppEnv, **values: bool) -> None:
+    """Set top-level boolean keys in the app's config.toml the way the Settings
+    switches persist them (the app keeps every other key it wrote)."""
+    f = config_file(env)
+    f.parent.mkdir(parents=True, exist_ok=True)
+    lines = f.read_text(encoding="utf-8").splitlines() if f.exists() else []
+    lines = [ln for ln in lines if not any(re.match(rf"\s*{k}\s*=", ln) for k in values)]
+    head = [f"{k} = {'true' if v else 'false'}" for k, v in values.items()]
+    f.write_text("\n".join(head + lines) + "\n", encoding="utf-8")  # top-level keys first
+
+
+def graceful_quit(p: subprocess.Popen, timeout: int = 60) -> int:
+    """Quit the way a user does: SIGTERM (handled like ⌘Q) or, on Windows, a
+    window close (WM_CLOSE via taskkill without /F). Returns the exit status."""
+    if IS_WIN:
+        subprocess.run(["taskkill", "/PID", str(p.pid)], capture_output=True)
+    else:
+        p.send_signal(signal.SIGTERM)
+    try:
+        return p.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait()
+        raise E2EFailure(f"app did not quit within {timeout}s") from None
+
+
+def launch_with_updater(inst: Install, env: AppEnv, library: Path, offer: UpdateServer,
+                        interval: int | None = None) -> tuple[subprocess.Popen, dict, Path]:
+    e = dict(env.env, SOUL_PLAYER_FOLDER=str(library), SOUL_PLAYER_AUTOPLAY="1",
+             SOUL_PLAYER_UPDATE_ENDPOINT=offer.endpoint)
+    e.pop("SOUL_PLAYER_NO_UPDATE", None)
+    if interval:
+        e["SOUL_PLAYER_UPDATE_INTERVAL_SECS"] = str(interval)
+    mark = env.log_mark()
+    console = env.home / f"console-sched-{time.monotonic_ns()}.txt"
+    with open(console, "wb") as out:
+        p = subprocess.Popen([str(inst.exe)], env=e, stdout=out, stderr=subprocess.STDOUT)
+    return p, mark, console
+
+
+def scheduled_check(inst: Install, env: AppEnv, library: Path, update: tuple, version: str, key: str) -> None:
+    """A release published while the app runs is found by a scheduled re-check — and,
+    with the default settings, offered but never installed on its own."""
+    set_config(env, update_auto_check=True, update_auto_install=False)
+    offered = bump_patch(version)
+    offer = UpdateServer(offered, key, *update)
+    offer.offering = False  # nothing released yet
+    mark_stale(inst)
+    p, mark, _ = launch_with_updater(inst, env, library, offer, interval=4)
+    try:
+        check(wait_until(lambda: offer.manifest_requests() >= 1, 60), "no launch-time check")
+        ok("launch check ran (no release yet)")
+        time.sleep(3)
+        offer.offering = True  # the release goes live while the app is running
+        pat = re.compile(r"update available.*" + re.escape(offered))
+        check(wait_until(lambda: pat.search(env.log_since(mark)) is not None, 60),
+              f"a running app did not pick up the new release\n{env.log_since(mark)[-3000:]}")
+        n = offer.manifest_requests()
+        check(n >= 2, f"found on a re-check, expected ≥ 2 manifest requests, saw {n}")
+        check(p.poll() is None, "the app restarted or exited by itself")
+        ok(f"scheduled re-check #{n} found {offered} while the app kept running")
+        time.sleep(6)
+    finally:
+        status = graceful_quit(p)
+        offer.close()
+    text = env.log_since(mark)
+    check(status == 0, f"quit with {status}")
+    check("/artifact" not in offer.requests, "it downloaded the update without being asked")
+    check(is_stale(inst) and "installing update" not in text, "it installed the update on its own")
+    ok("offered, not downloaded or installed (installing is the user's call)")
+
+
+def auto_check_off(inst: Install, env: AppEnv, library: Path, update: tuple, version: str, key: str) -> None:
+    """With "Check for updates automatically" off, the app never contacts the server."""
+    set_config(env, update_auto_check=False, update_auto_install=False)
+    offer = UpdateServer(bump_patch(version), key, *update)
+    p, mark, _ = launch_with_updater(inst, env, library, offer, interval=2)
+    try:
+        time.sleep(15)
+        check(p.poll() is None, "app exited early")
+    finally:
+        status = graceful_quit(p)
+        offer.close()
+        set_config(env, update_auto_check=True)
+    check(status == 0, f"quit with {status}")
+    check(not offer.requests, f"automatic checks are off, yet it requested {offer.requests}")
+    check("update available" not in env.log_since(mark), "it found an update with checks off")
+    ok("no update traffic in 15s with automatic checks off (re-checks every 2s otherwise)")
+
+
+def install_on_quit(inst: Install, env: AppEnv, library: Path, update: tuple, version: str, key: str) -> None:
+    """"Install updates automatically": download in the background, install nothing
+    mid-session, install when the user quits, and do not reopen the app."""
+    set_config(env, update_auto_check=True, update_auto_install=True)
+    offer = UpdateServer(bump_patch(version), key, *update)
+    mark_stale(inst)
+    p, mark, console = launch_with_updater(inst, env, library, offer)
+    try:
+        ready = wait_until(lambda: "installs when you quit" in env.log_since(mark), 180)
+        check(ready, f"no background download\n{env.log_since(mark)[-3000:]}")
+        check("/artifact" in offer.requests, "staged without downloading?")
+        time.sleep(5)
+        check(p.poll() is None, "the app quit/restarted on its own after downloading")
+        check(is_stale(inst), "it installed mid-session")
+        ok("downloaded + verified in the background; nothing installed while running")
+    except BaseException:
+        p.kill()
+        offer.close()
+        raise
+    status = graceful_quit(p)
+    offer.close()
+    check(status == 0, f"quit with {status}")
+    check(wait_until(lambda: not is_stale(inst), 180),
+          f"quitting did not install the update\n{env.log_since(mark)[-3000:]}")
+    time.sleep(15)  # an unwanted relaunch would have logged a startup by now
+    later = [x for x in startups(env.log_since(mark)) if x.get("pid") != str(p.pid)]
+    check(not later, f"the app reopened after installing on quit: {later}")
+    reported = installed_version(inst)
+    check(reported in ("", version), f"the OS now records {reported}")
+    ok("installed on quit, app stayed closed")
+    set_config(env, update_auto_install=False)
+    text = live_run(inst, env, version, library, secs=8)
+    check("did not exit cleanly" not in text, "the quit that installed the update was reported as a crash")
+    ok("next launch runs the installed build, no crash reported")
 
 
 def bump_patch(v: str) -> str:
@@ -807,6 +975,16 @@ def main() -> int:
                 offer.close()
             steps.append(("auto-update via the app's updater (download → verify → install → relaunch)", "pass"))
             end_section()
+
+            for title, fn in [
+                ("scheduled re-check finds a new release; default settings never install", scheduled_check),
+                ("automatic checks off → no update traffic", auto_check_off),
+                ("install updates automatically → background download, installs on quit", install_on_quit),
+            ]:
+                section(f"update settings: {title}")
+                fn(inst, env, library, update, a.version, a.target_key)
+                steps.append((title, "pass"))
+                end_section()
         else:
             steps.append(("auto-update", "skipped (no --update-meta)"))
 
