@@ -368,7 +368,8 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                         circular: false,
                         play_ids: alb.ids.clone(),
                         remote_source: alb.remote_source.clone(),
-                        dr: alb.dr,
+                        // Same loudness-columns toggle as the Tracks page + album grid.
+                        dr: s.show_loudness_columns.then_some(alb.dr).flatten(),
                     },
                     card_w,
                     scale,
