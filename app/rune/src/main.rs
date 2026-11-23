@@ -323,6 +323,13 @@ struct State {
     /// membership list by name. Reset alongside the pending track so the
     /// overlay always opens with an empty filter.
     add_to_playlist_search: rune::TextEdit,
+    /// The in-progress "Edit Artwork" crop (the old app's cover-crop step), or
+    /// `None` (closed). `Some` opens `views::artwork_crop::overlay`, mounted at
+    /// the window root like `add_to_playlist_for`: it carries the picked source
+    /// image plus the live pan/zoom, and confirming crops + stores it as the
+    /// target album/artist's custom cover (non-destructively). Reset only by
+    /// `edit_artwork_control`'s pick and `close_artwork_crop`.
+    artwork_crop: Option<crate::views::detail_page::ArtworkCrop>,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -761,6 +768,7 @@ impl State {
             add_to_playlist_for: None,
             add_to_playlist_buf: rune::TextEdit::new(""),
             add_to_playlist_search: rune::TextEdit::new(""),
+            artwork_crop: None,
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -1635,6 +1643,13 @@ pub(crate) fn close_add_to_playlist(s: &mut State) {
     s.add_to_playlist_for = None;
     s.add_to_playlist_buf = rune::TextEdit::new("");
     s.add_to_playlist_search = rune::TextEdit::new("");
+}
+
+/// Close the "Edit Artwork" crop dialogue (Cancel, Escape / outside press via
+/// `El::modal`, or after a confirmed crop), discarding the in-progress pan/zoom.
+/// Mirrors [`close_add_to_playlist`].
+pub(crate) fn close_artwork_crop(s: &mut State) {
+    s.artwork_crop = None;
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
@@ -2697,6 +2712,7 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     overlays.extend(views::signal_path::overlay(s, &p));
     overlays.extend(views::titlebar::overlay(s, &p));
     overlays.extend(views::add_to_playlist::overlay(s, &p));
+    overlays.extend(views::artwork_crop::overlay(s, &p));
     // The crash-report modal draws over everything, on any route — last, so it
     // stacks above any panel still mounted beneath it.
     if let Some(dialog) = crash_overlay(s, &p) {
@@ -3527,6 +3543,43 @@ fn scene_add_to_playlist_open(s: &mut State) {
     open_add_to_playlist(s, 1);
 }
 
+/// The "Edit Artwork" CROP dialogue over an album detail page: pan/zoom a real
+/// gradient image behind the fixed SQUARE frame (an album → square; an artist
+/// would be a circle), so `--snap` captures the frame + image + zoom buttons +
+/// footer and the a11y sweep covers its buttons. Writes a real, decodable
+/// landscape PNG to a temp file (the cropper decodes + renders it; wider than
+/// tall so the square frame leaves horizontal pan room).
+fn scene_artwork_crop(s: &mut State) {
+    use views::detail_page::{ArtworkCrop, ArtworkTarget};
+    let album = s
+        .library
+        .iter()
+        .find_map(|t| t.album.clone())
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| "Album".to_string());
+    s.route = Route::Album;
+    s.open_album = Some(album.clone());
+    let (w, h) = (480u32, 320u32);
+    let mut img = image::RgbImage::new(w, h);
+    for (x, y, px) in img.enumerate_pixels_mut() {
+        *px = image::Rgb([(x * 255 / w) as u8, (y * 255 / h) as u8, 160]);
+    }
+    let path = std::env::temp_dir().join(format!(
+        "soul_rune_scene_artwork_crop_{}.png",
+        std::process::id()
+    ));
+    let _ = img.save(&path);
+    let scale = views::artwork_crop::FRAME / (w.min(h) as f32);
+    s.artwork_crop = Some(ArtworkCrop {
+        target: ArtworkTarget::Album(album),
+        source: path,
+        src_w: w,
+        src_h: h,
+        scale,
+        offset: (0.0, 0.0),
+    });
+}
+
 /// The title-bar remote-health popover, over a seeded online remote server, so
 /// the indicator renders and the popover opens.
 fn scene_remote_health_open(s: &mut State) {
@@ -3703,6 +3756,7 @@ fn main() -> anyhow::Result<()> {
             ("playlists", scene_playlists),
             ("playlist-detail", scene_playlist_detail),
             ("add-to-playlist-open", scene_add_to_playlist_open),
+            ("artwork-crop", scene_artwork_crop),
             ("remote-health-open", scene_remote_health_open),
         ],
         ..AppSpec::new(
@@ -5221,13 +5275,14 @@ mod tests {
         assert!(!cover_path.exists(), "the cover file is deleted from disk");
     }
 
-    /// Clicking an album's "Edit Artwork" button opens the image file dialog and,
-    /// on a pick, applies it as that album's custom cover (stored by name in
-    /// `CoverStore`) so the hero renders the chosen image. Drives the full
-    /// button -> `tx.open_file` -> `set_album_cover` path through a real Runtime,
-    /// mirroring the playlist Set-cover e2e above.
+    /// Clicking an album's "Edit Artwork" button opens the image file dialog
+    /// and, on a pick, opens the CROP dialogue (the old Soul Player's crop step)
+    /// rather than setting the cover directly: the pick seeds `State::artwork_crop`
+    /// and the crop modal renders, but NO cover is stored until the user confirms.
+    /// The full pick -> crop -> confirm -> stored-cover path is covered by
+    /// `e2e_edit_artwork_crop_then_set_album_cover` below.
     #[test]
-    fn edit_artwork_sets_an_album_cover_via_the_file_dialog() {
+    fn edit_artwork_pick_opens_the_crop_dialogue() {
         let _g = config::use_test_config_dir();
         let mut s = populated_state();
         let album_name = s
@@ -5236,6 +5291,9 @@ mod tests {
             .find_map(|t| t.album.clone())
             .filter(|a| !a.is_empty())
             .expect("the testdata library has at least one named album");
+        // Isolation: a sibling album-cover test shares this per-process config
+        // dir, so clear any cover it left for this same album first.
+        s.covers.clear_album_cover(&album_name);
         s.route = Route::Album;
         s.open_album = Some(album_name.clone());
         let env = Env {
@@ -5255,17 +5313,156 @@ mod tests {
             .file_dialog()
             .expect("Edit Artwork opens an image file dialog");
         assert_eq!(kind, FileDialogKind::Open);
-        rt.resolve_file_dialog(Some(write_temp_cover_png()))
-            .unwrap();
+        rt.resolve_file_dialog(Some(write_temp_real_png())).unwrap();
         rt.frame(0.0);
 
+        // The pick opens the crop step; it does NOT store a cover by itself.
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_some(),
-            "the picked image is stored as the album's custom cover"
+            rt.state.artwork_crop.is_some(),
+            "picking an image opens the crop dialogue"
         );
         assert!(
-            rt.find("album-hero-image").is_some(),
-            "the album hero now renders the custom cover image"
+            rt.find("artwork-crop-dialog").is_some(),
+            "the crop dialogue renders"
+        );
+        assert!(
+            rt.state.covers.album_cover_path(&album_name).is_none(),
+            "picking alone stores no cover (the crop confirm does)"
+        );
+    }
+
+    /// A REAL, decodable PNG (a tiny landscape gradient) written to a fresh temp
+    /// dir, unique per call. Unlike `write_temp_cover_png` (which writes only the
+    /// 8-byte PNG signature — enough for the cover store's extension/size check
+    /// but NOT for `image::open`), the crop pipeline actually decodes + crops
+    /// this one, so the crop e2e exercises the whole path.
+    fn write_temp_real_png() -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "soul_rune_crop_e2e_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("source.png");
+        let mut img = image::RgbImage::new(64, 48);
+        for (x, y, px) in img.enumerate_pixels_mut() {
+            *px = image::Rgb([(x * 4) as u8, (y * 5) as u8, 120]);
+        }
+        img.save(&path).unwrap();
+        path
+    }
+
+    /// The album name of the testdata library's first named album, for the crop
+    /// e2e tests below.
+    fn first_album_name(s: &State) -> String {
+        s.library
+            .iter()
+            .find_map(|t| t.album.clone())
+            .filter(|a| !a.is_empty())
+            .expect("the testdata library has at least one named album")
+    }
+
+    /// Open an album detail page's "Edit Artwork", answer the file dialog with a
+    /// real PNG, and settle so the crop modal is mounted + hittable. Returns the
+    /// running `Runtime`. Shared by the two crop e2e tests.
+    fn open_artwork_crop(album_name: &str) -> Runtime<State> {
+        let mut s = populated_state();
+        // The per-process test config dir persists across tests in this binary
+        // (the `CONFIG_TEST_LOCK` only serialises them), so clear any cover a
+        // sibling album-cover test left for this same album before we start.
+        s.covers.clear_album_cover(album_name);
+        s.route = Route::Album;
+        s.open_album = Some(album_name.to_string());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "album-edit-artwork");
+        rt.frame(0.0);
+        let (kind, _opts) = rt
+            .file_dialog()
+            .expect("Edit Artwork opens an image file dialog");
+        assert_eq!(kind, FileDialogKind::Open);
+        rt.resolve_file_dialog(Some(write_temp_real_png())).unwrap();
+        rt.frame(0.0);
+        // The modal is a fresh mid-session insert (and animates from opacity 0),
+        // so settle before driving its buttons.
+        rt.settle_all();
+        rt.frame(0.0);
+        rt
+    }
+
+    /// The crop flow end-to-end: Edit Artwork → file dialog → the CROP dialogue
+    /// opens → zoom in (scale grows) → Set-as-cover crops + stores the result.
+    /// Picking no longer sets the cover directly; the crop step does, and it
+    /// stores a freshly-encoded PNG (never touching the source music files).
+    #[test]
+    fn e2e_edit_artwork_crop_then_set_album_cover() {
+        let _g = config::use_test_config_dir();
+        let album_name = first_album_name(&populated_state());
+
+        let mut rt = open_artwork_crop(&album_name);
+        assert!(
+            rt.find("artwork-crop-dialog").is_some(),
+            "the crop dialogue appeared after the pick"
+        );
+        assert!(
+            rt.state.artwork_crop.is_some(),
+            "the crop state is set (picking opens the crop step, not a direct cover set)"
+        );
+        assert!(
+            rt.state.covers.album_cover_path(&album_name).is_none(),
+            "no cover is stored until the crop is confirmed"
+        );
+
+        // Zoom in grows the displayed scale.
+        let before = rt.state.artwork_crop.as_ref().unwrap().scale;
+        click_key(&mut rt, "artwork-crop-zoom-in");
+        let after = rt.state.artwork_crop.as_ref().unwrap().scale;
+        assert!(
+            after > before,
+            "zoom in grew the scale: {before} -> {after}"
+        );
+
+        // Confirm: crop + store.
+        click_key(&mut rt, "artwork-crop-confirm");
+        let stored = rt
+            .state
+            .covers
+            .album_cover_path(&album_name)
+            .expect("Set as cover stored a cropped cover");
+        assert!(
+            rt.state.artwork_crop.is_none(),
+            "confirming closes the dialogue"
+        );
+        assert_eq!(
+            stored.extension().and_then(|e| e.to_str()),
+            Some("png"),
+            "the stored cover is a PNG (the re-encoded crop)"
+        );
+        assert!(stored.exists(), "the stored cover file exists on disk");
+    }
+
+    /// Cancelling the crop dialogue closes it and sets NO cover.
+    #[test]
+    fn edit_artwork_crop_cancel_sets_no_cover() {
+        let _g = config::use_test_config_dir();
+        let album_name = first_album_name(&populated_state());
+
+        let mut rt = open_artwork_crop(&album_name);
+        assert!(rt.state.artwork_crop.is_some(), "the crop dialogue is open");
+
+        click_key(&mut rt, "artwork-crop-cancel");
+        assert!(
+            rt.state.artwork_crop.is_none(),
+            "cancel closes the crop dialogue"
+        );
+        assert!(
+            rt.state.covers.album_cover_path(&album_name).is_none(),
+            "cancelling stored no cover"
         );
     }
 
@@ -13542,6 +13739,7 @@ mod tests {
         ("playlists", scene_playlists),
         ("playlist-detail", scene_playlist_detail),
         ("add-to-playlist-open", scene_add_to_playlist_open),
+        ("artwork-crop", scene_artwork_crop),
         ("remote-health-open", scene_remote_health_open),
     ];
 
