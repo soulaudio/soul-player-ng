@@ -106,7 +106,13 @@ fn with_artwork_overlay(
     artwork: Option<ArtworkTarget>,
 ) -> El {
     match artwork {
-        Some(target) => container.child(artwork_hover_overlay(s, p, corner, target)),
+        // `.hover_group()` makes the cover track hover so the overlay's
+        // `group_opacity` fades in when the pointer is over the cover (the same
+        // pattern a grid card uses for its play-overlay); without it the overlay
+        // would never leave its rest opacity of 0.
+        Some(target) => container
+            .hover_group()
+            .child(artwork_hover_overlay(s, p, corner, target)),
         None => container,
     }
 }

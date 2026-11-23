@@ -5730,6 +5730,62 @@ mod tests {
         );
     }
 
+    /// The detail-hero Edit Artwork affordance is revealed ON HOVER (like the old
+    /// app), not parked in the actions row: the overlay rests at opacity 0 and
+    /// fades in while the pointer is over the cover. Guards the `hover_group`
+    /// wiring on the hero cover, without which the overlay never leaves opacity 0.
+    #[test]
+    fn hovering_an_artist_hero_reveals_the_edit_artwork_overlay() {
+        let _g = config::use_test_config_dir();
+        let mut s = populated_state();
+        let artist = s
+            .library
+            .iter()
+            .filter_map(|t| t.artist.clone())
+            .find(|a| !a.is_empty())
+            .expect("the testdata library has a named artist");
+        // A plain avatar (no custom cover) so the hero is the circular
+        // `artist-cover`, and sibling tests can't leave a cover behind.
+        s.covers.clear_artist_cover(&artist);
+        s.route = Route::Artist;
+        s.open_artist = Some(artist);
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+
+        let overlay_opacity = |rt: &Runtime<State>| {
+            rt.elements()
+                .iter()
+                .find(|e| e.key.as_deref() == Some("artist-artwork-overlay"))
+                .map(|e| e.opacity)
+        };
+        assert!(
+            matches!(overlay_opacity(&rt), Some(o) if o < 0.01),
+            "at rest the Edit Artwork overlay is hidden, got {:?}",
+            overlay_opacity(&rt)
+        );
+
+        // Move the pointer onto the hero cover: the overlay fades in.
+        let (cx, cy) = rt
+            .find("artist-cover")
+            .expect("the artist hero cover is on screen");
+        rt.pointer_move(cx, cy);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(
+            matches!(overlay_opacity(&rt), Some(o) if o > 0.5),
+            "hovering the cover reveals the Edit Artwork overlay, got {:?}",
+            overlay_opacity(&rt)
+        );
+    }
+
     /// The Keyboard-tab playback shortcuts actually fire through the real key
     /// path: Ctrl+Space/Right/Left/M each send their transport Command, and
     /// Ctrl+Up raises the volume. Guards that the `ev.mods.ctrl` arms in
