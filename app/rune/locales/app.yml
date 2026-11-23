@@ -2428,3 +2428,10 @@ settings.autoInstallDesc:
   zh: '在后台下载新版本，并在下次退出 Soul Player 时安装。'
   cs: 'Stahovat nové verze na pozadí a nainstalovat je při příštím ukončení Soul Playeru.'
   ja: '新しいバージョンをバックグラウンドでダウンロードし、次に Soul Player を終了したときにインストールします。'
+settings.updatesViaPackageManager:
+  en: 'Updates are handled by your package manager.'
+  de: 'Updates werden von deiner Paketverwaltung verwaltet.'
+  es: 'Las actualizaciones las gestiona tu gestor de paquetes.'
+  zh: '更新由你的软件包管理器处理。'
+  cs: 'Aktualizace spravuje tvůj správce balíčků.'
+  ja: 'アップデートはパッケージマネージャーが管理します。'

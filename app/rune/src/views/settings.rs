@@ -3609,7 +3609,14 @@ fn about_card(p: &Palette) -> El {
 pub(crate) fn update_status_text(s: &State) -> String {
     use crate::updater::UpdateStatus as U;
     if !s.update.supported {
-        return t!("settings.updatesUnavailable").to_string();
+        // A package-managed install is not "updates off" — it updates through
+        // apt / dnf / flatpak, and saying so is the difference between a user
+        // who knows what to do and one who files a bug.
+        return if s.update.managed_elsewhere {
+            t!("settings.updatesViaPackageManager").to_string()
+        } else {
+            t!("settings.updatesUnavailable").to_string()
+        };
     }
     match &s.update.status {
         U::Idle => t!("settings.updateNotChecked").to_string(),
@@ -4417,6 +4424,37 @@ mod tests {
         // The three kinds are genuinely distinct, so applied never looks like idle.
         assert_ne!(StatusKind::Active, StatusKind::Neutral);
         assert_ne!(StatusKind::Active, StatusKind::Attention);
+    }
+
+    /// A package-managed install must not be told "updates are turned off for
+    /// this build". They are not off — they arrive through apt, dnf or flatpak,
+    /// and the app deliberately does not touch a root-owned binary. The two
+    /// cases look identical to `supported == false`, so the message is the only
+    /// thing distinguishing them, and getting it wrong turns working behaviour
+    /// into a bug report.
+    #[test]
+    fn the_updates_page_distinguishes_package_managed_from_disabled() {
+        use crate::State;
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+
+        s.update.supported = false;
+        s.update.managed_elsewhere = true;
+        let managed = super::update_status_text(&s);
+        assert!(
+            managed.to_lowercase().contains("package manager"),
+            "a .deb/.rpm/Flatpak install should be pointed at its package \
+             manager, got {managed:?}"
+        );
+
+        s.update.managed_elsewhere = false;
+        let off = super::update_status_text(&s);
+        assert_ne!(
+            off, managed,
+            "a build with updates compiled out is a different situation and \
+             must not reuse the package-manager wording"
+        );
+        assert!(off.to_lowercase().contains("build"), "got {off:?}");
     }
 
     /// The skip notice has to answer "how many, which formats, and why" — a bare
