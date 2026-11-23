@@ -331,7 +331,9 @@ pub enum Event {
     /// them) from a scan that is simply broken. The reason is what makes the
     /// notice actionable, so it travels with the count.
     TracksSkipped {
+        /// The source root the skipped files live under.
         root: PathBuf,
+        /// The skipped files grouped by extension, each with its count and reason.
         groups: Vec<SkippedGroup>,
     },
 }
