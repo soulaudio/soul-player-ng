@@ -22,8 +22,11 @@ use crate::domain::UserId;
 /// itself is never stored anywhere.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RefreshRecord {
+    /// The SHA-256 hex digest of the raw token (the raw token is never stored).
     pub token_sha256: String,
+    /// The user this refresh token belongs to.
     pub user_id: UserId,
+    /// When the record was created, unix seconds.
     pub created_at: u64,
 }
 

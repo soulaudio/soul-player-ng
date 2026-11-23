@@ -13,15 +13,25 @@ use std::collections::HashMap;
 /// An output device's connection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Transport {
+    /// The machine's built-in audio (internal speakers / headphone jack).
     BuiltIn,
+    /// A USB audio device / DAC.
     Usb,
+    /// Audio over HDMI.
     Hdmi,
+    /// Audio over DisplayPort.
     DisplayPort,
+    /// A Thunderbolt-attached audio device.
     Thunderbolt,
+    /// A Bluetooth device — always a lossy codec, never bit-perfect.
     Bluetooth,
+    /// An AirPlay receiver — re-encodes to ALAC at 44.1 kHz, never bit-perfect.
     AirPlay,
+    /// A virtual / loopback device (e.g. BlackHole, Soundflower).
     Virtual,
+    /// A macOS aggregate device (several devices combined).
     Aggregate,
+    /// Any transport not otherwise classified, carrying its raw label.
     Other(String),
 }
 

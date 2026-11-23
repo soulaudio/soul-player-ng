@@ -48,7 +48,9 @@ use crate::RemoteHealth;
 /// bearer token.
 #[derive(Clone, Debug)]
 pub struct RemoteServer {
+    /// The server's base URL (e.g. `https://listen.home.lan:8080`).
     pub url: String,
+    /// The OAuth bearer token, carried opaquely — this client never parses it.
     pub access_token: String,
 }
 
@@ -90,10 +92,15 @@ pub(crate) fn host_label(url: &str) -> String {
               straight to a PathBuf without materializing one"
 )]
 pub enum TrackLocation {
+    /// A track on the local filesystem at this path.
     Local(PathBuf),
+    /// A track on a remote server.
     Remote {
+        /// Index into the caller's list of [`RemoteServer`]s.
         server: usize,
+        /// The track's root-relative path on that server.
         rel: PathBuf,
+        /// The id the remote server's own catalog knows the track by (for `/v0/track/{id}`).
         track_id: u32,
     },
 }
@@ -103,6 +110,8 @@ pub enum TrackLocation {
 /// (and swap in a test fake) without caring that [`DownloadCache`] is the
 /// only real implementation.
 pub trait MediaFetch: Send + Sync {
+    /// Resolve a remote track to a local, playable file path, downloading it first
+    /// if it isn't already cached.
     fn fetch(&self, server: &RemoteServer, track_id: u32) -> anyhow::Result<PathBuf>;
 }
 
@@ -110,6 +119,7 @@ pub trait MediaFetch: Send + Sync {
 /// directory, keyed by catalog id, and skips the download outright on a
 /// cache hit (a file already there, non-empty).
 pub struct DownloadCache {
+    /// The flat directory downloaded track bytes are cached under.
     pub dir: PathBuf,
 }
 
@@ -609,6 +619,7 @@ impl TokenStore for KeyringStore {
 pub struct MemStore(std::sync::Mutex<std::collections::HashMap<String, String>>);
 
 impl MemStore {
+    /// An empty in-memory token store.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -754,7 +765,9 @@ pub fn probe_health(server: &RemoteServer, now_unix: u64) -> RemoteHealth {
 /// [`TokenStore`] persists so a later session can skip the interactive
 /// browser login via [`refresh`].
 pub struct Tokens {
+    /// The short-lived access JWT, sent as `Authorization: Bearer` (held opaquely).
     pub access: String,
+    /// The long-lived rotating refresh token, persisted to skip the next browser login.
     pub refresh: String,
 }
 

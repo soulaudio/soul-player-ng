@@ -40,9 +40,13 @@ pub type AppServices = Services<CoreIndex, FsMedia, FileUsers>;
 /// token-issuing handlers mint against.
 #[derive(Clone)]
 pub struct AppState {
+    /// The shared domain services the handlers call into.
     pub services: Arc<AppServices>,
+    /// The EdDSA token signer/verifier.
     pub signer: Arc<Signer>,
+    /// This server's issuer URL, stamped and validated in the `iss` claim.
     pub issuer: String,
+    /// The lifetime (seconds) of the access tokens this server mints.
     pub access_ttl: u64,
     /// In-memory, single-use authorization-code store for the PKCE
     /// `/authorize` → `/token` handoff. Constructed fresh here rather than
@@ -53,6 +57,8 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Build the router state from the shared services, signer, issuer URL, and
+    /// access-token lifetime (a fresh in-memory [`CodeStore`] is created here).
     pub fn new(
         services: Arc<AppServices>,
         signer: Arc<Signer>,

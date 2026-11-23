@@ -394,6 +394,8 @@ impl Library {
 /// Resolves a track id to a local file path for the loader. `Library` resolves
 /// it locally; a host-side adapter can resolve remote ids by fetching them.
 pub trait TrackSource: Send + Sync {
+    /// Resolve a track id to the local file path the loader should open, or `None`
+    /// when the id doesn't resolve (unknown, or an unavailable source).
     fn path_of(&self, id: u32) -> Option<std::path::PathBuf>;
 
     /// The tag-derived duration (seconds), used by the pump's Tick fallback when

@@ -13,8 +13,11 @@ use super::{DomainError, IndexVersion, UserId};
 /// The use-case layer: one instance per running server, generic over the
 /// concrete port adapters so tests can swap in fakes.
 pub struct Services<I, M, U> {
+    /// The catalog/index port adapter.
     pub index: I,
+    /// The media-byte store adapter (track files).
     pub media: M,
+    /// The user/credential store adapter.
     pub users: U,
 }
 

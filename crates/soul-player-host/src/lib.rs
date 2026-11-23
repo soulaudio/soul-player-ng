@@ -2,6 +2,10 @@
 //! live `Library`, fans backend events out to subscribers, and exposes the one
 //! `PlayerHandle` the Rune UI head binds to.
 #![forbid(unsafe_code)]
+// Every public item on this host surface (the PlayerHandle API, the remote/device
+// DTOs, the analyzer frames) must be documented, enforced as a build gate so a new
+// undocumented `pub` item fails CI rather than relying on docs-as-culture.
+#![deny(missing_docs)]
 
 // Licensing guard: AAC is a Via LA patent pool and a clean-room decoder doesn't clear it, so
 // soul-audio-core keeps AAC decode behind an opt-in `aac` feature that shipped soul products
