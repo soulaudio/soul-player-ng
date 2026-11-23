@@ -9,7 +9,7 @@ resample → playback library.
 
 Downloads are on the [releases page](https://github.com/soulaudio/soul-player-ng/releases/latest).
 
-**Linux** — four options, all x86_64:
+**Linux** — four package formats, for x86_64 and aarch64:
 
 | | | updates via |
 |---|---|---|
@@ -25,8 +25,8 @@ spawning), but they are *weak* — glibc falls back to the older path when they
 are absent, which is why older releases work.
 
 ```sh
-sudo apt install ./soul-player-rune_*_amd64.deb     # Debian / Ubuntu
-sudo dnf install ./soul-player-0.4.0-1.x86_64.rpm   # Fedora
+sudo apt install ./soul-player-rune_*_amd64.deb     # Debian / Ubuntu (arm64 for ARM)
+sudo dnf install ./soul-player-*.x86_64.rpm         # Fedora (aarch64 for ARM)
 chmod +x Soul-Player*.AppImage && ./Soul-Player*.AppImage
 ```
 

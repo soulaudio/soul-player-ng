@@ -60,6 +60,13 @@ env:
   CARGO_TERM_COLOR: always
   DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
   REHEARSAL: ${{ github.event.inputs.rehearsal == 'true' }}
+  # How many platforms a complete release covers — one entry per leg of the
+  # `build` matrix, and the number `latest.json` must carry for the in-app
+  # updater to reach every user. Defined once because it was previously written
+  # out as a literal `4` in three separate checks, which is three places to
+  # forget when a platform is added (and the failure mode is a release that
+  # verifies clean while silently offering no update to the new one).
+  PLATFORMS: "5"
 
 jobs:
   guard:
@@ -156,9 +163,20 @@ jobs:
             format: app
             arch: x86_64
             asset_arch: x86_64
+          # Linux ships per architecture too. `ubuntu-24.04-arm` is a standard
+          # GitHub-hosted runner (free on public repos), so this is a native
+          # build rather than a cross-compile — which matters for a project that
+          # links ALSA, D-Bus, OpenSSL and a GPU stack through `-sys` crates.
           - os: ubuntu-24.04
             target_key: linux-x86_64
             format: appimage
+            deb_arch: amd64
+            rpm_arch: x86_64
+          - os: ubuntu-24.04-arm
+            target_key: linux-aarch64
+            format: appimage
+            deb_arch: arm64
+            rpm_arch: aarch64
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -344,7 +362,7 @@ jobs:
           '
 
           flatpak build-bundle "$RUNNER_TEMP/fp-repo" \
-            "dist/Soul-Player_${VERSION}_x86_64.flatpak" co.datadir.soulplayer
+            "dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak" co.datadir.soulplayer
           ls -la dist/
 
 
@@ -397,6 +415,9 @@ jobs:
             installer: "*.dmg"
           - os: ubuntu-24.04
             target_key: linux-x86_64
+            installer: "*.AppImage"
+          - os: ubuntu-24.04-arm
+            target_key: linux-aarch64
             installer: "*.AppImage"
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
@@ -530,7 +551,7 @@ jobs:
               *) echo "::error::manifest URL $url is not under $TAG"; exit 1 ;; esac
             [ -f "check/${url##*/}" ] || { echo "::error::manifest names ${url##*/}, not uploaded"; exit 1; }
           done
-          jq -e '.platforms | length == 4' check/latest.json >/dev/null
+          jq -e --argjson n "$PLATFORMS" '.platforms | length == $n' check/latest.json >/dev/null
 
       - name: Delete the rehearsal draft
         if: always() && env.REHEARSAL == 'true'
@@ -579,8 +600,8 @@ jobs:
           [ "$v" = "$VERSION" ] || { echo "::error::latest/download/latest.json never served $VERSION"; exit 1; }
           curl -fsSL "$base/latest/download/latest.json" -o latest.json
           curl -fsSL "$base/download/$TAG/SHA256SUMS" -o SHA256SUMS
-          jq -e '.platforms | length == 4' latest.json >/dev/null \
-            || { echo "::error::latest.json does not cover all 4 platforms"; jq . latest.json; exit 1; }
+          jq -e --argjson n "$PLATFORMS" '.platforms | length == $n' latest.json >/dev/null \
+            || { echo "::error::latest.json does not cover all $PLATFORMS platforms"; jq . latest.json; exit 1; }
           jq -r '.platforms | to_entries[] | "\(.key) \(.value.url) \(.value.signature | length)"' latest.json |
           while read -r key url siglen; do
             [ "$siglen" -gt 0 ] || { echo "::error::$key has no updater signature"; exit 1; }
