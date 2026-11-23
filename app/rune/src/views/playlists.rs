@@ -1,23 +1,20 @@
-//! Playlists browse: every user-created playlist, as a scrolled list of rows
-//! (cover thumbnail, name, track count) plus an inline "New playlist" field.
-//! Mirrors `artists::album_row` for the cover-thumbnail-plus-text row shape
-//! (Genres is now a card-tile grid, not a row list, see `genres::genre_tile`).
+//! Playlists browse: every user-created playlist, as the same responsive card
+//! grid the Albums page uses (a square cover — custom image, 2x2 mosaic, or a
+//! single cover — the name, and a track count) under the shared browse-page top
+//! bar (a bounded search that filters by name, plus a "New playlist" button).
 #![forbid(unsafe_code)]
 
 use std::path::Path;
 
-use rune::{Cursor, El, ScrollSpec, col, el, row, text, text_input};
+use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, row, text, text_input};
 
 use crate::State;
 use crate::playlists::cover::choose_playlist_cover;
 use crate::playlists::{PlaylistCover, PlaylistSummary};
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
+use crate::views::grid;
 use crate::views::player::{cover, cover_from_path};
-
-/// A row's cover-thumbnail side, matching the library/artist rows' 48 pt
-/// cover size.
-const ROW_COVER: f32 = 48.0;
 
 /// Choose a playlist summary's cover: a user-set custom cover image always
 /// wins (`summary.custom_cover`); absent that, resolve the summary's cover
@@ -48,38 +45,38 @@ fn playlist_cover(s: &State, summary: &PlaylistSummary) -> PlaylistCover {
     choose_playlist_cover(custom, &resolved, |id| s.host.art(id).is_some())
 }
 
-/// Render a playlist row's thumbnail: the user-set custom cover image for
-/// `Custom`, a 2x2 mosaic for `Mosaic`, a single full-bleed cover for
-/// `Single`, or the shared "no art" placeholder tile for `Placeholder`.
-/// Reuses `views::player::cover`/`cover_from_path` for every tile's pixels
-/// so a mosaic tile and a library row's own cover decode identically (same
-/// cache, same placeholder); `Custom` falls back to that same placeholder
-/// when the file can't be read or hasn't decoded yet, never panicking.
-/// `key_prefix` must be unique per row (the playlist id) so two rows' tiles
+/// Render a playlist's cover square at `size` pt: the user-set custom cover image
+/// for `Custom`, a 2x2 mosaic for `Mosaic`, a single full-bleed cover for
+/// `Single`, or the shared "no art" placeholder tile for `Placeholder`. Reuses
+/// `views::player::cover`/`cover_from_path` for every tile's pixels so a mosaic
+/// tile and a library card's own cover decode identically (same cache, same
+/// placeholder); `Custom` falls back to that same placeholder when the file can't
+/// be read or hasn't decoded yet, never panicking. Tiles carry no corner radius
+/// of their own — the caller clips the whole square to a rounded card shape — so
+/// `key_prefix` must be unique per card (the playlist id) so two cards' tiles
 /// never collide.
 fn playlist_cover_el(
     s: &State,
     which: PlaylistCover,
+    size: f32,
     scale: f32,
     p: &Palette,
     key_prefix: &str,
 ) -> El {
     match which {
         PlaylistCover::Placeholder => {
-            cover(s, None, ROW_COVER, radius::SM, p, scale).key(format!("{key_prefix}-placeholder"))
+            cover(s, None, size, 0.0, p, scale).key(format!("{key_prefix}-placeholder"))
         }
-        PlaylistCover::Custom(path) => {
-            cover_from_path(s, Path::new(&path), ROW_COVER, radius::SM, p, scale)
-                .key(format!("{key_prefix}-custom"))
-        }
+        PlaylistCover::Custom(path) => cover_from_path(s, Path::new(&path), size, 0.0, p, scale)
+            .key(format!("{key_prefix}-custom")),
         PlaylistCover::Single(id) => {
-            cover(s, Some(id), ROW_COVER, radius::SM, p, scale).key(format!("{key_prefix}-single"))
+            cover(s, Some(id), size, 0.0, p, scale).key(format!("{key_prefix}-single"))
         }
         PlaylistCover::Mosaic(ids) => {
-            let tile = ROW_COVER / 2.0;
+            let tile = size / 2.0;
             let mut grid = col()
                 .key(format!("{key_prefix}-mosaic"))
-                .size(ROW_COVER, ROW_COVER)
+                .size(size, size)
                 .gap(space::NONE);
             for (ri, pair) in ids.chunks(2).enumerate() {
                 let mut tile_row = row()
@@ -98,42 +95,56 @@ fn playlist_cover_el(
     }
 }
 
-/// One playlist row: cover thumbnail, name, and track count. Clicking opens
-/// the playlist's detail page.
-fn playlist_row(s: &State, p: &Palette, scale: f32, summary: &PlaylistSummary) -> El {
+/// One playlist card, mirroring `albums::album_card`'s shape: a square cover on
+/// top (the playlist's custom / mosaic / single art, clipped to a rounded,
+/// shadowed tile), the name, then the track-count subtitle. A flex item that wraps
+/// at [`grid::MIN_CARD`] and grows to fill its row, like the album/artist cards.
+/// Clicking the card opens the playlist's detail page (the same navigation the old
+/// row used). Keyed by the playlist's stable id (`playlist-card-{id}`) — a playlist
+/// has a durable id (unlike an album, keyed by name/slot) — so a specific playlist
+/// stays addressable across filtering.
+fn playlist_card(s: &State, p: &Palette, summary: &PlaylistSummary, card_w: f32, scale: f32) -> El {
     let id = summary.id;
     let which = playlist_cover(s, summary);
     let key_prefix = format!("playlist-cover-{id}");
-    row()
-        .key(format!("playlist-row-{id}"))
+    let cover_area = el()
+        .key(format!("{key_prefix}-area"))
+        .size(card_w, card_w)
+        .radius(radius::MD)
+        // Clip the square (mosaic included) to the rounded card shape, as the
+        // album card's cover tile does.
+        .clip_rounded(radius::MD)
+        .shadow(2.0, 8.0, Color::BLACK.alpha(0.15))
+        .child(playlist_cover_el(s, which, card_w, scale, p, &key_prefix));
+    col()
+        .key(format!("playlist-card-{id}"))
         .role("button")
         .label(summary.name.clone())
         .focusable(true)
-        .w_full()
-        .gap(space::MD)
-        .center_y()
-        .px(space::MD)
-        .py(space::SM)
-        .radius(radius::SM)
+        // A flex item like the album/artist cards (see `media_card`): wrap at
+        // MIN_CARD, grow to fill the row, capped so a partial last row stays aligned.
+        .min_w(grid::MIN_CARD)
+        .max_w(card_w + grid::FILL_SLOP)
+        .grow(1.0)
+        .gap(space::SM)
         .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(playlist_cover_el(s, which, scale, p, &key_prefix))
+        .child(cover_area)
         .child(
             col()
+                .key(format!("playlist-card-text-{id}"))
                 .gap(space::XXS)
                 .min_w(0.0)
-                .grow(1.0)
                 .child(
                     text(summary.name.clone())
-                        .font(type_::ITEM)
+                        .font(type_::CARD_TITLE)
                         .color(p.fg)
                         .truncate(),
                 )
                 .child(
                     text(t!("playlists.trackCount", count => summary.count).to_string())
-                        .font(type_::CAPTION)
-                        .color(p.text_secondary),
+                        .font(type_::ITEM)
+                        .color(p.text_secondary)
+                        .truncate(),
                 ),
         )
         .on_press(move |st: &mut State| {
@@ -192,50 +203,108 @@ fn new_playlist_row(s: &State, p: &Palette) -> El {
         )
 }
 
-/// The Playlists page: a heading and the New-playlist field, then a scrolled
-/// list of playlist rows (or an empty-state message when there are none).
-pub fn page(s: &State, p: &Palette, scale: f32) -> El {
+/// The Playlists page: the shared browse-page top bar (a bounded search that
+/// filters playlists by name, plus a "New playlist" button) over the same
+/// responsive card grid the Albums page uses — one [`playlist_card`] per playlist
+/// — or an empty-state message when there are none. Pressing "New playlist"
+/// reveals the inline name field under the bar.
+pub fn page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let summaries = s.playlists.list();
-    let mut list = col()
-        .key("playlists-list")
-        .role("list")
-        .gap(space::XXS)
-        .padding(space::PANE);
-    if summaries.is_empty() {
-        list = list.child(
+    let q = s.playlist_search.text.to_lowercase();
+    let visible: Vec<&PlaylistSummary> = if q.is_empty() {
+        summaries.iter().collect()
+    } else {
+        summaries
+            .iter()
+            .filter(|pl| pl.name.to_lowercase().contains(&q))
+            .collect()
+    };
+    // Responsive grid, the same rule as the Albums grid: read this page's own pane
+    // width (first frame has no prior layout → a sensible desktop fallback).
+    let pane = cx.layout_size("playlists").map(|[w, _]| w).unwrap_or(820.0);
+    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
+
+    let search = crate::views::library::search_box(
+        &s.playlist_search,
+        "playlists-search",
+        t!("playlists.searchPlaceholder").to_string(),
+        p,
+        |st: &mut State| &mut st.playlist_search,
+    );
+    // The "New playlist" affordance in the bar's trailing slot (mirrors the Albums
+    // Filters button). Lit while the inline name field is open; pressing it toggles
+    // that field in/out under the bar.
+    let adding = s.playlists_adding;
+    let new_btn = row()
+        .key("playlists-new")
+        .role("button")
+        .label(t!("playlists.new").to_string())
+        .focusable(true)
+        .center_y()
+        .px(space::MD)
+        .py(space::SM)
+        .radius(radius::SM)
+        .cursor(Cursor::Pointer)
+        .fill(if adding { p.accent.alpha(0.2) } else { p.muted })
+        .hover(p.fg.alpha(fx::HOVER))
+        .child(
+            text(t!("playlists.new").to_string())
+                .font(type_::ITEM)
+                .color(if adding { p.accent } else { p.fg }),
+        )
+        .on_press(|st: &mut State| st.playlists_adding = !st.playlists_adding);
+    let search_bar = crate::views::library::page_search_bar("playlists", search, Some(new_btn));
+
+    // The body: the empty-state message when there are no playlists at all, else
+    // the responsive grid of cover cards (filtered by the search), mirroring the
+    // Albums grid's structure exactly.
+    let body: El = if summaries.is_empty() {
+        col().key("playlists-empty").padding(space::PANE).child(
             text(t!("playlists.empty").to_string())
                 .font(type_::ITEM)
                 .color(p.text_secondary),
-        );
+        )
     } else {
-        for summary in &summaries {
-            list = list.child(playlist_row(s, p, scale, summary));
+        let mut grid_el = row()
+            .key("playlists-grid")
+            .role("grid")
+            .flex_wrap()
+            .gaps(space::MD, space::GUTTER)
+            .padding(space::PANE);
+        for &summary in &visible {
+            grid_el = grid_el.child(playlist_card(s, p, summary, card_w, scale));
         }
-    }
-    col()
+        grid_el
+    };
+
+    let mut page = col()
         .key("playlists")
         .grow(1.0)
         .min_h(0.0)
-        .child(
+        .child(search_bar);
+    // The inline New-playlist field drops in under the bar while adding; confirming
+    // it creates the playlist and navigates away (which resets `playlists_adding`).
+    if adding {
+        page = page.child(
             col()
-                .key("playlists-header")
-                .gap(space::SM)
-                .padding(space::PANE)
-                .child(
-                    text(t!("playlists.title").to_string())
-                        .font(type_::TITLE)
-                        .color(p.fg),
-                )
+                .key("playlists-new-group-wrap")
+                .px(space::PANE)
+                .pt(space::SM)
                 .child(new_playlist_row(s, p)),
-        )
-        .child(
-            list.scroll(ScrollSpec {
+        );
+    }
+    page.child(
+        // Scroll on the growing wrapper, not the grid, see `albums_page`.
+        col()
+            .key("playlists-scroll")
+            .scroll(ScrollSpec {
                 stick_bottom: false,
             })
             .scroll_edge_fade(24.0)
             .grow(1.0)
-            .min_h(0.0),
-        )
+            .min_h(0.0)
+            .child(body),
+    )
 }
 
 #[cfg(test)]
@@ -253,7 +322,7 @@ mod tests {
     fn test_view(s: &State, cx: &mut Cx<State>) -> El {
         let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
         let scale = cx.env().scale;
-        page(s, &p, scale)
+        page(s, &p, cx, scale)
     }
 
     fn env() -> Env {
@@ -324,9 +393,20 @@ mod tests {
             .any(|e| e.text.as_deref().is_some_and(|t| t.contains(needle)))
     }
 
-    /// Drive the real inline New-playlist field through the harness: click
-    /// to focus it, type `name` via IME commit, then confirm with Return.
+    /// Drive the real inline New-playlist field through the harness: reveal it
+    /// via the top bar's "New playlist" button, click to focus it, type `name`
+    /// via IME commit, then confirm with Return.
     fn trigger_new_playlist(rt: &mut Runtime<State>, name: &str) {
+        let (bx, by) = rt
+            .find("playlists-new")
+            .expect("the New playlist button renders");
+        rt.pointer_down(bx, by);
+        rt.pointer_up(bx, by);
+        rt.frame(0.0);
+        // The field drops in animated from opacity 0; settle so it is hittable +
+        // focusable before we click into it (else the IME commit goes nowhere).
+        rt.settle_all();
+        rt.frame(0.0);
         let (x, y) = rt
             .find("playlist-new-input")
             .expect("the new-playlist field renders");
@@ -367,5 +447,86 @@ mod tests {
         trigger_new_playlist(&mut rt, "Fresh");
         assert!(shows(&rt, "Fresh"), "the new playlist's name renders");
         assert_eq!(PlaylistStore::load().list().len(), 1);
+    }
+
+    /// The labelled, focusable cards in the Playlists grid (one per playlist), by
+    /// their stable key prefix + interactive role (excludes the inner text col).
+    fn grid_cards(rt: &Runtime<State>) -> Vec<rune::ElementInfo> {
+        rt.elements()
+            .into_iter()
+            .filter(|e| !e.exiting)
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("playlist-card-"))
+                    && e.role == "button"
+            })
+            .collect()
+    }
+
+    /// The Playlists page renders the same responsive card GRID the Albums page
+    /// does (role "grid"), not a row list: one focusable, labelled card per
+    /// playlist — which the a11y sweep also depends on.
+    #[test]
+    fn playlists_page_renders_a_grid_of_cards() {
+        let _locale = crate::config::use_test_locale("en");
+        let _g = crate::config::use_test_config_dir();
+        let rt = runtime_with_playlists(&[("Road Trip", 3), ("Focus", 0)]);
+        let grid = rt
+            .elements()
+            .into_iter()
+            .find(|e| e.key.as_deref() == Some("playlists-grid"))
+            .expect("the page renders a grid container");
+        assert_eq!(grid.role, "grid", "the container carries the grid role");
+
+        let cards = grid_cards(&rt);
+        assert_eq!(cards.len(), 2, "one card per playlist");
+        assert!(
+            cards.iter().all(|e| e.focusable && e.role == "button"),
+            "each card is a focusable button"
+        );
+        assert!(
+            cards
+                .iter()
+                .any(|e| e.label.as_deref() == Some("Road Trip"))
+        );
+        assert!(cards.iter().any(|e| e.label.as_deref() == Some("Focus")));
+    }
+
+    /// The Playlists search filters the grid by playlist name (empty query =
+    /// all), matching the Albums/Artists/Genres grids.
+    #[test]
+    fn playlists_search_narrows_the_grid() {
+        let _locale = crate::config::use_test_locale("en");
+        let _g = crate::config::use_test_config_dir();
+        let mut rt = runtime_with_playlists(&[("Road Trip", 3), ("Focus", 0)]);
+        assert!(
+            rt.find("playlists-search").is_some(),
+            "the search box renders above the grid"
+        );
+        let labels = |rt: &Runtime<State>| -> Vec<String> {
+            grid_cards(rt).into_iter().filter_map(|e| e.label).collect()
+        };
+        assert_eq!(labels(&rt).len(), 2, "both playlists show with no query");
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.playlist_search = rune::TextEdit::new("road"));
+        rt.frame(0.0);
+        let got = labels(&rt);
+        assert!(
+            got.contains(&"Road Trip".to_string()),
+            "the name match stays, got {got:?}"
+        );
+        assert!(
+            !got.contains(&"Focus".to_string()),
+            "the non-match is filtered out, got {got:?}"
+        );
+
+        rt.update(|st: &mut State, _tx: &mut Tx| st.playlist_search = rune::TextEdit::new(""));
+        rt.frame(0.0);
+        assert_eq!(
+            labels(&rt).len(),
+            2,
+            "clearing the query shows every playlist again"
+        );
     }
 }

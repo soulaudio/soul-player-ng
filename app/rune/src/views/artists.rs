@@ -143,13 +143,8 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         t!("artists.searchPlaceholder").to_string(),
         p,
         |st: &mut State| &mut st.artist_search,
-    )
-    .w_full();
-    let search_bar = row()
-        .key("artists-search-bar")
-        .px(space::PANE)
-        .pt(space::SM)
-        .child(search);
+    );
+    let search_bar = crate::views::library::page_search_bar("artists", search, None);
 
     let mut grid = row()
         .key("artists-grid")
