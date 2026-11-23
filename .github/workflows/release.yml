@@ -365,7 +365,14 @@ jobs:
           cp packaging/flatpak/co.datadir.soulplayer.yml "$stage/"
           appstreamcli validate --no-net "$stage/co.datadir.soulplayer.metainfo.xml"
 
+          # `--state-dir` is explicit and next to the target: flatpak-builder
+          # refuses to run when its state dir and target dir are on different
+          # filesystems, and the state dir otherwise defaults to
+          # `.flatpak-builder` in the CWD — which is the repo checkout, while
+          # the target is under RUNNER_TEMP. Those are not guaranteed to be the
+          # same mount.
           ( cd "$stage" && flatpak-builder --user --force-clean --install \
+              --state-dir="$RUNNER_TEMP/fp-state" \
               --repo="$RUNNER_TEMP/fp-repo" "$RUNNER_TEMP/fp-build" \
               co.datadir.soulplayer.yml )
 
@@ -377,7 +384,7 @@ jobs:
               flatpak run --user --socket=x11 \
                 --env=SOUL_PLAYER_FOLDER="$HOME/Music" \
                 --env=SOUL_PLAYER_NO_UPDATE=1 \
-                co.datadir.soulplayer >/dev/null 2>&1 &
+                co.datadir.soulplayer >"$RUNNER_TEMP/fp-run.log" 2>&1 &
             for i in $(seq 1 60); do
               n=$(dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
                     org.freedesktop.DBus.ListNames 2>/dev/null \
@@ -387,9 +394,26 @@ jobs:
             done
             if [ "$n" != "org.mpris.MediaPlayer2.co.datadir.soulplayer" ]; then
               echo "::error::the Flatpak did not own its MPRIS name (saw ${n:-nothing}); the sandbox refused it or the app failed to start"
+              # Say WHY, rather than leaving the next person to re-run CI to
+              # learn nothing: the app logs to its sandboxed state dir, and a
+              # crash before logging shows up as an empty log plus whatever the
+              # process wrote to the console.
+              echo "--- console ---"; tail -40 "$RUNNER_TEMP/fp-run.log" 2>/dev/null || echo "(none)"
+              echo "--- app log ---"
+              find "$HOME/.var/app/co.datadir.soulplayer" -name "*.log*" -type f 2>/dev/null \
+                | head -1 | xargs -r tail -40 || echo "(no log written — died before logging started)"
+              echo "--- names on the bus ---"
+              dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
+                org.freedesktop.DBus.ListNames 2>/dev/null | grep -oE "[a-z][A-Za-z0-9_.-]+" | tail -20
               exit 1
             fi
-            pkill -f soul-player-rune || true
+            # `flatpak kill`, NOT `pkill -f soul-player-rune`: the shell running
+            # this very script has that string in its own command line (right
+            # here), so pkill matches its parent, SIGTERMs it, and the step
+            # fails with 143 having already passed every assertion. That is
+            # exactly how the first run of this gate "failed" — after printing
+            # the MPRIS name it was checking for.
+            flatpak kill co.datadir.soulplayer || true
           '
 
           flatpak build-bundle "$RUNNER_TEMP/fp-repo" \
