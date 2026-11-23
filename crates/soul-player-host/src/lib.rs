@@ -2087,6 +2087,18 @@ impl PlayerHandle {
         self.set_remote_library(remote_lib);
     }
 
+    /// Pre-warm the audio pipeline: spawn the player actor NOW (if a library exists) so the
+    /// output device opens in the background, instead of paying that cost — seconds, on a slow
+    /// WASAPI / Bluetooth endpoint — on the user's FIRST play. Cheap and non-blocking: it only
+    /// spawns the pump thread; the device open runs on that thread, off the caller's, so this
+    /// is safe to call from the UI thread (e.g. right after the startup scan lands). Idempotent
+    /// — a no-op if the actor is already running or no library has been opened yet. A later
+    /// library update reaches the already-spawned actor via `set_library` (a swap, not a
+    /// re-open), so the warmed device stays open.
+    pub fn prewarm(&self) {
+        self.ensure_actor();
+    }
+
     /// Lazily spawn the actor once a library exists. Snapshots the library WITHOUT
     /// holding the player lock (avoids inverting `set_library`'s library→player
     /// order). The forwarder fans each event out to the current subscribers.
@@ -2457,6 +2469,38 @@ mod tests {
         let views = h.open_folder(dir.path()).expect("open_folder");
         assert_eq!(views.len(), 2, "both wavs scanned");
         assert_eq!(h.views().len(), 2, "views() reflects the opened library");
+    }
+
+    #[test]
+    fn prewarm_spawns_the_actor_once_a_library_exists() {
+        let h = PlayerHandle::offline();
+        // No library yet → prewarm is a no-op: nothing to play, so no actor/device is opened.
+        h.prewarm();
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "prewarm with no library opened spawns nothing"
+        );
+
+        // `set_sources` scans + sets the library WITHOUT auto-playing (the app's restore-at-
+        // launch path), so it does not spawn the actor by itself — unlike `open_folder`, which
+        // auto-plays. This is exactly the path where pre-warming matters.
+        let a = folder_with("prewarm_src", &["a.wav"]);
+        h.set_sources(&[(a.path().to_path_buf(), true)]).unwrap();
+        assert!(
+            h.inner.player.lock().unwrap().is_none(),
+            "set_sources alone (no play) does not spawn the actor"
+        );
+
+        // prewarm now spawns it, so the output device opens ahead of the user's first play.
+        h.prewarm();
+        assert!(
+            h.inner.player.lock().unwrap().is_some(),
+            "prewarm spawns the actor once a library exists (device opens in the background)"
+        );
+
+        // Idempotent: a second prewarm does not respawn (would needlessly reopen the device).
+        h.prewarm();
+        assert!(h.inner.player.lock().unwrap().is_some());
     }
 
     #[test]
