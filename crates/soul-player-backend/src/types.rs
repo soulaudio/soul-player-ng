@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use soul_audio_core::DeckState;
+use soul_audio_import::SkippedGroup;
 use soul_audio_loudness::LoudnessMetrics;
 use soul_audio_queue::Repeat;
 
@@ -283,6 +284,20 @@ pub enum Event {
     TracksRemoved {
         root: PathBuf,
         count: usize,
+    },
+    /// A library rescan walked past audio files it could not import: `root` is the
+    /// source they live under, `groups` counts them per extension with the reason.
+    /// Emitted once per affected root (never with an empty `groups`), so a UI can
+    /// say "3 files skipped — 2 .aac, 1 .wma" and name the cause.
+    ///
+    /// This exists because the alternative is silence: a user whose `.aac` rips
+    /// never appear in the library cannot distinguish a deliberate limitation
+    /// (the decoder is gated off in this build — a different build would play
+    /// them) from a scan that is simply broken. The reason is what makes the
+    /// notice actionable, so it travels with the count.
+    TracksSkipped {
+        root: PathBuf,
+        groups: Vec<SkippedGroup>,
     },
 }
 
