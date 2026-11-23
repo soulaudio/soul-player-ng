@@ -224,6 +224,13 @@ pub(crate) enum Update {
 pub(crate) struct Snapshot {
     pub id: Option<u32>,
     pub playing: bool,
+    /// Playback is stopped (as opposed to merely paused). Tracked separately
+    /// because `playing: false` covers both, and a Stop that leaves the track
+    /// loaded flips only this — without it the OS session would sit on `Paused`
+    /// until the next periodic refresh, or forever if the stop arrived while
+    /// already paused. `Update::Playback` already distinguishes the two
+    /// (`MediaPlayback::Stopped`); this is what gets that push SENT.
+    pub stopped: bool,
 }
 
 /// What the OS session needs pushed given a change in the now-playing snapshot.
@@ -244,8 +251,12 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) fn decide_push(prev: &Snapshot, cur: &Snapshot, since_last: Duration) -> Push {
     if prev.id != cur.id {
         Push::TrackAndPlayback
-    } else if prev.playing != cur.playing || (cur.id.is_some() && since_last >= REFRESH_INTERVAL) {
-        // Same track: a play/pause flip, or a periodic refresh while loaded.
+    } else if prev.playing != cur.playing
+        || prev.stopped != cur.stopped
+        || (cur.id.is_some() && since_last >= REFRESH_INTERVAL)
+    {
+        // Same track: a play/pause flip, a stop/resume, or a periodic refresh
+        // while loaded.
         Push::PlaybackOnly
     } else {
         Push::Nothing
@@ -510,8 +521,54 @@ mod tests {
         assert_eq!(publish_artwork(dir, 3, None), None, "no art → no URL");
     }
 
+    /// A snapshot in the ordinary playing/paused case: a track is loaded, so it
+    /// is not stopped. `snap_stopped` covers the loaded-but-stopped case.
     fn snap(id: Option<u32>, playing: bool) -> Snapshot {
-        Snapshot { id, playing }
+        Snapshot {
+            id,
+            playing,
+            stopped: id.is_none(),
+        }
+    }
+
+    /// A snapshot for a track that is loaded but STOPPED — what MPRIS `Stop`
+    /// (or a deck that reached the end) leaves behind.
+    fn snap_stopped(id: Option<u32>) -> Snapshot {
+        Snapshot {
+            id,
+            playing: false,
+            stopped: true,
+        }
+    }
+
+    /// Stopping a loaded track must push immediately, not wait for the periodic
+    /// refresh — otherwise the OS transport keeps showing `Paused` (a different
+    /// MPRIS status than the spec calls for here) for up to a second, or
+    /// indefinitely when the stop arrives while already paused.
+    #[test]
+    fn decide_push_on_stop_of_a_loaded_track() {
+        // Playing -> stopped: `playing` flips too, but the stop must be the
+        // reason it pushes even when it isn't.
+        assert_eq!(
+            decide_push(&snap(Some(1), true), &snap_stopped(Some(1)), Duration::ZERO),
+            Push::PlaybackOnly
+        );
+        // Paused -> stopped: `playing` is false on BOTH sides, so only the
+        // `stopped` flag distinguishes them. This is the case that hung on
+        // `Paused` forever.
+        assert_eq!(
+            decide_push(
+                &snap(Some(1), false),
+                &snap_stopped(Some(1)),
+                Duration::ZERO
+            ),
+            Push::PlaybackOnly
+        );
+        // And back out of stopped, without a track change.
+        assert_eq!(
+            decide_push(&snap_stopped(Some(1)), &snap(Some(1), true), Duration::ZERO),
+            Push::PlaybackOnly
+        );
     }
 
     #[test]

@@ -334,6 +334,23 @@ struct State {
     position_secs: f64,
     duration_secs: f64,
     playing: bool,
+    /// Whether the window is maximized (or full screen), so the title bar can
+    /// show the RESTORE glyph in place of maximize — the same swap Windows
+    /// makes on its native caption button.
+    ///
+    /// Mirrored into `State` rather than read from the window inside the view:
+    /// a view runs on every frame and must stay pure, and the authoritative
+    /// answer is an OS query behind a mutex. `sync_window_maximized` refreshes
+    /// it from the live window each frame instead.
+    maximized: bool,
+    /// The backend's full three-way playback state, as `Tick` reports it.
+    ///
+    /// `playing` is the bool the UI draws from (play icon vs pause icon), but it
+    /// collapses Paused and Stopped into the same `false`. The OS media session
+    /// has to tell them apart — MPRIS has a distinct `Stopped` status, and
+    /// reporting `Paused` after a Stop is a spec violation a Linux desktop's
+    /// lock screen shows — so the unreduced state is kept alongside it.
+    play_state: PlayState,
     volume: f32,
     /// Whether the output is muted — mirrored from `Tick.muted`. The backend owns
     /// the mute state and the pre-mute level; the UI just sends `ToggleMute` and
@@ -647,6 +664,7 @@ struct State {
     /// for change detection + the periodic refresh (`media_session::decide_push`).
     media_last_id: Option<u32>,
     media_last_playing: bool,
+    media_last_stopped: bool,
     media_last_push: Option<std::time::Instant>,
     /// Whether the window currently has OS focus (`App::on_focus`). Gates
     /// now-playing toasts — foreground users already see the UI. Starts `true`.
@@ -773,6 +791,8 @@ impl State {
             position_secs: 0.0,
             duration_secs: 0.0,
             playing: false,
+            maximized: false,
+            play_state: PlayState::Stopped,
             volume: 1.0,
             muted: false,
             shuffle: false,
@@ -865,6 +885,7 @@ impl State {
             media_tx: None,
             media_last_id: None,
             media_last_playing: false,
+            media_last_stopped: true,
             media_last_push: None,
             focused: true,
             notify_last_id: None,
@@ -926,6 +947,7 @@ impl State {
                 );
                 self.duration_secs = t.duration_secs.unwrap_or(0.0);
                 self.playing = matches!(t.state, PlayState::Playing);
+                self.play_state = t.state;
                 // Don't let a stale tick overwrite the volume mid-drag (the drag
                 // sets it optimistically; the host echo catches up after release).
                 if self.dragging_slider.as_deref() != Some("volume") {
@@ -2301,6 +2323,12 @@ fn spectrum_poll(s: &mut State, now: f64, tx: &mut Tx) -> bool {
     // delta — see `AppSpec::poll`. Recover the real time this frame covered for the
     // manual, time-based animations (clamped so an idle gap can't teleport them).
     let frame_dt = views::reveal::frame_delta(now, &mut s.reveal_clock);
+    // Keep the title bar's maximize/restore glyph honest. Piggybacks on frames
+    // that were going to happen anyway and never ASKS for one: maximizing,
+    // restoring or going full screen always resizes the window, which draws a
+    // frame, which runs this — so the glyph updates without an idle app ticking
+    // the CPU just to watch a window flag.
+    sync_window_maximized(s);
     // Title-bar activity: while a library scan is in flight, OR a Sources row
     // is showing its own "Connecting…"/"Syncing…" loading state (a remote
     // with no health probe yet, or a reconnect/resync in flight), keep the
@@ -2898,6 +2926,69 @@ pub(crate) fn set_nav_visible(s: &mut State, id: &str, visible: bool) {
 /// before exit). `None` in headless tests.
 static WINDOW: std::sync::Mutex<Option<rune::WindowHandle>> = std::sync::Mutex::new(None);
 
+/// Refresh [`State::maximized`] from the live window, so the title bar's
+/// maximize button can show the restore glyph while maximized.
+///
+/// `placement()` is the only thing Rune exposes that carries `is_maximized`,
+/// and it returns `None` **on Wayland** — it also reads the window position,
+/// which Wayland deliberately hides from clients. There, the flag keeps
+/// whatever [`toggle_maximized_from_titlebar`] last set, which is correct for
+/// the app's own button and wrong only if the compositor maximizes the window
+/// some other way (a keybind, a titlebar double-click). That is the best
+/// available answer until Rune exposes `is_maximized` on its own; it is not a
+/// reason to leave the glyph permanently stuck on every platform.
+///
+/// Full screen counts as maximized here: either way the useful action is
+/// "put it back", which is what the restore glyph says.
+fn sync_window_maximized(s: &mut State) {
+    if let Some(p) = WINDOW
+        .lock()
+        .ok()
+        .and_then(|w| w.as_ref().and_then(|w| w.placement()))
+    {
+        s.maximized = p.maximized || p.full_screen;
+    }
+}
+
+/// Toggle the window between maximized and restored from the app's own caption
+/// button, flipping [`State::maximized`] optimistically.
+///
+/// The optimistic flip is what makes the glyph swap on Wayland, where
+/// [`sync_window_maximized`] can't read the real state back. Everywhere else
+/// the next frame's sync overwrites it with the truth, so a compositor that
+/// refused the request self-corrects rather than leaving the glyph lying.
+fn toggle_maximized_from_titlebar(s: &mut State, tx: &mut Tx) {
+    s.maximized = !s.maximized;
+    tx.toggle_maximized();
+}
+
+/// Start playing the loaded library on launch when `SOUL_PLAYER_AUTOPLAY` is
+/// set — the hook the Linux session E2E test uses to get a track playing.
+///
+/// Why a hook rather than driving the UI: the end-to-end test asserts what the
+/// OS media session publishes (MPRIS metadata, artwork, transport), and that
+/// needs a track LOADED. Clicking a row to get there would mean injecting
+/// synthetic pointer events into a compositor — a far more fragile dependency
+/// than one env var, and it would test the click path rather than the thing
+/// under test.
+///
+/// Joins the existing `SOUL_PLAYER_*` dev/e2e family (`SOUL_PLAYER_FOLDER`,
+/// `SOUL_PLAYER_NO_UPDATE`); unset in any normal run, so a user never trips it.
+/// Issues the same `PlayContext` the "Play All" pill does, so the test exercises
+/// the real play path.
+fn autoplay_from_env(s: &mut State) {
+    if std::env::var_os("SOUL_PLAYER_AUTOPLAY").is_none() {
+        return;
+    }
+    let ids: Vec<u32> = s.library.iter().map(|t| t.id).collect();
+    if ids.is_empty() {
+        tracing::warn!("SOUL_PLAYER_AUTOPLAY set but the library is empty");
+        return;
+    }
+    tracing::info!(tracks = ids.len(), "autoplay: starting the loaded library");
+    s.host.send(Command::PlayContext { ids, start: 0 });
+}
+
 /// Final best-effort flush on app exit — window close, Quit, or OS logout — run
 /// once even if both `on_close` and `on_quit` fire. Config is already persisted
 /// on change; this captures the warm-startup scan caches updated this session and
@@ -2952,13 +3043,20 @@ fn feed_media_session(s: &mut State) {
     let Some(tx) = s.media_tx.clone() else {
         return;
     };
+    // A track that is loaded but stopped (MPRIS `Stop`, or a deck that ended)
+    // is NOT the same as paused: the OS transport has a distinct Stopped
+    // status. `now_playing_id.is_none()` alone misses it, because Stop leaves
+    // the track loaded.
+    let stopped_now = s.now_playing_id.is_none() || s.play_state == PlayState::Stopped;
     let prev = media_session::Snapshot {
         id: s.media_last_id,
         playing: s.media_last_playing,
+        stopped: s.media_last_stopped,
     };
     let cur = media_session::Snapshot {
         id: s.now_playing_id,
         playing: s.playing,
+        stopped: stopped_now,
     };
     let since = s
         .media_last_push
@@ -2980,13 +3078,14 @@ fn feed_media_session(s: &mut State) {
     if push != media_session::Push::Nothing {
         let _ = tx.send(media_session::Update::Playback(media_session::Playback {
             playing: s.playing,
-            stopped: s.now_playing_id.is_none(),
+            stopped: stopped_now,
             position_secs: s.position_secs,
         }));
         s.media_last_push = Some(std::time::Instant::now());
     }
     s.media_last_id = s.now_playing_id;
     s.media_last_playing = s.playing;
+    s.media_last_stopped = stopped_now;
 }
 
 /// The window's native handle as an `isize` (Windows HWND) for the media session's
@@ -3138,6 +3237,12 @@ fn handle_key(s: &mut State, ev: &KeyEvent, tx: &mut Tx) -> bool {
 /// normal use — only Rune's tooling `--scene` flag ever runs them.
 fn scene_settings(s: &mut State) {
     s.route = Route::Settings;
+}
+/// Home with the window reported as maximized, so `--snap` can show the
+/// title bar's RESTORE glyph (the state a screenshot otherwise can't reach:
+/// headless runs have no window to maximize).
+fn scene_maximized(s: &mut State) {
+    s.maximized = true;
 }
 fn scene_home(s: &mut State) {
     s.route = Route::Home;
@@ -3714,6 +3819,7 @@ fn main() -> anyhow::Result<()> {
         scenes: &[
             ("settings", scene_settings),
             ("home", scene_home),
+            ("maximized", scene_maximized),
             ("settings-music", scene_settings_music),
             ("settings-keyboard", scene_settings_keyboard),
             ("settings-audio", scene_settings_audio),
@@ -3826,6 +3932,8 @@ fn main() -> anyhow::Result<()> {
             // HWND, for Windows SMTC) exists. `on_ready` may fire more than once —
             // guard it so we don't spawn duplicates.
             let cell = media_ah_cell.clone();
+            // Shared by the tray and the media session; the session thread reads
+            // cover art itself (`host.art`) so that disk I/O stays off the UI thread.
             let tray_host = host.clone();
             let mut started = false;
             move |wh: &rune::WindowHandle| {
@@ -3902,6 +4010,11 @@ fn main() -> anyhow::Result<()> {
             // thread — same "don't block the first paint" reasoning as the local
             // startup scan just above, since each reconnect does a blocking
             // refresh-token round-trip (plus a catalog re-fetch) over the network.
+            // Before the remote reconnect: that path can reach the OS keychain,
+            // and on a session with no Secret Service D-Bus spends up to two
+            // minutes trying to ACTIVATE one. Playback has nothing to do with
+            // remotes and shouldn't queue behind that.
+            autoplay_from_env(s);
             reconnect_remotes_on_startup(s);
         });
     }
@@ -3987,6 +4100,21 @@ fn main() -> anyhow::Result<()> {
         });
         host.start_watching();
     }
+    // The identity the window advertises to the desktop: Wayland `app_id`, X11
+    // `WM_CLASS`. Without it the compositor reports an EMPTY class, and nothing
+    // that identifies a window by it works — the dock and task switcher show a
+    // generic icon instead of ours, and `windowrule`-style rules can't target
+    // the app at all.
+    //
+    // The value must equal the basename of the shipped `.desktop` entry, which
+    // is how a compositor resolves a window to its icon. cargo-packager names
+    // that file after the main BINARY (`{main_binary_name}.desktop`), so this
+    // reads the binary name rather than hardcoding a string the two could drift
+    // apart on. (A reverse-DNS id like the packager `identifier` is the broader
+    // convention and what Flatpak would want, but it would need a custom
+    // desktop-entry template to rename the file to match — a packaging change,
+    // not a runtime one.)
+    rune::set_app_id(env!("CARGO_BIN_NAME"));
     // Window + taskbar icon: the Soul Player logo, set at runtime (the packaged
     // installer uses the same icons via [package.metadata.packager]).
     // macOS: the tiled Dock icon (matches the bundle's .icns); elsewhere the bare mark.
@@ -4110,6 +4238,86 @@ mod tests {
         assert!(
             rt.find("titlebar-scan-count").is_some(),
             "done/total count present"
+        );
+    }
+
+    /// Linux has no native window controls under a Rune custom titlebar (Rune
+    /// places them on macOS/Windows only), and on Wayland — where a tiling
+    /// compositor draws no titlebar at all — that left the window with NO way to
+    /// minimize, maximize or close from the UI. The band must draw its own.
+    ///
+    /// Clicking each one (rather than only asserting it exists) is the point:
+    /// the buttons sit INSIDE the `.window_drag()` strip, so the real risk is
+    /// that the drag region swallows the press and the button is inert. A click
+    /// that lands and runs its handler proves the child kept its press.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_draws_working_caption_buttons_in_the_titlebar() {
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let s = State::new(PlayerHandle::offline());
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // Two frames: the band's responsive branch reads its own committed
+        // width from the previous frame (same reason the scan-widget test does).
+        rt.frame(0.0);
+        rt.frame(0.0);
+
+        for key in ["caption-min", "caption-max", "caption-close"] {
+            let at = rt
+                .find(key)
+                .unwrap_or_else(|| panic!("{key} should be drawn on Linux"));
+            assert!(
+                at.0 > 900.0,
+                "{key} should sit in the band's trailing edge, found at x={}",
+                at.0
+            );
+            // Drives a full move/down/up at the button and re-renders. The
+            // window request itself goes to the run loop, which a headless
+            // Runtime has no view of — so this asserts the press is RECEIVED,
+            // not that the window minimized.
+            click_key(&mut rt, key);
+        }
+    }
+
+    /// The app-drawn caption button must RE-LABEL itself while maximized, not
+    /// just redraw: "Maximize" announced by a button that will restore is the
+    /// same defect as the frozen glyph, and it is the half a screen-reader user
+    /// actually hits. Exercises the real wiring through the view, unlike
+    /// `titlebar`'s unit tests of the two pure helpers.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_maximize_button_relabels_itself_while_maximized() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let label_of = |maximized: bool| -> String {
+            let mut s = populated_state();
+            s.maximized = maximized;
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            rt.settle_all();
+            rt.frame(0.0);
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some("caption-max"))
+                .and_then(|e| e.label)
+                .unwrap_or_else(|| {
+                    panic!("caption-max should carry a label (maximized={maximized})")
+                })
+        };
+        assert_eq!(
+            label_of(false),
+            "Maximize",
+            "a normal window offers maximize"
+        );
+        assert_eq!(
+            label_of(true),
+            "Restore",
+            "a maximized window offers restore"
         );
     }
 
@@ -4836,8 +5044,13 @@ mod tests {
         s.media_tx = Some(tx);
 
         // A track starts playing → a Track update then a Playback update.
+        // `play_state` is set alongside `playing` throughout: the media session
+        // reads the three-way state to tell Paused from Stopped, so a fixture
+        // that only flips the bool would describe a state the backend never
+        // produces (playing, yet stopped).
         s.now_playing_id = Some(id);
         s.playing = true;
+        s.play_state = PlayState::Playing;
         s.position_secs = 12.0;
         s.duration_secs = 200.0;
         feed_media_session(&mut s);
@@ -4859,18 +5072,29 @@ mod tests {
 
         // Pausing the same track pushes only a playback update.
         s.playing = false;
+        s.play_state = PlayState::Paused;
         feed_media_session(&mut s);
         match rx.try_recv().expect("a playback update on pause") {
-            media_session::Update::Playback(pb) => assert!(!pb.playing),
+            media_session::Update::Playback(pb) => assert!(!pb.playing && !pb.stopped),
             media_session::Update::Track(_) => panic!("expected Playback on pause"),
         }
 
-        // Stopping (no track loaded) reports stopped.
-        s.now_playing_id = None;
+        // Stopping a track that is STILL LOADED reports stopped, not paused —
+        // MPRIS has a distinct `Stopped` status, and the loaded track means
+        // `now_playing_id` is no help in telling the two apart.
+        s.play_state = PlayState::Stopped;
         feed_media_session(&mut s);
         match rx.try_recv().expect("a playback update on stop") {
-            media_session::Update::Playback(pb) => assert!(pb.stopped),
+            media_session::Update::Playback(pb) => assert!(pb.stopped, "stop must report stopped"),
             media_session::Update::Track(_) => panic!("expected Playback on stop"),
+        }
+
+        // Unloading the track keeps reporting stopped.
+        s.now_playing_id = None;
+        feed_media_session(&mut s);
+        match rx.try_recv().expect("a playback update on unload") {
+            media_session::Update::Playback(pb) => assert!(pb.stopped),
+            media_session::Update::Track(_) => panic!("expected Playback on unload"),
         }
         assert!(rx.try_recv().is_err(), "no extra updates queued");
     }
@@ -7898,15 +8122,26 @@ mod tests {
             "glyphs show where the app draws its own controls"
         );
 
-        // Native frame (default insets, trailing 0): no custom glyphs.
+        // No trailing inset. On macOS/Windows that means the native frame owns
+        // the controls, so the app draws none. On Linux it means the opposite:
+        // nothing owns them (Rune's custom titlebar places controls on
+        // macOS/Windows only), so the app must draw its own working buttons —
+        // see `titlebar::DRAWS_OWN_CAPTION_BUTTONS`.
         let mut rt2 = Runtime::new(populated_state(), view, (1100.0, 720.0), env);
         rt2.frame(0.0);
         rt2.settle_all();
         rt2.frame(0.0);
-        assert!(
-            rt2.presented("caption-close").is_none(),
-            "no custom glyphs under a native frame"
-        );
+        if cfg!(target_os = "linux") {
+            assert!(
+                rt2.presented("caption-close").is_some(),
+                "Linux has no native controls, so the app draws its own"
+            );
+        } else {
+            assert!(
+                rt2.presented("caption-close").is_none(),
+                "no custom glyphs under a native frame"
+            );
+        }
     }
 
     /// The left sidebar runs to the very top of the window (no strip above it),
