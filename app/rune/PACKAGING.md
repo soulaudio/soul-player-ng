@@ -26,7 +26,7 @@ cargo packager --release -f app       # → target/release/Soul Player.app
 cargo packager --release -f dmg       # → target/release/Soul Player_<ver>_aarch64.dmg
 ```
 
-The bundle identity (`co.datadir.soulplayer`, category Music) comes from
+The bundle identity (`co.soulaudio.soulplayer`, category Music) comes from
 `[package.metadata.packager]`. Run the app from the bundle to test anything that depends
 on identity: the Now Playing widget's name/icon and notifications (`rune-notify` only
 posts from a bundle). Releases ship a DMG per architecture (`aarch64` for Apple silicon,

@@ -311,7 +311,7 @@ jobs:
           ls -la dist/
 
       # The screenshots the AppStream metadata points at. Flathub requires them
-      # to be reachable over HTTPS, and `co.datadir.soulplayer.metainfo.xml`
+      # to be reachable over HTTPS, and `co.soulaudio.soulplayer.metainfo.xml`
       # names them under `releases/latest/download/`, so they have to ship as
       # release assets or software centres show an app with no pictures.
       #
@@ -362,8 +362,8 @@ jobs:
             org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
 
           stage=app/rune/target/release/linux-stage
-          cp packaging/flatpak/co.datadir.soulplayer.yml "$stage/"
-          appstreamcli validate --no-net "$stage/co.datadir.soulplayer.metainfo.xml"
+          cp packaging/flatpak/co.soulaudio.soulplayer.yml "$stage/"
+          appstreamcli validate --no-net "$stage/co.soulaudio.soulplayer.metainfo.xml"
 
           # `--state-dir` is explicit and next to the target: flatpak-builder
           # refuses to run when its state dir and target dir are on different
@@ -374,7 +374,7 @@ jobs:
           ( cd "$stage" && flatpak-builder --user --force-clean --install \
               --state-dir="$RUNNER_TEMP/fp-state" \
               --repo="$RUNNER_TEMP/fp-repo" "$RUNNER_TEMP/fp-build" \
-              co.datadir.soulplayer.yml )
+              co.soulaudio.soulplayer.yml )
 
           # Prove it actually runs sandboxed, and owns the one MPRIS name
           # Flatpak's D-Bus policy allows it.
@@ -384,7 +384,7 @@ jobs:
               flatpak run --user --socket=x11 \
                 --env=SOUL_PLAYER_FOLDER="$HOME/Music" \
                 --env=SOUL_PLAYER_NO_UPDATE=1 \
-                co.datadir.soulplayer >"$RUNNER_TEMP/fp-run.log" 2>&1 &
+                co.soulaudio.soulplayer >"$RUNNER_TEMP/fp-run.log" 2>&1 &
             for i in $(seq 1 60); do
               n=$(dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
                     org.freedesktop.DBus.ListNames 2>/dev/null \
@@ -392,7 +392,7 @@ jobs:
               [ -n "$n" ] && { echo "MPRIS: $n"; break; }
               sleep 1
             done
-            if [ "$n" != "org.mpris.MediaPlayer2.co.datadir.soulplayer" ]; then
+            if [ "$n" != "org.mpris.MediaPlayer2.co.soulaudio.soulplayer" ]; then
               echo "::error::the Flatpak did not own its MPRIS name (saw ${n:-nothing}); the sandbox refused it or the app failed to start"
               # Say WHY, rather than leaving the next person to re-run CI to
               # learn nothing: the app logs to its sandboxed state dir, and a
@@ -400,7 +400,7 @@ jobs:
               # process wrote to the console.
               echo "--- console ---"; tail -40 "$RUNNER_TEMP/fp-run.log" 2>/dev/null || echo "(none)"
               echo "--- app log ---"
-              find "$HOME/.var/app/co.datadir.soulplayer" -name "*.log*" -type f 2>/dev/null \
+              find "$HOME/.var/app/co.soulaudio.soulplayer" -name "*.log*" -type f 2>/dev/null \
                 | head -1 | xargs -r tail -40 || echo "(no log written — died before logging started)"
               echo "--- names on the bus ---"
               dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
@@ -413,11 +413,11 @@ jobs:
             # fails with 143 having already passed every assertion. That is
             # exactly how the first run of this gate "failed" — after printing
             # the MPRIS name it was checking for.
-            flatpak kill co.datadir.soulplayer || true
+            flatpak kill co.soulaudio.soulplayer || true
           '
 
           flatpak build-bundle "$RUNNER_TEMP/fp-repo" \
-            "dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak" co.datadir.soulplayer
+            "dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak" co.soulaudio.soulplayer
           ls -la dist/
 
 

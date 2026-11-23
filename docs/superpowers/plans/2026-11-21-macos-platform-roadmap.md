@@ -124,7 +124,7 @@ Verified on this Mac with `scripts/e2e-now-playing-macos.sh` (real app ↔ Media
 `media-control`, shared AND hog-mode exclusive — exclusive output does NOT knock the app
 out of Now Playing): metadata, duration, elapsed, rate, artwork, and remote
 pause/play/seek/next/toggle all round-trip. Bundled, macOS attributes it to
-`co.datadir.soulplayer`.
+`co.soulaudio.soulplayer`.
 
 - ✅ Now Playing artwork (cover → cache file → `file://` URL; one file per track).
 - ✅ Controls menu (Play/Pause, Next ⌘→, Previous ⌘←, keys-first) + Dock menu (`macos_menu`).
@@ -190,7 +190,7 @@ is proven first.
 
 ## Phase 6 — Packaging 🔨
 
-✅ Proper `.icns` (16–1024 px, Apple grid) (#265). ✅ `cargo packager -f app` builds `Soul Player.app` (`co.datadir.soulplayer`,
+✅ Proper `.icns` (16–1024 px, Apple grid) (#265). ✅ `cargo packager -f app` builds `Soul Player.app` (`co.soulaudio.soulplayer`,
 `public.app-category.music`). ✅ `-f dmg` builds a drag-to-Applications DMG (verified:
 mounts, correct bundle id, arm64); release.yml ships it on macOS. ⏸ Developer ID signing +
 notarization — **later** (owner, 2026-11-22). Note: `cargo packager` only wraps the existing

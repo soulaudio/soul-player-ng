@@ -75,7 +75,7 @@ for _stream in (sys.stdout, sys.stderr):
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 APP_NAME = "Soul Player"
-BUNDLE_ID = "co.datadir.soulplayer"
+BUNDLE_ID = "co.soulaudio.soulplayer"
 APPS_DIR = Path(os.environ.get("SOUL_E2E_APPS_DIR", "/Applications"))
 
 

@@ -18,7 +18,7 @@ deb=${1:?usage: stage-linux.sh <deb> <out-dir>}
 out=${2:?usage: stage-linux.sh <deb> <out-dir>}
 
 bin_name=soul-player-rune
-app_id=co.datadir.soulplayer
+app_id=co.soulaudio.soulplayer
 
 rm -rf "$out"
 mkdir -p "$out"

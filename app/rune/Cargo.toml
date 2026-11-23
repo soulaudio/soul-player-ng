@@ -148,7 +148,7 @@ windows-registry = "0.6"
 # (from app/rune). name/version/authors come from [package] above.
 [package.metadata.packager]
 product-name = "Soul Player"
-identifier = "co.datadir.soulplayer"
+identifier = "co.soulaudio.soulplayer"
 # What a USER is shown, so it must not be the `[package] description` — that one
 # names the crate's role in this workspace ("Rune (native GPU) UI head for Soul
 # Player, over soul-player-host"), which is the right text for developers and

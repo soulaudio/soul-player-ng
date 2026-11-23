@@ -106,7 +106,7 @@ fn the_app_id_is_the_same_string_everywhere_it_is_written() {
 #[test]
 fn the_appstream_metadata_has_no_illegal_double_hyphens() {
     let root = repo_root();
-    let path = root.join("packaging/flatpak/co.datadir.soulplayer.metainfo.xml");
+    let path = root.join("packaging/flatpak/co.soulaudio.soulplayer.metainfo.xml");
     let src = read(&path);
 
     let mut rest = src.as_str();

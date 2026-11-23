@@ -3912,7 +3912,7 @@ fn main() -> anyhow::Result<()> {
     // `on_open_url`) instead of opening a duplicate that would fight over the
     // audio device. Returns false when another instance handled this launch →
     // exit without opening a window. macOS/other platforms: always true.
-    if !cfg!(debug_assertions) && !rune::single_instance("co.datadir.soulplayer") {
+    if !cfg!(debug_assertions) && !rune::single_instance("co.soulaudio.soulplayer") {
         return Ok(());
     }
 
@@ -6773,8 +6773,8 @@ mod tests {
     #[test]
     fn desktop_identity_follows_the_flatpak_id_when_sandboxed() {
         assert_eq!(
-            resolve_desktop_id(Some("co.datadir.soulplayer")),
-            "co.datadir.soulplayer",
+            resolve_desktop_id(Some("co.soulaudio.soulplayer")),
+            "co.soulaudio.soulplayer",
             "inside a Flatpak the id IS the desktop entry's basename"
         );
         assert_eq!(

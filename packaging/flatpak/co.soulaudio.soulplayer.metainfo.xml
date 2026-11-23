@@ -8,15 +8,15 @@
   the same reason those two must match each other — see the manifest.
 -->
 <component type="desktop-application">
-  <id>co.datadir.soulplayer</id>
-  <launchable type="desktop-id">co.datadir.soulplayer.desktop</launchable>
+  <id>co.soulaudio.soulplayer</id>
+  <launchable type="desktop-id">co.soulaudio.soulplayer.desktop</launchable>
 
   <name>Soul Player</name>
   <summary>Play your music library with gapless, bit-perfect output</summary>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>Apache-2.0</project_license>
-  <developer id="co.datadir">
+  <developer id="co.soulaudio">
     <name>datadir s. r. o.</name>
   </developer>
 
