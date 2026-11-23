@@ -47,6 +47,10 @@ const MAX_ZOOM: f32 = 6.0;
 const OUTPUT_PX: u32 = 512;
 /// The current-artwork preview side in the manage ('select') dialogue, in points.
 const MANAGE_PREVIEW: f32 = 140.0;
+/// The manage dialogue's fixed width, in points: the same outer width as the crop
+/// dialogue (its `VIEW` plus the card's `LG` padding on each side), so stepping
+/// Change -> crop keeps the card the same size instead of jumping.
+const MANAGE_DIALOG_W: f32 = VIEW + 2.0 * space::LG;
 
 thread_local! {
     /// The image offset at the moment a pan drag started. `Drag::dx/dy` are the
@@ -263,6 +267,31 @@ pub fn overlay(s: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
 /// The MANAGE ('select') dialogue the hero pencil opens: a preview of the current
 /// artwork, then Change (pick an image, then the crop step) and, when a cover is
 /// already set, Delete, plus Cancel.
+/// A full-width secondary button for the manage dialogue (Delete / Cancel) — the
+/// same height + shape as [`choose_image_button`] so the stacked actions read as
+/// one even column.
+fn manage_button(
+    key: &str,
+    label: String,
+    p: &Palette,
+    on_press: impl Fn(&mut State) + 'static,
+) -> El {
+    el().key(key.to_string())
+        .role("button")
+        .label(label.clone())
+        .focusable(true)
+        .w_full()
+        .py(space::SM)
+        .radius(radius::SM)
+        .fill(p.muted)
+        .cursor(Cursor::Pointer)
+        .hover(p.fg.alpha(fx::HOVER))
+        .press(p.fg.alpha(fx::PRESS))
+        .center()
+        .child(text(label).color(p.fg))
+        .on_press(on_press)
+}
+
 fn manage_dialogue(s: &State, p: &Palette, cx: &Cx<State>, target: &ArtworkTarget) -> El {
     let corner = if target.is_circular() {
         MANAGE_PREVIEW * 0.5
@@ -300,18 +329,16 @@ fn manage_dialogue(s: &State, p: &Palette, cx: &Cx<State>, target: &ArtworkTarge
         .child(choose_image_button(target.clone(), p));
     if target.cover_path(s).is_some() {
         let target_del = target.clone();
-        actions = actions.child(footer_button(
+        actions = actions.child(manage_button(
             "artwork-edit-delete",
             t!("artwork.remove").to_string(),
-            false,
             p,
             move |st: &mut State| delete_cover(st, &target_del),
         ));
     }
-    actions = actions.child(footer_button(
+    actions = actions.child(manage_button(
         "artwork-edit-cancel",
         t!("common.cancel").to_string(),
-        false,
         p,
         |st: &mut State| crate::close_artwork_edit(st),
     ));
@@ -326,11 +353,12 @@ fn manage_dialogue(s: &State, p: &Palette, cx: &Cx<State>, target: &ArtworkTarge
         .child(
             col()
                 .key("artwork-edit-dialog")
+                .w(MANAGE_DIALOG_W)
                 .fill(p.card)
                 .radius(radius::LG)
                 .border(1.0, p.border)
                 .padding(space::LG)
-                .gap(space::MD)
+                .gap(space::LG)
                 .center()
                 .modal(true, crate::close_artwork_edit)
                 .child(
@@ -352,8 +380,7 @@ fn choose_image_button(target: ArtworkTarget, p: &Palette) -> El {
         .label(t!("artwork.change").to_string())
         .focusable(true)
         .w_full()
-        .px(space::MD)
-        .py(space::XS)
+        .py(space::SM)
         .radius(radius::SM)
         .fill(p.primary)
         .cursor(Cursor::Pointer)
