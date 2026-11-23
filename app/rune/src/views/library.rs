@@ -516,68 +516,19 @@ fn track_header_row(p: &Palette, width: RowWidth, show_loudness: bool) -> El {
     )
 }
 
-/// The Tracks search bar: a bounded, left-aligned field in the shared
-/// [`page_search_bar`] top (keyed `tracks-search-bar`), matching the
-/// Albums/Artists/Genres/Playlists search shape. The field itself shows the
-/// current filter and, while active, a cursor; clicking it (or pressing `/`)
-/// starts typing and the inline ✕ clears it. No focused text widget — this is
-/// keyboard-driven: `main::handle_key` routes keystrokes into `State::search`.
+/// The Tracks search bar: the SAME live [`search_box`] the other browse pages use
+/// (a focused text input keyed `tracks-search`), in the shared [`page_search_bar`]
+/// top with the Sort toggle beside it, so the Tracks top reads identically to
+/// Albums/Artists/Genres/Playlists. `/` on the Tracks page focuses it (`handle_key`).
 fn search_bar(s: &State, p: &Palette) -> El {
-    let (shown, dim) = if s.search.is_empty() && !s.searching {
-        (t!("library.searchPlaceholder").to_string(), true)
-    } else if s.searching {
-        (format!("{}│", s.search), false)
-    } else {
-        (s.search.clone(), false)
-    };
-    // The search "box": a magnifier + the query/placeholder in a muted rounded
-    // field, mirroring `search_box`'s shape so the Tracks search reads the same as
-    // the other browse pages'. `page_search_bar` bounds it to `SEARCH_MAX_W`.
-    let mut field = row()
-        .key("tracks-search")
-        .role("button")
-        .label(t!("library.searchPlaceholder").to_string())
-        .focusable(true)
-        .center_y()
-        .gap(space::SM)
-        .px(space::MD)
-        .py(space::SM)
-        .radius(radius::SM)
-        .fill(p.muted)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(icon(&icons::SEARCH, 16.0).color(p.text_secondary))
-        .child(
-            text(shown)
-                .font(type_::ITEM)
-                .color(if dim { p.text_secondary } else { p.fg })
-                .truncate()
-                .grow(1.0)
-                .min_w(0.0),
-        )
-        .on_press(|st: &mut State| st.searching = true);
-    // An inline ✕ clears the filter, nested in the field (Rune hit-tests the
-    // innermost target, so pressing it clears without entering search mode).
-    if !s.search.is_empty() {
-        field = field.child(
-            el().key("tracks-search-clear")
-                .role("button")
-                .label(t!("queue.clear").to_string())
-                .focusable(true)
-                .padding(space::XS)
-                .radius(radius::SM)
-                .cursor(Cursor::Pointer)
-                .hover(p.fg.alpha(fx::HOVER))
-                .press(p.fg.alpha(fx::PRESS))
-                .child(text("✕").color(p.text_secondary))
-                .on_press(|st: &mut State| {
-                    st.search.clear();
-                    st.searching = false;
-                }),
-        );
-    }
-    page_search_bar("tracks", field, Some(sort_toggle(s, p)))
+    let search = search_box(
+        &s.library_search,
+        "tracks-search",
+        t!("library.searchPlaceholder").to_string(),
+        p,
+        |st: &mut State| &mut st.library_search,
+    );
+    page_search_bar("tracks", search, Some(sort_toggle(s, p)))
 }
 
 /// The "Sort" toggle in the Tracks top bar (mirrors the Albums "Filters" button):
@@ -669,7 +620,7 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                     .on_press(|s: &mut State| s.route = crate::Route::Settings),
             );
     }
-    let q = s.search.to_lowercase();
+    let q = s.library_search.text.to_lowercase();
     let visible: Vec<&TrackView> = if q.is_empty() {
         s.library.iter().collect()
     } else {
@@ -677,7 +628,8 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     };
     let body = if visible.is_empty() {
         col().key("no-matches").grow(1.0).min_h(0.0).center().child(
-            text(t!("library.noMatch", query => s.search).to_string()).color(p.text_secondary),
+            text(t!("library.noMatch", query => s.library_search.text).to_string())
+                .color(p.text_secondary),
         )
     } else {
         // Virtualized rows: only the window the viewport shows (plus a margin either
