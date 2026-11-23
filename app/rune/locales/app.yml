@@ -523,6 +523,13 @@ playlists.addingTrack:
   zh: '正在添加曲目'
   cs: 'Přidávání skladby'
   ja: 'トラックを追加中'
+playlists.addingTracks:
+  en: 'Adding tracks'
+  de: 'Titel werden hinzugefügt'
+  es: 'Añadiendo pistas'
+  zh: '正在添加曲目'
+  cs: 'Přidávání skladeb'
+  ja: 'トラックを追加中'
 playlists.searchPlaylists:
   en: 'Search playlists…'
   de: 'Playlists durchsuchen…'
