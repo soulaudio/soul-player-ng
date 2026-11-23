@@ -97,27 +97,22 @@ use souvlaki::{MediaControls, MediaMetadata, MediaPlayback, MediaPosition, Platf
 use crate::State;
 
 /// The MPRIS bus-name suffix: the app registers as
-/// `org.mpris.MediaPlayer2.{DBUS_NAME}`.
+/// `org.mpris.MediaPlayer2.{}` with this as the suffix.
 ///
-/// It is the BINARY name on purpose, which is also the basename of the installed
-/// desktop entry (`soul-player-rune.desktop`) and the window's `app_id`. MPRIS
-/// has an optional `DesktopEntry` root property for exactly this — "which
-/// .desktop file is this player" — but souvlaki does not implement it (0.9.3
-/// serves Identity/CanQuit/CanRaise/SupportedUriSchemes/SupportedMimeTypes and
-/// nothing else). Without it, desktops that want the player's ICON fall back to
-/// matching the bus-name suffix against installed desktop files, which only
-/// works if the two agree. They previously did not: the suffix was
-/// `soul_player` while the entry is `soul-player-rune`, so a media applet had
-/// nothing to resolve and showed a generic icon.
+/// This is [`crate::desktop_id`] — the same string as the window's `app_id` and
+/// the installed desktop entry's basename. MPRIS has an optional `DesktopEntry`
+/// root property that would state the link outright, but souvlaki does not
+/// implement it (0.9.3 serves Identity/CanQuit/CanRaise/SupportedUriSchemes/
+/// SupportedMimeTypes and nothing else), so a desktop falls back to matching the
+/// bus-name SUFFIX against installed desktop files. If the two disagree there is
+/// nothing to match and media applets show a generic icon.
 ///
 /// Hyphens are legal here. D-Bus forbids them in object paths and interface
 /// names, but bus-name elements allow `[A-Za-z0-9_-]` (just not a leading
 /// digit), and souvlaki interpolates this straight into the name.
-///
-/// Taken from `CARGO_BIN_NAME` rather than written out so it cannot drift from
-/// the binary — which is what cargo-packager names the desktop entry after, and
-/// what `rune::set_app_id` publishes to the compositor.
-const DBUS_NAME: &str = env!("CARGO_BIN_NAME");
+fn dbus_name() -> &'static str {
+    crate::desktop_id()
+}
 const DISPLAY_NAME: &str = "Soul Player";
 
 // ---- artwork --------------------------------------------------------------------
@@ -311,7 +306,7 @@ fn session_thread(
 ) {
     let hwnd = hwnd_raw.map(|h| h as *mut c_void);
     let config = PlatformConfig {
-        dbus_name: DBUS_NAME,
+        dbus_name: dbus_name(),
         display_name: DISPLAY_NAME,
         hwnd,
     };
