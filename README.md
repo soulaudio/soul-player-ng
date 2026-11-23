@@ -37,6 +37,44 @@ cargo test --manifest-path crates/soul-player-host/Cargo.toml   # host
 
 See `app/rune/PACKAGING.md` for installers + auto-update.
 
+### Linux
+
+Nothing here is Linux-specific in the code, but the build needs system libraries
+the other two platforms ship in their SDKs. On Debian/Ubuntu:
+
+```sh
+sudo apt-get install -y pkg-config \
+  libasound2-dev libdbus-1-dev libssl-dev \
+  libxkbcommon-dev libwayland-dev mesa-vulkan-drivers
+```
+
+| Package | Pulled in by |
+|---|---|
+| `libasound2-dev` | `cpal` → ALSA, the Linux audio sink |
+| `libdbus-1-dev` | `keyring` → Secret Service (remote-source tokens) |
+| `libssl-dev` | `reqwest` → `native-tls` → `openssl-sys` |
+| `libxkbcommon-dev`, `libwayland-dev` | `winit` (Rune head only) |
+| `mesa-vulkan-drivers` | a Vulkan ICD for `wgpu` — any hardware driver also does |
+
+Running the Rune head's tests headlessly (what CI does) needs `xvfb` on top, and
+a software adapter if the box has no GPU: `xvfb-run -a cargo test`.
+
+#### Nix / NixOS
+
+`flake.nix` provides both toolchains and every native dependency above, so the
+whole thing builds with no global installs:
+
+```sh
+nix develop            # stable pin (rust-toolchain.toml) — backend + host
+nix develop .#rune     # the pinned nightly + xvfb/vulkan-tools — app/rune
+```
+
+Both shells read the pins straight from the repo's own `rust-toolchain.toml`
+files, so they can't drift from what CI builds. (NixOS needs the flake rather
+than `rustup`: rustup's downloaded toolchains aren't patched for the Nix dynamic
+linker.) The shell leaves a system Vulkan driver alone when there is one and
+only falls back to Mesa's Lavapipe when no hardware ICD exists.
+
 ## Status
 
 Feature-complete on desktop: multi-source watched-folder library (add / remove /
