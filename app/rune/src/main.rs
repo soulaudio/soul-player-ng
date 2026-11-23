@@ -327,12 +327,14 @@ struct State {
     /// Rename/Delete icons), or `None`. A single stray click never deletes.
     /// Reset the same way as `playlist_renaming`.
     playlist_delete_confirm: Option<playlists::PlaylistId>,
-    /// The track id pending an "Add to playlist" pick, or `None`. `Some`
-    /// opens `views::add_to_playlist::overlay`, mounted at the window root
-    /// like `signal_path_open`/`remote_health_open`: it survives a route
-    /// change (a global action, not a page-local widget) and is reset only
-    /// by `open_add_to_playlist`/`close_add_to_playlist`.
-    add_to_playlist_for: Option<u32>,
+    /// The track ids pending an "Add to playlist" pick, or empty (closed). A
+    /// single id is the usual track-level add; several ids come from an album or
+    /// artist card's menu, which adds the whole set. A non-empty vec opens
+    /// `views::add_to_playlist::overlay`, mounted at the window root like
+    /// `signal_path_open`/`remote_health_open`: it survives a route change (a
+    /// global action, not a page-local widget) and is reset only by
+    /// `open_add_to_playlist`(`_many`)/`close_add_to_playlist`.
+    add_to_playlist_for: Vec<u32>,
     /// The overlay's inline "New playlist..." field, bound the same way
     /// `playlist_new_buf` binds the Playlists page's own field.
     add_to_playlist_buf: rune::TextEdit,
@@ -822,7 +824,7 @@ impl State {
             playlist_renaming: None,
             playlist_rename_buf: rune::TextEdit::new(""),
             playlist_delete_confirm: None,
-            add_to_playlist_for: None,
+            add_to_playlist_for: Vec::new(),
             add_to_playlist_buf: rune::TextEdit::new(""),
             add_to_playlist_search: rune::TextEdit::new(""),
             artwork_crop: None,
@@ -1722,16 +1724,27 @@ pub(crate) fn close_remote_health_popover(s: &mut State) {
 /// then mark `track_id` as pending, which is what tells
 /// `views::add_to_playlist::overlay` to render.
 pub(crate) fn open_add_to_playlist(s: &mut State, track_id: u32) {
+    open_add_to_playlist_many(s, vec![track_id]);
+}
+
+/// Open the "Add to playlist" overlay for a whole SET of tracks (an album or an
+/// artist card's menu). A membership toggle then adds every one of `ids` that's
+/// missing from the picked playlist (or removes them all when every one is
+/// already present). A no-op on an empty set, which would open an empty overlay.
+pub(crate) fn open_add_to_playlist_many(s: &mut State, ids: Vec<u32>) {
+    if ids.is_empty() {
+        return;
+    }
     s.add_to_playlist_buf = rune::TextEdit::new("");
     s.add_to_playlist_search = rune::TextEdit::new("");
-    s.add_to_playlist_for = Some(track_id);
+    s.add_to_playlist_for = ids;
 }
 
 /// Close the overlay (a pick, a successful New-playlist create, Escape via
 /// `El::modal`, or an outside press) and reset its buffer + pending track so
 /// the next open always starts clean.
 pub(crate) fn close_add_to_playlist(s: &mut State) {
-    s.add_to_playlist_for = None;
+    s.add_to_playlist_for = Vec::new();
     s.add_to_playlist_buf = rune::TextEdit::new("");
     s.add_to_playlist_search = rune::TextEdit::new("");
 }
@@ -5123,7 +5136,7 @@ mod tests {
         rt.frame(0.0);
         rt.frame(0.0);
         click_key(&mut rt, "np-heart");
-        assert_eq!(rt.state.add_to_playlist_for, Some(id));
+        assert_eq!(rt.state.add_to_playlist_for, vec![id]);
     }
 
     /// Full heart -> dialogue -> toggle membership flow, driven end-to-end
@@ -5157,7 +5170,7 @@ mod tests {
         rt.frame(0.0);
         assert_eq!(
             rt.state.add_to_playlist_for,
-            Some(id),
+            vec![id],
             "the heart opens the add-to-playlist dialogue for the playing track"
         );
 
@@ -5174,7 +5187,7 @@ mod tests {
         );
         assert_eq!(
             rt.state.add_to_playlist_for,
-            Some(id),
+            vec![id],
             "the dialogue stays open across the add"
         );
 
@@ -5190,7 +5203,7 @@ mod tests {
         );
         assert_eq!(
             rt.state.add_to_playlist_for,
-            Some(id),
+            vec![id],
             "the dialogue stays open across the remove"
         );
     }
@@ -6304,7 +6317,7 @@ mod tests {
         rt.settle_all();
         rt.frame(0.0);
         click_key(&mut rt, "np-heart");
-        assert_eq!(rt.state.add_to_playlist_for, Some(track_c));
+        assert_eq!(rt.state.add_to_playlist_for, vec![track_c]);
         rt.settle_all();
         rt.frame(0.0);
         click_key(&mut rt, &format!("add-to-playlist-pick-{pid}"));

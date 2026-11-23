@@ -100,15 +100,28 @@ pub(crate) fn remove_track_from_playlist(s: &mut State, track_id: u32, playlist_
     s.playlists.remove_entry(playlist_id, index);
 }
 
-/// Toggle `track_id`'s membership in playlist `playlist_id`: remove it if
-/// already present, add it otherwise. The one action every row/button in
-/// this overlay drives now that it's a membership manager rather than a
-/// one-shot picker.
-pub(crate) fn toggle_track_in_playlist(s: &mut State, track_id: u32, playlist_id: PlaylistId) {
-    if already_has(s, playlist_id, track_id) {
-        remove_track_from_playlist(s, track_id, playlist_id);
+/// Whether playlist `playlist_id` already holds EVERY one of `track_ids` (by
+/// durable-locator key). An empty set is `false` (nothing to have). Drives the
+/// multi-track membership box: ticked only once the whole album/artist is in.
+fn already_has_all(s: &State, playlist_id: PlaylistId, track_ids: &[u32]) -> bool {
+    !track_ids.is_empty() && track_ids.iter().all(|&id| already_has(s, playlist_id, id))
+}
+
+/// Toggle a whole SET of tracks in `playlist_id`: when every one is already
+/// present, remove them all; otherwise add just the ones still missing (so
+/// re-ticking an album that's partly in the playlist never duplicates rows).
+/// The single action every row in this overlay drives (one id or a whole set).
+pub(crate) fn toggle_tracks_in_playlist(s: &mut State, track_ids: &[u32], playlist_id: PlaylistId) {
+    if already_has_all(s, playlist_id, track_ids) {
+        for &id in track_ids {
+            remove_track_from_playlist(s, id, playlist_id);
+        }
     } else {
-        add_track_to_playlist(s, track_id, playlist_id);
+        for &id in track_ids {
+            if !already_has(s, playlist_id, id) {
+                add_track_to_playlist(s, id, playlist_id);
+            }
+        }
     }
 }
 
@@ -133,13 +146,14 @@ fn membership_box(checked: bool, p: &Palette) -> El {
 
 /// One playlist row in the membership list: a checkbox reflecting whether
 /// `track_id` is already in this playlist, its name, and its track count.
-/// Pressing the row toggles membership (via [`toggle_track_in_playlist`])
+/// Pressing the row toggles membership (via [`toggle_tracks_in_playlist`])
 /// without closing the overlay, so a track can be ticked into (or out of)
 /// several playlists in one visit; the overlay only closes via the "Done"
 /// button, the backdrop, or Escape.
-fn pick_row(s: &State, p: &Palette, track_id: u32, summary: &PlaylistSummary) -> El {
+fn pick_row(s: &State, p: &Palette, track_ids: &[u32], summary: &PlaylistSummary) -> El {
     let id = summary.id;
-    let checked = already_has(s, id, track_id);
+    let checked = already_has_all(s, id, track_ids);
+    let row_ids: Vec<u32> = track_ids.to_vec();
     let count = text(t!("playlists.trackCount", count => summary.count).to_string())
         .font(type_::CAPTION)
         .color(p.text_secondary);
@@ -168,7 +182,7 @@ fn pick_row(s: &State, p: &Palette, track_id: u32, summary: &PlaylistSummary) ->
         )
         .child(count)
         .on_press(move |st: &mut State| {
-            toggle_track_in_playlist(st, track_id, id);
+            toggle_tracks_in_playlist(st, &row_ids, id);
         })
 }
 
@@ -178,15 +192,17 @@ fn pick_row(s: &State, p: &Palette, track_id: u32, summary: &PlaylistSummary) ->
 /// field, and KEEP the overlay open (the fresh playlist's row then renders
 /// checked). A no-op if the overlay isn't actually open.
 fn confirm_new_playlist(s: &mut State) {
-    let Some(track_id) = s.add_to_playlist_for else {
+    if s.add_to_playlist_for.is_empty() {
         return;
-    };
+    }
     let name = s.add_to_playlist_buf.text.trim().to_string();
     if name.is_empty() {
         return;
     }
     let id = s.playlists.create(&name);
-    add_track_to_playlist(s, track_id, id);
+    for track_id in s.add_to_playlist_for.clone() {
+        add_track_to_playlist(s, track_id, id);
+    }
     s.add_to_playlist_buf = rune::TextEdit::new("");
 }
 
@@ -264,13 +280,23 @@ fn title_row(p: &Palette) -> El {
 /// track's title (resolved from `s.library` by id), so the user always sees
 /// *which* track their toggles apply to. A muted, rounded panel mirroring the
 /// old app's header card.
-fn track_header(s: &State, p: &Palette, track_id: u32) -> El {
-    let title = s
-        .library
-        .iter()
-        .find(|t| t.id == track_id)
-        .and_then(|t| t.title.clone())
-        .unwrap_or_default();
+fn track_header(s: &State, p: &Palette, track_ids: &[u32]) -> El {
+    // One track shows its title ("Adding track" / "Song"); an album or artist
+    // set shows how many ("Adding tracks" / "12 tracks").
+    let (caption, title) = if let [single] = track_ids {
+        let title = s
+            .library
+            .iter()
+            .find(|t| t.id == *single)
+            .and_then(|t| t.title.clone())
+            .unwrap_or_default();
+        (t!("playlists.addingTrack").to_string(), title)
+    } else {
+        (
+            t!("playlists.addingTracks").to_string(),
+            t!("playlists.trackCount", count => track_ids.len()).to_string(),
+        )
+    };
     col()
         .key("add-to-playlist-track")
         .w_full()
@@ -279,11 +305,7 @@ fn track_header(s: &State, p: &Palette, track_id: u32) -> El {
         .py(space::SM)
         .radius(radius::SM)
         .fill(p.muted)
-        .child(
-            text(t!("playlists.addingTrack").to_string())
-                .font(type_::CAPTION)
-                .color(p.text_secondary),
-        )
+        .child(text(caption).font(type_::CAPTION).color(p.text_secondary))
         .child(text(title).font(type_::ITEM_STRONG).color(p.fg).truncate())
 }
 
@@ -336,7 +358,10 @@ fn footer(p: &Palette) -> El {
 /// has no playlists at all. `None` while `State::add_to_playlist_for` is
 /// `None` (closed).
 pub fn overlay(s: &State, p: &Palette) -> Option<El> {
-    let track_id = s.add_to_playlist_for?;
+    if s.add_to_playlist_for.is_empty() {
+        return None;
+    }
+    let track_ids = s.add_to_playlist_for.as_slice();
     let summaries = s.playlists.list();
     let query = s.add_to_playlist_search.text.trim().to_lowercase();
 
@@ -365,7 +390,7 @@ pub fn overlay(s: &State, p: &Palette) -> Option<El> {
             .iter()
             .filter(|sm| query.is_empty() || sm.name.to_lowercase().contains(&query))
         {
-            list = list.child(pick_row(s, p, track_id, summary));
+            list = list.child(pick_row(s, p, track_ids, summary));
         }
         list
     };
@@ -398,7 +423,7 @@ pub fn overlay(s: &State, p: &Palette) -> Option<El> {
                     .gap(space::MD)
                     .modal(true, crate::close_add_to_playlist)
                     .child(title_row(p))
-                    .child(track_header(s, p, track_id))
+                    .child(track_header(s, p, track_ids))
                     .child(search)
                     .child(new_playlist_field(s, p))
                     .child(body)
@@ -490,14 +515,14 @@ mod tests {
         let pid = rt.state.playlists.create("P");
         let tid = rt.state.library[0].id;
 
-        toggle_track_in_playlist(&mut rt.state, tid, pid);
+        toggle_tracks_in_playlist(&mut rt.state, &[tid], pid);
         assert_eq!(
             PlaylistStore::load().get(pid).unwrap().entries.len(),
             1,
             "the first toggle adds the track"
         );
 
-        toggle_track_in_playlist(&mut rt.state, tid, pid);
+        toggle_tracks_in_playlist(&mut rt.state, &[tid], pid);
         assert_eq!(
             PlaylistStore::load().get(pid).unwrap().entries.len(),
             0,
@@ -610,7 +635,7 @@ mod tests {
         assert_eq!(store.get(created).unwrap().entries.len(), 1);
         assert_eq!(
             rt.state.add_to_playlist_for,
-            Some(tid),
+            vec![tid],
             "creating a playlist keeps the membership-manager overlay open"
         );
     }
@@ -632,7 +657,7 @@ mod tests {
         assert_eq!(PlaylistStore::load().get(pid).unwrap().entries.len(), 1);
         assert_eq!(
             rt.state.add_to_playlist_for,
-            Some(tid),
+            vec![tid],
             "adding via the row keeps the overlay open"
         );
 
@@ -656,7 +681,7 @@ mod tests {
         // not a picker).
         toggle_row(&mut rt, pid);
 
-        assert_eq!(rt.state.add_to_playlist_for, Some(tid));
+        assert_eq!(rt.state.add_to_playlist_for, vec![tid]);
     }
 
     /// The explicit "Done" button is the membership manager's own way to
@@ -676,6 +701,40 @@ mod tests {
         rt.pointer_up(x, y);
         rt.frame(0.0);
 
-        assert_eq!(rt.state.add_to_playlist_for, None);
+        assert_eq!(rt.state.add_to_playlist_for, Vec::<u32>::new());
+    }
+
+    /// A multi-track open (an album/artist card's "Add to Playlist") toggles the
+    /// WHOLE set in one press: ticking the row adds every track, and ticking it
+    /// again (now that all are present) removes them all.
+    #[test]
+    fn add_overlay_toggles_a_whole_track_set() {
+        let _g = config::use_test_config_dir();
+        let mut rt = runtime_over_library(&["a.wav", "b.wav", "c.wav"]);
+        let ids: Vec<u32> = rt.state.library.iter().map(|t| t.id).collect();
+        let pid = rt.state.playlists.create("Album");
+
+        let ids_open = ids.clone();
+        rt.update(move |st: &mut State, _tx| {
+            crate::open_add_to_playlist_many(st, ids_open.clone())
+        });
+        rt.settle_all();
+        rt.frame(0.0);
+        assert_eq!(rt.state.add_to_playlist_for, ids);
+
+        // One toggle adds ALL three tracks.
+        toggle_row(&mut rt, pid);
+        assert_eq!(
+            PlaylistStore::load().get(pid).unwrap().entries.len(),
+            3,
+            "ticking the row adds every track in the set"
+        );
+        // A second toggle (all now present) removes the whole set.
+        toggle_row(&mut rt, pid);
+        assert_eq!(
+            PlaylistStore::load().get(pid).unwrap().entries.len(),
+            0,
+            "re-ticking removes the whole set"
+        );
     }
 }

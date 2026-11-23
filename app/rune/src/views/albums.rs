@@ -246,6 +246,10 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             PopupMenu::new()
                 .item(PopupItem::new("play", t!("player.play").to_string()))
                 .item(PopupItem::new(
+                    "add-to-playlist",
+                    t!("playlists.addTo").to_string(),
+                ))
+                .item(PopupItem::new(
                     "edit-artwork",
                     t!("artwork.edit").to_string(),
                 )),
@@ -255,6 +259,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                     ids: play_ids.clone(),
                     start: 0,
                 }),
+                Some("add-to-playlist") => crate::open_add_to_playlist_many(st, play_ids.clone()),
                 Some("edit-artwork") => {
                     st.artwork_edit = Some(ArtworkTarget::Album(art_name.clone()));
                 }
