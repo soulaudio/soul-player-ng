@@ -9,7 +9,7 @@
 //! register one under `HKCU` at startup ([`register_identity`]).
 //!
 //! On macOS we post through `rune-notify` (`UNUserNotificationCenter`), which reads the
-//! app identity from the `.app` bundle (`co.datadir.soulplayer`) and asks the person for
+//! app identity from the `.app` bundle (`co.soulaudio.soulplayer`) and asks the person for
 //! permission on first post. An unbundled dev binary can't post (`available()` is false),
 //! so it stays silent. Each kind reuses one notification id, so a new now-playing banner
 //! replaces the previous one instead of piling up in Notification Center.
@@ -19,7 +19,7 @@
 /// Our stable reverse-DNS AppUserModelID (matches the packager identifier).
 /// Only referenced by the Windows toast + registry paths.
 #[cfg(windows)]
-const AUMID: &str = "co.datadir.soulplayer";
+const AUMID: &str = "co.soulaudio.soulplayer";
 
 /// Escape text for inclusion in XML character data. `&` first so we don't
 /// double-escape the entities we introduce. A track titled "Rock & Roll" or

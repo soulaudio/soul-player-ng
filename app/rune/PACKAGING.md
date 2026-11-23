@@ -26,7 +26,7 @@ cargo packager --release -f app       # → target/release/Soul Player.app
 cargo packager --release -f dmg       # → target/release/Soul Player_<ver>_aarch64.dmg
 ```
 
-The bundle identity (`co.datadir.soulplayer`, category Music) comes from
+The bundle identity (`co.soulaudio.soulplayer`, category Music) comes from
 `[package.metadata.packager]`. Run the app from the bundle to test anything that depends
 on identity: the Now Playing widget's name/icon and notifications (`rune-notify` only
 posts from a bundle). Releases ship a DMG per architecture (`aarch64` for Apple silicon,
@@ -41,6 +41,71 @@ Developer ID signing + notarization come later (Apple Developer account).
 Check a packaged DMG the way the release does:
 `.github/scripts/verify-macos-bundle.sh <version> arm64 "target/release/Soul Player_<ver>_aarch64.dmg"`
 (signature, architecture, identity, version, icon, DMG layout, and a headless launch).
+
+## Linux (.deb, .rpm, AppImage, Flatpak)
+
+All four are built by one script, for x86_64 and aarch64:
+
+```sh
+packaging/build-linux.sh            # or --skip-build to reuse target/release
+```
+
+It strips the binary (a full strip, ~23% off the binary and ~30% off the .deb),
+checks the declared glibc floor against what the binary actually requires,
+generates the Debian changelog, builds the `.deb`, stages the desktop entry and
+icon out of it, and builds the `.rpm` from that same staging. The Flatpak is
+built in CI from the same staged files.
+
+Staging through the .deb is deliberate: cargo-packager generates the desktop
+entry and icon set from `[package.metadata.packager]`, which is the one place
+those values are written down. Re-deriving them per format would give three
+chances to disagree about the app's name, category or icon — and an entry that
+disagrees with the window's `app_id` silently costs the icon.
+
+### What differs per format
+
+| | identity | updates | notes |
+|---|---|---|---|
+| `.deb` | binary name | `apt` | `libc6 (>= 2.35)`; `t64` alternatives so one package covers Debian 12 and Ubuntu 24.04 |
+| `.rpm` | binary name | `dnf` | SONAME dependencies, so it resolves on Fedora **and** openSUSE |
+| AppImage | binary name | **itself** | the only format the in-app updater can replace |
+| Flatpak | `$FLATPAK_ID` | `flatpak` | sandboxed; needs `--device=all` for bit-perfect output |
+
+The app resolves its own identity at runtime (`desktop_id()`): normally the
+binary name, but `$FLATPAK_ID` inside a Flatpak, because Flatpak installs the
+desktop entry as `$FLATPAK_ID.desktop` and grants exactly one MPRIS name,
+`org.mpris.MediaPlayer2.$FLATPAK_ID`. Get that wrong and media keys stop
+working while everything else looks fine.
+
+Self-update is disabled wherever a package manager owns the install
+(`update::manager_owned`) — `/usr/bin` is root-owned, so the updater would
+download tens of megabytes and fail on a permission error.
+
+### Dependencies
+
+Derived from the built binary — its `NEEDED` entries plus every SONAME it
+`dlopen`s — not from guesswork. The dlopened ones never appear in `ldd`, so
+they are easy to miss and produce a package that installs cleanly and then
+fails at runtime (fontconfig's absence means no text renders at all).
+
+Equally, the app does **not** need gtk3, libayatana-appindicator, libxdo or
+libGL: the tray is spoken directly over D-Bus
+(`org.kde.StatusNotifierItem` + `com.canonical.dbusmenu`), and wgpu's GL
+fallback is not compiled in. Depending on gtk3 would pull ~40 MB of transitive
+dependencies in for nothing.
+
+### Verifying a change
+
+Build the packages, then install and RUN them in a container — building is not
+evidence:
+
+```sh
+podman run --rm -v "$PWD/app/rune/target/release:/w:z" ubuntu:24.04 \
+  bash -c 'apt-get update -qq && apt-get install -y -qq /w/*.deb && soul-player-rune --help'
+```
+
+The release pipeline does this for real on every platform, and its Flatpak step
+starts the sandboxed app and fails unless it owns its MPRIS name.
 
 ## Auto-update (implemented, free)
 
@@ -154,5 +219,5 @@ Removes the first-run warnings above. Independent of the (working) auto-updater.
   Sign the `.exe` in CI before upload.
 - **macOS Developer ID + notarization** — Apple Developer Program ($99/yr);
   `codesign` + `notarytool` in CI. Enables the `dmg` format cleanly.
-- **Other formats** — add `"wix"` (`.msi`), `"dmg"`, `"deb"` to the per-OS
-  `-f` list once their signing is in place.
+- **Other formats** — `"wix"` (`.msi`) is the remaining one worth adding once
+  its signing is in place. The Linux formats already ship; see below.

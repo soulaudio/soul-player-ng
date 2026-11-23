@@ -148,7 +148,7 @@ windows-registry = "0.6"
 # (from app/rune). name/version/authors come from [package] above.
 [package.metadata.packager]
 product-name = "Soul Player"
-identifier = "co.datadir.soulplayer"
+identifier = "co.soulaudio.soulplayer"
 # What a USER is shown, so it must not be the `[package] description` — that one
 # names the crate's role in this workspace ("Rune (native GPU) UI head for Soul
 # Player, over soul-player-host"), which is the right text for developers and
@@ -221,7 +221,17 @@ section = "sound"
 # Ubuntu 24.04+ and Debian 13 ship the `t64` names, Debian 12 and Ubuntu 22.04
 # the untagged ones. Listing both keeps one package installable on both.
 depends = [
-    "libc6",
+    # The glibc floor, stated rather than implied. Without a version here apt
+    # will happily install onto an older release and leave the user with a
+    # binary that cannot load — the .rpm refuses in that situation, because
+    # rpm derives versioned glibc requires from the ELF automatically, and the
+    # two package types should behave the same.
+    #
+    # 2.35 is the highest NON-WEAK glibc version the binary references (the
+    # 2.39 ones — pidfd_spawnp, pidfd_getpid — are weak and fall back).
+    # `packaging/build-linux.sh` re-derives that from the built binary and
+    # fails if it no longer matches, so this cannot quietly go stale.
+    "libc6 (>= 2.35)",
     "libgcc-s1",
     # Audio: cpal's ALSA backend (the Linux sink, shared and exclusive).
     "libasound2t64 | libasound2",
@@ -282,22 +292,27 @@ assets = [
 # wgpu and the tray `dlopen` at runtime. Those are the ones that turn into a
 # package that installs fine and then dies, so they are listed explicitly.
 [package.metadata.generate-rpm.requires]
-# Fedora's names, and the same derived set as the `deb` block above — see there
-# for why gtk3, appindicator, xdo and libGL are absent. rpm auto-generates
-# `Requires` from the ELF's NEEDED entries, which covers libc/libgcc/alsa/
-# dbus/openssl/xcb; these are the DLOPENED ones it cannot see, which are
-# exactly the libraries whose absence produces a package that installs fine and
-# then fails at runtime.
-fontconfig = "*"
-glib2 = "*"
-libxkbcommon = "*"
-libxkbcommon-x11 = "*"
-libwayland-client = "*"
-libX11 = "*"
-libX11-xcb = "*"
-libXcursor = "*"
-libXi = "*"
-vulkan-loader = "*"
+# SONAMEs, not package names. rpm resolves `libX11.so.6()(64bit)` through
+# whichever package *provides* that file, which differs per distro — Fedora
+# calls it `libX11`, openSUSE `libX11-6`. Naming packages made the .rpm
+# Fedora-only: `zypper install` refused it outright with "nothing provides
+# 'libX11'". This form installs on both, and is the same mechanism rpm's own
+# auto-generated requires use.
+#
+# Only the DLOPENED libraries are listed. rpm derives the rest from the ELF's
+# NEEDED entries by itself; these are the ones it cannot see, and so the ones
+# whose absence yields a package that installs cleanly and then fails at
+# runtime.
+"libfontconfig.so.1()(64bit)" = "*"
+"libgio-2.0.so.0()(64bit)" = "*"
+"libxkbcommon.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libX11.so.6()(64bit)" = "*"
+"libX11-xcb.so.1()(64bit)" = "*"
+"libXcursor.so.1()(64bit)" = "*"
+"libXi.so.6()(64bit)" = "*"
+"libvulkan.so.1()(64bit)" = "*"
 
 [package.metadata.packager.macos]
 # Ad-hoc signature ("-") until Developer ID signing + notarization (deferred). The linker

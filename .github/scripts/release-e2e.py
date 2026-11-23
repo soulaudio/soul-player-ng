@@ -75,7 +75,7 @@ for _stream in (sys.stdout, sys.stderr):
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 APP_NAME = "Soul Player"
-BUNDLE_ID = "co.datadir.soulplayer"
+BUNDLE_ID = "co.soulaudio.soulplayer"
 APPS_DIR = Path(os.environ.get("SOUL_E2E_APPS_DIR", "/Applications"))
 
 
@@ -304,7 +304,7 @@ def eject_dmg(mnt: Path) -> None:
     log(f"::warning::could not eject the DMG mounted at {mnt}")
 
 
-def install(installer: Path, work: Path, verify_sig: bool = True) -> Install:
+def install(installer: Path, work: Path, current_build: bool = True) -> Install:
     log(f"  installing {installer.name}")
     if IS_WIN:
         run([str(installer), "/S"], timeout=600)
@@ -335,10 +335,20 @@ def install(installer: Path, work: Path, verify_sig: bool = True) -> Install:
                 ["/usr/libexec/PlistBuddy", "-c", f"Print :{k}", str(plist)], text=True
             ).strip()
 
-        check(pb("CFBundleIdentifier") == BUNDLE_ID, f"bundle id {pb('CFBundleIdentifier')}")
+        # Only the build under test is held to the CURRENT bundle id. The
+        # previously published release is installed here as an upgrade source,
+        # and it legitimately carries whatever id it shipped with — asserting
+        # today's id against yesterday's artifact fails every time the
+        # identifier changes, which is exactly what happened when it became
+        # co.soulaudio.soulplayer.
+        if current_build:
+            check(
+                pb("CFBundleIdentifier") == BUNDLE_ID,
+                f"bundle id {pb('CFBundleIdentifier')}",
+            )
         inst.version = pb("CFBundleShortVersionString")
         inst.exe = app / "Contents" / "MacOS" / pb("CFBundleExecutable")
-        if verify_sig:  # releases before 0.4 carry only the linker's signature
+        if current_build:  # releases before 0.4 carry only the linker's signature
             run(["codesign", "--verify", "--deep", "--strict", str(app)])
     else:
         dest_dir = Path.home() / "Applications"
@@ -814,7 +824,7 @@ def main() -> int:
             env = AppEnv(work, "upgrade")  # one profile: config carries across versions
 
             section(f"upgrade {prev_version} → {a.version}")
-            old = install(prev_installer, work, verify_sig=False)
+            old = install(prev_installer, work, current_build=False)
             # The previous release is history: if it can't run on today's runner that is
             # reported, not fatal — but installing over it, and getting back to it, are.
             try:
@@ -852,7 +862,7 @@ def main() -> int:
 
             section(f"rollback {a.version} → {prev_version}")
             uninstall(new)
-            old = install(prev_installer, work, verify_sig=False)
+            old = install(prev_installer, work, current_build=False)
             check(old.version in ("", prev_version), f"after rollback the OS reports {old.version}")
             if prev_runs:  # it ran before the upgrade, so it must run on what the new one left
                 live_run(old, env, prev_version, library, secs=12, require_log=False)

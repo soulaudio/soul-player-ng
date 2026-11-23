@@ -50,13 +50,13 @@ archs="$(lipo -archs "$exe")"
 [ "$archs" = "$arch" ] || fail "binary architectures '$archs', expected '$arch'"
 ok "architecture $archs"
 
-[ "$(pb CFBundleIdentifier)" = "co.datadir.soulplayer" ] || fail "bundle id $(pb CFBundleIdentifier)"
+[ "$(pb CFBundleIdentifier)" = "co.soulaudio.soulplayer" ] || fail "bundle id $(pb CFBundleIdentifier)"
 [ "$(pb CFBundleShortVersionString)" = "$version" ] \
   || fail "bundle version $(pb CFBundleShortVersionString), expected $version"
 icon="$(pb CFBundleIconFile)"
 [ -f "$app/Contents/Resources/$icon" ] || [ -f "$app/Contents/Resources/$icon.icns" ] \
   || fail "icon $icon missing from Resources"
-ok "identity co.datadir.soulplayer $version, icon $icon"
+ok "identity co.soulaudio.soulplayer $version, icon $icon"
 
 if [ -n "$tarball" ]; then
   x="$(mktemp -d)"

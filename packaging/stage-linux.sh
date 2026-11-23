@@ -14,11 +14,16 @@
 # Usage: packaging/stage-linux.sh <path-to.deb> <staging-dir>
 set -euo pipefail
 
-deb=${1:?usage: stage-linux.sh <deb> <out-dir>}
+# Resolved to an absolute path up front: the `ar` fallback below runs after a
+# `cd` into the work dir, where a relative path no longer points anywhere. That
+# only shows on a host without `dpkg-deb` (which reads the file from the
+# original CWD), so it hides on Debian and Ubuntu and breaks everywhere else.
+deb=$(readlink -f "${1:?usage: stage-linux.sh <deb> <out-dir>}")
 out=${2:?usage: stage-linux.sh <deb> <out-dir>}
+[ -f "$deb" ] || { echo "no such .deb: $deb" >&2; exit 1; }
 
 bin_name=soul-player-rune
-app_id=co.datadir.soulplayer
+app_id=co.soulaudio.soulplayer
 
 rm -rf "$out"
 mkdir -p "$out"
