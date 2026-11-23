@@ -2114,21 +2114,26 @@ fn output_card(s: &State, p: &Palette) -> El {
             s.output_device.is_none(),
             p,
         ));
-    if s.output_devices.is_empty() {
+    for (i, name) in s.output_devices.iter().enumerate() {
+        let active = s.output_device.as_deref() == Some(name.as_str());
+        choices = choices.child(device_button(
+            name.clone(),
+            s.output_transports.get(name).map(transport_caption),
+            &format!("output-{i}"),
+            Some(name.clone()),
+            active,
+            p,
+        ));
+    }
+    // While the first off-thread enumeration is still in flight, show a "scanning" row
+    // (cpal's device enumeration can take a few seconds) so the list never looks mistakenly
+    // empty; once it lands, fall back to the "none detected" message if there really are none.
+    if s.output_devices_loading {
+        choices =
+            choices.child(text(t!("settings.scanningDevices").to_string()).color(p.text_secondary));
+    } else if s.output_devices.is_empty() {
         choices =
             choices.child(text(t!("settings.noOutputDevices").to_string()).color(p.text_secondary));
-    } else {
-        for (i, name) in s.output_devices.iter().enumerate() {
-            let active = s.output_device.as_deref() == Some(name.as_str());
-            choices = choices.child(device_button(
-                name.clone(),
-                s.output_transports.get(name).map(transport_caption),
-                &format!("output-{i}"),
-                Some(name.clone()),
-                active,
-                p,
-            ));
-        }
     }
     card("sp-stage-output", p)
         .child(stage_header(
@@ -4355,6 +4360,70 @@ mod tests {
             airplay.label.as_deref(),
             Some("Living Room, AirPlay · not bit-perfect"),
             "screen readers hear the warning too"
+        );
+    }
+
+    /// While the first (off-thread, possibly multi-second) device enumeration is still in
+    /// flight, the picker shows a "scanning" row rather than a mistaken "none detected"; once
+    /// it lands and the list is genuinely empty, it shows the real "none" message instead.
+    #[test]
+    fn output_picker_shows_a_scanning_row_until_devices_load() {
+        use super::output_card;
+        use crate::State;
+        use rune::{Cx, El, Env, Runtime};
+        let _locale = crate::config::use_test_locale("en");
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            output_card(s, &p)
+        }
+
+        // Still enumerating (empty list, loading) → a "scanning" row, NOT "none detected".
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.output_devices.clear();
+        s.output_devices_loading = true;
+        let mut rt = Runtime::new(
+            s,
+            test_view,
+            (900.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        let texts: Vec<String> = rt.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("Scanning")),
+            "a scanning row shows while the first enumeration is in flight: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("No output devices")),
+            "the 'none detected' message must NOT show while still scanning: {texts:?}"
+        );
+
+        // Enumeration landed, still empty → the real "none detected" message, no scanning row.
+        let mut s2 = State::new(soul_player_host::PlayerHandle::offline());
+        s2.output_devices.clear();
+        s2.output_devices_loading = false;
+        let mut rt2 = Runtime::new(
+            s2,
+            test_view,
+            (900.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt2.frame(0.0);
+        let texts2: Vec<String> = rt2.elements().into_iter().filter_map(|e| e.text).collect();
+        assert!(
+            texts2.iter().any(|t| t.contains("No output devices")),
+            "once loaded and empty, show the real 'none detected' message: {texts2:?}"
+        );
+        assert!(
+            !texts2.iter().any(|t| t.contains("Scanning")),
+            "no scanning row once the enumeration has landed: {texts2:?}"
         );
     }
 }
