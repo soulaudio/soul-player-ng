@@ -266,18 +266,22 @@ jobs:
       # `update::manager_owned`).
       - name: Package .deb + .rpm (Linux)
         if: runner.os == 'Linux'
-        env:
-          # Deliberately EMPTY: cargo-packager signs every package it builds
-          # with this key, and the staging step requires exactly one `.sig`
-          # under target/release — the AppImage's, which the updater verifies.
-          # A signed .deb would be a second one and break staging, and the
-          # signature would mean nothing anyway: apt and dnf authenticate
-          # through repository signing, not a per-file updater key.
-          CARGO_PACKAGER_SIGN_PRIVATE_KEY: ""
-          CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD: ""
         run: |
           cargo install cargo-generate-rpm --locked
-          packaging/build-linux.sh --skip-build
+          # The updater key is UNSET for this step, not blanked. cargo-packager
+          # signs every package it builds, and a second `.sig` under
+          # target/release breaks the staging step, which requires exactly one
+          # (the AppImage's — the only artifact the updater verifies). A signed
+          # .deb would mean nothing anyway: apt and dnf authenticate through
+          # repository signing.
+          #
+          # `env -u` rather than setting the variable to "": an empty value is
+          # still a value, and cargo-packager parses it as a key and dies with
+          # "Missing comment in secret key". That is exactly how the first run
+          # of this step failed.
+          env -u CARGO_PACKAGER_SIGN_PRIVATE_KEY \
+              -u CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD \
+              packaging/build-linux.sh --skip-build
           cp app/rune/target/release/*.deb dist/
           cp app/rune/target/generate-rpm/*.rpm dist/
           ls -la dist/
