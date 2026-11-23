@@ -85,6 +85,10 @@ struct Fixture {
 /// has no Layer-I encoder); Opus is 48 kHz and MP1 32 kHz, so the harness also
 /// exercises non-44.1 kHz native rates.
 #[rustfmt::skip]
+// AAC is deliberately absent: `soul-audio-core` gates its decoder behind an
+// opt-in `aac` feature (patent — Via LA) that this product does not enable, so
+// these fixtures cannot be decoded here. `testdata/` still carries them for a
+// build that does take the licence.
 const FIXTURES: &[Fixture] = &[
     Fixture { file: "tone.wav",        lossy: false, rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.99 },
     Fixture { file: "tone.flac",       lossy: false, rate: 44100, ch: 2, known_secs: 2.000, corr_floor: 0.99 },
