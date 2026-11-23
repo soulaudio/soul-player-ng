@@ -724,7 +724,6 @@ mod tests {
             ("mp2", "tone.mp2"),
             ("mp1", "tone.mp1"),
             ("m4a", "tone.m4a"),
-            ("aac", "tone.aac"),
             ("ogg", "tone-vorbis.ogg"),
             ("oga", "meta-oggflac.oga"),
             ("opus", "tone.opus"),
@@ -748,6 +747,25 @@ mod tests {
                 "{ext}: fixture {name} did not scan to one track"
             );
         }
+    }
+
+    /// `.aac` is NOT in the list above, and must not scan: AAC decode is gated
+    /// behind an opt-in feature (patent) this product does not enable, and the
+    /// importer refuses to list a file whose decoder was not compiled in.
+    ///
+    /// Asserted rather than merely omitted — a format that silently started
+    /// scanning again would put tracks in the user's library that fail the
+    /// moment they press play.
+    #[test]
+    fn aac_does_not_scan_while_its_decoder_is_gated_off() {
+        let root = tmpdir("fmt_aac_gated");
+        std::fs::copy(fixture("tone.aac"), root.join("clip.aac")).expect("copy tone.aac");
+        let lib = Library::scan(&root).unwrap();
+        assert_eq!(
+            lib.len(),
+            0,
+            "a .aac file must not be imported while AAC decode is gated off"
+        );
     }
 
     /// A minimal FLAC container with a VORBIS_COMMENT (title/artist/album) and a
