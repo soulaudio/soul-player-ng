@@ -2129,8 +2129,8 @@ fn output_card(s: &State, p: &Palette) -> El {
     // (cpal's device enumeration can take a few seconds) so the list never looks mistakenly
     // empty; once it lands, fall back to the "none detected" message if there really are none.
     if s.output_devices_loading {
-        choices = choices
-            .child(text(t!("settings.scanningDevices").to_string()).color(p.text_secondary));
+        choices =
+            choices.child(text(t!("settings.scanningDevices").to_string()).color(p.text_secondary));
     } else if s.output_devices.is_empty() {
         choices =
             choices.child(text(t!("settings.noOutputDevices").to_string()).color(p.text_secondary));
