@@ -3626,8 +3626,44 @@ pub(crate) fn update_status_text(s: &State) -> String {
         U::Downloading(f) => t!("settings.updateDownloading", version => f.version).to_string(),
         U::Ready(f) => t!("settings.updateReady", version => f.version).to_string(),
         U::Restarting(v) => t!("settings.updateRestarting", version => v).to_string(),
-        U::Failed(e) => t!("settings.updateFailed", error => e).to_string(),
+        // The raw error is in the log; the page says what it means for the user.
+        U::Failed(e) if e.to_lowercase().contains("signature") => {
+            t!("settings.updateFailedSignature").to_string()
+        }
+        U::Failed(_) => t!("settings.updateFailed").to_string(),
     }
+}
+
+/// Release notes as display lines: `(is_heading, text)`. Markdown-ish bullets
+/// (`-`, `*`, `•`) become "• item"; `#` headings and short non-bullet lines that
+/// introduce bullets ("New", "Fixed") are headings; anything else is prose.
+pub(crate) fn release_note_lines(notes: &str) -> Vec<(bool, String)> {
+    let lines: Vec<&str> = notes
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let bullet = |l: &str| -> Option<String> {
+        ["- ", "* ", "• "]
+            .iter()
+            .find_map(|p| l.strip_prefix(p))
+            .map(|rest| format!("• {}", rest.trim()))
+    };
+    lines
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            if let Some(b) = bullet(l) {
+                (false, b)
+            } else if l.starts_with('#') {
+                (true, l.trim_start_matches('#').trim().to_string())
+            } else {
+                let intro = l.chars().count() <= 40
+                    && lines.get(i + 1).is_some_and(|n| bullet(n).is_some());
+                (intro, (*l).to_string())
+            }
+        })
+        .collect()
 }
 
 /// "Last checked …", coarse and relative (no clock/timezone dependency).
@@ -3687,7 +3723,17 @@ fn updates_card(s: &State, p: &Palette) -> El {
                         .font(type_::SECTION)
                         .color(p.text_secondary),
                 )
-                .child(text(notes).font(type_::BODY).color(p.fg).wrap()),
+                .children(
+                    release_note_lines(&notes)
+                        .into_iter()
+                        .map(|(heading, line)| {
+                            if heading {
+                                text(line).font(type_::LABEL).color(p.text_secondary).wrap()
+                            } else {
+                                text(line).font(type_::BODY).color(p.fg).wrap()
+                            }
+                        }),
+                ),
         );
     }
     if !s.update.supported {
@@ -3718,7 +3764,7 @@ fn updates_card(s: &State, p: &Palette) -> El {
             support_button(
                 "check-updates",
                 t!("settings.checkNow").to_string(),
-                &icons::CHECK,
+                &icons::REFRESH,
                 p,
             )
             .on_press(crate::updater::check_now),
