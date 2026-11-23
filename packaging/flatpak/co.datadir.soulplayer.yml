@@ -1,0 +1,80 @@
+# Flatpak manifest for Soul Player.
+#
+# The app id is the packager `identifier` from app/rune/Cargo.toml, and it is
+# load-bearing in three places at once: Flatpak installs the desktop entry as
+# `$FLATPAK_ID.desktop`, its D-Bus policy auto-grants exactly one MPRIS name
+# (`org.mpris.MediaPlayer2.$FLATPAK_ID`), and the window's `app_id` has to equal
+# the entry's basename for a compositor to resolve it to an icon. The app reads
+# `FLATPAK_ID` at startup and uses it for all of those (see `desktop_id()`), so
+# the three agree by construction rather than by three files repeating a string.
+#
+# The binary is built OUTSIDE this manifest and installed as a prebuilt file.
+# Building Rust inside flatpak-builder would mean vendoring the whole crate
+# graph into a sources list, and would compile the app a second time in CI for
+# no benefit — the bytes we want to ship are the ones already built and tested.
+app-id: co.datadir.soulplayer
+# 26.08 is the current Freedesktop runtime (a new major lands each August with a
+# two-year support window).
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: soul-player-rune
+
+finish-args:
+  # Wayland first, with X11 only as a fallback: `fallback-x11` grants the X
+  # socket ONLY when Wayland is unavailable, which is what Flathub asks for from
+  # an app that speaks both (a blanket `--socket=x11` would hand over X access
+  # even in a pure Wayland session).
+  - --socket=wayland
+  - --socket=fallback-x11
+  # X11 shared memory. Without it the X fallback path renders, but slowly.
+  - --share=ipc
+  # Sound. `--socket=pulseaudio` also covers PipeWire's Pulse server, which is
+  # what a current desktop actually runs.
+  - --socket=pulseaudio
+  # Remote sources (the soul-server client), and nothing else — the in-app
+  # updater is disabled under Flatpak, where `flatpak update` owns updates.
+  - --share=network
+  # The OS keychain, for remote-source OAuth refresh tokens. A `--talk-name` and
+  # not a filesystem hole: the app asks the Secret Service for its own items.
+  - --talk-name=org.freedesktop.secrets
+  # The music library. Read-write rather than `:ro` because the managed-library
+  # organizer MOVES files into a path-template tree — a read-only grant would
+  # leave that feature visibly broken. Anything outside ~/Music is added by the
+  # user through the portal or Flatseal.
+  - --filesystem=xdg-music
+  # GPU access for wgpu, and raw ALSA for bit-perfect exclusive output.
+  #
+  # `--device=all` rather than the narrower `--device=dri` is a deliberate
+  # trade-off, and the one thing in this manifest a Flathub reviewer is likely
+  # to ask about. Exclusive output opens the card directly as `hw:CARD,DEV` after
+  # claiming it over D-Bus, which needs `/dev/snd`; `--socket=pulseaudio` alone
+  # can only ever reach the shared mixer. Since bit-perfect playback is the
+  # point of this player, shipping it broken by default would be the worse
+  # answer. Shared (non-exclusive) playback works fine without it, so a user who
+  # strips this permission in Flatseal loses exclusive mode and nothing else.
+  - --device=all
+
+modules:
+  - name: soul-player
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 soul-player-rune /app/bin/soul-player-rune
+      - install -Dm644 co.datadir.soulplayer.desktop
+        /app/share/applications/co.datadir.soulplayer.desktop
+      - install -Dm644 co.datadir.soulplayer.png
+        /app/share/icons/hicolor/128x128/apps/co.datadir.soulplayer.png
+      - install -Dm644 co.datadir.soulplayer.metainfo.xml
+        /app/share/metainfo/co.datadir.soulplayer.metainfo.xml
+    sources:
+      # Staged by `packaging/flatpak/stage.sh`, which takes the binary and the
+      # desktop entry/icon out of the built .deb so the Flatpak cannot drift
+      # from the other Linux packages.
+      - type: file
+        path: soul-player-rune
+      - type: file
+        path: co.datadir.soulplayer.desktop
+      - type: file
+        path: co.datadir.soulplayer.png
+      - type: file
+        path: co.datadir.soulplayer.metainfo.xml

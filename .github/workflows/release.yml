@@ -207,6 +207,20 @@ jobs:
         working-directory: app/rune
         run: cargo build --release --locked
 
+      # Strip before any package is built, so the AppImage, the .deb and the
+      # .rpm all carry the smaller binary. A full strip (symbols as well as
+      # debug info) takes ~23% off the binary and ~30% off the .deb. Done here
+      # rather than via `[profile.release]` because it is a Linux packaging
+      # decision: macOS keeps its symbols for the signed bundle's crash reports.
+      # Idempotent, so it does not matter if a later step strips again.
+      - name: Strip the Linux binary
+        if: runner.os == 'Linux'
+        run: |
+          before=$(stat -c%s app/rune/target/release/soul-player-rune)
+          strip app/rune/target/release/soul-player-rune
+          after=$(stat -c%s app/rune/target/release/soul-player-rune)
+          echo "stripped: $before -> $after bytes"
+
       - name: Package + updater-sign
         working-directory: app/rune
         run: cargo packager --release -f ${{ matrix.format }}
@@ -225,6 +239,25 @@ jobs:
           echo "binary needs $need"
           [ "$(printf '%s\nGLIBC_2.39\n' "$need" | sort -V | tail -1)" = "GLIBC_2.39" ] \
             || { echo "::error::binary needs $need, above the GLIBC_2.39 floor (Ubuntu 24.04)"; exit 1; }
+
+      # Distro-native packages, alongside the AppImage. For a lot of Linux users
+      # "not in my package manager" means "not available", so the AppImage alone
+      # is not distribution.
+      #
+      # These are NOT updater artifacts: `latest.json` keeps pointing at the
+      # AppImage, because that is the only layout the in-app updater can
+      # actually replace. A .deb/.rpm installs to /usr/bin, owned by root, so
+      # the app disables self-update there and defers to apt/dnf (see
+      # `update::manager_owned`).
+      - name: Package .deb + .rpm (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-generate-rpm --locked
+          packaging/build-linux.sh --skip-build
+          mkdir -p dist
+          cp app/rune/target/release/*.deb dist/
+          cp app/rune/target/generate-rpm/*.rpm dist/
+          ls -la dist/
 
       # Stage under a GitHub-safe name (so the manifest URL matches the uploaded asset)
       # and write the updater sidecar for latest.json.
