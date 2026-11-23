@@ -225,8 +225,14 @@ jobs:
         working-directory: app/rune
         run: cargo packager --release -f ${{ matrix.format }}
 
-      # The AppImage runs on any distro whose glibc is at least the build's. Keep the floor
-      # at Ubuntu 24.04 LTS (2.39). BOTH published releases predate this check and are built
+      # Keep the BUILD host at Ubuntu 24.04 LTS (2.39) so the binary never references a
+      # glibc newer than that. The effective RUNTIME floor is lower — 2.35, measured by
+      # installing and running on Ubuntu 22.04, Debian 12 and Ubuntu 24.04 — because the
+      # only 2.39 symbols the binary carries (`pidfd_spawnp`, `pidfd_getpid`, from Rust's
+      # process spawning) are WEAK, and glibc falls back when they are absent. This gate
+      # is therefore a ceiling on the build, not a claim about where it runs.
+      #
+      # BOTH published releases predate this check and are built
       # against 2.43 (new libm float symbols — asinf/acosf/atan2f/…), so neither v0.2.0 nor
       # v0.3.0 starts on 24.04: `libm.so.6: version 'GLIBC_2.43' not found`. That is the
       # whole reason this gate exists — the e2e's "previous release runs here" leg reports

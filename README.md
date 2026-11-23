@@ -15,8 +15,14 @@ Downloads are on the [releases page](https://github.com/soulaudio/soul-player-ng
 |---|---|---|
 | `.deb` | Debian 12+, Ubuntu 22.04+ | `apt upgrade` |
 | `.rpm` | Fedora, openSUSE, RHEL | `dnf upgrade` |
-| `.AppImage` | anything with glibc 2.39+ | the app itself |
+| `.AppImage` | anything with glibc 2.35+ | the app itself |
 | Flatpak | anything with Flatpak | `flatpak update` |
+
+The glibc floor is **2.35**, verified by installing and running on Ubuntu 22.04
+(2.35), Debian 12 (2.36) and Ubuntu 24.04 (2.39). The binary also references two
+glibc 2.39 symbols (`pidfd_spawnp`, `pidfd_getpid`, from Rust's process
+spawning), but they are *weak* — glibc falls back to the older path when they
+are absent, which is why older releases work.
 
 ```sh
 sudo apt install ./soul-player-rune_*_amd64.deb     # Debian / Ubuntu
