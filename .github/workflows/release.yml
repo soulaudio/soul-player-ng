@@ -310,6 +310,37 @@ jobs:
           cp app/rune/target/generate-rpm/*.rpm dist/
           ls -la dist/
 
+      # The screenshots the AppStream metadata points at. Flathub requires them
+      # to be reachable over HTTPS, and `co.datadir.soulplayer.metainfo.xml`
+      # names them under `releases/latest/download/`, so they have to ship as
+      # release assets or software centres show an app with no pictures.
+      #
+      # Rendered by the app itself (`--snap`, the same offscreen path the UI
+      # tests use) against the repo's own fixtures, so they always show the
+      # version being released rather than a screenshot someone took once. x86_64
+      # only: the two architectures render identically, and uploading both would
+      # collide on the asset name.
+      - name: Screenshots for the software centres (Linux x86_64)
+        if: matrix.target_key == 'linux-x86_64'
+        run: |
+          sudo apt-get install -y -o Acquire::Retries=3 xvfb xauth
+          shot() {
+            xvfb-run -a -s "-screen 0 1600x1000x24" \
+              env SOUL_PLAYER_FOLDER=testdata SOUL_PLAYER_NO_UPDATE=1 \
+              app/rune/target/release/soul-player-rune \
+                --snap "dist/screenshot-$1.png" --size 1400x900 ${2:+--scene "$2"}
+          }
+          shot library
+          shot albums albums
+          shot settings settings-music
+          # A zero-byte or missing file would publish a broken image, so check
+          # rather than trust the exit status of a GPU render under Xvfb.
+          for f in library albums settings; do
+            [ -s "dist/screenshot-$f.png" ] \
+              || { echo "::error::screenshot-$f.png was not rendered"; exit 1; }
+          done
+          ls -la dist/screenshot-*.png
+
       # The Flatpak, built from the SAME staged files the .rpm uses, so all four
       # Linux packages agree about the app's identity and icon.
       #
