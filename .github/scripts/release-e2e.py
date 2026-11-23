@@ -361,8 +361,20 @@ def install(installer: Path, work: Path, current_build: bool = True) -> Install:
         dest_dir = Path.home() / "Applications"
         dest_dir.mkdir(exist_ok=True)
         dest = dest_dir / "Soul-Player.AppImage"
-        shutil.copy2(installer, dest)
-        dest.chmod(0o755)
+        # Write beside the target and rename into place, rather than copying
+        # over it. Overwriting a file the kernel still holds as a running
+        # executable fails with ETXTBSY ("Text file busy"), and a previous
+        # scenario's app can still be exiting — the install-on-quit case
+        # especially, where the installer it spawns outlives the quit. A
+        # rename swaps the directory entry instead of the bytes, so a lingering
+        # process keeps its own inode and the new build lands atomically.
+        #
+        # This is what broke the aarch64 release e2e at the upgrade step, after
+        # six scenarios had passed.
+        staging = dest.with_name(dest.name + ".new")
+        shutil.copy2(installer, staging)
+        staging.chmod(0o755)
+        os.replace(staging, dest)
         inst = Install()
         inst.exe = dest
         m = re.search(r"_(\d+\.\d+\.\d+)_", installer.name)
