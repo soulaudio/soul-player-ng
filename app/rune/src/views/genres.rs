@@ -151,7 +151,7 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     let search = crate::views::library::search_box(
         &s.genre_search,
         "genres-search",
-        t!("genres.searchPlaceholder").to_string(),
+        t!("genres.searchPlaceholder", count => genres.len()).to_string(),
         p,
         |st: &mut State| &mut st.genre_search,
     );
