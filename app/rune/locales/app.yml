@@ -1730,6 +1730,13 @@ settings.noOutputDevices:
   zh: '未检测到输出设备。'
   cs: 'Nebyla zjištěna žádná výstupní zařízení.'
   ja: '出力デバイスが見つかりません。'
+settings.scanningDevices:
+  en: 'Scanning for output devices…'
+  de: 'Suche nach Ausgabegeräten…'
+  es: 'Buscando dispositivos de salida…'
+  zh: '正在扫描输出设备…'
+  cs: 'Vyhledávání výstupních zařízení…'
+  ja: '出力デバイスを検索中…'
 settings.transportBuiltIn:
   en: 'Built-in'
   de: 'Integriert'

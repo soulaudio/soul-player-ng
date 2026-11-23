@@ -542,9 +542,15 @@ struct State {
     /// The chosen output device (persisted), rendered by Settings → Output;
     /// `None` = follow the system default. Applies to the next playback session.
     output_device: Option<String>,
-    /// The output devices enumerated from the host at startup — the picker's
-    /// choices. Empty on a host that exposes none (headless / no audio).
+    /// The output devices enumerated from the host — the picker's choices. Enumerated
+    /// OFF the UI thread (cpal's WASAPI enumeration can take seconds on a Bluetooth-heavy
+    /// system) and refreshed on a loop, so this starts seeded with just the selected device
+    /// and fills in once the first enumeration lands.
     output_devices: Vec<String>,
+    /// True until the first off-thread device enumeration has landed — the picker shows a
+    /// "scanning" row instead of an empty/"none" state while the (possibly multi-second)
+    /// enumeration is still in flight, so the list never looks mistakenly empty.
+    output_devices_loading: bool,
     /// How each output device is connected (AirPlay / Bluetooth / USB …), filled in
     /// off the UI thread after startup (macOS; empty elsewhere) — lets the picker flag
     /// devices that can never be bit-perfect before the user picks one.
@@ -755,9 +761,13 @@ impl State {
         // live availability). Counts are 0 until the first rescan's WatchUpdate —
         // live edits refresh the full status via apply_watch.
         let sources = host.sources();
-        // Enumerate the output devices once (computed before `host` is moved into
-        // the struct) for the Settings → Output picker.
-        let output_devices = host.output_devices();
+        // The output-device list is enumerated OFF the UI thread after the window opens and
+        // refreshed on a gentle loop (see the device-refresh thread in `main`): cpal's WASAPI
+        // enumeration can block for several seconds on a Bluetooth endpoint, so it must never
+        // sit on the init/first-paint path, and polling it keeps the picker current when a
+        // device is plugged/unplugged. Seed with the currently-selected device so the picker
+        // shows that one immediately; the refresh fills in the rest a moment later.
+        let output_devices: Vec<String> = config::load_output_device().into_iter().collect();
         // Restore the persisted ReplayGain choice (defaults: Off, 0 dB); main()
         // has already pushed the same value to the host before the first spawn.
         let (replaygain_mode, replaygain_preamp) = config::load_replaygain();
@@ -864,6 +874,9 @@ impl State {
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
             output_devices,
+            // Cleared when the first off-thread enumeration lands (see the device-refresh
+            // loop in `main`); until then the picker shows a "scanning" row.
+            output_devices_loading: true,
             output_transports: Default::default(),
             pending_open: Vec::new(),
             startup_scan_pending: false,
@@ -1162,6 +1175,14 @@ pub(crate) fn set_settings_tab(s: &mut State, tab: SettingsTab) {
 /// source's health. A tradeoff between freshness and not hammering a remote
 /// with pings — the program spec calls for "~30 s".
 const REMOTE_HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How often the device-refresh loop (spawned in `main`) re-enumerates the output devices so
+/// the picker reflects a plugged/unplugged device. Gentle enough not to hammer the audio stack,
+/// frequent enough that an unplug updates the list within a few seconds. Self-paced (the loop
+/// sleeps this long AFTER each enumeration), so a slow cpal enumeration can never overlap itself
+/// — and the gap keeps the background enumeration from contending with a live device-open (cpal's
+/// WASAPI enumeration can be multi-second on a Bluetooth-heavy system).
+const OUTPUT_DEVICE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Refresh every remote source's health off the UI thread. Mirrors
 /// [`scan_in_background`]'s shape (and the `connect_remote_source` thread): the
@@ -4085,13 +4106,39 @@ fn main() -> anyhow::Result<()> {
         let qh = ah.clone();
         signal_quit::spawn(move |_| qh.quit());
     }
-    // Output-device transports (≈0.2 s of system_profiler on macOS) — off the UI thread.
+    // Output devices + their transports, enumerated OFF the UI thread and refreshed on a gentle
+    // self-paced loop. cpal's WASAPI enumeration can block for several seconds (a Bluetooth
+    // endpoint especially), so it must never sit on the init/first-paint path — that was the
+    // multi-second blocked first paint. The loop then re-enumerates so plugging or unplugging a
+    // device updates the picker automatically; it only posts an update when the list actually
+    // changed, so it never churns the UI, and it sleeps AFTER each pass so a slow enumeration
+    // can't overlap itself.
     {
-        let th = ah.clone();
+        let dh = ah.clone();
+        let dev_host = host.clone();
         std::thread::spawn(move || {
-            let t = soul_player_host::device_transport::query();
-            if !t.is_empty() {
-                th.update(move |s: &mut State, _tx: &mut Tx| s.output_transports = t);
+            type DeviceSnapshot = (
+                Vec<String>,
+                std::collections::HashMap<String, soul_player_host::device_transport::Transport>,
+            );
+            let mut last: Option<DeviceSnapshot> = None;
+            loop {
+                let names = dev_host.output_devices();
+                let transports = soul_player_host::device_transport::query();
+                let snapshot: DeviceSnapshot = (names, transports);
+                if last.as_ref() != Some(&snapshot) {
+                    last = Some(snapshot.clone());
+                    let (names, transports) = snapshot;
+                    dh.update(move |s: &mut State, _tx: &mut Tx| {
+                        s.output_devices = names;
+                        if !transports.is_empty() {
+                            s.output_transports = transports;
+                        }
+                        // The first enumeration has landed — stop showing the "scanning" row.
+                        s.output_devices_loading = false;
+                    });
+                }
+                std::thread::sleep(OUTPUT_DEVICE_REFRESH_INTERVAL);
             }
         });
     }

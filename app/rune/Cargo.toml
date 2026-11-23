@@ -36,6 +36,13 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.soul-audio-engine]
 opt-level = 3
+# cpal drives the WASAPI/CoreAudio/ALSA device enumeration + open. Unoptimized, its
+# format-probing loops make enumerating + opening a device take seconds in a debug build
+# (worst on a Bluetooth-heavy Windows setup), which stalls the output-device switch and the
+# first-paint device list. Release already optimizes it; match that in dev so the device open
+# is realistic while testing. OS-call latency (WASAPI endpoint activation) is unaffected.
+[profile.dev.package.cpal]
+opt-level = 3
 
 [dependencies]
 rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a74164bd132965de88830", features = ["native-file-dialog"] }
