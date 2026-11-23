@@ -2204,3 +2204,10 @@ settings.close:
   zh: '关闭'
   cs: 'Zavřít'
   ja: '閉じる'
+settings.exclusiveUnsupported:
+  en: 'shared — bit-perfect exclusive output is not available on this platform yet'
+  de: 'geteilt — bitgenaue exklusive Ausgabe ist auf dieser Plattform noch nicht verfügbar'
+  es: 'compartido: la salida exclusiva bit-perfect aún no está disponible en esta plataforma'
+  zh: '共享 — 此平台尚不支持比特完美独占输出'
+  cs: 'sdílený — bitově přesný exkluzivní výstup zatím na této platformě není dostupný'
+  ja: '共有 — このプラットフォームではビットパーフェクトの排他出力はまだ利用できません'
