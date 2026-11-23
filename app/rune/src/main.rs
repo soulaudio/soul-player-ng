@@ -330,6 +330,12 @@ struct State {
     /// target album/artist's custom cover (non-destructively). Reset only by
     /// `edit_artwork_control`'s pick and `close_artwork_crop`.
     artwork_crop: Option<crate::views::detail_page::ArtworkCrop>,
+    /// The "Edit Artwork" MANAGE dialogue (the old app's 'select' state), or
+    /// `None` (closed). `Some(target)` is opened by the hero's pencil control and
+    /// offers Change (pick an image -> the crop step) and, when a custom cover is
+    /// already set, Delete. `artwork_edit` and `artwork_crop` are never both
+    /// `Some`: Change clears this and sets `artwork_crop`.
+    artwork_edit: Option<crate::views::detail_page::ArtworkTarget>,
     now_playing_id: Option<u32>,
     position_secs: f64,
     duration_secs: f64,
@@ -793,6 +799,7 @@ impl State {
             add_to_playlist_buf: rune::TextEdit::new(""),
             add_to_playlist_search: rune::TextEdit::new(""),
             artwork_crop: None,
+            artwork_edit: None,
             now_playing_id: None,
             position_secs: 0.0,
             duration_secs: 0.0,
@@ -1688,6 +1695,12 @@ pub(crate) fn close_add_to_playlist(s: &mut State) {
 /// Mirrors [`close_add_to_playlist`].
 pub(crate) fn close_artwork_crop(s: &mut State) {
     s.artwork_crop = None;
+}
+
+/// Close the "Edit Artwork" MANAGE dialogue (Cancel, Escape / outside press, or
+/// after Change hands off to the crop step / Delete finishes).
+pub(crate) fn close_artwork_edit(s: &mut State) {
+    s.artwork_edit = None;
 }
 
 /// Choose + persist the output device (used by the Output settings buttons).
@@ -3759,6 +3772,21 @@ fn scene_artwork_crop(s: &mut State) {
     });
 }
 
+/// The "Edit Artwork" MANAGE dialogue (the pencil's select step: Change/Cancel,
+/// no cover set so no Delete) for the a11y sweep + snapshots.
+fn scene_artwork_edit(s: &mut State) {
+    use views::detail_page::ArtworkTarget;
+    let album = s
+        .library
+        .iter()
+        .find_map(|t| t.album.clone())
+        .filter(|a| !a.is_empty())
+        .unwrap_or_else(|| "Album".to_string());
+    s.route = Route::Album;
+    s.open_album = Some(album.clone());
+    s.artwork_edit = Some(ArtworkTarget::Album(album));
+}
+
 /// The title-bar remote-health popover, over a seeded online remote server, so
 /// the indicator renders and the popover opens.
 fn scene_remote_health_open(s: &mut State) {
@@ -3938,6 +3966,7 @@ fn main() -> anyhow::Result<()> {
             ("playlist-detail", scene_playlist_detail),
             ("add-to-playlist-open", scene_add_to_playlist_open),
             ("artwork-crop", scene_artwork_crop),
+            ("artwork-edit", scene_artwork_edit),
             ("remote-health-open", scene_remote_health_open),
         ],
         ..AppSpec::new(
@@ -5606,11 +5635,18 @@ mod tests {
             "no custom cover yet"
         );
 
+        // The pencil opens the MANAGE dialogue; Change opens the file dialog.
         click_key(&mut rt, "album-edit-artwork");
         rt.frame(0.0);
-        let (kind, _opts) = rt
-            .file_dialog()
-            .expect("Edit Artwork opens an image file dialog");
+        assert!(
+            rt.state.artwork_edit.is_some() && rt.find("artwork-edit-dialog").is_some(),
+            "the pencil opens the manage dialogue"
+        );
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "artwork-edit-change");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Change opens an image file dialog");
         assert_eq!(kind, FileDialogKind::Open);
         rt.resolve_file_dialog(Some(write_temp_real_png())).unwrap();
         rt.frame(0.0);
@@ -5679,16 +5715,19 @@ mod tests {
         };
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
+        // Pencil -> the manage dialogue (a fresh modal: settle before its buttons)
+        // -> Change -> the file dialog.
         click_key(&mut rt, "album-edit-artwork");
         rt.frame(0.0);
-        let (kind, _opts) = rt
-            .file_dialog()
-            .expect("Edit Artwork opens an image file dialog");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "artwork-edit-change");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Change opens an image file dialog");
         assert_eq!(kind, FileDialogKind::Open);
         rt.resolve_file_dialog(Some(write_temp_real_png())).unwrap();
         rt.frame(0.0);
-        // The modal is a fresh mid-session insert (and animates from opacity 0),
-        // so settle before driving its buttons.
+        // The crop modal is also a fresh insert, so settle before driving it.
         rt.settle_all();
         rt.frame(0.0);
         rt
@@ -5876,12 +5915,18 @@ mod tests {
             overlay_opacity(&rt)
         );
 
-        // 2. Click Edit Artwork -> an image file dialog -> pick -> the crop dialogue opens.
+        // 2. Pencil -> the manage dialogue -> Change -> file dialog -> pick -> crop.
         click_key(&mut rt, "artist-edit-artwork");
         rt.frame(0.0);
-        let (kind, _opts) = rt
-            .file_dialog()
-            .expect("Edit Artwork opens an image file dialog");
+        assert!(
+            rt.state.artwork_edit.is_some(),
+            "the pencil opens the manage dialogue"
+        );
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "artwork-edit-change");
+        rt.frame(0.0);
+        let (kind, _opts) = rt.file_dialog().expect("Change opens an image file dialog");
         assert_eq!(kind, FileDialogKind::Open);
         rt.resolve_file_dialog(Some(write_temp_real_png())).unwrap();
         rt.frame(0.0);
@@ -5920,17 +5965,17 @@ mod tests {
         );
     }
 
-    /// Removing a cover lives INSIDE the edit dialogue (a trash control), not on
-    /// the hover overlay: with a cover already set, opening Edit Artwork offers a
-    /// Remove control that clears the cover and closes. Without a cover, no Remove
-    /// control is shown (guarded by the crop-dialogue snap scene's a11y sweep).
+    /// Deleting a cover lives in the MANAGE dialogue the pencil opens (not on the
+    /// hover overlay, not the crop step): with a cover already set, the dialogue
+    /// offers Delete, which clears the cover and closes. Without a cover, no Delete
+    /// control is shown (the manage snap scene's a11y sweep covers Change/Cancel).
     #[test]
-    fn e2e_crop_dialogue_remove_clears_an_existing_cover() {
+    fn e2e_manage_dialogue_delete_clears_an_existing_cover() {
         let _g = config::use_test_config_dir();
         let album_name = first_album_name(&populated_state());
 
         let mut s = populated_state();
-        // Pre-set a custom cover so the edit dialogue offers Remove.
+        // Pre-set a custom cover so the manage dialogue offers Delete.
         assert!(
             s.covers
                 .set_album_cover(&album_name, &write_temp_real_png()),
@@ -5947,29 +5992,30 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
 
-        // Open the crop dialogue (Edit Artwork -> pick an image).
+        // The pencil opens the manage dialogue, which offers Delete (a cover is set).
         click_key(&mut rt, "album-edit-artwork");
         rt.frame(0.0);
-        rt.resolve_file_dialog(Some(write_temp_real_png())).unwrap();
-        rt.frame(0.0);
-        rt.settle_all();
-        rt.frame(0.0);
-        assert!(rt.state.artwork_crop.is_some(), "the crop dialogue is open");
         assert!(
-            rt.find("artwork-crop-remove").is_some(),
-            "the dialogue offers Remove because a cover is set"
+            rt.state.artwork_edit.is_some(),
+            "the pencil opens the manage dialogue"
+        );
+        assert!(
+            rt.find("artwork-edit-delete").is_some(),
+            "the dialogue offers Delete because a cover is set"
         );
 
-        // Click Remove -> the cover is cleared and the dialogue closes.
-        click_key(&mut rt, "artwork-crop-remove");
+        // Click Delete -> the cover is cleared and the dialogue closes.
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "artwork-edit-delete");
         rt.frame(0.0);
         assert!(
-            rt.state.artwork_crop.is_none(),
-            "removing closes the dialogue"
+            rt.state.artwork_edit.is_none(),
+            "deleting closes the dialogue"
         );
         assert!(
             rt.state.covers.album_cover_path(&album_name).is_none(),
-            "Remove cleared the custom cover"
+            "Delete cleared the custom cover"
         );
     }
 
@@ -14364,6 +14410,7 @@ mod tests {
         ("playlist-detail", scene_playlist_detail),
         ("add-to-playlist-open", scene_add_to_playlist_open),
         ("artwork-crop", scene_artwork_crop),
+        ("artwork-edit", scene_artwork_edit),
         ("remote-health-open", scene_remote_health_open),
     ];
 

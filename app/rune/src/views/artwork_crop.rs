@@ -16,13 +16,16 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
-use rune::{Color, Cursor, Cx, Drag, El, Phase, SurfaceFit, col, el, icon, row, text};
+use rune::{
+    Color, Cursor, Cx, Drag, El, FileDialogOptions, Phase, SurfaceFit, Tx, col, el, icon, row, text,
+};
 
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::detail_page::ArtworkCrop;
+use crate::views::detail_page::{ArtworkCrop, ArtworkTarget};
 use crate::views::icons;
+use crate::views::player::cover_from_path;
 use crate::views::slider::slider;
 
 /// The pan/zoom VIEW area side, in points (the square window the image shows
@@ -42,8 +45,8 @@ const MAX_ZOOM: f32 = 6.0;
 /// The cropped cover is re-encoded at this side, in pixels — generous for the
 /// 176 pt detail hero and the grid cards while staying a small PNG.
 const OUTPUT_PX: u32 = 512;
-/// The round in-dialogue icon button side, in points (the trash control).
-const ROUND_BTN: f32 = 36.0;
+/// The current-artwork preview side in the manage ('select') dialogue, in points.
+const MANAGE_PREVIEW: f32 = 140.0;
 
 thread_local! {
     /// The image offset at the moment a pan drag started. `Drag::dx/dy` are the
@@ -102,19 +105,25 @@ fn zoom01(crop: &ArtworkCrop) -> f32 {
     ((crop.scale - min) / (max - min)).clamp(0.0, 1.0)
 }
 
-/// Clear the crop target's custom cover (back to the generated/embedded art) and
-/// close the dialogue. The in-dialogue trash control calls this; it is only shown
-/// when the target already has a cover to remove.
-fn remove_cover(s: &mut State) {
-    if let Some(crop) = s.artwork_crop.as_ref() {
-        let target = crop.target.clone();
-        let old = target.cover_path(s);
-        target.clear_cover(s);
-        if let Some(old) = old {
-            s.art.forget_path(&old);
-        }
+/// Delete `target`'s custom cover (back to the generated/embedded art) and close
+/// the manage dialogue. The dialogue's Delete button calls this; it is only shown
+/// when a cover is actually set.
+fn delete_cover(s: &mut State, target: &ArtworkTarget) {
+    let old = target.cover_path(s);
+    target.clear_cover(s);
+    if let Some(old) = old {
+        s.art.forget_path(&old);
     }
-    crate::close_artwork_crop(s);
+    crate::close_artwork_edit(s);
+}
+
+/// Cancel the crop step: discard the pan/zoom and return to the manage dialogue
+/// (the old app's crop "Back"), so the user lands back on Change/Delete rather
+/// than all the way out.
+fn crop_cancel(s: &mut State) {
+    let target = s.artwork_crop.as_ref().map(|c| c.target.clone());
+    s.artwork_crop = None;
+    s.artwork_edit = target;
 }
 
 /// Apply one pan-drag event to the live offset: anchor at `Down`, then add the
@@ -197,31 +206,6 @@ fn footer_button(
     b.on_press(on_press)
 }
 
-/// A round icon button, [`ROUND_BTN`] wide — the in-dialogue trash (remove)
-/// control.
-fn round_icon_button(
-    key: &str,
-    label: String,
-    glyph: &'static rune::Icon,
-    p: &Palette,
-    on_press: impl Fn(&mut State) + 'static,
-) -> El {
-    el().key(key.to_string())
-        .role("button")
-        .label(label.clone())
-        .help(label)
-        .focusable(true)
-        .size(ROUND_BTN, ROUND_BTN)
-        .center()
-        .radius(radius::FULL)
-        .fill(p.muted)
-        .cursor(Cursor::Pointer)
-        .hover(p.fg.alpha(fx::HOVER))
-        .press(p.fg.alpha(fx::PRESS))
-        .child(icon(glyph, 18.0).color(p.text_secondary))
-        .on_press(on_press)
-}
-
 /// The pan/zoom VIEW: the dimmed full image behind a bright, framed cut-out, all
 /// panning together under one `on_drag`.
 fn crop_view(s: &State, crop: &ArtworkCrop, p: &Palette) -> El {
@@ -264,11 +248,156 @@ fn crop_view(s: &State, crop: &ArtworkCrop, p: &Palette) -> El {
         .on_drag(|st: &mut State, d: &mut Drag, _tx| pan(st, d))
 }
 
-/// The crop dialogue, mounted in `main.rs`'s overlay layer. `None` while
-/// `State::artwork_crop` is `None` (closed).
+/// The Edit-Artwork dialogue, mounted in `main.rs`'s overlay layer: the MANAGE
+/// ('select') step ([`State::artwork_edit`], Change/Delete) or, once an image is
+/// chosen, the CROP step ([`State::artwork_crop`]). `None` when both are closed.
 pub fn overlay(s: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
-    let crop = s.artwork_crop.as_ref()?;
+    if let Some(crop) = s.artwork_crop.as_ref() {
+        return Some(crop_dialogue(s, crop, p, cx));
+    }
+    s.artwork_edit
+        .as_ref()
+        .map(|target| manage_dialogue(s, p, cx, target))
+}
 
+/// The MANAGE ('select') dialogue the hero pencil opens: a preview of the current
+/// artwork, then Change (pick an image, then the crop step) and, when a cover is
+/// already set, Delete, plus Cancel.
+fn manage_dialogue(s: &State, p: &Palette, cx: &Cx<State>, target: &ArtworkTarget) -> El {
+    let corner = if target.is_circular() {
+        MANAGE_PREVIEW * 0.5
+    } else {
+        radius::MD
+    };
+    // Preview: the current custom cover if set, else a muted "upload" placeholder.
+    let preview: El = match target.cover_path(s) {
+        Some(path) => el()
+            .key("artwork-edit-preview")
+            .size(MANAGE_PREVIEW, MANAGE_PREVIEW)
+            .radius(corner)
+            .clip_rounded(corner)
+            .child(cover_from_path(
+                s,
+                &path,
+                MANAGE_PREVIEW,
+                corner,
+                p,
+                cx.env().scale,
+            )),
+        None => el()
+            .key("artwork-edit-preview")
+            .size(MANAGE_PREVIEW, MANAGE_PREVIEW)
+            .radius(corner)
+            .fill(p.muted)
+            .center()
+            .child(icon(&icons::UPLOAD, (MANAGE_PREVIEW * 0.34).round()).color(p.text_secondary)),
+    };
+
+    let mut actions = col()
+        .key("artwork-edit-actions")
+        .w_full()
+        .gap(space::SM)
+        .child(choose_image_button(target.clone(), p));
+    if target.cover_path(s).is_some() {
+        let target_del = target.clone();
+        actions = actions.child(footer_button(
+            "artwork-edit-delete",
+            t!("artwork.remove").to_string(),
+            false,
+            p,
+            move |st: &mut State| delete_cover(st, &target_del),
+        ));
+    }
+    actions = actions.child(footer_button(
+        "artwork-edit-cancel",
+        t!("common.cancel").to_string(),
+        false,
+        p,
+        |st: &mut State| crate::close_artwork_edit(st),
+    ));
+
+    col()
+        .key("artwork-edit-modal")
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .center()
+        .fill(Color::BLACK.alpha(0.45))
+        .child(
+            col()
+                .key("artwork-edit-dialog")
+                .fill(p.card)
+                .radius(radius::LG)
+                .border(1.0, p.border)
+                .padding(space::LG)
+                .gap(space::MD)
+                .center()
+                .modal(true, crate::close_artwork_edit)
+                .child(
+                    text(t!("artwork.cropTitle").to_string())
+                        .font(type_::TITLE)
+                        .color(p.fg),
+                )
+                .child(preview)
+                .child(actions),
+        )
+}
+
+/// The primary "Change Image" button: opens an image file dialog and, on a pick,
+/// reads the image size and hands off to the CROP step (`State::artwork_crop`),
+/// leaving the manage dialogue.
+fn choose_image_button(target: ArtworkTarget, p: &Palette) -> El {
+    el().key("artwork-edit-change")
+        .role("button")
+        .label(t!("artwork.change").to_string())
+        .focusable(true)
+        .w_full()
+        .px(space::MD)
+        .py(space::XS)
+        .radius(radius::SM)
+        .fill(p.primary)
+        .cursor(Cursor::Pointer)
+        .hover(p.bg.alpha(fx::HOVER_FILL))
+        .press(p.bg.alpha(fx::PRESS_FILL))
+        .center()
+        .child(text(t!("artwork.change").to_string()).color(p.bg))
+        .on_press_tx(move |_s: &mut State, tx: &mut Tx| {
+            let target = target.clone();
+            tx.open_file(
+                FileDialogOptions {
+                    title: t!("artwork.editDialog").to_string(),
+                    ..Default::default()
+                }
+                .filter(
+                    "Images (*.jpg, *.jpeg, *.png, *.webp, *.gif)",
+                    &["jpg", "jpeg", "png", "webp", "gif"],
+                ),
+                move |s: &mut State, result, _tx| {
+                    let Ok(Some(path)) = result else {
+                        return;
+                    };
+                    // Header-only size read; a file we can't measure isn't croppable.
+                    let Ok((src_w, src_h)) = image::image_dimensions(&path) else {
+                        return;
+                    };
+                    let scale = FRAME / (src_w.min(src_h).max(1) as f32);
+                    s.artwork_crop = Some(ArtworkCrop {
+                        target: target.clone(),
+                        source: path,
+                        src_w,
+                        src_h,
+                        scale,
+                        offset: (0.0, 0.0),
+                    });
+                    s.artwork_edit = None; // leave manage, enter crop
+                },
+            );
+        })
+}
+
+/// The CROP dialogue: pan/zoom the chosen image behind the frame, then Set as
+/// cover (store) or Cancel (back to the manage step).
+fn crop_dialogue(s: &State, crop: &ArtworkCrop, p: &Palette, cx: &Cx<State>) -> El {
     // Zoom is a continuous slider (the same hand-built `slider` as seek/volume):
     // `-` at the left, `+` at the right as static end-caps, the value mapped to
     // the live scale between the cover scale and `MAX_ZOOM`× it.
@@ -290,81 +419,57 @@ pub fn overlay(s: &State, p: &Palette, cx: &Cx<State>) -> Option<El> {
         ))
         .child(icon(&icons::PLUS, 16.0).color(p.text_secondary));
 
-    // A trash control to remove the current cover lives in the dialogue (not on
-    // the hover overlay), shown only when the target already has one. A same-size
-    // spacer keeps Cancel/Set-as-cover parked right when there is nothing to remove.
-    let remove_slot: El = if crop.target.cover_path(s).is_some() {
-        round_icon_button(
-            "artwork-crop-remove",
-            t!("artwork.remove").to_string(),
-            &icons::TRASH,
-            p,
-            remove_cover,
-        )
-    } else {
-        el().key("artwork-crop-remove-spacer")
-            .size(ROUND_BTN, ROUND_BTN)
-    };
-
     let footer = row()
         .key("artwork-crop-footer")
         .w_full()
         .center_y()
         .justify_between()
-        .child(remove_slot)
-        .child(
-            row()
-                .gap(space::SM)
-                .center_y()
-                .child(footer_button(
-                    "artwork-crop-cancel",
-                    t!("common.cancel").to_string(),
-                    false,
-                    p,
-                    |st: &mut State| crate::close_artwork_crop(st),
-                ))
-                .child(footer_button(
-                    "artwork-crop-confirm",
-                    t!("artwork.setCover").to_string(),
-                    true,
-                    p,
-                    confirm,
-                )),
-        );
+        .child(footer_button(
+            "artwork-crop-cancel",
+            t!("common.cancel").to_string(),
+            false,
+            p,
+            crop_cancel,
+        ))
+        .child(footer_button(
+            "artwork-crop-confirm",
+            t!("artwork.setCover").to_string(),
+            true,
+            p,
+            confirm,
+        ));
 
-    Some(
-        col()
-            .key("artwork-crop-modal")
-            .absolute(0.0, 0.0)
-            .w_full()
-            .h_full()
-            .center()
-            .fill(Color::BLACK.alpha(0.45))
-            .child(
-                col()
-                    .key("artwork-crop-dialog")
-                    .fill(p.card)
-                    .radius(radius::LG)
-                    .border(1.0, p.border)
-                    .padding(space::LG)
-                    .gap(space::MD)
-                    .center()
-                    .modal(true, crate::close_artwork_crop)
-                    .child(
-                        text(t!("artwork.cropTitle").to_string())
-                            .font(type_::TITLE)
-                            .color(p.fg),
-                    )
-                    .child(
-                        text(t!("artwork.cropHint").to_string())
-                            .font(type_::CAPTION)
-                            .color(p.text_secondary),
-                    )
-                    .child(crop_view(s, crop, p))
-                    .child(zoom_row)
-                    .child(footer),
-            ),
-    )
+    col()
+        .key("artwork-crop-modal")
+        .absolute(0.0, 0.0)
+        .w_full()
+        .h_full()
+        .center()
+        .fill(Color::BLACK.alpha(0.45))
+        .child(
+            col()
+                .key("artwork-crop-dialog")
+                .fill(p.card)
+                .radius(radius::LG)
+                .border(1.0, p.border)
+                .padding(space::LG)
+                .gap(space::MD)
+                .center()
+                .modal(true, crop_cancel)
+                .child(
+                    text(t!("artwork.cropTitle").to_string())
+                        .font(type_::TITLE)
+                        .color(p.fg),
+                )
+                .child(
+                    text(t!("artwork.cropHint").to_string())
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary),
+                )
+                .child(crop_view(s, crop, p))
+                .child(zoom_row)
+                .child(footer),
+        )
 }
 
 /// Confirm handler: crop the source to a square per the live pan/zoom, store it
