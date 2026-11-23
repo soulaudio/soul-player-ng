@@ -1073,6 +1073,14 @@ pub(crate) fn apply_startup_scan(s: &mut State, up: WatchUpdate) {
         "startup scan landed"
     );
     s.startup_scan_pending = false;
+    // Pre-warm the audio pipeline now that a library exists: spawn the actor so the output
+    // device opens in the BACKGROUND (the device open is seconds on a slow WASAPI/Bluetooth
+    // endpoint), instead of making the user's FIRST play wait the whole open. Non-blocking —
+    // it just spawns the pump thread; the open happens there, off the UI thread. No-op if the
+    // library is empty (nothing to play yet).
+    if !s.library.is_empty() {
+        s.host.prewarm();
+    }
     let waiting = std::mem::take(&mut s.pending_open);
     if !waiting.is_empty() {
         open_files::open(s, waiting);
