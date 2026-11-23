@@ -536,9 +536,15 @@ struct State {
     /// The chosen output device (persisted), rendered by Settings → Output;
     /// `None` = follow the system default. Applies to the next playback session.
     output_device: Option<String>,
-    /// The output devices enumerated from the host at startup — the picker's
-    /// choices. Empty on a host that exposes none (headless / no audio).
+    /// The output devices enumerated from the host — the picker's choices. Enumerated
+    /// OFF the UI thread (cpal's WASAPI enumeration can take seconds on a Bluetooth-heavy
+    /// system) and refreshed on a loop, so this starts seeded with just the selected device
+    /// and fills in once the first enumeration lands.
     output_devices: Vec<String>,
+    /// True until the first off-thread device enumeration has landed — the picker shows a
+    /// "scanning" row instead of an empty/"none" state while the (possibly multi-second)
+    /// enumeration is still in flight, so the list never looks mistakenly empty.
+    output_devices_loading: bool,
     /// How each output device is connected (AirPlay / Bluetooth / USB …), filled in
     /// off the UI thread after startup (macOS; empty elsewhere) — lets the picker flag
     /// devices that can never be bit-perfect before the user picks one.
@@ -861,6 +867,9 @@ impl State {
             // enumerated list came from `host` just above.
             output_device: config::load_output_device(),
             output_devices,
+            // Cleared when the first off-thread enumeration lands (see the device-refresh
+            // loop in `main`); until then the picker shows a "scanning" row.
+            output_devices_loading: true,
             output_transports: Default::default(),
             pending_open: Vec::new(),
             startup_scan_pending: false,
@@ -4096,6 +4105,8 @@ fn main() -> anyhow::Result<()> {
                         if !transports.is_empty() {
                             s.output_transports = transports;
                         }
+                        // The first enumeration has landed — stop showing the "scanning" row.
+                        s.output_devices_loading = false;
                     });
                 }
                 std::thread::sleep(OUTPUT_DEVICE_REFRESH_INTERVAL);
