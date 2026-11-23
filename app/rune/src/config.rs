@@ -193,6 +193,14 @@ struct Config {
     /// `#[serde(default)]` would wrongly default a missing bool to `false`).
     #[serde(default = "default_true")]
     show_loudness_columns: bool,
+    /// Settings → Updates: check for updates at launch and on a schedule. Default
+    /// on (`default_true`, so a config from before this setting keeps checking).
+    #[serde(default = "default_true")]
+    update_auto_check: bool,
+    /// Settings → Updates: download a found update in the background and install
+    /// it when the app is next quit. Opt-in (default off).
+    #[serde(default)]
+    update_auto_install: bool,
 }
 
 /// serde field default for a bool that should default to `true` when absent from an
@@ -358,6 +366,8 @@ impl Default for Config {
             window: None,
             album_year_source: AlbumYearSource::Original,
             show_loudness_columns: true,
+            update_auto_check: true,
+            update_auto_install: false,
         }
     }
 }
@@ -573,6 +583,27 @@ pub fn load_show_loudness_columns() -> bool {
 pub fn save_show_loudness_columns(show: bool) {
     let mut cfg = load();
     cfg.show_loudness_columns = show;
+    save(&cfg);
+}
+
+/// Settings → Updates: (check automatically, install automatically on quit).
+/// Defaults `(true, false)`.
+pub fn load_update_prefs() -> (bool, bool) {
+    let cfg = load();
+    (cfg.update_auto_check, cfg.update_auto_install)
+}
+
+/// Persist the "check for updates automatically" switch.
+pub fn save_update_auto_check(on: bool) {
+    let mut cfg = load();
+    cfg.update_auto_check = on;
+    save(&cfg);
+}
+
+/// Persist the "install updates automatically" switch.
+pub fn save_update_auto_install(on: bool) {
+    let mut cfg = load();
+    cfg.update_auto_install = on;
     save(&cfg);
 }
 
@@ -1317,6 +1348,8 @@ mod tests {
             }),
             album_year_source: AlbumYearSource::Release,
             show_loudness_columns: false,
+            update_auto_check: false,
+            update_auto_install: true,
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
@@ -1341,6 +1374,7 @@ mod tests {
         assert_eq!(back.active_profile, 0);
         assert_eq!(back.album_year_source, AlbumYearSource::Release);
         assert!(!back.show_loudness_columns);
+        assert!(!back.update_auto_check && back.update_auto_install);
     }
 
     #[test]
@@ -1359,6 +1393,31 @@ mod tests {
         assert!(!load_show_loudness_columns());
         save_show_loudness_columns(true);
         assert!(load_show_loudness_columns());
+    }
+
+    #[test]
+    fn update_prefs_round_trip_and_default_to_check_but_not_install() {
+        let _g = use_test_config_dir();
+        assert_eq!(
+            load_update_prefs(),
+            (true, false),
+            "check on, auto-install off by default"
+        );
+        save_update_auto_check(false);
+        save_update_auto_install(true);
+        assert_eq!(load_update_prefs(), (false, true));
+        save_update_auto_check(true);
+        assert_eq!(load_update_prefs(), (true, true));
+    }
+
+    #[test]
+    fn a_config_written_before_the_update_settings_keeps_checking() {
+        // The e2e harness and older builds write configs without these keys: they
+        // must load as "check on, install off", and a bare key sets just itself.
+        let cfg: Config = toml::from_str("theme = \"dark\"\n").unwrap();
+        assert!(cfg.update_auto_check && !cfg.update_auto_install);
+        let cfg: Config = toml::from_str("update_auto_check = false\n").unwrap();
+        assert!(!cfg.update_auto_check && !cfg.update_auto_install);
     }
 
     #[test]

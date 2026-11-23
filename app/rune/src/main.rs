@@ -37,6 +37,7 @@ mod i18n_tests;
 mod logging;
 #[cfg(unix)]
 mod signal_quit;
+mod updater;
 // macOS-only at runtime; still compiled for tests everywhere so its pure mapping is
 // unit-tested on Linux/Windows CI too.
 #[cfg(any(target_os = "macos", test))]
@@ -224,6 +225,7 @@ pub(crate) enum SettingsTab {
     MusicData,
     Audio,
     Keyboard,
+    Updates,
     About,
 }
 
@@ -693,10 +695,9 @@ struct State {
     /// Cover-art decode cache (`views::player::ArtCache`), wired up with the
     /// app's `Waker` in `setup_art` below.
     art: ArtCache,
-    /// The version of a newer signed release, set by the launch-time update
-    /// check (`update::available`); `Some` makes Settings surface "Install &
-    /// Restart". `None` = up to date (or the check hasn't run / failed).
-    update_available: Option<String>,
+    /// Settings → Updates: the update flow's status and its two switches (see
+    /// `updater`). Fed by the background schedule and the page's buttons.
+    update: updater::UpdateUi,
     /// Set at startup (`logging::begin_session`) when the previous session ended
     /// without a clean exit — surfaces the dismissible "report this crash" banner.
     crashed_last_session: bool,
@@ -917,7 +918,7 @@ impl State {
             focused: true,
             notify_last_id: None,
             art: ArtCache::new(),
-            update_available: None,
+            update: updater::UpdateUi::load(),
             // Set from `logging::begin_session()` in `main`; `false` in tests.
             crashed_last_session: false,
             search: String::new(),
@@ -4202,26 +4203,11 @@ fn main() -> anyhow::Result<()> {
             }
         });
     }
-    // Launch-time update check (release builds only): off-thread so it never
-    // blocks startup, and it only *flags* an available update — Settings offers
-    // the actual "Install & Restart" so we never yank a playing track away
-    // (unless `SOUL_PLAYER_AUTO_INSTALL_UPDATE` asks to install it unattended).
-    if update::enabled() {
-        let uh = app.handle();
-        std::thread::spawn(move || match update::available() {
-            Some(version) => {
-                tracing::info!(version, "update available");
-                notify::update_available(&version);
-                if update::auto_install() {
-                    install_update(uh.clone());
-                }
-                uh.update(move |s: &mut State, _tx: &mut Tx| {
-                    s.update_available = Some(version);
-                });
-            }
-            None => tracing::debug!("no update available"),
-        });
-    }
+    // Update checks (release builds only): at launch, then on a schedule while
+    // "Check for updates automatically" is on. They only *offer* an update —
+    // installing is the user's call (Settings → Updates), so a playing track is
+    // never yanked away.
+    updater::start(app.handle());
     host.subscribe(move |ev: Event| {
         // Persist a completed background analysis to the on-disk cache (best-effort,
         // off the UI thread) so it seeds the NEXT launch; the fold into playback is
@@ -4293,23 +4279,6 @@ fn main() -> anyhow::Result<()> {
     // put the verified update in place and start it (no-op without one).
     update::apply_pending();
     Ok(())
-}
-
-/// "Install & Restart": download and verify the update off the UI thread, then
-/// quit normally; `main` installs it once the run loop has returned (see
-/// [`update::apply_pending`]). A failed download leaves the app running.
-pub(crate) fn install_update(ah: rune::AppHandle<State>) {
-    std::thread::spawn(move || match update::download() {
-        Ok(Some(version)) => {
-            tracing::info!(
-                version,
-                "update downloaded and verified; quitting to install it"
-            );
-            ah.quit();
-        }
-        Ok(None) => tracing::info!("no update to install"),
-        Err(e) => tracing::error!("update download failed: {e}"),
-    });
 }
 
 #[cfg(test)]
@@ -12761,40 +12730,212 @@ mod tests {
         );
     }
 
-    #[test]
-    fn settings_shows_updates_section_without_install_by_default() {
+    // ── Settings → Updates ───────────────────────────────────────────────────
+
+    fn updates_rt(status: updater::UpdateStatus, supported: bool) -> Runtime<State> {
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Updates;
+        s.update.supported = supported;
+        s.update.status = status;
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
-        let mut s = settings_state(&[], &[]);
-        s.settings_tab = SettingsTab::About;
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
+        rt
+    }
+
+    fn found(version: &str, notes: Option<&str>) -> update::Found {
+        update::Found {
+            version: version.into(),
+            notes: notes.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn settings_rail_opens_the_updates_page() {
+        let _locale = config::use_test_locale("en");
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Appearance;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("updates").is_none(), "not on the Appearance page");
+        click(&mut rt, "cat-updates");
+        assert_eq!(rt.state.settings_tab, SettingsTab::Updates);
+        for key in [
+            "updates",
+            "update-status",
+            "automatic-updates",
+            "auto-check-toggle",
+            "auto-install-toggle",
+        ] {
+            assert!(rt.find(key).is_some(), "Updates page shows {key}");
+        }
+        click(&mut rt, "cat-about");
+        assert!(rt.find("about").is_some() && rt.find("install-update").is_none());
+    }
+
+    #[test]
+    fn updates_page_offers_check_now_but_no_install_until_an_update_is_found() {
+        let _locale = config::use_test_locale("en");
+        let rt = updates_rt(updater::UpdateStatus::UpToDate, true);
         assert!(
-            rt.find("updates").is_some(),
-            "Settings has an About/Updates section"
+            rt.find("check-updates").is_some(),
+            "Check Now is always on offer"
+        );
+        assert!(rt.find("install-update").is_none(), "nothing to install");
+        assert!(rt.find("update-notes").is_none());
+    }
+
+    #[test]
+    fn updates_page_offers_install_and_notes_when_an_update_is_found() {
+        let _locale = config::use_test_locale("en");
+        let rt = updates_rt(
+            updater::UpdateStatus::Available(found("9.9.9", Some("Faster scans."))),
+            true,
         );
         assert!(
-            rt.find("install-update").is_none(),
-            "no install button until the launch check flags an update"
+            rt.find("install-update").is_some(),
+            "a found update offers Install & Restart"
+        );
+        assert!(
+            rt.find("update-notes").is_some(),
+            "its release notes are shown"
+        );
+        assert!(rt.find("check-updates").is_some());
+        // A downloaded-for-quit update can still be installed right away.
+        let rt = updates_rt(updater::UpdateStatus::Ready(found("9.9.9", None)), true);
+        assert!(rt.find("install-update").is_some());
+        assert!(
+            rt.find("update-notes").is_none(),
+            "no notes, no notes panel"
         );
     }
 
     #[test]
-    fn settings_offers_install_when_update_available() {
-        let mut s = settings_state(&[], &[]);
-        s.settings_tab = SettingsTab::About;
-        s.update_available = Some("9.9.9".to_string());
-        let env = Env {
-            system_dark: true,
-            scale: 2.0,
-        };
-        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
-        rt.frame(0.0);
+    fn updates_page_hides_its_actions_while_busy() {
+        let _locale = config::use_test_locale("en");
+        for status in [
+            updater::UpdateStatus::Checking,
+            updater::UpdateStatus::Downloading(found("9.9.9", None)),
+            updater::UpdateStatus::Restarting("9.9.9".into()),
+        ] {
+            let rt = updates_rt(status.clone(), true);
+            assert!(
+                rt.find("check-updates").is_none() && rt.find("install-update").is_none(),
+                "no double-starts while {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn updates_page_in_a_build_without_updates_offers_no_actions() {
+        let _locale = config::use_test_locale("en");
+        let rt = updates_rt(updater::UpdateStatus::Idle, false);
+        assert!(rt.find("check-updates").is_none());
+        assert_eq!(
+            views::settings::update_status_text(&rt.state),
+            "Updates are turned off for this build."
+        );
+    }
+
+    #[test]
+    fn update_switches_flip_and_persist() {
+        let _locale = config::use_test_locale("en");
+        let _g = config::use_test_config_dir();
+        let mut rt = updates_rt(updater::UpdateStatus::Idle, true);
         assert!(
-            rt.find("install-update").is_some(),
-            "a flagged update offers Install & Restart"
+            rt.state.update.auto_check && !rt.state.update.auto_install,
+            "defaults"
+        );
+        click(&mut rt, "auto-install-toggle");
+        assert!(rt.state.update.auto_install);
+        assert_eq!(config::load_update_prefs(), (true, true), "persisted");
+        assert!(update::auto_install(), "the scheduler sees it");
+        click(&mut rt, "auto-check-toggle");
+        assert!(!rt.state.update.auto_check);
+        assert_eq!(config::load_update_prefs(), (false, true));
+        assert!(!update::auto_check());
+        // Back to defaults (the flags are process-global).
+        click(&mut rt, "auto-check-toggle");
+        click(&mut rt, "auto-install-toggle");
+        assert_eq!(config::load_update_prefs(), (true, false));
+    }
+
+    #[test]
+    fn switching_auto_install_off_drops_a_waiting_download() {
+        let _locale = config::use_test_locale("en");
+        let _g = config::use_test_config_dir();
+        let mut s = settings_state(&[], &[]);
+        s.update.auto_install = true;
+        s.update.status = updater::UpdateStatus::Ready(found("9.9.9", None));
+        updater::set_auto_install(&mut s, false);
+        assert_eq!(
+            s.update.status,
+            updater::UpdateStatus::Available(found("9.9.9", None)),
+            "no longer installs on quit, still offered"
+        );
+        updater::set_auto_install(&mut s, false);
+        assert!(!s.update.auto_install);
+    }
+
+    #[test]
+    fn a_found_update_is_offered_without_clobbering_one_in_flight() {
+        let _locale = config::use_test_locale("en");
+        let mut s = settings_state(&[], &[]);
+        updater::on_found(&mut s, found("9.9.9", Some("n")));
+        assert_eq!(
+            s.update.status,
+            updater::UpdateStatus::Available(found("9.9.9", Some("n")))
+        );
+        assert!(s.update.last_checked.is_some());
+        // The same version already downloading / ready stays as it is …
+        s.update.status = updater::UpdateStatus::Ready(found("9.9.9", None));
+        updater::on_found(&mut s, found("9.9.9", None));
+        assert!(matches!(s.update.status, updater::UpdateStatus::Ready(_)));
+        // … a newer one replaces it in the offer.
+        updater::on_found(&mut s, found("9.9.10", None));
+        assert_eq!(
+            s.update.status,
+            updater::UpdateStatus::Available(found("9.9.10", None))
+        );
+        // Restarting into an update is never interrupted.
+        s.update.status = updater::UpdateStatus::Restarting("9.9.10".into());
+        updater::on_found(&mut s, found("9.9.11", None));
+        assert!(matches!(
+            s.update.status,
+            updater::UpdateStatus::Restarting(_)
+        ));
+    }
+
+    #[test]
+    fn update_status_and_last_checked_read_naturally() {
+        let _locale = config::use_test_locale("en");
+        use std::time::Duration;
+        let mut s = settings_state(&[], &[]);
+        s.update.supported = true;
+        let text = |s: &State| views::settings::update_status_text(s);
+        assert_eq!(text(&s), "Not checked yet.");
+        s.update.status = updater::UpdateStatus::UpToDate;
+        assert_eq!(text(&s), "Soul Player is up to date.");
+        s.update.status = updater::UpdateStatus::Ready(found("1.2.3", None));
+        assert_eq!(
+            text(&s),
+            "Version 1.2.3 is downloaded and installs when you quit Soul Player."
+        );
+        s.update.status = updater::UpdateStatus::Failed("offline".into());
+        assert_eq!(text(&s), "Couldn't check for updates: offline");
+        let ago = views::settings::last_checked_text;
+        assert_eq!(ago(Duration::from_secs(20)), "Last checked just now");
+        assert_eq!(ago(Duration::from_secs(5 * 60)), "Last checked 5 min ago");
+        assert_eq!(
+            ago(Duration::from_secs(3 * 3600 + 10)),
+            "Last checked 3 h ago"
         );
     }
 
@@ -12857,10 +12998,21 @@ mod tests {
             "Music Data shows the sources card"
         );
         assert!(rt.find("sp-stage-replaygain").is_none());
-        // Click About → the version / updater card (keyed "updates").
-        click_key(&mut rt, "cat-about");
-        assert!(rt.find("updates").is_some(), "About shows the version card");
+        // Click Updates → the update status + automatic-updates cards.
+        click_key(&mut rt, "cat-updates");
+        assert!(
+            rt.find("updates").is_some(),
+            "Updates shows the status card"
+        );
+        assert!(rt.find("automatic-updates").is_some());
         assert!(rt.find("sources").is_none());
+        // Click About → the version / support card (keyed "about").
+        click_key(&mut rt, "cat-about");
+        assert!(rt.find("about").is_some(), "About shows the version card");
+        assert!(
+            rt.find("updates").is_none(),
+            "updates moved to their own page"
+        );
         // Back to Appearance.
         click_key(&mut rt, "cat-appearance");
         assert!(rt.find("appearance").is_some(), "back to Appearance");

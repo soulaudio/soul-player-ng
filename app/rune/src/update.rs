@@ -6,20 +6,33 @@
 //! `PUBKEY` below), which is wholly independent of OS code-signing. So an app the
 //! OS treats as "unknown publisher" still auto-updates safely.
 //!
-//! Flow (owned by `main`/`views::settings`, not here, so this stays Rune-free):
-//! on launch a background thread calls [`available`]; if a newer signed release
-//! exists it flips a flag and Settings surfaces an "Install & Restart" button.
-//! Pressing it [`download`]s and verifies the update, then quits the app the
-//! normal way (quit hooks run, the session is marked clean); once the run loop
-//! has returned, `main` calls [`apply_pending`], which installs it and starts the
-//! new build. We deliberately do **not** auto-install on launch — yanking a music
-//! player out from under a playing track is worse than letting the user pick the
-//! moment — except when `SOUL_PLAYER_AUTO_INSTALL_UPDATE` asks for it
-//! ([`auto_install`]), which is how the release e2e drives a real update.
+//! The policy follows the established desktop updaters (Sparkle, VS Code, GitHub
+//! Desktop): **check** automatically by default — at launch, then on a schedule
+//! ([`DEFAULT_INTERVAL`], jittered, backing off after a failure) so a player left
+//! open for days still learns about a release — but never yank a playing track
+//! away. Installing is the user's call: "Install & Restart" now, or the opt-in
+//! "Install updates automatically", which downloads in the background and installs
+//! when the user next quits. Both switches live in Settings → Updates.
+//!
+//! This module stays Rune-free; `main` owns the scheduler thread and the UI state:
+//! - [`check`] asks the manifest whether a newer signed release exists.
+//! - [`download`] fetches and **verifies** it and stages it, either to relaunch
+//!   ("Install & Restart": `main` then quits the app the normal way) or to install
+//!   silently on quit.
+//! - [`apply_pending`] runs once the run loop has returned (every quit hook has
+//!   run, the session is marked clean) and puts the staged update in place.
+//!
+//! Environment (tests / managed machines): `SOUL_PLAYER_NO_UPDATE` turns it all
+//! off, `SOUL_PLAYER_UPDATE_ENDPOINT` overrides the manifest URL,
+//! `SOUL_PLAYER_UPDATE_INTERVAL_SECS` the schedule, and
+//! `SOUL_PLAYER_AUTO_INSTALL_UPDATE` installs a found update at once and restarts
+//! ([`install_immediately`]) — how the release e2e drives real updates.
 #![forbid(unsafe_code)]
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use anyhow::Result;
 use cargo_packager_updater::{
@@ -37,6 +50,19 @@ const PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMwNE
 /// as a release asset.
 const ENDPOINT: &str =
     "https://github.com/soulaudio/soul-player-ng/releases/latest/download/latest.json";
+
+/// How often a running app re-checks. Sparkle's default is a day; a music player
+/// is often left open for days, so twice a day, which is still one small static
+/// file from a CDN per user.
+pub const DEFAULT_INTERVAL: Duration = Duration::from_secs(12 * 60 * 60);
+
+/// Floor for the schedule (Sparkle enforces an hour too), so a mistyped override
+/// can't hammer the server. The env override for tests may go lower.
+const MIN_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// After a failed check (offline, GitHub hiccup), retry sooner than the full
+/// interval — but not in a tight loop.
+const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(30 * 60);
 
 /// Whether auto-update is active for this build. Release builds only, and never
 /// when `SOUL_PLAYER_NO_UPDATE` is set (the e2e harness sets it, so tests neither
@@ -66,77 +92,209 @@ fn config(endpoint: &str) -> Result<Config> {
     })
 }
 
-/// Blocking check: the version string of a newer signed release, or `None` when
-/// we're up to date or the check failed (offline / no release yet / bad
-/// manifest). Any failure resolves to `None` so the caller just carries on — a
-/// failed update check must never stop the player from running.
-pub fn available() -> Option<String> {
-    available_at(&endpoint())
+// ── Settings (mirrored from config by `main`, read by the scheduler) ─────────
+
+static AUTO_CHECK: AtomicBool = AtomicBool::new(true);
+static AUTO_INSTALL: AtomicBool = AtomicBool::new(false);
+
+/// Settings → Updates → "Check for updates automatically" (default on).
+pub fn auto_check() -> bool {
+    AUTO_CHECK.load(Ordering::Relaxed)
 }
 
-fn available_at(endpoint: &str) -> Option<String> {
-    match try_available(endpoint) {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::info!("update check skipped: {e}");
-            None
-        }
-    }
+pub fn set_auto_check(on: bool) {
+    AUTO_CHECK.store(on, Ordering::Relaxed);
 }
 
-fn try_available(endpoint: &str) -> Result<Option<String>> {
-    let current = env!("CARGO_PKG_VERSION").parse()?;
-    Ok(check_update(current, config(endpoint)?)?.map(|u| u.version))
-}
-
-/// Whether to install an available update unattended, right after the launch
-/// check finds it, instead of waiting for "Install & Restart". Off unless
-/// `SOUL_PLAYER_AUTO_INSTALL_UPDATE` is set (the release e2e sets it to drive a
-/// real update; it also suits unattended/managed machines).
+/// Settings → Updates → "Install updates automatically" (default off): download
+/// a found update in the background and install it when the app is next quit.
 pub fn auto_install() -> bool {
+    AUTO_INSTALL.load(Ordering::Relaxed)
+}
+
+pub fn set_auto_install(on: bool) {
+    AUTO_INSTALL.store(on, Ordering::Relaxed);
+}
+
+/// Install a found update at once and restart, unattended. Off unless
+/// `SOUL_PLAYER_AUTO_INSTALL_UPDATE` is set (the release e2e sets it to drive a
+/// real update; it also suits kiosk / managed machines).
+pub fn install_immediately() -> bool {
     std::env::var_os("SOUL_PLAYER_AUTO_INSTALL_UPDATE").is_some()
 }
+
+// ── Schedule ─────────────────────────────────────────────────────────────────
+
+/// The configured check interval: [`DEFAULT_INTERVAL`], or
+/// `SOUL_PLAYER_UPDATE_INTERVAL_SECS` (tests use a few seconds).
+pub fn interval() -> Duration {
+    std::env::var("SOUL_PLAYER_UPDATE_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .map(Duration::from_secs)
+        .unwrap_or(DEFAULT_INTERVAL)
+}
+
+/// How long to wait before the next scheduled check. `jitter` ∈ [0, 1) spreads
+/// clients over ±10 % of the interval so a fleet started together doesn't check in
+/// lockstep. A failed check retries after [`RETRY_AFTER_FAILURE`] (or the
+/// interval, if that is shorter). Intervals below [`MIN_INTERVAL`] are honoured
+/// only when they came from the test override (`floor = false`).
+pub fn next_delay(interval: Duration, last_failed: bool, jitter: f64, floor: bool) -> Duration {
+    let base = if floor {
+        interval.max(MIN_INTERVAL)
+    } else {
+        interval
+    };
+    let base = if last_failed {
+        base.min(RETRY_AFTER_FAILURE)
+    } else {
+        base
+    };
+    let spread = base.as_secs_f64() * 0.1;
+    Duration::from_secs_f64(
+        (base.as_secs_f64() + spread * (2.0 * jitter.clamp(0.0, 1.0) - 1.0)).max(1.0),
+    )
+}
+
+/// Whether the interval came from the test override (and so skips the floor).
+pub fn interval_overridden() -> bool {
+    std::env::var_os("SOUL_PLAYER_UPDATE_INTERVAL_SECS").is_some()
+}
+
+/// A cheap jitter source in [0, 1) — the clock's sub-second part. Good enough to
+/// de-synchronise clients; nothing here needs real randomness.
+pub fn jitter() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| f64::from(d.subsec_nanos()) / 1e9)
+        .unwrap_or(0.5)
+}
+
+// ── Check ────────────────────────────────────────────────────────────────────
+
+/// A newer signed release the manifest offers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Found {
+    pub version: String,
+    /// The manifest's release notes, when it has any.
+    pub notes: Option<String>,
+}
+
+static CHECKING: AtomicBool = AtomicBool::new(false);
+
+/// Claim the single check slot (a manual "Check now" racing the schedule runs
+/// once). Pair with [`end_check`].
+pub fn begin_check() -> bool {
+    !CHECKING.swap(true, Ordering::AcqRel)
+}
+
+pub fn end_check() {
+    CHECKING.store(false, Ordering::Release);
+}
+
+/// Blocking check: the newer signed release, `None` when up to date, or the
+/// error (offline / no release yet / bad manifest) for the caller to show or
+/// retry. Never panics, never stops the player.
+pub fn check() -> Result<Option<Found>> {
+    check_at(&endpoint())
+}
+
+fn check_at(endpoint: &str) -> Result<Option<Found>> {
+    let current = env!("CARGO_PKG_VERSION").parse()?;
+    Ok(check_update(current, config(endpoint)?)?.map(|u| Found {
+        version: u.version,
+        notes: u.body.filter(|b| !b.trim().is_empty()),
+    }))
+}
+
+// ── Download + install ───────────────────────────────────────────────────────
 
 /// A downloaded, signature-verified update, held until the app has quit cleanly.
 struct Staged {
     update: Update,
     bytes: Vec<u8>,
+    /// Restart into the new build after installing ("Install & Restart"), or just
+    /// install and stay closed (installed on quit).
+    relaunch: bool,
 }
 
 static STAGED: Mutex<Option<Staged>> = Mutex::new(None);
 
-/// Check for, download and **verify** (against [`PUBKEY`]) the latest signed
-/// release, and stage it for [`apply_pending`]. Returns its version, or `None`
-/// when already up to date. Blocks on the network: call it off the UI thread,
-/// then quit the app so `main` can apply it.
-pub fn download() -> Result<Option<String>> {
-    download_from(&endpoint())
+fn staged() -> std::sync::MutexGuard<'static, Option<Staged>> {
+    STAGED.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn download_from(endpoint: &str) -> Result<Option<String>> {
+/// Check for, download and **verify** (against [`PUBKEY`]) the latest signed
+/// release, and stage it for [`apply_pending`]. Returns its version, or `None`
+/// when already up to date. Blocks on the network: call it off the UI thread.
+/// `relaunch`: restart into it after installing (then quit the app), or install it
+/// silently whenever the app is next quit.
+pub fn download(relaunch: bool) -> Result<Option<String>> {
+    download_from(&endpoint(), relaunch)
+}
+
+fn download_from(endpoint: &str, relaunch: bool) -> Result<Option<String>> {
     let current = env!("CARGO_PKG_VERSION").parse()?;
     let Some(update) = check_update(current, config(endpoint)?)? else {
         return Ok(None);
     };
     let bytes = update.download()?;
     let version = update.version.clone();
-    *STAGED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Staged { update, bytes });
+    *staged() = Some(Staged {
+        update,
+        bytes,
+        relaunch,
+    });
     Ok(Some(version))
 }
 
-/// Install the update [`download`] staged, if any, and start the new build. Call
-/// once the run loop has returned (the quit hooks have run). Windows hands over
-/// to the NSIS installer, which replaces the app and restarts it (`/R`), and
-/// exits this process; macOS and Linux replace the bundle / AppImage in place,
-/// so the new build is started here.
+/// The version already downloaded and waiting, if any.
+pub fn staged_version() -> Option<String> {
+    staged().as_ref().map(|s| s.update.version.clone())
+}
+
+/// Turn an install-on-quit download into "Install & Restart" (no re-download).
+/// False when nothing is staged.
+pub fn stage_relaunch() -> bool {
+    staged().as_mut().map(|s| s.relaunch = true).is_some()
+}
+
+/// Drop a staged update (the user turned "Install updates automatically" off).
+pub fn discard_staged() {
+    staged().take();
+}
+
+/// Install the update [`download`] staged, if any. Call once the run loop has
+/// returned (the quit hooks have run). Windows hands over to the NSIS installer
+/// (passive: a progress bar, no clicks) and exits this process; macOS and Linux
+/// replace the bundle / AppImage in place. With `relaunch` the new build is then
+/// started (on Windows by the installer's `/R`).
 pub fn apply_pending() {
-    let Some(Staged { update, bytes }) = STAGED.lock().unwrap_or_else(|e| e.into_inner()).take()
+    let Some(Staged {
+        mut update,
+        bytes,
+        relaunch,
+    }) = staged().take()
     else {
         return;
     };
-    tracing::info!(version = %update.version, "installing update");
+    tracing::info!(version = %update.version, relaunch, "installing update");
+    if !relaunch {
+        // Passive without `/R`: the installer must not start the app the user
+        // just quit. (`BasicUi` contributes no NSIS flags; `/P` is passive.)
+        update.config.windows = Some(WindowsConfig {
+            install_mode: Some(WindowsUpdateInstallMode::BasicUi),
+            installer_args: Some(vec!["/P".into()]),
+        });
+    }
     if let Err(e) = update.install(bytes) {
         tracing::error!("update install failed: {e}");
+        return;
+    }
+    if !relaunch {
+        tracing::info!("update installed; it starts next time");
         return;
     }
     match relaunch_target().map(|exe| std::process::Command::new(&exe).spawn()) {
@@ -199,30 +357,80 @@ mod tests {
     }
 
     #[test]
-    fn available_returns_version_when_endpoint_offers_newer() {
+    fn check_returns_version_when_endpoint_offers_newer() {
         // Leak the manifest string to get the 'static the server needs.
         let body: &'static str = Box::leak(manifest("99.0.0").into_boxed_str());
         assert_eq!(
-            available_at(&serve(body)).as_deref(),
+            check_at(&serve(body))
+                .unwrap()
+                .map(|f| f.version)
+                .as_deref(),
             Some("99.0.0"),
             "99.0.0 > current version is an available update"
         );
     }
 
     #[test]
-    fn available_none_when_endpoint_version_is_older() {
+    fn check_carries_the_release_notes() {
+        let body: &'static str = Box::leak(manifest("99.0.0").into_boxed_str());
+        let found = check_at(&serve(body)).unwrap().expect("newer");
+        assert_eq!(
+            found.notes.as_deref(),
+            Some("t"),
+            "manifest `notes` → Found::notes"
+        );
+    }
+
+    #[test]
+    fn schedule_jitters_around_the_interval_and_retries_sooner_after_a_failure() {
+        let day = Duration::from_secs(86_400);
+        // jitter 0.5 = exactly the interval; 0 / 1 = −10 % / +10 %.
+        assert_eq!(next_delay(day, false, 0.5, true), day);
+        assert_eq!(next_delay(day, false, 0.0, true).as_secs(), 77_760);
+        assert_eq!(next_delay(day, false, 1.0, true).as_secs(), 95_040);
+        // A failure retries after ~30 min, not a whole day …
+        let retry = next_delay(day, true, 0.5, true);
+        assert_eq!(retry, RETRY_AFTER_FAILURE);
+        // … and never below the hour floor in production …
+        assert_eq!(
+            next_delay(Duration::from_secs(5), false, 0.5, true),
+            MIN_INTERVAL
+        );
+        // … while the test override may go as low as it likes.
+        assert_eq!(
+            next_delay(Duration::from_secs(5), false, 0.5, false).as_secs(),
+            5
+        );
+        assert_eq!(
+            next_delay(Duration::from_secs(5), true, 0.5, false).as_secs(),
+            5
+        );
+        assert!(DEFAULT_INTERVAL >= MIN_INTERVAL);
+    }
+
+    #[test]
+    fn only_one_check_runs_at_a_time() {
+        assert!(begin_check(), "the slot is free");
+        assert!(!begin_check(), "a second check while one runs is refused");
+        end_check();
+        assert!(begin_check(), "free again once the first ends");
+        end_check();
+    }
+
+    #[test]
+    fn check_none_when_endpoint_version_is_older() {
         let body: &'static str = Box::leak(manifest("0.0.1").into_boxed_str());
         assert!(
-            available_at(&serve(body)).is_none(),
+            check_at(&serve(body)).unwrap().is_none(),
             "0.0.1 < current version is no update"
         );
     }
 
     #[test]
-    fn available_none_when_endpoint_unreachable() {
-        // Port 1 is effectively never listening: the fetch fails and the check
-        // degrades to `None` rather than erroring out.
-        assert!(available_at("http://127.0.0.1:1/latest.json").is_none());
+    fn check_errors_when_endpoint_unreachable() {
+        // Port 1 is effectively never listening: the fetch fails and the error is
+        // returned (Settings shows it; the scheduler retries sooner).
+        assert!(check_at("http://127.0.0.1:1/latest.json").is_err());
     }
 
     /// Two-route server for the full download path: `/latest.json` returns a
@@ -310,10 +518,10 @@ mod tests {
         };
         let mut tampered = FIXTURE.to_vec();
         tampered[0] ^= 0xFF;
-        assert!(download_from(&serve_update(tampered, FIXTURE_SIG.trim())).is_err());
+        assert!(download_from(&serve_update(tampered, FIXTURE_SIG.trim()), true).is_err());
         assert!(take().is_none(), "a failed verification stages nothing");
 
-        let version = download_from(&serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim()))
+        let version = download_from(&serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim()), false)
             .expect("verifies")
             .expect("99.0.0 is newer");
         assert_eq!(version, "99.0.0");
@@ -324,9 +532,23 @@ mod tests {
         );
         assert!(take().is_none(), "staged once; applying takes it");
 
+        // Install-on-quit download → "Install & Restart" upgrades it in place, no
+        // re-download; switching auto-install off drops it.
+        download_from(&serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim()), false).unwrap();
+        assert_eq!(staged_version().as_deref(), Some("99.0.0"));
+        assert!(!STAGED.lock().unwrap().as_ref().unwrap().relaunch);
+        assert!(
+            stage_relaunch(),
+            "a staged update can be switched to relaunch"
+        );
+        assert!(STAGED.lock().unwrap().as_ref().unwrap().relaunch);
+        discard_staged();
+        assert_eq!(staged_version(), None);
+        assert!(!stage_relaunch(), "nothing staged, nothing to switch");
+
         let older: &'static str = Box::leak(manifest("0.0.1").into_boxed_str());
         assert_eq!(
-            download_from(&serve(older)).unwrap(),
+            download_from(&serve(older), true).unwrap(),
             None,
             "nothing newer, nothing staged"
         );
