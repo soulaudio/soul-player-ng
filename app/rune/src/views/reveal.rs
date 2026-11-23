@@ -125,6 +125,50 @@ mod tests {
         assert!(!tick(&mut gone, false, SECS));
     }
 
+    /// Architecture guard: there must be exactly ONE fade+collapse implementation —
+    /// THIS module. Any new "fade out, then collapse the space" effect must REUSE
+    /// `reveal` (`tick` + `opacity` + `height_factor`), not hand-roll the sequential
+    /// fade/collapse math. This scans the `views` tree and fails if any other file
+    /// re-defines the reveal primitives, catching a second (and inevitably
+    /// inconsistent) fade before it ships.
+    #[test]
+    fn fade_collapse_math_lives_only_in_the_reveal_module() {
+        use std::fs;
+        use std::path::PathBuf;
+        let views = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/views");
+        let mut offenders = Vec::new();
+        let mut stack = vec![views];
+        while let Some(dir) = stack.pop() {
+            for entry in fs::read_dir(&dir).expect("read a views dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                if path.file_name().and_then(|n| n.to_str()) == Some("reveal.rs") {
+                    continue;
+                }
+                let src = fs::read_to_string(&path).expect("read a view file");
+                // The reveal primitives' definitions. A copy of any of them elsewhere
+                // is a parallel fade+collapse implementation.
+                if src.contains("fn height_factor")
+                    || src.contains("fn frame_delta")
+                    || src.contains("fn tick(progress")
+                {
+                    offenders.push(path.display().to_string());
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "fade+collapse math must live in `views::reveal` and be reused, not \
+             re-implemented. Reuse reveal::{{tick,opacity,height_factor}} in: {offenders:?}"
+        );
+    }
+
     #[test]
     fn frame_delta_is_a_clamped_per_frame_step_from_the_absolute_clock() {
         // Rune hands `poll` the ABSOLUTE clock, not a per-frame delta. `frame_delta`
