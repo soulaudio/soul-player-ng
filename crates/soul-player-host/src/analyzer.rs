@@ -39,7 +39,9 @@ const RELEASE: f32 = 0.12;
 /// tell a fresh frame from a repeat.
 #[derive(Debug, Clone)]
 pub struct SpectrumFrame {
+    /// Per-column smoothed dBFS levels on a log-spaced `F_MIN`..`F_MAX` axis.
     pub cols: [f32; SPECTRUM_COLS],
+    /// Publish sequence counter — bumps every FFT so the UI can tell fresh from repeat.
     pub seq: u64,
 }
 
@@ -64,9 +66,13 @@ pub type SpectrumShared = Arc<Mutex<SpectrumFrame>>;
 /// path's whole-track loudness readouts.
 #[derive(Debug, Clone, Copy)]
 pub struct LiveLoudnessFrame {
+    /// Momentary (400 ms window) loudness in LUFS; `NEG_INFINITY` at silence.
     pub momentary_lufs: f32,
+    /// Short-term (3 s window) loudness in LUFS; `NEG_INFINITY` at silence.
     pub short_term_lufs: f32,
+    /// Recent sample peak in dBFS; `NEG_INFINITY` at silence.
     pub peak_dbfs: f32,
+    /// Publish sequence counter — bumps each frame so the UI can tell fresh from repeat.
     pub seq: u64,
 }
 
