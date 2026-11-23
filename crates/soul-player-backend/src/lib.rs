@@ -7,6 +7,10 @@
 //! Sink-generic: the actor builds the sink on the pump thread, so a `!Send`
 //! device sink works, and this crate stays free of `cpal` (the host injects it).
 #![forbid(unsafe_code)]
+// Documentation is a CI gate, not just a culture: every public item on this
+// cross-layer IPC surface (commands, events, DTOs, the library/actor API) must
+// carry a doc comment, so a new undocumented `pub` item fails the build.
+#![deny(missing_docs)]
 
 // Licensing guard: AAC is a Via LA patent pool and a clean-room decoder doesn't clear it, so
 // soul-audio-core keeps AAC decode behind an opt-in `aac` feature that shipped soul products

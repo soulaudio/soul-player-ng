@@ -23,10 +23,15 @@ pub use soul_audio_playlist::{TrackLocator, TrackSnapshot};
 /// `dr` the integer DR value.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TrackLoudness {
+    /// Integrated (program) loudness in LUFS — negative; −18 is the RG2 reference.
     pub integrated_lufs: f32,
+    /// Loudness range in LU: the spread between the quiet and loud passages.
     pub lra: f32,
+    /// True-peak level in dBTP (inter-sample peak); ≤ 0 means no clipping.
     pub true_peak_dbtp: f32,
+    /// Peak-to-loudness ratio in LU (true-peak minus integrated loudness).
     pub plr: f32,
+    /// The integer DR (dynamic-range) value — crest-factor based, not true LRA.
     pub dr: f32,
 }
 
@@ -73,18 +78,27 @@ impl From<TrackLoudness> for soul_audio_catalog::LoudnessRec {
 pub enum Command {
     /// Play an ordered list of track ids, starting at `start`.
     PlayContext {
+        /// The ordered track ids forming the playback context.
         ids: Vec<u32>,
         /// Starting index into `ids`; u32 since track counts fit comfortably.
         start: u32,
     },
+    /// Toggle between play and pause.
     TogglePlay,
+    /// Begin or resume playback.
     Play,
+    /// Pause playback, holding the current position.
     Pause,
+    /// Stop playback and reset to the track start.
     Stop,
+    /// Skip to the next track.
     Next,
+    /// Go to the previous track, or restart the current one if played past the
+    /// ~3 s "prev restarts" threshold.
     Prev,
     /// Seek within the current track, in seconds from its start.
     Seek {
+        /// Target position in seconds from the track start (clamped to the track bounds).
         secs: f64,
     },
     /// Set output volume, 0.0..=1.0. A positive volume also clears mute.
@@ -93,20 +107,27 @@ pub enum Command {
     /// un-mute. The player has no separate mute, so this is applied as a 0 gain;
     /// `Tick.muted` reports the state.
     ToggleMute,
+    /// Insert a track at the front of the manual queue (it plays next).
     PlayNext(u32),
+    /// Append a track to the end of the manual queue.
     Enqueue(u32),
+    /// Clear the manual queue, leaving the playing context intact.
     ClearQueue,
     /// Remove the manually queued track at this index (per-row ✕).
     RemoveFromQueue(u32),
     /// Reorder the manual queue: move the item at `from` to `to` (drag-reorder).
     MoveInQueue {
+        /// Index of the manual-queue item to move.
         from: u32,
+        /// Index to move it to.
         to: u32,
     },
     /// Click the upcoming row at 1-based offset `k`: play it now, consuming the
     /// rows above it (routes to the manual queue or the source, shuffle-correct).
     PlayUpcoming(u32),
+    /// Turn shuffle on or off (reshuffles the upcoming context).
     SetShuffle(bool),
+    /// Set the repeat mode (Off / All / One).
     SetRepeat(RepeatMode),
     /// Jump to a natural position within the current context.
     Goto(u32),
@@ -116,7 +137,9 @@ pub enum Command {
     /// [`ReplayGainMode`]). `Command` is `PartialEq` but not `Eq` precisely so
     /// this `f32` preamp can ride along.
     SetReplayGain {
+        /// Which gain to apply: track vs album (vs off).
         mode: ReplayGainMode,
+        /// A constant dB offset added on top of the chosen gain.
         preamp_db: f32,
     },
     /// Seed the backend's in-memory loudness cache from the app's persisted cache
@@ -213,9 +236,12 @@ pub enum ReplayGainMode {
 /// from that crate's `serde` feature).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum RepeatMode {
+    /// No repeat — playback ends after the last context track.
     #[default]
     Off,
+    /// Repeat the whole context, looping back to the start after the last track.
     All,
+    /// Repeat the current track indefinitely.
     One,
 }
 
@@ -241,8 +267,11 @@ impl From<Repeat> for RepeatMode {
 /// Playback state as seen by the UI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlayState {
+    /// Audio is flowing to the output.
     Playing,
+    /// Playback is paused, holding its position.
     Paused,
+    /// Stopped or ended — no current playback position.
     Stopped,
 }
 
@@ -259,7 +288,9 @@ impl From<DeckState> for PlayState {
 /// An event from the player actor to the UI.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Event {
+    /// A now-playing + transport snapshot (see [`Tick`]), emitted ~8×/s and on change.
     Tick(Tick),
+    /// The Up-Next + context snapshot (see [`QueueState`]), emitted on queue mutation.
     Queue(QueueState),
     /// The current track's decode→output chain (`None` = nothing playing), for the
     /// signal-path display. Emitted alongside `Tick`/`Queue` so it tracks rate /
@@ -272,7 +303,9 @@ pub enum Event {
     /// loudness, and persists the set (keyed by path + mtime/size) to seed back next
     /// launch via [`Command::SeedLoudness`].
     TrackLoudnessAnalyzed {
+        /// The analyzed file's path (the key the app persists the metrics under).
         path: PathBuf,
+        /// The full measured metric set for that file.
         loudness: TrackLoudness,
     },
     /// A library rescan found tracks that disappeared from an **available** source
@@ -282,7 +315,9 @@ pub enum Event {
     /// root are reported — an offline / unmounted root is skipped wholesale (never
     /// scanned), so unplugging a drive never mass-reports its tracks as removed.
     TracksRemoved {
+        /// The source root the vanished tracks were under.
         root: PathBuf,
+        /// How many tracks disappeared from that root since the last scan.
         count: usize,
     },
     /// A library rescan walked past audio files it could not import: `root` is the
@@ -304,11 +339,17 @@ pub enum Event {
 /// Now-playing + transport snapshot, emitted ~8×/s and on any change.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Tick {
+    /// The current track's id, or `None` when nothing is loaded.
     pub now_playing_id: Option<u32>,
+    /// The current playback position, in seconds from the track start.
     pub position_secs: f64,
+    /// The track's total duration in seconds, or `None` when the container can't report it.
     pub duration_secs: Option<f64>,
+    /// The transport state (playing / paused / stopped).
     pub state: PlayState,
+    /// Whether shuffle is on.
     pub shuffle: bool,
+    /// The active repeat mode.
     pub repeat: RepeatMode,
     /// The user's volume level, 0.0..=1.0 — preserved across mute (so un-muting
     /// restores it). The actual output gain is 0 while [`Tick::muted`].
@@ -331,23 +372,30 @@ pub struct QueueState {
     /// manual queue — bounded, shuffle-correct, projected from the player (not
     /// synthesized from library order). Not reorderable.
     pub context_ids: Vec<u32>,
-    /// u32 since context positions fit comfortably.
+    /// The current track's position within the context (0-based). u32 since context
+    /// positions fit comfortably.
     pub context_pos: u32,
+    /// The total number of tracks in the context.
     pub context_len: u32,
 }
 
 /// A library track as sent to the UI (no path, no cover bytes).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TrackView {
+    /// The track's (possibly compound, source-tagged) id.
     pub id: u32,
+    /// Track title, or `None` when the file carries no title tag.
     pub title: Option<String>,
+    /// Track artist, or `None` when untagged.
     pub artist: Option<String>,
+    /// Album title, or `None` when untagged.
     pub album: Option<String>,
     /// The track's genre bucket, interned from file tags. Unlike `artist` /
     /// `album`, the importer's `"Unknown Genre"` sentinel is **kept** (not mapped
     /// back to `None`): every track has a genre bucket, and the blank/absent case
     /// is a real, browse-able "Unknown Genre" group that keys the Genre axis.
     pub genre: Option<String>,
+    /// Track duration in seconds, tag-derived (0.0 when unknown).
     pub duration_secs: f64,
     /// `None` when this track sits on local disk; `Some(host)` when it
     /// streams from a remote source, naming the remote server (a
@@ -382,9 +430,15 @@ pub struct TrackView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SourceFormat {
     /// Multi-bit PCM at this bit depth; its rate is [`SignalPath::decoded_rate`].
-    Pcm { bits: u8 },
+    Pcm {
+        /// Bit depth of the source PCM samples.
+        bits: u8,
+    },
     /// Native 1-bit DSD at this stream rate in Hz (2_822_400 = DSD64, …).
-    Dsd { rate_hz: u32 },
+    Dsd {
+        /// The DSD stream rate in Hz (e.g. 2_822_400 for DSD64).
+        rate_hz: u32,
+    },
 }
 
 /// The current track's original **codec** — the lossless-vs-lossy identity the
@@ -458,7 +512,9 @@ pub struct SignalPath {
     pub codec: SourceCodec,
     /// The PCM the decoder hands the engine.
     pub decoded_rate: u32,
+    /// Bit depth of the decoded PCM.
     pub decoded_bits: u8,
+    /// Channel count of the decoded PCM.
     pub channels: u8,
     /// Applied ReplayGain, in dB (`0.0` = unity/off). The mode lives in [`Tick`].
     pub replay_gain_db: f32,

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 pub struct Cover {
     /// e.g. `"image/jpeg"` / `"image/png"`.
     pub mime: String,
+    /// The raw encoded image bytes (as stored/embedded, not re-encoded).
     pub bytes: Vec<u8>,
 }
 
