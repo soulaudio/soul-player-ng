@@ -34,7 +34,27 @@ use zbus::blocking::Connection;
 use zbus::zvariant::{ObjectPath, OwnedValue};
 
 /// The MPRIS bus name the app registers (`media_session::DBUS_NAME`).
-const BUS: &str = "org.mpris.MediaPlayer2.soul_player";
+///
+/// Built from the binary name for the same reason the app builds it that way:
+/// the suffix must stay equal to the desktop entry's basename, or a media applet
+/// has no way to find the player's icon (MPRIS's `DesktopEntry` property, which
+/// would say so outright, is not implemented by souvlaki). Spelling it out here
+/// would let the two drift silently — and this test would still pass, because it
+/// would simply be asserting against whatever the app happened to register.
+fn bus() -> String {
+    format!("org.mpris.MediaPlayer2.{}", bin_name())
+}
+
+/// The built binary's file stem — what `main` passes to `rune::set_app_id`, what
+/// cargo-packager names the desktop entry after, and (now) the MPRIS bus-name
+/// suffix. `CARGO_BIN_NAME` is not set for an integration-test target, so this
+/// reads it off the binary path Cargo does provide.
+fn bin_name() -> &'static str {
+    Path::new(env!("CARGO_BIN_EXE_soul-player-rune"))
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .expect("the built binary has a name")
+}
 const OBJECT: &str = "/org/mpris/MediaPlayer2";
 const PLAYER_IFACE: &str = "org.mpris.MediaPlayer2.Player";
 const ROOT_IFACE: &str = "org.mpris.MediaPlayer2";
@@ -149,13 +169,13 @@ fn wait_for_mpris(conn: &Connection) {
     let proxy = zbus::blocking::fdo::DBusProxy::new(conn).expect("open the D-Bus proxy");
     wait_for("the app to claim its MPRIS bus name", || {
         let names = proxy.list_names().ok()?;
-        names.iter().any(|n| n.as_str() == BUS).then_some(())
+        names.iter().any(|n| n.as_str() == bus()).then_some(())
     });
 }
 
 fn get(conn: &Connection, iface: &str, prop: &str) -> OwnedValue {
     zbus::blocking::fdo::PropertiesProxy::builder(conn)
-        .destination(BUS)
+        .destination(bus().as_str())
         .expect("destination")
         .path(OBJECT)
         .expect("path")
@@ -188,8 +208,14 @@ fn position_us(conn: &Connection) -> i64 {
 }
 
 fn call(conn: &Connection, method: &str) {
-    conn.call_method(Some(BUS), OBJECT, Some(PLAYER_IFACE), method, &())
-        .unwrap_or_else(|e| panic!("call {method}: {e}"));
+    conn.call_method(
+        Some(bus().as_str()),
+        OBJECT,
+        Some(PLAYER_IFACE),
+        method,
+        &(),
+    )
+    .unwrap_or_else(|e| panic!("call {method}: {e}"));
 }
 
 /// Roughly how long autoplay must keep producing audio for the session
@@ -509,7 +535,7 @@ fn set_position_seeks_within_the_track() {
     let target_us: i64 = 1_000_000;
     let track = ObjectPath::try_from("/").expect("a valid object path");
     conn.call_method(
-        Some(BUS),
+        Some(bus().as_str()),
         OBJECT,
         Some(PLAYER_IFACE),
         "SetPosition",
@@ -620,6 +646,58 @@ fn window_advertises_its_app_id_to_the_compositor() {
             .ok()?;
         let tree: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
         find_app_id(&tree, expected).then_some(())
+    });
+}
+
+/// The MPRIS bus name and the window's `app_id` must identify the app the SAME
+/// way, because that is the only thing tying a media applet to the player's icon.
+///
+/// MPRIS has a `DesktopEntry` root property that would name the `.desktop` file
+/// outright, but souvlaki does not implement it. With it absent, a desktop
+/// resolves the player by matching the bus-name suffix against installed desktop
+/// entries — so the suffix, the entry's basename and the `app_id` all have to be
+/// the same string. They were not: the bus said `soul_player` while the entry and
+/// `app_id` said `soul-player-rune`, and a media applet had nothing to match.
+///
+/// Both halves are read back from the SYSTEM — the bus name from the session bus,
+/// the `app_id` from the compositor's own tree — rather than compared against the
+/// constants this crate defines, which would pass no matter what the app did.
+#[test]
+#[ignore = "needs a running sway session (SWAYSOCK); CI's Wayland job provides one"]
+fn the_mpris_bus_name_and_the_window_app_id_agree() {
+    if std::env::var_os("SWAYSOCK").is_none() {
+        eprintln!("no SWAYSOCK (not a sway session) — skipping the identity check");
+        return;
+    }
+    let library = staged_library("meta.flac", "flac", 1.5);
+    let _app = App::launch(library.path(), false);
+    let conn = session_bus();
+    wait_for_mpris(&conn);
+
+    // The suffix the app actually registered on the bus: ask the bus for its
+    // owned names rather than assuming the registration took.
+    let owned: Vec<String> = zbus::blocking::fdo::DBusProxy::new(&conn)
+        .expect("connect to the bus daemon")
+        .list_names()
+        .expect("list bus names")
+        .into_iter()
+        .map(|n| n.to_string())
+        .filter(|n| n.starts_with("org.mpris.MediaPlayer2."))
+        .collect();
+    let suffix = owned
+        .iter()
+        .find_map(|n| n.strip_prefix("org.mpris.MediaPlayer2."))
+        .unwrap_or_else(|| panic!("no MPRIS player on the bus; saw {owned:?}"));
+
+    // `wait_for` panics on timeout, so reaching the end IS the assertion: the
+    // compositor reported a window whose app_id equals the bus suffix.
+    wait_for("a window whose app_id matches the MPRIS bus suffix", || {
+        let out = Command::new("swaymsg")
+            .args(["-t", "get_tree", "-r"])
+            .output()
+            .ok()?;
+        let tree: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+        find_app_id(&tree, suffix).then_some(())
     });
 }
 
