@@ -4,8 +4,8 @@
 #![forbid(unsafe_code)]
 
 use rune::{
-    Align, Color, Cursor, Cx, El, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col,
-    el, icon, row, text,
+    Align, Color, Cursor, Cx, El, GrowthSpec, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec,
+    Tx, col, el, icon, row, text,
 };
 use soul_player_host::{BrowseAxis, Command, TrackView};
 
@@ -84,6 +84,11 @@ pub(crate) fn search_box(
 /// below it on a narrow pane), so it stays comfortable to read on a wide window
 /// rather than stretching edge to edge.
 pub(crate) const SEARCH_MAX_W: f32 = 360.0;
+
+/// Estimated track-row height (points) for the virtualized Tracks list: unvisited
+/// rows use this estimate until they are measured, so the scrollbar + mounted-window
+/// math start out sensible on a long library.
+const TRACK_ROW_EST_H: f32 = 44.0;
 
 /// The shared browse-page top bar, reused by Albums / Artists / Genres / Tracks /
 /// Playlists so every list page opens with the same search in the same place. A
@@ -675,20 +680,47 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             text(t!("library.noMatch", query => s.search).to_string()).color(p.text_secondary),
         )
     } else {
-        let ids: Vec<u32> = visible.iter().map(|t| t.id).collect();
-        // `role("list")` announces the rows as a list to assistive tech; each row
-        // is a focusable button Tab reaches and Space plays. (Arrow keys stay the
-        // app's global volume/seek shortcuts; per-list arrow roving is a follow-up.)
-        let mut list = col().key("tracks").role("list").gap(space::XXS);
-        for (i, t) in visible.iter().enumerate() {
-            list = list.child(track_row(s, p, t, &ids, i, width, scale));
-        }
+        // Virtualized rows: only the window the viewport shows (plus a margin either
+        // side) is ever built, so the Tracks page stays smooth on a 10k+ track
+        // library instead of laying out every row. `virtual_rows`' build/key closures
+        // take `&State` and can borrow nothing, so they capture OWNED data: an
+        // `Rc<[TrackView]>` of the visible tracks (cloned once per render, cheap to
+        // index), the context ids, the palette, and the row width + scale. Each row is
+        // keyed by its track id (handlers find their track by id, never the index).
+        let ids: std::rc::Rc<[u32]> = visible.iter().map(|t| t.id).collect();
+        let rows: std::rc::Rc<[TrackView]> = visible.iter().map(|t| (*t).clone()).collect();
+        let pal = *p;
+        let count = rows.len();
+        let key_rows = rows.clone();
+        let (build_rows, build_ids) = (rows.clone(), ids.clone());
+        // `role("list")` announces the rows to assistive tech; each built row is a
+        // focusable button Tab reaches and Space plays. Only built (windowed) rows
+        // are in the element/a11y tree, which is how virtualization pays off.
+        let list = col()
+            .key("tracks-rows")
+            .role("list")
+            .growth(GrowthSpec::default())
+            .virtual_rows(
+                count,
+                TRACK_ROW_EST_H,
+                move |_s: &State, i: usize| {
+                    // Key each row the SAME as `track_row`'s own key ("track-{id}"),
+                    // so finders/tests keep resolving a row by its id.
+                    std::borrow::Cow::Owned(format!("track-{}", key_rows[i].id))
+                },
+                move |s: &State, i: usize| {
+                    track_row(s, &pal, &build_rows[i], &build_ids, i, width, scale)
+                },
+            );
         scrollbar::attach(
-            list.scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .grow(1.0)
-            .min_h(0.0),
+            col()
+                .key("tracks")
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .grow(1.0)
+                .min_h(0.0)
+                .child(list),
             "tracks",
             &LIB_SCROLL_THUMB.with(|t| t.clone()),
             "library-scrollbar",
@@ -1067,5 +1099,43 @@ mod tests {
         assert!(compact_texts.iter().any(|t| t == "DURATION"));
         assert!(!compact_texts.iter().any(|t| t == "ARTIST"));
         assert!(!compact_texts.iter().any(|t| t == "ALBUM"));
+    }
+
+    /// Virtualization: a large library builds only the window of rows the viewport
+    /// shows (plus a margin either side), NOT every row, so the Tracks page stays
+    /// smooth at a 10k-scale library. Guards `track_list`'s `virtual_rows` wiring.
+    #[test]
+    fn track_list_virtualizes_a_large_library() {
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            track_list(s, &p, cx, scale)
+        }
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = (0..5000u32).map(|i| tv(i, Some("FLAC"))).collect();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        // Each built row carries exactly one `track-cover-{id}` child, so counting
+        // them counts the rows actually mounted.
+        let built = rt
+            .elements()
+            .iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("track-cover-"))
+            })
+            .count();
+        assert!(built > 0, "some rows mount");
+        assert!(
+            built < 300,
+            "virtualized: only a window of rows mounts out of 5000, got {built}"
+        );
     }
 }

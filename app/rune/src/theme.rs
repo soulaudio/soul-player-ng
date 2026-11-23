@@ -10,6 +10,7 @@ use rune::Color;
 // through the crate's own `color::hex` parser instead, which does the decode
 // (`srgb_decode`) the same way `examples/*` author colors from hex.
 
+#[derive(Clone, Copy)]
 pub struct Palette {
     pub bg: Color,
     pub fg: Color,
