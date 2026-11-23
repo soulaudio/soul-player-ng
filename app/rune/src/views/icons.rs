@@ -218,6 +218,12 @@ pub static GRIP: Icon = Icon {
 /// lucide `x` — the per-row remove-from-queue affordance.
 pub static X: Icon = stroke_icon!("x", r#"<path d="M18 6 6 18"/><path d="m6 6 12 12"/>"#);
 
+/// A funnel (the old app's Albums "Filters" button icon, lucide `filter`).
+pub static FILTER: Icon = stroke_icon!(
+    "filter",
+    r#"<polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>"#
+);
+
 /// lucide `list-plus`: the detail-hero "Add to queue" secondary button beside
 /// Play All (album/artist/genre/playlist detail pages), enqueuing every track
 /// in the group. Source: lucide.dev/icons/list-plus.

@@ -9,7 +9,8 @@
 use std::collections::HashMap;
 
 use rune::{
-    Align, Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, row, text,
+    Align, Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row,
+    text,
 };
 use soul_player_host::{Command, TrackView};
 
@@ -293,6 +294,13 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             p.muted
         })
         .hover(p.fg.alpha(fx::HOVER))
+        .child(
+            icon(&crate::views::icons::FILTER, 14.0).color(if filters_lit {
+                p.accent
+            } else {
+                p.text_secondary
+            }),
+        )
         .child(
             text(t!("albums.filters").to_string())
                 .font(type_::ITEM)

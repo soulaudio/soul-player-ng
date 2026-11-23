@@ -88,10 +88,11 @@ pub(crate) const SEARCH_MAX_W: f32 = 360.0;
 /// The shared browse-page top bar, reused by Albums / Artists / Genres / Tracks /
 /// Playlists so every list page opens with the same search in the same place. A
 /// left-aligned `search` field bounded to [`SEARCH_MAX_W`] (responsive — it grows
-/// with the pane up to that cap, not the full width), plus optional `trailing`
-/// controls (e.g. the Albums Filters button, the Playlists New button) pinned to
-/// the right edge by a growing spacer between them. Keyed `{page}-search-bar`, so
-/// each page's existing finders/tests (`albums-search-bar`, …) keep resolving.
+/// with the pane up to that cap, not the full width), with any optional `trailing`
+/// control (the Albums Filters button, the Playlists New button, the Tracks Sort
+/// toggle) sitting RIGHT NEXT TO the search as one left-aligned group, like the old
+/// app's `flex items-center gap-4` header — not pinned to the far right. Keyed
+/// `{page}-search-bar`, so each page's finders/tests (`albums-search-bar`, …) resolve.
 pub(crate) fn page_search_bar(page: &str, search: El, trailing: Option<El>) -> El {
     let mut bar = row()
         .key(format!("{page}-search-bar"))
@@ -104,11 +105,7 @@ pub(crate) fn page_search_bar(page: &str, search: El, trailing: Option<El>) -> E
         .center_y()
         .child(search.grow(1.0).max_w(SEARCH_MAX_W));
     if let Some(trailing) = trailing {
-        // A growing spacer pushes the trailing control to the pane's right edge,
-        // so the search stays left-aligned and bounded regardless of pane width.
-        bar = bar
-            .child(el().key(format!("{page}-search-spacer")).grow(1.0))
-            .child(trailing);
+        bar = bar.child(trailing);
     }
     bar
 }
