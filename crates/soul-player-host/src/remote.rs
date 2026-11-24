@@ -691,6 +691,17 @@ fn deframe(bytes: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
 
     let mut pos = 0usize;
     let n = read_u32(bytes, &mut pos)? as usize;
+    // Reject a hostile or corrupt blob count BEFORE reserving for it: a frame holds
+    // at most one blob per 4-byte length prefix, so a count the remaining bytes
+    // cannot satisfy would otherwise drive `Vec::with_capacity` to request a
+    // multi-gigabyte allocation (which aborts the process) off bytes a remote server
+    // controls. `fetch_index` runs this on every remote add / sync / reconnect.
+    if n > (bytes.len() - pos) / 4 {
+        bail!(
+            "framed index claims {n} blobs, more than the remaining {} bytes can hold",
+            bytes.len() - pos
+        );
+    }
     let mut blobs = Vec::with_capacity(n);
     for _ in 0..n {
         let len = read_u32(bytes, &mut pos)? as usize;
@@ -1551,6 +1562,17 @@ mod tests {
     fn deframe_rejects_truncated_bytes() {
         let truncated = 1u32.to_le_bytes().to_vec();
         assert!(deframe(&truncated).is_err());
+    }
+
+    /// A hostile or corrupt blob-count header must be rejected cleanly (an `Err`),
+    /// never fed to `Vec::with_capacity`: a near-`u32::MAX` count would otherwise
+    /// reserve ~100 GiB and abort the process. `fetch_index` deframes bytes a remote
+    /// server controls, so this runs on every remote add / sync / reconnect.
+    #[test]
+    fn deframe_rejects_an_implausible_blob_count() {
+        // A count header of u32::MAX with no blob bytes following it.
+        let hostile = u32::MAX.to_le_bytes().to_vec();
+        assert!(deframe(&hostile).is_err());
     }
 
     /// Bake `root` (a single-root scan) and hand back its one `.soulidx`
