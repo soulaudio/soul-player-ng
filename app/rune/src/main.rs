@@ -1387,6 +1387,15 @@ pub(crate) fn apply_and_save(s: &mut State, up: WatchUpdate) {
     config::save_scan_caches(&s.host.caches_snapshot());
 }
 
+/// Whether to pre-warm the output device at startup (see [`apply_startup_scan`]). Pre-warm
+/// ONLY in shared mode: WASAPI exclusive output is one-client-per-device, so opening the
+/// device before the user plays anything would seize the DAC from other apps the instant the
+/// app launches. An exclusive user's device opens on their first play instead; the device-open
+/// cache already trims that cost. No point pre-warming an empty library either (nothing to play).
+fn should_prewarm(library_empty: bool, exclusive: bool) -> bool {
+    !library_empty && !exclusive
+}
+
 /// The restored library's first scan landed: apply it like any Sources edit, then open any
 /// files the OS handed us while it ran.
 pub(crate) fn apply_startup_scan(s: &mut State, up: WatchUpdate) {
@@ -1400,9 +1409,10 @@ pub(crate) fn apply_startup_scan(s: &mut State, up: WatchUpdate) {
     // Pre-warm the audio pipeline now that a library exists: spawn the actor so the output
     // device opens in the BACKGROUND (the device open is seconds on a slow WASAPI/Bluetooth
     // endpoint), instead of making the user's FIRST play wait the whole open. Non-blocking —
-    // it just spawns the pump thread; the open happens there, off the UI thread. No-op if the
-    // library is empty (nothing to play yet).
-    if !s.library.is_empty() {
+    // it just spawns the pump thread; the open happens there, off the UI thread. Skipped in
+    // exclusive mode so we don't seize the one-client-per-device DAC before the user plays
+    // (see `should_prewarm`).
+    if should_prewarm(s.library.is_empty(), s.exclusive) {
         s.host.prewarm();
     }
     let waiting = std::mem::take(&mut s.pending_open);
@@ -4890,6 +4900,28 @@ mod tests {
     // reaches them through `soul_player_host::` full paths).
     use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
     use soul_player_host::{DspChain, Profile, ProfileSet};
+
+    #[test]
+    fn prewarm_only_in_shared_mode_with_a_library() {
+        // Pre-warm opens the output device at startup so the first play is instant. That's a
+        // pure win in SHARED mode, but in WASAPI EXCLUSIVE mode the device is
+        // one-client-per-device: opening it before the user plays would seize the DAC from
+        // other apps the moment the app launches. So pre-warm only when a library exists AND
+        // output is shared; an exclusive user's device opens on their first play.
+        assert!(
+            should_prewarm(false, false),
+            "non-empty library + shared → pre-warm"
+        );
+        assert!(
+            !should_prewarm(false, true),
+            "exclusive → do NOT seize the one-client device at startup"
+        );
+        assert!(
+            !should_prewarm(true, false),
+            "empty library → nothing to pre-warm"
+        );
+        assert!(!should_prewarm(true, true), "empty + exclusive → no");
+    }
 
     fn testdata_dir() -> PathBuf {
         // app/rune -> repo-root/testdata
