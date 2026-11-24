@@ -44,8 +44,9 @@ pub(crate) fn group_genres(library: &[TrackView]) -> Vec<Genre> {
     for t in library {
         let name = t
             .genre
-            .clone()
+            .as_deref()
             .filter(|g| !g.is_empty())
+            .map(str::to_string)
             .unwrap_or_else(|| t!("library.unknown").to_string());
         let i = *index.entry(name.clone()).or_insert_with(|| {
             genres.push(Genre {
@@ -367,7 +368,7 @@ mod tests {
             title: Some(format!("T{id}")),
             artist: Some("A".into()),
             album: Some("Alb".into()),
-            genre: genre.map(|g| g.to_string()),
+            genre: genre.map(|g| g.into()),
             duration_secs: 1.0,
             remote_source: None,
             original_date: 0,

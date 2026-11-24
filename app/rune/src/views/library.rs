@@ -186,8 +186,8 @@ pub(crate) fn format_badge(format: &str, p: &Palette) -> El {
 /// Case-insensitive substring match over the fields a user would search by.
 /// `q` is already lowercased by the caller.
 pub(crate) fn track_matches(t: &TrackView, q: &str) -> bool {
-    let hit = |o: &Option<String>| o.as_deref().is_some_and(|v| v.to_lowercase().contains(q));
-    hit(&t.title) || hit(&t.artist) || hit(&t.album)
+    let hit = |s: Option<&str>| s.is_some_and(|v| v.to_lowercase().contains(q));
+    hit(t.title.as_deref()) || hit(t.artist.as_deref()) || hit(t.album.as_deref())
 }
 
 /// How much horizontal room the track list has, in three tiers driven by the
@@ -219,7 +219,7 @@ fn track_row(
     let start = index as u32;
     let tid = t.id; // Copy out of the borrow so the button/menu closures can own it.
     let menu_ids = ids.clone(); // the context menu's "Play" needs its own copy.
-    let artist = t.artist.clone().unwrap_or_default();
+    let artist = t.artist.as_deref().unwrap_or_default().to_string();
     // Accessible name for the whole row (keyboard focus / screen readers).
     let row_label = {
         let ti = t
@@ -331,7 +331,7 @@ fn track_row(
                     .min_w(0.0),
             )
             .child(
-                text(t.album.clone().unwrap_or_default())
+                text(t.album.as_deref().unwrap_or_default())
                     .font(type_::ITEM)
                     .color(p.text_secondary)
                     .truncate()
@@ -847,7 +847,7 @@ mod tests {
             original_date: 0,
             release_date: 0,
             loudness: None,
-            format: format.map(str::to_string),
+            format: format.map(|f| f.into()),
         }
     }
 

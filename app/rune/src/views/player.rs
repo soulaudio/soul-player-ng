@@ -469,8 +469,8 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .title
         .clone()
         .unwrap_or_else(|| t!("library.unknown").to_string());
-    let artist = track.artist.clone().unwrap_or_default();
-    let album = track.album.clone();
+    let artist = track.artist.as_deref().unwrap_or_default().to_string();
+    let album = track.album.as_deref().map(str::to_string);
     let title_el = text(title).font(type_::TITLE).color(p.fg).truncate();
     // A local track (the overwhelming default) keeps the plain title text
     // unchanged; only a remote one gains the badge row, so the common case
