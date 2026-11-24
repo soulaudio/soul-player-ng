@@ -25,7 +25,7 @@ use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_import::{ScanCache, ScanProgress, SkippedGroup};
 use soul_audio_index::IndexReader;
 use soul_audio_multicatalog::{MultiCatalog, pack, unpack};
-use soul_audio_playlist::{PlaylistEntry, ResolvedPlaylist};
+use soul_audio_playlist::{PlaylistEntry, ResolvedPlaylist, resolve_locator_ids};
 
 use crate::types::{TrackLocator, TrackLoudness, TrackView};
 
@@ -319,23 +319,23 @@ impl Library {
     /// rescan that renumbered them. Phase 1: exact-locator (Local path) match
     /// only; `None` for anything that doesn't match (a missing file, a moved
     /// file, or a `Remote` locator, which this local-only `Library` can never
-    /// produce or match). Builds a `locator-key -> id` reverse map from the
-    /// current catalog once, then looks up each input by
-    /// [`TrackLocator::key`] so separator/case differences don't matter.
+    /// produce or match), matched by [`TrackLocator::key`] so separator/case
+    /// differences don't matter. STREAMS the catalog through the no_std
+    /// [`resolve_locator_ids`], holding only the INPUT locators' keys (O(locators)
+    /// memory, not O(catalog)), the same lean path a playlist's covers and the DAP
+    /// resolve through.
     #[must_use]
     pub fn resolve_locators(&self, locs: &[TrackLocator]) -> Vec<Option<u32>> {
-        let mut by_key: HashMap<String, u32> = HashMap::new();
-        for (source, &count) in self.counts.iter().enumerate() {
-            for local in 0..count as u32 {
-                let id = pack(source as u32, local);
-                if let Some(loc) = self.locator_of(id) {
-                    by_key.insert(loc.key(), id);
-                }
-            }
-        }
-        locs.iter()
-            .map(|loc| by_key.get(&loc.key()).copied())
-            .collect()
+        resolve_locator_ids(
+            locs,
+            (0..self.counts.len()).flat_map(move |source| {
+                (0..self.counts[source] as u32).filter_map(move |local| {
+                    let id = pack(source as u32, local);
+                    let loc = self.locator_of(id)?;
+                    Some((loc.key(), id))
+                })
+            }),
+        )
     }
 
     /// Resolve a playlist's `entries` into the shared [`ResolvedPlaylist`] view-model
