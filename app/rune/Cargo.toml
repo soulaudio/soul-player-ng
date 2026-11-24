@@ -7,14 +7,20 @@ publish = false
 description = "Rune (native GPU) UI head for Soul Player, over soul-player-host."
 
 [[bin]]
-# The USER-VISIBLE name, and deliberately not the crate's. cargo-packager derives
-# the .deb's filename AND its `Package:` field from the main binary's name
-# (`package/deb/mod.rs`: `format!("{}_{}_{}", config.main_binary_name()?, ..)`),
-# and the same name becomes `/usr/bin/<name>`, the desktop entry's basename and
-# — via `desktop_id()`'s fallback — the MPRIS bus name. "rune" is the internal
-# name of this UI head, which is meaningless to anyone installing a music
-# player, so it stays on the crate (`[package] name` above, where only
-# developers see it) and never reaches a package.
+# The USER-VISIBLE name, and deliberately not the crate's. This name becomes
+# `/usr/bin/<name>`, the installed desktop entry's basename, the MPRIS bus name
+# (via `desktop_id()`'s fallback) and the .deb/AppImage/NSIS FILENAMES —
+# cargo-packager builds those from the main binary's name
+# (`package/deb/mod.rs`: `format!("{}_{}_{}", config.main_binary_name()?, ..)`).
+#
+# It does NOT set the .deb's `Package:` field: that is the kebab-cased
+# `product-name` below, and has read `soul-player` all along. Worth stating
+# because assuming otherwise produced a whole unnecessary package-transition
+# apparatus here before the published 0.4.2 .deb disproved it.
+#
+# "rune" is the internal name of this UI head, which means nothing to anyone
+# installing a music player, so it stays on the crate (`[package] name` above,
+# where only developers see it) and never reaches a package.
 name = "soul-player"
 path = "src/main.rs"
 
@@ -270,19 +276,20 @@ depends = [
     # want it.
     "libvulkan1",
 ]
-# NOTE: the package's `Provides`/`Conflicts`/`Replaces` — which are what make
-# the old `soul-player-rune` package (shipped through 0.4.2) get REMOVED
-# rather than installed
-# alongside this one — are NOT settable here. cargo-packager 0.11.8's
-# `DebianConfig` takes only depends/section/priority/files/package-name/
-# desktop-template; the provides/conflicts/replaces trio in its config module
-# belongs to `PacmanConfig`. Putting them here fails the build outright with
-# "unknown field `conflicts`", which is how this was found — and is now caught
-# by `the_deb_packager_config_uses_only_fields_cargo_packager_accepts`.
+# NOTE: no `Provides`/`Conflicts`/`Replaces`, for two separate reasons.
 #
-# `packaging/build-linux.sh` therefore patches them into the built .deb's
-# control file. Keep them there, not here, until cargo-packager's Debian
-# backend grows them.
+# They are not NEEDED: `Package:` is the kebab-cased `product-name`, so it has
+# been `soul-player` since before the binary rename (the published 0.4.2 .deb
+# is named soul-player-rune_0.4.2_amd64.deb and carries `Package: soul-player`).
+# The rename moves a file within one package, which dpkg handles by removing
+# paths the new version no longer ships.
+#
+# They would also not WORK here: cargo-packager 0.11.8's `DebianConfig` accepts
+# only depends/section/priority/files/package-name/desktop-template, and the
+# provides/conflicts/replaces trio in its config module belongs to
+# `PacmanConfig` — writing them here fails the build with "unknown field
+# `conflicts`", which is now caught by
+# `the_deb_packager_config_uses_only_fields_cargo_packager_accepts`.
 
 # ── RPM (Fedora / openSUSE / RHEL) ──────────────────────────────────────────
 # cargo-packager has no RPM backend (it does deb, AppImage and pacman), so the

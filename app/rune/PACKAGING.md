@@ -62,44 +62,41 @@ those values are written down. Re-deriving them per format would give three
 chances to disagree about the app's name, category or icon — and an entry that
 disagrees with the window's `app_id` silently costs the icon.
 
-### The package name, and the rename after 0.4.2
+### The package name, and what the rename did and did not change
 
-Every Linux package is `soul-player`, from `[[bin]] name` — cargo-packager takes
-the .deb's filename *and* its `Package:` field from the main binary's name. The
-crate stays `soul-player-rune`: "rune" names this UI head, which means nothing
-to someone installing a music player, so it is kept to places only developers
-see (the crate, `cargo test -p`, the `nix develop .#rune` shell).
+Every Linux package is `soul-player`. The crate stays `soul-player-rune`:
+"rune" names this UI head, which means nothing to someone installing a music
+player, so it is kept to places only developers see (the crate, `cargo test
+-p`, the `nix develop .#rune` shell).
 
-Every release through 0.4.2 carried the crate's name, so the .deb has to declare
+Two different names come from two different places, and conflating them is easy:
 
-```
-Provides: soul-player-rune
-Conflicts: soul-player-rune
-Replaces: soul-player-rune
-```
+| | source | changed by the rename? |
+|---|---|---|
+| `.deb`/AppImage/NSIS **filename** | main binary's name | **yes** |
+| installed binary, desktop entry, MPRIS suffix | main binary's name | **yes** |
+| `.deb` **`Package:`** field | kebab-cased `product-name` | no — always `soul-player` |
+| `.rpm` package name | `[package.metadata.generate-rpm] name` | no |
 
-which is one idiom, not three independent fields (Debian policy §7.6): together
-they let dpkg *remove* the old package instead of refusing the file overlap.
+So **no package was ever renamed**, and neither the `.deb` nor the `.rpm` needs
+`Provides`/`Conflicts`/`Replaces` or `Obsoletes` — do not add them. The
+published 0.4.2 `.deb` settles it: the file is
+`soul-player-rune_0.4.2_amd64.deb` and inside it is `Package: soul-player`.
 
-The **`.rpm` needs no equivalent** — do not add `Obsoletes` by analogy. Its
-package name was already `soul-player`, so the rename only moves a file inside
-the same package, which rpm handles itself: installing the old rpm and running
-`rpm -U` on the renamed one leaves exactly one binary and one desktop entry
-(tested in a Fedora container, not assumed).
+What the rename actually does is move `/usr/bin/soul-player-rune` to
+`/usr/bin/soul-player` *within* one package, and both package managers drop
+paths a new version no longer ships. Verified in containers rather than
+reasoned about — install the published package, upgrade to the renamed build,
+and exactly one binary and one desktop entry remain (`Unpacking soul-player
+over (0.4.2)` on Debian; the same on Fedora with `rpm -U`).
 
-`build-linux.sh` patches these into the built package's control file, and fails
-if they do not read back. They are **not** in `Cargo.toml`: cargo-packager
-0.11.8's Debian config has no such fields (the provides/conflicts/replaces in
-its config module belong to the *pacman* backend), and declaring them under
-`[package.metadata.packager.deb]` fails the build with ``unknown field
-`conflicts` ``. Move them into Cargo.toml only once that backend supports them.
-Without them the upgrade leaves two packages, two binaries and two desktop
-entries — verified by building both and watching it happen. The release workflow
-finds the newest release that still ships a `soul-player-rune` .deb, installs
-it, and upgrades to the build under test — so the one upgrade path the rename
-can break stays gated without a version to keep up to date. Once no release
-carries such an asset the gate says so and skips, which is the signal that it
-and these three fields can go.
+This was originally built the other way round, on the assumption that
+`Package:` followed the binary name: a transition apparatus with three control
+fields patched into the built `.deb`, plus a gate that hunted for "the last
+old-named release". The release workflow's own upgrade check disproved it by
+failing on an assertion that the old package name was installed — it never was.
+The check remains, asserting the thing that can actually break: that the
+previous release's binary path is gone after the upgrade.
 
 ### What differs per format
 

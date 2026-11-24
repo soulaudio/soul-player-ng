@@ -101,10 +101,10 @@
             extraPackages = lib.optionals pkgs.stdenv.hostPlatform.isLinux [
               pkgs.xvfb-run        # headless `cargo test` (CI does the same)
               pkgs.vulkan-tools    # vulkaninfo, for debugging adapter selection
-              # `build-linux.sh` patches the built .deb's control file (the
-              # transition off the old package name), and unpacks the .deb to
-              # stage the RPM's and Flatpak's shared files. Both need dpkg-deb,
-              # which no non-Debian host has.
+              # `stage-linux.sh` unpacks the built .deb to stage the RPM's and
+              # Flatpak's shared files. It falls back to `ar` + `tar` where
+              # dpkg-deb is missing, but the dpkg path is the one CI takes, so
+              # a local build should exercise the same one.
               pkgs.dpkg
             ];
           };
