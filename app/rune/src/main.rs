@@ -1067,11 +1067,15 @@ impl State {
             .unwrap_or(if self.nav_visible(id) { 1.0 } else { 0.0 })
     }
 
-    /// A cheap fingerprint of the current library that changes whenever the set
-    /// OR ORDER of tracks changes, used to invalidate the grouping caches. Samples
-    /// ~16 track ids at even strides plus the length rather than hashing every
-    /// track, so it stays O(1)-ish even at a million tracks. A scan (content
-    /// change) moves the length/ids; a sort (reorder) moves the sampled ids.
+    /// A cheap fingerprint of the current library that changes whenever the set,
+    /// ORDER, or per-track LOUDNESS of tracks changes, used to invalidate the
+    /// grouping / `library_rc` caches. Samples ~16 tracks at even strides plus the
+    /// length rather than hashing every track, so it stays O(1)-ish even at a
+    /// million tracks. A scan (content change) moves the length/ids; a sort
+    /// (reorder) moves the sampled ids; a background loudness sweep landing values
+    /// (which refills the library with same-id, same-order tracks that now carry
+    /// DR) moves the sampled loudness, so the DR-bearing caches (album badges, the
+    /// Tracks DR/LUFS cells) refresh instead of serving the pre-analysis blanks.
     fn library_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -1083,9 +1087,19 @@ impl State {
             let mut i = 0;
             while i < n {
                 lib[i].id.hash(&mut h);
+                lib[i]
+                    .loudness
+                    .as_ref()
+                    .map(|l| l.dr.to_bits())
+                    .hash(&mut h);
                 i += step;
             }
             lib[n - 1].id.hash(&mut h);
+            lib[n - 1]
+                .loudness
+                .as_ref()
+                .map(|l| l.dr.to_bits())
+                .hash(&mut h);
         }
         h.finish()
     }
@@ -14443,6 +14457,37 @@ mod tests {
             analysis_pending: 0,
         }));
         assert!(!s.loudness_dirty, "the next tick consumes the refresh flag");
+    }
+
+    /// The grouping / `library_rc` caches are keyed solely by [`library_fingerprint`],
+    /// so the fingerprint MUST move when a track's loudness lands. The sweep's refetch
+    /// (`loudness_dirty` tick) replaces the library with same-id, same-order tracks that
+    /// now carry loudness; if the fingerprint ignored it, `grouped_albums()` (album DR
+    /// badges) and `library_rc()` (Tracks DR/LUFS cells) would keep serving the stale,
+    /// pre-analysis (blank) values until an unrelated structural change.
+    #[test]
+    fn library_fingerprint_moves_when_loudness_lands() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        assert!(!s.library.is_empty(), "the test library has tracks");
+        // A clean None -> Some transition (mirrors the sweep landing a first value).
+        for t in &mut s.library {
+            t.loudness = None;
+        }
+        let before = s.library_fingerprint();
+        s.library[0].loudness = Some(TrackLoudness {
+            integrated_lufs: -14.0,
+            lra: 6.0,
+            true_peak_dbtp: -1.0,
+            plr: 9.0,
+            dr: 12.0,
+        });
+        assert_ne!(
+            before,
+            s.library_fingerprint(),
+            "a landed loudness value must move the fingerprint so the memoized caches refresh"
+        );
     }
 
     /// Build a track with (or without) a loudness reading `(dr, integrated_lufs)`, for the

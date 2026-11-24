@@ -189,11 +189,12 @@ pub(crate) fn fmt_total_dur(total_secs: f64) -> String {
     }
 }
 
-/// The albums of a single artist: filter the library to that artist (matching
-/// `group_artists`' empty→"Unknown" bucketing), fold by album in first-seen
-/// order, then re-sort chronologically by the selected date source — the
-/// artist page's Discography. Unknown dates (`0`) sort last; the sort is
-/// stable, so equal/unknown years keep their first-seen order.
+/// The albums of a single artist by a library-wide name filter: fold the matching
+/// tracks by album (first-seen order), then sort via [`discography_of`]. This is the
+/// O(library) name-scan the artist page used to run every frame; production now
+/// resolves the artist's OWN track ids (`group_artists`) through `discography_of`
+/// directly (O(artist)). Kept as the equivalence oracle those tests check against.
+#[cfg(test)]
 pub(crate) fn albums_of_artist(
     library: &[TrackView],
     artist: &str,
@@ -212,9 +213,20 @@ pub(crate) fn albums_of_artist(
         })
         .cloned()
         .collect();
-    let mut albums = group_albums(&subset);
-    // Chronological by the SELECTED date; unknown (0) sorts last. Stable
-    // keeps the first-seen order among equal/unknown years.
+    discography_of(&subset, src)
+}
+
+/// Fold a set of tracks already filtered to a single artist into that artist's
+/// Discography: group by album (first-seen order), then re-sort chronologically by
+/// the selected date source (unknown `0` dates last; the sort is stable, so
+/// equal/unknown years keep their first-seen order). Shared by [`albums_of_artist`]
+/// (library-wide name filter) and the artist detail page, which feeds the artist's
+/// own resolved tracks (O(artist), not an O(library) re-scan).
+pub(crate) fn discography_of(
+    tracks: &[TrackView],
+    src: crate::config::AlbumYearSource,
+) -> Vec<Album> {
+    let mut albums = group_albums(tracks);
     let key = |a: &Album| -> u32 {
         let (first, second) = if src == crate::config::AlbumYearSource::Original {
             (a.original_date, a.release_date)
@@ -703,11 +715,13 @@ pub(crate) fn detail_track_header(p: &Palette, show_artist: bool, show_album: bo
 /// `State::open_album`, re-derived from the current library; if it has vanished we
 /// just offer the way back.
 pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
-    let albums = group_albums(&s.library);
+    // Reuse the memoized album grouping (keyed by the library fingerprint) instead
+    // of re-grouping the whole library every frame to locate one album.
+    let albums = s.grouped_albums();
     let Some(album) = s
         .open_album
         .as_deref()
-        .and_then(|name| albums.into_iter().find(|a| a.name == name))
+        .and_then(|name| albums.iter().find(|a| a.name == name).cloned())
     else {
         return col()
             .key("album-detail")
