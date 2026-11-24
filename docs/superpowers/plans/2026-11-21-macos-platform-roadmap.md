@@ -214,6 +214,8 @@ TODO:
   nothing; ✅ the `homebrew` release job pushes it to the tap after `verify`.
   ⬜ Create `soulaudio/homebrew-tap` and the `HOMEBREW_TAP_TOKEN` secret (contents: write on
   that repo) — until then the job says the cask was tested but not published.
+  Newer Homebrew refuses casks from a tap until `brew trust soulaudio/tap` (the e2e does it);
+  the tap's README must say so.
   ⬜ homebrew/cask (the main repo) once notarized — it rejects casks that fail Gatekeeper.
 - ⬜ Saved sign-ins across updates: the Keychain ties an item to the app's code signature, and
   an ad-hoc signature changes every build, so a remote server's refresh token may prompt or be

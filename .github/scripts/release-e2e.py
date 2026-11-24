@@ -1253,6 +1253,11 @@ def homebrew_cask(dmg: Path, work: Path, library: Path, version: str) -> None:
 
     tap = "soulaudio/e2e"
     brew("tap-new", "--no-git", tap)
+    # Newer Homebrew refuses casks from a third-party tap until it is trusted,
+    # as a user of soulaudio/tap does once. Older Homebrew has no `trust`.
+    has_trust = subprocess.run(["brew", "trust", "--help"], env=benv, capture_output=True).returncode == 0
+    if has_trust:
+        brew("trust", tap)
     try:
         casks = Path(brew("--repository", tap).strip()) / "Casks"
         casks.mkdir(parents=True, exist_ok=True)
