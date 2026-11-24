@@ -299,7 +299,7 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let search = crate::views::library::search_box(
         &s.album_search,
         "albums-search",
-        t!("albums.searchPlaceholder").to_string(),
+        t!("albums.searchPlaceholder", count => albums.len()).to_string(),
         p,
         |st: &mut State| &mut st.album_search,
     );

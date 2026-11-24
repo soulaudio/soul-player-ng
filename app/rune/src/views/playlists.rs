@@ -280,7 +280,7 @@ pub fn page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let search = crate::views::library::search_box(
         &s.playlist_search,
         "playlists-search",
-        t!("playlists.searchPlaceholder").to_string(),
+        t!("playlists.searchPlaceholder", count => summaries.len()).to_string(),
         p,
         |st: &mut State| &mut st.playlist_search,
     );

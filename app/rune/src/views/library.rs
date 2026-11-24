@@ -524,7 +524,7 @@ fn search_bar(s: &State, p: &Palette) -> El {
     let search = search_box(
         &s.library_search,
         "tracks-search",
-        t!("library.searchPlaceholder").to_string(),
+        t!("library.searchPlaceholder", count => s.library.len()).to_string(),
         p,
         |st: &mut State| &mut st.library_search,
     );
