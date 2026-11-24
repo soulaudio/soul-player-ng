@@ -786,11 +786,22 @@ def set_config(env: AppEnv, **values: bool) -> None:
     f.write_text("\n".join(head + lines) + "\n", encoding="utf-8")  # top-level keys first
 
 
-def graceful_quit(p: subprocess.Popen, timeout: int = 60) -> int:
+def graceful_quit(p: subprocess.Popen, timeout: int = 60, apple_event: bool = False) -> int:
     """Quit the way a user does: SIGTERM (handled like ⌘Q) or, on Windows, a
-    window close (WM_CLOSE via taskkill without /F). Returns the exit status."""
+    window close (WM_CLOSE via taskkill without /F). Returns the exit status.
+
+    `apple_event` (macOS): send the Quit Apple Event instead, the path ⌘Q, the
+    Dock and logout take. AppKit then ends the process from
+    `applicationWillTerminate:` and the app's run loop never returns, unlike the
+    SIGTERM quit, which the app turns into its own quit. 0.4.1 installed an
+    install-on-quit update only after the run loop returned, so a real ⌘Q never
+    installed it while every SIGTERM-driven check passed."""
     if IS_WIN:
         subprocess.run(["taskkill", "/PID", str(p.pid)], capture_output=True)
+    elif IS_MAC and apple_event:
+        r = subprocess.run(["osascript", "-e", f'tell application id "{BUNDLE_ID}" to quit'],
+                           capture_output=True, text=True, timeout=60)
+        check(r.returncode == 0, f"the Quit Apple Event failed: {r.stderr.strip()}")
     else:
         p.send_signal(signal.SIGTERM)
     try:
@@ -867,7 +878,8 @@ def auto_check_off(inst: Install, env: AppEnv, library: Path, update: tuple, ver
 
 def install_on_quit(inst: Install, env: AppEnv, library: Path, update: tuple, version: str, key: str) -> None:
     """"Install updates automatically": download in the background, install nothing
-    mid-session, install when the user quits, and do not reopen the app."""
+    mid-session, install when the user quits (on macOS with the Quit Apple Event, as
+    ⌘Q does), and do not reopen the app."""
     set_config(env, update_auto_check=True, update_auto_install=True)
     offer = UpdateServer(bump_patch(version), key, *update)
     mark_stale(inst)
@@ -884,7 +896,7 @@ def install_on_quit(inst: Install, env: AppEnv, library: Path, update: tuple, ve
         p.kill()
         offer.close()
         raise
-    status = graceful_quit(p)
+    status = graceful_quit(p, apple_event=True)
     offer.close()
     check(status == 0, f"quit with {status}")
     check(wait_until(lambda: not is_stale(inst), 180),
@@ -899,6 +911,61 @@ def install_on_quit(inst: Install, env: AppEnv, library: Path, update: tuple, ve
     text = live_run(inst, env, version, library, secs=8)
     check("did not exit cleanly" not in text, "the quit that installed the update was reported as a crash")
     ok("next launch runs the installed build, no crash reported")
+
+
+def move_from_dmg(installer: Path, work: Path, library: Path, version: str) -> None:
+    """macOS: opened straight from its disk image, the app moves itself into
+    Applications (unattended here; a prompt for users), relaunches from there,
+    and ejects the image. The moved copy keeps its signature and loses the
+    quarantine flag, so Gatekeeper doesn't translocate it on the next launch."""
+    env = AppEnv(work, "move")
+    apps = work / "moved-apps"
+    apps.mkdir(exist_ok=True)
+    mnt = Path(tempfile.mkdtemp(dir=work))
+    attach_dmg(installer, mnt)
+    moved = apps / f"{APP_NAME}.app"
+    new_pid = None
+    try:
+        exe = next((mnt / f"{APP_NAME}.app" / "Contents" / "MacOS").iterdir())
+        e = dict(env.env, SOUL_PLAYER_FOLDER=str(library), SOUL_PLAYER_MOVE_TO_APPLICATIONS="1",
+                 SOUL_PLAYER_APPLICATIONS_DIR=str(apps))
+        mark = env.log_mark()
+        # Output to a file, not a pipe: the moved copy it starts inherits the
+        # handles, and a pipe would stay open until that one exits too.
+        with open(env.home / "console-move.txt", "wb") as out:
+            r = subprocess.run([str(exe)], env=e, stdout=out, stderr=subprocess.STDOUT,
+                               stdin=subprocess.DEVNULL, timeout=120)
+        check(r.returncode == 0, f"the copy on the disk image exited with {r.returncode}")
+        relaunched = re.compile(r"Soul Player starting.*pid=(\d+).*exe=" + re.escape(str(moved)))
+        check(wait_until(lambda: relaunched.search(env.log_since(mark)) is not None, 60),
+              f"the moved copy never started\n{env.log_since(mark)[-3000:]}")
+        text = env.log_since(mark)
+        new_pid = int(relaunched.search(text).group(1))
+        check("place=DiskImage" in text, "it didn't recognise the disk image")
+        ok(f"moved off the disk image to {moved}, relaunched as pid {new_pid}")
+        run(["codesign", "--verify", "--deep", "--strict", str(moved)])
+        attrs = subprocess.run(["xattr", str(moved)], capture_output=True, text=True).stdout
+        check("com.apple.quarantine" not in attrs, "the moved copy is still quarantined")
+        ok("moved copy: signature intact, not quarantined")
+        check(wait_until(lambda: not os.path.ismount(mnt), 30), "the disk image was not ejected")
+        ok("disk image ejected")
+        time.sleep(5)
+        check(pid_alive(new_pid), "the moved copy exited")
+        n = len(startups(env.log_since(mark)))
+        check(n == 2, f"expected the disk-image copy and one moved copy to start, saw {n} startups")
+        check(installed_version_at(moved) == version, f"moved copy reports {installed_version_at(moved)}")
+    finally:
+        if new_pid and pid_alive(new_pid):
+            stop_pid(new_pid)
+        if os.path.ismount(mnt):
+            eject_dmg(mnt)
+        shutil.rmtree(apps, ignore_errors=True)
+
+
+def installed_version_at(app: Path) -> str:
+    return subprocess.check_output(
+        ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString", str(app / "Contents" / "Info.plist")],
+        text=True).strip()
 
 
 def bump_patch(v: str) -> str:
@@ -971,6 +1038,12 @@ def main() -> int:
         exercise(inst, env, a.version, library, a.out / "fresh", full=True)
         steps.append(("fresh install → run", "pass"))
         end_section()
+
+        if IS_MAC and installer.name.endswith(".dmg"):
+            section("run from the disk image → moves itself to Applications")
+            move_from_dmg(installer, work, library, a.version)
+            steps.append(("opened from the DMG → moves to Applications, relaunches, ejects", "pass"))
+            end_section()
 
         update = None
         if a.update_meta:

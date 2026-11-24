@@ -70,6 +70,10 @@ pub(crate) struct UpdateUi {
     /// owns this install (apt / dnf / flatpak) rather than because the build
     /// has updates compiled out. The page says different things.
     pub(crate) managed_elsewhere: bool,
+    /// When `supported` is false, whether that is because the app runs from a
+    /// disk image or a translocated copy (macOS) — moving it to Applications
+    /// turns updates on.
+    pub(crate) needs_move: bool,
     /// The version already announced with an OS notification this session, so
     /// the scheduled re-checks don't repeat it.
     notified: Option<String>,
@@ -86,6 +90,7 @@ impl UpdateUi {
             auto_install,
             supported: update::enabled(),
             managed_elsewhere: update::managed_elsewhere(),
+            needs_move: update::needs_move(),
             notified: None,
         }
     }

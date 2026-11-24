@@ -30,6 +30,7 @@ use soul_player_host::{
     remote::{KeyringStore, TokenStore},
 };
 
+mod app_location;
 mod config;
 mod covers;
 #[cfg(test)]
@@ -745,6 +746,10 @@ struct State {
     /// Set at startup (`logging::begin_session`) when the previous session ended
     /// without a clean exit — surfaces the dismissible "report this crash" banner.
     crashed_last_session: bool,
+    /// macOS: the app runs from outside Applications (a disk image, Downloads, a
+    /// translocated copy) — the "Move to Applications" prompt. `None` once
+    /// answered, in tests, and on other platforms.
+    move_offer: Option<MoveOffer>,
     /// The Tracks page filter: a live text field like the other browse pages'
     /// search (case-insensitive substring over title/artist/album; empty = no
     /// filter). `/` on the Tracks page focuses it.
@@ -975,6 +980,7 @@ impl State {
             update: updater::UpdateUi::load(),
             // Set from `logging::begin_session()` in `main`; `false` in tests.
             crashed_last_session: false,
+            move_offer: None,
             library_search: rune::TextEdit::new(""),
             sidebar_width,
             sidebar_collapsed,
@@ -2986,6 +2992,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     // stacks above any panel still mounted beneath it.
     if let Some(dialog) = crash_overlay(s, &p) {
         overlays.push(dialog);
+    } else if let Some(dialog) = move_overlay(s, &p) {
+        // One modal at a time: after a crash, that report comes first.
+        overlays.push(dialog);
     }
     el().key("overlay-root")
         .w_full()
@@ -3029,6 +3038,115 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
             .child(page)
     };
     col().key("content").grow(1.0).min_h(0.0).child(inner)
+}
+
+/// The "Move to Applications" prompt's state (see `app_location`).
+#[derive(Clone, Debug)]
+pub(crate) struct MoveOffer {
+    bundle: PathBuf,
+    place: app_location::Place,
+    /// Why the last attempt failed, shown in the dialog.
+    error: Option<String>,
+}
+
+/// "Keep Here": close the prompt, and for a folder the user picked (not a disk
+/// image or a translocated copy, which can't be kept) don't ask again.
+fn keep_here(s: &mut State) {
+    if let Some(o) = s.move_offer.take()
+        && o.place == app_location::Place::Elsewhere
+    {
+        config::save_move_prompt_kept(&o.bundle.to_string_lossy());
+    }
+}
+
+/// "Move to Applications": copy the bundle there and quit; the quit hook starts
+/// the moved copy and ejects the disk image.
+fn move_to_applications(s: &mut State, tx: &mut Tx) {
+    let Some(o) = s.move_offer.as_mut() else {
+        return;
+    };
+    match app_location::move_to_applications(&o.bundle, &o.place) {
+        Ok(_) => {
+            s.move_offer = None;
+            tx.quit();
+        }
+        Err(e) => {
+            tracing::error!("moving to Applications failed: {e}");
+            o.error = Some(e);
+        }
+    }
+}
+
+/// The "Move to Applications" modal: what's wrong with where the app runs, and
+/// the two choices. Escape / an outside press is "Keep Here" for this session
+/// only, so a dismissal never silences the prompt for good.
+fn move_overlay(s: &State, p: &theme::Palette) -> Option<El> {
+    use crate::ui::{radius, space, type_};
+    let o = s.move_offer.as_ref()?;
+    let (body_key, body) = match o.place {
+        app_location::Place::DiskImage { .. } => ("move-body-dmg", t!("move.bodyDiskImage")),
+        _ => ("move-body", t!("move.body")),
+    };
+    let button = |key: &'static str, label: String, primary: bool| {
+        el().key(key)
+            .role("button")
+            .label(label.clone())
+            .focusable(true)
+            .padding(space::MD)
+            .radius(radius::MD)
+            .fill(if primary { p.primary } else { p.bg })
+            .border(1.0, if primary { p.primary } else { p.border })
+            .center()
+            .cursor(rune::Cursor::Pointer)
+            .child(rune::text(label).color(if primary { p.bg } else { p.fg }))
+    };
+    let mut card = col()
+        .key("move-dialog")
+        .w(400.0)
+        .fill(p.card)
+        .radius(radius::LG)
+        .border(1.0, p.border)
+        .padding(space::LG)
+        .gap(space::MD)
+        .child(
+            rune::text(t!("move.title").to_string())
+                .font(type_::TITLE)
+                .color(p.fg),
+        )
+        .child(
+            rune::text(body.to_string())
+                .key(body_key)
+                .color(p.text_secondary)
+                .wrap(),
+        );
+    if let Some(e) = &o.error {
+        card = card.child(
+            rune::text(t!("move.failed", error => e).to_string())
+                .key("move-error")
+                .color(p.danger)
+                .wrap(),
+        );
+    }
+    let card = card.child(
+        row()
+            .gap(space::SM)
+            .justify_end()
+            .child(button("move-keep", t!("move.keep").to_string(), false).on_press(keep_here))
+            .child(
+                button("move-accept", t!("move.accept").to_string(), true)
+                    .on_press_tx(move_to_applications),
+            ),
+    );
+    Some(
+        col()
+            .key("move-modal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(rune::Color::BLACK.alpha(0.45))
+            .child(card.modal(true, |s: &mut State| s.move_offer = None)),
+    )
 }
 
 /// Hide the crash prompt for this session — also the modal's Escape / outside-press
@@ -3677,6 +3795,16 @@ fn scene_add_source_open(s: &mut State) {
     s.settings_tab = SettingsTab::MusicData;
     s.open_dropdown = Some("add-source".to_string());
 }
+/// The "Move to Applications" prompt for an app run from its disk image.
+fn scene_move_dialog(s: &mut State) {
+    s.move_offer = Some(MoveOffer {
+        bundle: PathBuf::from("/Volumes/Soul Player/Soul Player.app"),
+        place: app_location::Place::DiskImage {
+            mount: PathBuf::from("/Volumes/Soul Player"),
+        },
+        error: None,
+    });
+}
 /// The crash-report dialog shown after a crashed session.
 fn scene_crash_dialog(s: &mut State) {
     s.crashed_last_session = true;
@@ -4114,6 +4242,7 @@ fn main() -> anyhow::Result<()> {
         os = %os,
         arch = std::env::consts::ARCH,
         cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
+        exe = %std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
         "Soul Player starting",
     );
     // Whether the previous session ended without a clean exit (and mark this one
@@ -4133,6 +4262,33 @@ fn main() -> anyhow::Result<()> {
     // exit without opening a window. macOS/other platforms: always true.
     if !cfg!(debug_assertions) && !rune::single_instance("co.soulaudio.soulplayer") {
         return Ok(());
+    }
+
+    // macOS: running from a disk image, Downloads or a translocated copy. Offer
+    // to move into Applications (the window's first prompt), or do it right
+    // away when `SOUL_PLAYER_MOVE_TO_APPLICATIONS` asks (the release e2e).
+    let move_offer = app_location::current().and_then(|(bundle, place)| {
+        if place != app_location::Place::Installed {
+            tracing::info!(bundle = %bundle.display(), ?place, "running outside Applications");
+        }
+        let kept = config::load_move_prompt_kept();
+        app_location::should_offer(&bundle, &place, kept.as_deref()).then_some(MoveOffer {
+            bundle,
+            place,
+            error: None,
+        })
+    });
+    if let Some(offer) = &move_offer
+        && app_location::move_unattended()
+    {
+        match app_location::move_to_applications(&offer.bundle, &offer.place) {
+            Ok(_) => {
+                logging::end_session();
+                app_location::finish_move();
+                return Ok(());
+            }
+            Err(e) => tracing::error!("moving to Applications failed: {e}"),
+        }
     }
 
     let host = PlayerHandle::new();
@@ -4232,6 +4388,7 @@ fn main() -> anyhow::Result<()> {
             ("settings-appearance", scene_settings_appearance),
             ("add-source-open", scene_add_source_open),
             ("crash-dialog", scene_crash_dialog),
+            ("move-dialog", scene_move_dialog),
             ("settings-music-skips", scene_settings_music_skips),
             ("settings-music-de", scene_settings_music_de),
             ("settings-audio-de", scene_settings_audio_de),
@@ -4327,6 +4484,7 @@ fn main() -> anyhow::Result<()> {
         .init(move || {
             let mut s = State::new(init_host.clone());
             s.crashed_last_session = crashed_last_session;
+            s.move_offer = move_offer.clone();
             // Set from the start (not in the first-frame update that kicks the scan off): a
             // file that launched the app arrives during AppKit's launch, before that frame.
             s.startup_scan_pending = needs_startup_scan;
@@ -4375,7 +4533,19 @@ fn main() -> anyhow::Result<()> {
         // an app Quit / OS logout (Cmd+Q, `WM_ENDSESSION`), where the run loop may
         // not return cleanly.
         .on_close(|s: &mut State, _tx: &mut Tx| flush_on_exit(s))
-        .on_quit(|s: &mut State, _tx: &mut Tx| flush_on_exit(s))
+        .on_quit(|s: &mut State, _tx: &mut Tx| {
+            flush_on_exit(s);
+            // macOS Quit (⌘Q, the Dock, logout, an Apple Event) ends the process
+            // from `applicationWillTerminate:` right after these hooks: `app.run()`
+            // never returns, so an install-on-quit update has to go in here or it
+            // never does. Elsewhere the run loop returns and the call after it does
+            // the install (an update is applied once; the later call is a no-op).
+            #[cfg(target_os = "macos")]
+            update::apply_pending();
+            // "Move to Applications": start the moved copy now that this one
+            // has let go of its session (no-op without a move).
+            app_location::finish_move();
+        })
         // Track focus so now-playing toasts fire only while backgrounded.
         .on_focus(|s: &mut State, focused: bool, _tx: &mut Tx| s.focused = focused);
     let ah = app.handle();
@@ -4543,6 +4713,7 @@ fn main() -> anyhow::Result<()> {
     // "Install & Restart" quit us to get here: now that every quit hook has run,
     // put the verified update in place and start it (no-op without one).
     update::apply_pending();
+    app_location::finish_move();
     Ok(())
 }
 
@@ -7092,6 +7263,77 @@ mod tests {
             rt2.find("crash-report").is_some(),
             "the report button is offered"
         );
+    }
+
+    /// The "Move to Applications" prompt: shown when the app runs from outside
+    /// Applications, with the disk-image wording there. "Keep Here" on a folder
+    /// the user picked is remembered, but never for a disk image (which can't
+    /// be kept), and after a crash the crash report comes first.
+    #[test]
+    fn move_to_applications_prompt_offers_and_remembers_keep_here() {
+        let _locale = config::use_test_locale("en");
+        let _cfg = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let offer = |place| MoveOffer {
+            bundle: PathBuf::from("/Users/me/Downloads/Soul Player.app"),
+            place,
+            error: None,
+        };
+
+        let mut rt = Runtime::new(populated_state(), view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("move-dialog").is_none(), "installed: no prompt");
+
+        let mut s = populated_state();
+        s.move_offer = Some(offer(app_location::Place::DiskImage {
+            mount: PathBuf::from("/Volumes/Soul Player"),
+        }));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("move-accept").is_some(), "the move is offered");
+        assert!(
+            rt.find("move-body-dmg").is_some(),
+            "the disk image gets its own explanation"
+        );
+        click_key(&mut rt, "move-keep");
+        assert!(rt.find("move-dialog").is_none(), "Keep Here closes it");
+        assert_eq!(
+            config::load_move_prompt_kept(),
+            None,
+            "a disk image is never kept for good"
+        );
+
+        let mut s = populated_state();
+        s.move_offer = Some(offer(app_location::Place::Elsewhere));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "move-keep");
+        assert_eq!(
+            config::load_move_prompt_kept().as_deref(),
+            Some("/Users/me/Downloads/Soul Player.app"),
+            "a folder the user picked isn't asked about again"
+        );
+
+        let mut s = populated_state();
+        s.crashed_last_session = true;
+        s.move_offer = Some(offer(app_location::Place::Elsewhere));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("crash-dialog").is_some() && rt.find("move-dialog").is_none());
+        click_key(&mut rt, "crash-dismiss");
+        assert!(rt.find("move-dialog").is_some(), "then the move prompt");
+
+        let mut s = populated_state();
+        s.move_offer = Some(MoveOffer {
+            error: Some("Permission denied".into()),
+            ..offer(app_location::Place::Elsewhere)
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("move-error").is_some(), "a failed move says why");
     }
 
     #[test]
@@ -14899,6 +15141,7 @@ mod tests {
                 "organize-confirm",
             ),
             ("crash-dialog", scene_crash_dialog, "crash-dialog"),
+            ("move-dialog", scene_move_dialog, "move-dialog"),
             (
                 "add-source-open",
                 scene_add_source_open,
@@ -15116,6 +15359,7 @@ mod tests {
         ("organize-confirm", scene_organize_confirm),
         ("signal-path-open", scene_signal_path_open),
         ("crash-dialog", scene_crash_dialog),
+        ("move-dialog", scene_move_dialog),
         ("playlists", scene_playlists),
         ("playlist-detail", scene_playlist_detail),
         ("add-to-playlist-open", scene_add_to_playlist_open),
