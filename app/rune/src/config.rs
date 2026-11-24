@@ -201,6 +201,10 @@ struct Config {
     /// it when the app is next quit. Opt-in (default off).
     #[serde(default)]
     update_auto_install: bool,
+    /// macOS: the bundle path the user chose to keep the app at ("Keep Here" on
+    /// the Move to Applications prompt), so that folder isn't asked about again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    move_prompt_kept: Option<String>,
 }
 
 /// serde field default for a bool that should default to `true` when absent from an
@@ -368,6 +372,7 @@ impl Default for Config {
             show_loudness_columns: true,
             update_auto_check: true,
             update_auto_install: false,
+            move_prompt_kept: None,
         }
     }
 }
@@ -604,6 +609,18 @@ pub fn save_update_auto_check(on: bool) {
 pub fn save_update_auto_install(on: bool) {
     let mut cfg = load();
     cfg.update_auto_install = on;
+    save(&cfg);
+}
+
+/// macOS: the bundle path the user kept the app at (see `app_location`).
+pub fn load_move_prompt_kept() -> Option<String> {
+    load().move_prompt_kept
+}
+
+/// Remember "Keep Here" for this bundle path.
+pub fn save_move_prompt_kept(bundle: &str) {
+    let mut cfg = load();
+    cfg.move_prompt_kept = Some(bundle.to_string());
     save(&cfg);
 }
 
@@ -1350,6 +1367,7 @@ mod tests {
             show_loudness_columns: false,
             update_auto_check: false,
             update_auto_install: true,
+            move_prompt_kept: Some("/Users/me/Downloads/Soul Player.app".into()),
         };
         let body = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&body).unwrap();
