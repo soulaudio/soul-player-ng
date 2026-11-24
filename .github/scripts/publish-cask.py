@@ -20,9 +20,10 @@ rollback: revert the version's commit on the base branch (a PR through cask-ci).
 Reverting protects new installs; anyone who already upgraded needs a newer
 release, since brew never downgrades.
 
-drill: branches the tap from just before its latest version, publishes that
-version into the branch and rolls it back, checking both, then deletes the
-branch — the full publish + rollback path, proven without touching main.
+drill: branches the tap from main with the cask set back to before its latest
+version, publishes that version into the branch, rolls it back, then offers a
+cask with a wrong checksum that cask-ci must reject — publish, rollback and the
+gate itself, proven without touching main. The branch is deleted afterwards.
 
 Needs GH_TOKEN with contents + pull-requests write on the tap (the release's
 GitHub App token). The brew tests need macOS; `--no-brew` skips the local ones
@@ -132,19 +133,30 @@ def write_branch(base: str, branch: str, text: str | None, message: str) -> str:
 
 
 def wait_check(sha: str, name: str = "cask-ci", timeout: int = 45 * 60) -> None:
-    """Wait for the `name` check on `sha` to finish; raise unless it succeeded."""
+    """Wait for the `name` check on `sha` to finish; raise unless it succeeded.
+
+    A run GitHub cancels because no macOS runner was free ("not acquired by
+    Runner … capacity constraints") is not a verdict on the cask: rerun it, up
+    to three times."""
     deadline = time.time() + timeout
     appear_by = time.time() + 10 * 60
+    reruns = 0
     while time.time() < deadline:
         runs = api("GET", f"repos/{TAP}/commits/{sha}/check-runs?check_name={name}")["check_runs"]
         if not runs and time.time() > appear_by:
             raise Failed(f"no {name} check started on {sha[:7]} within 10 min")
-        done = [r for r in runs if r["status"] == "completed"]
-        if done:
-            r = max(done, key=lambda r: r["completed_at"])
+        if runs and all(r["status"] == "completed" for r in runs):
+            r = max(runs, key=lambda r: r["completed_at"])
             if r["conclusion"] == "success":
                 log(f"  {name} passed: {r['html_url']}")
                 return
+            run_id = re.search(r"/actions/runs/(\d+)", r.get("details_url") or "")
+            if r["conclusion"] == "cancelled" and run_id and reruns < 3:
+                reruns += 1
+                log(f"  {name} was cancelled (no runner?): rerun {reruns}/3")
+                api("POST", f"repos/{TAP}/actions/runs/{run_id.group(1)}/rerun-failed-jobs")
+                time.sleep(30)
+                continue
             raise Failed(f"{name} {r['conclusion']}: {r['html_url']}")
         time.sleep(20)
     raise Failed(f"{name} didn't finish on {sha[:7]} within {timeout // 60} min")
@@ -365,7 +377,20 @@ def drill(use_brew: bool) -> None:
             raise Failed(f"after rolling back, {branch} has {now}, expected {before}")
         if use_brew and before:
             postpublish(before, branch, brew_env())
-        log(f"DRILL PASSED: published {version} through cask-ci, then rolled back to {before or 'no cask'}")
+        # The gate itself: a cask with a wrong checksum must be stopped by
+        # cask-ci, its PR closed, and nothing land.
+        bad = new_cask(version, "0" * 64)
+        try:
+            pr_through_ci(branch, bad, f"drill broken soul-player {version}",
+                          "Deliberately wrong sha256: cask-ci must reject this and it must never merge.")
+        except Failed as e:
+            log(f"  ok: cask-ci rejected the broken cask ({e})")
+        else:
+            raise Failed("cask-ci let a cask with a wrong checksum merge")
+        if version_of(cask_at(branch)[0]) != before:
+            raise Failed("the rejected cask changed the branch anyway")
+        log(f"DRILL PASSED: published {version} through cask-ci, rolled back to {before or 'no cask'}, "
+            "and cask-ci stopped a broken cask")
     finally:
         api("DELETE", f"repos/{TAP}/git/refs/heads/{branch}", ok404=True)
 
