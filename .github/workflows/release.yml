@@ -340,24 +340,41 @@ jobs:
           echo "ok: .deb installs, resolves every library, runs, and uninstalls"
           echo "::endgroup::"
 
-          # The package was named `soul-player-rune` through 0.4.1, because its
-          # name came from the binary's. `Provides`/`Conflicts`/`Replaces` in
-          # Cargo.toml are what make dpkg REMOVE the old package instead of
-          # installing alongside it — without them the upgrade silently leaves
-          # two binaries and two desktop entries, which was verified by
+          # Every release up to and including 0.4.2 named this package
+          # `soul-player-rune`, because its name came from the binary's. The
+          # `Provides`/`Conflicts`/`Replaces` that `build-linux.sh` patches into
+          # the control file are what make dpkg REMOVE the old package instead
+          # of installing alongside it — without them the upgrade silently
+          # leaves two binaries and two desktop entries, which was verified by
           # building both packages and watching it happen.
-          #
-          # v0.4.1 is pinned deliberately: it is the LAST release under the old
-          # name, so this is the only upgrade path the rename can break. Once no
-          # supported upgrade starts at <= 0.4.1, delete this group and the
-          # three fields it guards.
-          echo "::group::upgrade from the last old-named release (0.4.1)"
+          echo "::group::upgrade from the newest old-named release"
           old=$(mktemp -d)
-          if gh release download v0.4.1 --dir "$old" \
+          # Found rather than pinned. The first version of this gate hardcoded
+          # v0.4.1 as "the last release under the old name" and went stale the
+          # same day, when 0.4.2 shipped still-old-named. Asking the releases
+          # which ones actually carry a `soul-player-rune` .deb cannot rot: it
+          # keeps testing the real worst case while one exists, and once no
+          # release has such an asset the group reports that and skips.
+          old_tag=$(
+            gh release list --limit 30 --json tagName --jq '.[].tagName' | while read -r t; do
+              gh release view "$t" --json assets \
+                --jq '.assets[].name' 2>/dev/null \
+                | grep -qE "^soul-player-rune_.*_${{ matrix.deb_arch }}\.deb$" \
+                && { echo "$t"; break; }
+            done | head -1 || true
+          )
+          # `|| true` is load-bearing. This step runs under GitHub's `bash -eo
+          # pipefail`, so when NO release carries an old-named .deb every `grep
+          # -q` fails, the loop exits non-zero, pipefail propagates it out of the
+          # command substitution and -e kills the step — failing the release at
+          # exactly the moment the transition is complete and there is nothing
+          # left to test. Verified by stubbing `gh` for both cases.
+          if [ -n "$old_tag" ] && gh release download "$old_tag" --dir "$old" \
                --pattern "soul-player-rune_*_${{ matrix.deb_arch }}.deb" 2>/dev/null; then
+            echo "upgrading from $old_tag"
             sudo apt-get install -y -o Acquire::Retries=3 "$old"/*.deb
             dpkg -l | grep -q "^ii  soul-player-rune " \
-              || { echo "::error::the 0.4.1 package did not install"; exit 1; }
+              || { echo "::error::the $old_tag package did not install"; exit 1; }
 
             sudo apt-get install -y -o Acquire::Retries=3 ./dist/*.deb
 
@@ -377,9 +394,14 @@ jobs:
             soul-player --help >/dev/null 2>&1 \
               || { echo "::error::the upgraded binary does not run"; exit 1; }
             sudo apt-get remove -y -qq soul-player
-            echo "ok: 0.4.1 -> this build replaces the old package cleanly"
+            echo "ok: $old_tag -> this build replaces the old package cleanly"
+          elif [ -z "$old_tag" ]; then
+            # Not a failure: it means every release now carries the new name, so
+            # the transition is done and this group (and the Provides/Conflicts/
+            # Replaces that build-linux.sh patches in) can be deleted.
+            echo "no release ships a soul-player-rune ${{ matrix.deb_arch }} .deb — transition complete"
           else
-            echo "::warning::could not fetch the 0.4.1 ${{ matrix.deb_arch }} .deb; upgrade path unverified"
+            echo "::warning::could not fetch the $old_tag ${{ matrix.deb_arch }} .deb; upgrade path unverified"
           fi
           echo "::endgroup::"
 

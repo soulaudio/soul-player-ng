@@ -62,7 +62,7 @@ those values are written down. Re-deriving them per format would give three
 chances to disagree about the app's name, category or icon — and an entry that
 disagrees with the window's `app_id` silently costs the icon.
 
-### The package name, and the 0.4.1 rename
+### The package name, and the rename after 0.4.2
 
 Every Linux package is `soul-player`, from `[[bin]] name` — cargo-packager takes
 the .deb's filename *and* its `Package:` field from the main binary's name. The
@@ -70,7 +70,7 @@ crate stays `soul-player-rune`: "rune" names this UI head, which means nothing
 to someone installing a music player, so it is kept to places only developers
 see (the crate, `cargo test -p`, the `nix develop .#rune` shell).
 
-Through 0.4.1 the packages carried the crate's name, so the .deb has to declare
+Every release through 0.4.2 carried the crate's name, so the .deb has to declare
 
 ```
 Provides: soul-player-rune
@@ -89,9 +89,11 @@ its config module belong to the *pacman* backend), and declaring them under
 `conflicts` ``. Move them into Cargo.toml only once that backend supports them.
 Without them the upgrade leaves two packages, two binaries and two desktop
 entries — verified by building both and watching it happen. The release workflow
-installs the published 0.4.1 .deb and upgrades to the build under test, so the
-one upgrade path the rename can break is gated. Once nothing upgrades from
-≤ 0.4.1, that gate and these three fields can go.
+finds the newest release that still ships a `soul-player-rune` .deb, installs
+it, and upgrades to the build under test — so the one upgrade path the rename
+can break stays gated without a version to keep up to date. Once no release
+carries such an asset the gate says so and skips, which is the signal that it
+and these three fields can go.
 
 ### What differs per format
 

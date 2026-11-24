@@ -77,9 +77,9 @@ echo "    $deb"
 
 # Declare the transition off the old package name.
 #
-# Through 0.4.1 this package was `soul-player-rune` (its name came from the
+# Through 0.4.2 this package was `soul-player-rune` (its name came from the
 # binary's). To dpkg, `soul-player` is an unrelated package, so without these
-# three fields a 0.4.1 user ends up with BOTH installed: two binaries under
+# three fields an existing user ends up with BOTH installed: two binaries under
 # different names and two desktop entries, with no error anywhere. Verified by
 # building both packages — with the fields dpkg reports "Removing
 # soul-player-rune ... to allow configuration of soul-player"; without them
@@ -95,9 +95,10 @@ echo "    $deb"
 echo "==> .deb control: transition from soul-player-rune"
 command -v dpkg-deb >/dev/null 2>&1 || {
   echo "dpkg-deb is required to declare the transition off the old package" >&2
-  echo "name. Without it the .deb would install ALONGSIDE a 0.4.1 install" >&2
-  echo "instead of replacing it, so this is a hard failure rather than a" >&2
-  echo "warning. Install dpkg (it is in the 'rune' nix dev shell)." >&2
+  echo "name. Without it the .deb would install ALONGSIDE an existing" >&2
+  echo "soul-player-rune install instead of replacing it, so this is a hard" >&2
+  echo "failure rather than a warning. Install dpkg (it is in the 'rune'" >&2
+  echo "nix dev shell)." >&2
   exit 1
 }
 debwork=$(mktemp -d)

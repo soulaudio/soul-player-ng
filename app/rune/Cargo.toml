@@ -271,7 +271,8 @@ depends = [
     "libvulkan1",
 ]
 # NOTE: the package's `Provides`/`Conflicts`/`Replaces` — which are what make
-# the 0.4.1 `soul-player-rune` package get REMOVED rather than installed
+# the old `soul-player-rune` package (shipped through 0.4.2) get REMOVED
+# rather than installed
 # alongside this one — are NOT settable here. cargo-packager 0.11.8's
 # `DebianConfig` takes only depends/section/priority/files/package-name/
 # desktop-template; the provides/conflicts/replaces trio in its config module
