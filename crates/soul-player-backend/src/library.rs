@@ -358,36 +358,64 @@ impl Library {
     /// baker so no re-sort happens here.
     #[must_use]
     pub fn views_by(&self, axis: BrowseAxis) -> Vec<TrackView> {
+        use std::collections::HashMap;
         let cat = self.cat();
-        (0..cat.order_len(axis))
-            .filter_map(|i| {
-                let id = cat.order(axis, i).ok()?;
-                let t = cat.track(id).ok()?;
-                let (original_date, release_date) = album_dates(&cat, t.album);
-                Some(TrackView {
-                    id,
-                    title: resolve(&cat, t.title),
-                    artist: real_name(artist_name(&cat, t.artist)),
-                    album: real_name(album_title(&cat, t.album)),
-                    // Genre keeps its raw value — "Unknown Genre" is a real bucket,
-                    // NOT filtered through `real_name` like artist/album sentinels.
-                    genre: genre_name(&cat, t.genre),
-                    duration_secs: f64::from(t.duration_ms) / 1000.0,
-                    // The backend/local catalog is always local — the host
-                    // aggregate sets `Some(host)` for a remote source's tracks.
-                    remote_source: None,
-                    original_date,
-                    release_date,
-                    // The baked loudness (present once a scan has stamped it); the host
-                    // overrides with fresher live analysis via `mark_loudness`.
-                    loudness: t.loudness.map(Into::into),
-                    // Cheap: the file name is already being resolved for `locate`-style
-                    // lookups elsewhere; this is just an interned-string resolve plus an
-                    // extension match, no path join or IO.
-                    format: resolve(&cat, t.file_name).as_deref().and_then(format_label),
-                })
-            })
-            .collect()
+        let n = cat.order_len(axis);
+        // Memoize the interned artist/album/genre resolutions (and album dates) by
+        // their interned id across the WHOLE library: a million tracks share a few
+        // thousand artists/albums, so each distinct id is decoded ONCE here instead
+        // of once per track — millions of fewer catalog decodes on a big library's
+        // load. (The owned `String` is still cloned per track; interning the strings
+        // themselves into shared `Arc<str>` would also cut the per-track allocation +
+        // the library's memory — a wider `TrackView` change, noted as a follow-up.)
+        let mut artists: HashMap<u32, Option<String>> = HashMap::new();
+        let mut albums: HashMap<u32, Option<String>> = HashMap::new();
+        let mut genres: HashMap<u32, Option<String>> = HashMap::new();
+        let mut dates: HashMap<u32, (u32, u32)> = HashMap::new();
+        // Reused across tracks: each file name is decoded into THIS buffer for its
+        // FORMAT label, not a fresh per-track heap `String` that's thrown away.
+        let mut name_buf: Vec<u8> = Vec::new();
+        let mut out = Vec::with_capacity(n as usize);
+        for i in 0..n {
+            let Ok(id) = cat.order(axis, i) else { continue };
+            let Ok(t) = cat.track(id) else { continue };
+            let (original_date, release_date) = *dates
+                .entry(t.album)
+                .or_insert_with(|| album_dates(&cat, t.album));
+            let artist = artists
+                .entry(t.artist)
+                .or_insert_with(|| real_name(artist_name(&cat, t.artist)))
+                .clone();
+            let album = albums
+                .entry(t.album)
+                .or_insert_with(|| real_name(album_title(&cat, t.album)))
+                .clone();
+            // Genre keeps its raw value — "Unknown Genre" is a real bucket, NOT
+            // filtered through `real_name` like artist/album sentinels.
+            let genre = genres
+                .entry(t.genre)
+                .or_insert_with(|| genre_name(&cat, t.genre))
+                .clone();
+            let format = decode_into(&cat, t.file_name, &mut name_buf).and_then(format_label);
+            out.push(TrackView {
+                id,
+                title: resolve(&cat, t.title),
+                artist,
+                album,
+                genre,
+                duration_secs: f64::from(t.duration_ms) / 1000.0,
+                // The backend/local catalog is always local — the host aggregate sets
+                // `Some(host)` for a remote source's tracks.
+                remote_source: None,
+                original_date,
+                release_date,
+                // The baked loudness (present once a scan has stamped it); the host
+                // overrides with fresher live analysis via `mark_loudness`.
+                loudness: t.loudness.map(Into::into),
+                format,
+            });
+        }
+        out
     }
 }
 
@@ -437,6 +465,17 @@ fn resolve(cat: &MultiCatalog, s: StrRef) -> Option<String> {
     let n = cat.resolve_str(s, &mut buf).ok()?;
     buf.truncate(n);
     String::from_utf8(buf).ok()
+}
+
+/// Like [`resolve`], but decodes into a caller-owned REUSED buffer and hands back a
+/// `&str` view — so a caller that only reads the string (the FORMAT label) does not
+/// heap-allocate an owned `String` per call. `buf` is grown as needed and reused
+/// across calls.
+fn decode_into<'b>(cat: &MultiCatalog, s: StrRef, buf: &'b mut Vec<u8>) -> Option<&'b str> {
+    buf.clear();
+    buf.resize(s.len as usize, 0);
+    let n = cat.resolve_str(s, buf).ok()?;
+    std::str::from_utf8(&buf[..n]).ok()
 }
 
 /// Resolve an artist name (length not known up front) into an owned `String`.
@@ -509,6 +548,67 @@ fn real_name(s: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Quantifies the memory the repeated artist/album/genre strings cost as OWNED
+    /// `String`s vs shared `Arc<str>` (interned), to size the `TrackView` interning
+    /// win before taking it on. `#[ignore]`d; run with
+    /// `cargo test -p soul-player-backend bench_string_memory -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_string_memory_at_scale() {
+        use std::collections::HashSet;
+        for &n in &[100_000u32, 1_000_000] {
+            // ~12 tracks/album, ~8 albums/artist, 10 genres — a believable fan-out.
+            let views: Vec<TrackView> = (0..n)
+                .map(|i| {
+                    let album = i / 12;
+                    let artist = album / 8;
+                    TrackView {
+                        id: i,
+                        title: Some(format!("Track {i}")),
+                        artist: Some(format!("Artist {artist}")),
+                        album: Some(format!("Album {album}")),
+                        genre: Some(format!("Genre {}", artist % 10)),
+                        duration_secs: 180.0,
+                        remote_source: None,
+                        original_date: 0,
+                        release_date: 0,
+                        loudness: None,
+                        format: None,
+                    }
+                })
+                .collect();
+            // Owned String: a 24-byte header per field per track + its heap bytes,
+            // DUPLICATED across every track that shares the value.
+            let owned = |o: &Option<String>| o.as_ref().map_or(0, |s| 24 + s.len());
+            let owned_total: usize = views
+                .iter()
+                .map(|t| owned(&t.artist) + owned(&t.album) + owned(&t.genre))
+                .sum();
+            // Arc<str>: a 16-byte fat pointer per field per track, plus each DISTINCT
+            // string stored once (16-byte Arc header + content).
+            let mut artists = HashSet::new();
+            let mut albums = HashSet::new();
+            let mut genres = HashSet::new();
+            for t in &views {
+                t.artist.as_deref().map(|a| artists.insert(a));
+                t.album.as_deref().map(|a| albums.insert(a));
+                t.genre.as_deref().map(|g| genres.insert(g));
+            }
+            let distinct = |set: &HashSet<&str>| set.iter().map(|s| 16 + s.len()).sum::<usize>();
+            let interned_total =
+                views.len() * 16 * 3 + distinct(&artists) + distinct(&albums) + distinct(&genres);
+            eprintln!(
+                "n={n:>9}  artist/album/genre: {:>6.1} MB owned -> {:>6.1} MB Arc<str> (save {:>6.1} MB; {} artists, {} albums, {} genres)",
+                owned_total as f64 / 1e6,
+                interned_total as f64 / 1e6,
+                (owned_total - interned_total) as f64 / 1e6,
+                artists.len(),
+                albums.len(),
+                genres.len(),
+            );
+        }
+    }
     use soul_audio_import::{ScanPhase, SkipReason};
 
     /// A minimal valid PCM WAV of `frames` stereo frames at `rate` (silence).
