@@ -420,67 +420,77 @@ fn pump_thread<K, Mk, Pk, Ev>(
         //     failure it restores the old device (playback never dies) and we LATCH
         //     the failing config so we don't park/rebuild it every block.
         {
-            let desired = output_desired.lock().expect("output config mutex").clone();
-            if output_live {
-                // Normal path: the deck is on a real device sink. Apply a device/exclusive
-                // change live (release-then-acquire); skip re-attempting a config that just
-                // failed (latched) to avoid per-block device thrash.
-                if output_apply_failed.as_ref() != Some(&desired) {
-                    match maybe_apply_output_change(
-                        &mut player,
-                        &desired,
-                        &mut output_applied,
-                        &make_sink,
-                        &make_park,
-                    ) {
-                        OutputSwap::Applied => output_apply_failed = None,
-                        OutputSwap::KeptCurrent(e) => {
-                            // The change failed but a working sink still plays (the previous
-                            // device, or a kept non-strict shared stream). Latch it.
-                            output_apply_failed = Some(desired.clone());
-                            tracing::warn!(?desired, error = %format!("{e:#}"), "live output change failed; kept the current device");
-                        }
-                        OutputSwap::Parked(e) => {
-                            // The deck is SILENT now (a strict stop, or even the restore
-                            // could not open). Drop to the parked state so the pump holds the
-                            // position and recovers on a config change or the retry timer,
-                            // instead of racing the queue through the silent placeholder.
-                            output_apply_failed = Some(desired.clone());
-                            output_live = false;
-                            output_applied = desired.clone();
-                            last_output_retry = Instant::now();
-                            tracing::warn!(?desired, error = %format!("{e:#}"), "output could not open; stopped (silent); recovers on a config change or when the device frees");
+            // Fast path: in the steady LIVE state the desired output config already
+            // equals what's applied and there's no latched failure, so there is nothing
+            // to apply. Check that WITHOUT cloning: OutputConfig holds a String device
+            // name, which the old code cloned unconditionally here AND again inside
+            // maybe_apply_output_change, so a selected device allocated twice per block.
+            let settled = output_live
+                && output_apply_failed.is_none()
+                && *output_desired.lock().expect("output config mutex") == output_applied;
+            if !settled {
+                let desired = output_desired.lock().expect("output config mutex").clone();
+                if output_live {
+                    // Normal path: the deck is on a real device sink. Apply a device/exclusive
+                    // change live (release-then-acquire); skip re-attempting a config that just
+                    // failed (latched) to avoid per-block device thrash.
+                    if output_apply_failed.as_ref() != Some(&desired) {
+                        match maybe_apply_output_change(
+                            &mut player,
+                            &desired,
+                            &mut output_applied,
+                            &make_sink,
+                            &make_park,
+                        ) {
+                            OutputSwap::Applied => output_apply_failed = None,
+                            OutputSwap::KeptCurrent(e) => {
+                                // The change failed but a working sink still plays (the previous
+                                // device, or a kept non-strict shared stream). Latch it.
+                                output_apply_failed = Some(desired.clone());
+                                tracing::warn!(?desired, error = %format!("{e:#}"), "live output change failed; kept the current device");
+                            }
+                            OutputSwap::Parked(e) => {
+                                // The deck is SILENT now (a strict stop, or even the restore
+                                // could not open). Drop to the parked state so the pump holds the
+                                // position and recovers on a config change or the retry timer,
+                                // instead of racing the queue through the silent placeholder.
+                                output_apply_failed = Some(desired.clone());
+                                output_live = false;
+                                output_applied = desired.clone();
+                                last_output_retry = Instant::now();
+                                tracing::warn!(?desired, error = %format!("{e:#}"), "output could not open; stopped (silent); recovers on a config change or when the device frees");
+                            }
                         }
                     }
-                }
-            } else {
-                // Parked on the SILENT placeholder (a build failed). Recover when the config
-                // changes (user toggles exclusive/strict off, or picks another device) OR on
-                // the retry timer (a transient device-in-use clears). A config change
-                // bypasses the timer so a user toggle recovers instantly.
-                let config_changed = desired != output_applied;
-                if config_changed || last_output_retry.elapsed() >= OUTPUT_RETRY_EVERY {
-                    last_output_retry = Instant::now();
-                    match rebuild_output_sink(
-                        &mut player,
-                        &desired,
-                        &mut output_applied,
-                        &make_sink,
-                    ) {
-                        Ok(()) => {
-                            output_live = true;
-                            output_apply_failed = None;
-                            tracing::info!(
-                                ?desired,
-                                "output recovered; playback resumes on the device"
-                            );
-                        }
-                        Err(e) => {
-                            // Still unavailable — stay silent and retry on the next tick /
-                            // config change. Debug level so a persistent failure doesn't
-                            // spam the log every second.
-                            output_apply_failed = Some(desired.clone());
-                            tracing::debug!(?desired, error = %format!("{e:#}"), "output still unavailable; staying silent");
+                } else {
+                    // Parked on the SILENT placeholder (a build failed). Recover when the config
+                    // changes (user toggles exclusive/strict off, or picks another device) OR on
+                    // the retry timer (a transient device-in-use clears). A config change
+                    // bypasses the timer so a user toggle recovers instantly.
+                    let config_changed = desired != output_applied;
+                    if config_changed || last_output_retry.elapsed() >= OUTPUT_RETRY_EVERY {
+                        last_output_retry = Instant::now();
+                        match rebuild_output_sink(
+                            &mut player,
+                            &desired,
+                            &mut output_applied,
+                            &make_sink,
+                        ) {
+                            Ok(()) => {
+                                output_live = true;
+                                output_apply_failed = None;
+                                tracing::info!(
+                                    ?desired,
+                                    "output recovered; playback resumes on the device"
+                                );
+                            }
+                            Err(e) => {
+                                // Still unavailable — stay silent and retry on the next tick /
+                                // config change. Debug level so a persistent failure doesn't
+                                // spam the log every second.
+                                output_apply_failed = Some(desired.clone());
+                                tracing::debug!(?desired, error = %format!("{e:#}"), "output still unavailable; staying silent");
+                            }
                         }
                     }
                 }
