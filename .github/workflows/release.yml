@@ -890,6 +890,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+      id-token: write # Sigstore signing identity for the provenance attestations
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ needs.guard.outputs.release_tag }}
@@ -920,6 +922,26 @@ jobs:
           rm dist/*.sha256 dist/*.meta.json
           (cd dist && sha256sum -c SHA256SUMS && ls -la)
 
+      # SLSA build provenance for every file the release ships: a Sigstore-signed
+      # statement that this repo's release workflow, at this commit, built these
+      # exact bytes. Anyone can check a download with
+      # `gh attestation verify <file> --repo soulaudio/soul-player-ng`.
+      - name: Build provenance attestations
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: dist/*
+
+      # Checked here as well as after publishing, so a rehearsal proves it too.
+      - name: Verify the attestations
+        run: |
+          set -euo pipefail
+          for f in dist/*; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" >/dev/null \
+              || { echo "::error::no valid provenance for $f"; exit 1; }
+            echo "ok: provenance for ${f#dist/}"
+          done
+
       - name: Create the draft release
         run: |
           if gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null | grep -qx true; then
@@ -933,7 +955,7 @@ jobs:
           - **Windows** — run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
           - **Linux** — `chmod +x` the AppImage and run it.
 
-          Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`.
+          Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`, and that this repository's release workflow built it with `gh attestation verify <file> --repo soulaudio/soul-player-ng`.
           EOF
           if [ "$REHEARSAL" = "true" ]; then
             # A draft creates no git tag until it is published, so nothing leaks.
@@ -989,7 +1011,11 @@ jobs:
     needs: [guard, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
     env:
+      GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.guard.outputs.version }}
       TAG: ${{ needs.guard.outputs.tag }}
     steps:
@@ -1014,6 +1040,9 @@ jobs:
             name="${url##*/}"
             curl -fsSL "$url" -o "$name"
             grep -F "  $name" SHA256SUMS | sha256sum -c - || { echo "::error::$key: $name differs from the tested build"; exit 1; }
+            gh attestation verify "$name" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" >/dev/null \
+              || { echo "::error::$key: $name has no valid build provenance"; exit 1; }
             echo "ok: $key → $name"
           done
 
