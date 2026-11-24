@@ -154,7 +154,7 @@ rune-notify = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd8
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["UI_Notifications", "Data_Xml_Dom", "Foundation"] }
-windows-registry = "0.6"
+windows-registry = "0.100"
 
 # cargo-packager (the "Tauri bundler without the webview") — produces an UNSIGNED
 # installer today (SmartScreen nags); the signed updater + OS code-signing +
