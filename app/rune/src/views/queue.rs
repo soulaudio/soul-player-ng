@@ -34,6 +34,13 @@ const FADE_H: f32 = 32.0;
 /// drive a gesture of a known slot count.
 pub(crate) const QUEUE_ROW_H: f32 = 44.0;
 
+/// The most context ("Up next") rows ever laid out at once. A deep queue (a
+/// thousand-track playlist or an all-library shuffle) is bounded to the nearest
+/// `CONTEXT_CAP` soonest-to-play rows plus a muted "+N more" summary, so the
+/// sidebar's layout cost stays flat however long the real upcoming context is.
+/// The manual band isn't capped (it's a small, user-curated list).
+pub(crate) const CONTEXT_CAP: usize = 150;
+
 /// Where a dragged row lands: its own index plus one slot per `QUEUE_ROW_H` of
 /// vertical travel, clamped into the band. Pure, so the drag handler and its
 /// test share one rule.
@@ -103,6 +110,23 @@ fn drop_line(p: &Palette) -> El {
         .h(2.0)
         .radius(radius::FULL)
         .fill(p.accent)
+}
+
+/// The muted "+N more" summary at the top of a context band longer than
+/// [`CONTEXT_CAP`]: the furthest upcoming rows aren't laid out, so the sidebar's
+/// cost stays bounded; this line stands in for them. Non-interactive.
+fn more_row(n: usize, p: &Palette) -> El {
+    row()
+        .key("queue-context-more")
+        .w_full()
+        .center_y()
+        .px(space::LG)
+        .py(space::XS)
+        .child(
+            text(t!("queue.andMore", count => n).to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary.alpha(0.7)),
+        )
 }
 
 /// One manual-queue row: grip (drag-reorder) + cover + title/artist + remove ✕.
@@ -362,7 +386,15 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
                 None,
                 p,
             ));
-        for (j, &id) in s.context_ids.iter().enumerate().rev() {
+        // Lay out at most the nearest `CONTEXT_CAP` upcoming rows (reversed: the
+        // furthest shown sits at the top, the soonest at the bottom). A longer
+        // context is summarised by a "+N more" row above them, so the number of rows
+        // never grows without bound no matter how deep the queue runs.
+        let total = s.context_ids.len();
+        if total > CONTEXT_CAP {
+            band = band.child(more_row(total - CONTEXT_CAP, p));
+        }
+        for (j, &id) in s.context_ids.iter().enumerate().take(CONTEXT_CAP).rev() {
             let k = (manual_len + j + 1) as u32;
             band = band.child(context_row(s, p, scale, id, k));
         }

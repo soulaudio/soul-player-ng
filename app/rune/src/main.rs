@@ -13840,6 +13840,45 @@ mod tests {
         );
     }
 
+    /// A very deep context (a thousand-track playlist / all-library shuffle) is
+    /// bounded to `CONTEXT_CAP` laid-out rows plus a "+N more" summary, so the
+    /// sidebar's per-frame cost stays flat however long the upcoming queue runs.
+    #[test]
+    fn a_deep_context_is_capped_with_a_more_row() {
+        use crate::views::queue::CONTEXT_CAP;
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        s.sidebar_collapsed = false;
+        let id = s.library[0].id;
+        s.now_playing_id = Some(id);
+        // A thousand upcoming rows (rows are keyed by position, so one id is fine).
+        s.context_ids = vec![id; 1000];
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let rows = rt
+            .elements()
+            .into_iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("queue-context-body-"))
+            })
+            .count();
+        assert!(
+            rows <= CONTEXT_CAP,
+            "a 1000-row context lays out at most {CONTEXT_CAP} rows, got {rows}"
+        );
+        assert!(
+            rt.find("queue-context-more").is_some(),
+            "the dropped rows are summarised by a +N more row"
+        );
+    }
+
     /// Nothing queued and nothing upcoming shows the empty state, not stale rows.
     #[test]
     fn empty_queue_shows_the_empty_state() {
