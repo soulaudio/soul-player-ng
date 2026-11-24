@@ -784,6 +784,13 @@ queue.upNext:
   zh: '即将播放'
   cs: 'Následuje'
   ja: '次に再生'
+queue.andMore:
+  en: '+%{count} more'
+  de: '+%{count} weitere'
+  es: '+%{count} más'
+  zh: '还有 %{count} 首'
+  cs: '+%{count} dalších'
+  ja: '他 %{count} 件'
 queue.clear:
   en: 'Clear'
   de: 'Leeren'
