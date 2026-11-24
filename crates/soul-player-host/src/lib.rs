@@ -68,9 +68,9 @@ pub use soul_audio_organize as organize;
 /// (see `types.rs`), so this is the one `TrackLocator`/`Playlist` identity
 /// shared by backend, host and app.
 pub use soul_audio_playlist::{
-    Playlist, PlaylistCover, PlaylistEntry, PlaylistId, TrackLocator, TrackSnapshot,
-    choose_playlist_cover, entries_fingerprint, first_distinct_album_indices, select_cover,
-    slugify,
+    Playlist, PlaylistCover, PlaylistEntry, PlaylistId, ResolvedPlaylist, TrackLocator,
+    TrackSnapshot, choose_playlist_cover, entries_fingerprint, first_distinct_album_indices,
+    select_cover, slugify,
 };
 pub use soul_player_backend::{
     BrowseAxis, Command, Cover, Event, LoudnessAnalysisMode, PlayState, QueueState, RepeatMode,
@@ -1804,6 +1804,24 @@ impl PlayerHandle {
         match lib {
             Some(lib) => lib.resolve_locators(locs),
             None => vec![None; locs.len()],
+        }
+    }
+
+    /// Resolve a playlist's `entries` into the shared [`ResolvedPlaylist`] view-model
+    /// (per-entry availability, the available play context + its index map, and the
+    /// total duration) against whatever library is open. Delegates to
+    /// [`Library::resolve_playlist`], building the locator index once; an empty
+    /// resolution when no library is open yet. The UI memoizes the result so the
+    /// detail page never resolves per frame.
+    pub fn resolve_playlist(&self, entries: &[PlaylistEntry]) -> ResolvedPlaylist {
+        match self.inner.library.lock().expect("library mutex").clone() {
+            Some(lib) => lib.resolve_playlist(entries),
+            // No library open yet: resolve against an empty catalog, so every entry
+            // reads as unavailable but the result still has one slot per entry (the
+            // detail page indexes it by entry position).
+            None => {
+                ResolvedPlaylist::resolve(entries, std::iter::empty::<(&str, u32, Option<f64>)>())
+            }
         }
     }
 
