@@ -539,9 +539,57 @@ jobs:
             flatpak kill co.soulaudio.soulplayer || true
           '
 
-          flatpak build-bundle "$RUNNER_TEMP/fp-repo" \
-            "dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak" co.soulaudio.soulplayer
+          bundle="dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak"
+          flatpak build-bundle "$RUNNER_TEMP/fp-repo" "$bundle" co.soulaudio.soulplayer
           ls -la dist/
+
+          # Install the SHIPPED BUNDLE and run it.
+          #
+          # Everything above tests the app as `flatpak-builder --install` left
+          # it, which is not the artifact anyone downloads. The bundle is a
+          # separate file produced by a separate command, and until now it was
+          # uploaded to the release without ever being installed — the only
+          # Linux format whose shipped bytes were not install-tested.
+          echo "::group::the shipped .flatpak installs and runs"
+          flatpak uninstall --user -y co.soulaudio.soulplayer >/dev/null 2>&1 || true
+          flatpak install --user -y --noninteractive --bundle "$bundle"
+          flatpak info co.soulaudio.soulplayer | sed 's/^/  /'
+
+          # What a user's `flatpak update` can actually do with this app. A
+          # bundle is a single file with no repository behind it, so the origin
+          # it records is what decides whether updates are possible at all —
+          # and the in-app updater is deliberately off under Flatpak
+          # (update.rs: `manager_owned`). If this prints no usable remote then
+          # the README's "updates via flatpak update" is wrong for the bundle
+          # and the honest instruction is to install the next one.
+          origin=$(flatpak info --show-origin co.soulaudio.soulplayer 2>/dev/null || echo "<none>")
+          echo "  bundle origin: $origin"
+          flatpak remotes --user --columns=name,url | sed 's/^/  remote: /'
+
+          # Same nesting as the build-install run above (dbus outside, xvfb
+          # inside) because that order is the one proven to work on this runner.
+          dbus-run-session -- bash -c '
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              flatpak run --user --socket=x11 \
+                --env=SOUL_PLAYER_FOLDER="$HOME/Music" \
+                --env=SOUL_PLAYER_NO_UPDATE=1 \
+                co.soulaudio.soulplayer >"$RUNNER_TEMP/fp-bundle-run.log" 2>&1 &
+            for i in $(seq 1 60); do
+              n=$(dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
+                    org.freedesktop.DBus.ListNames 2>/dev/null \
+                  | grep -oE "org\.mpris\.MediaPlayer2\.[A-Za-z0-9_.-]+" | head -1)
+              [ -n "$n" ] && break
+              sleep 1
+            done
+            if [ "$n" != "org.mpris.MediaPlayer2.co.soulaudio.soulplayer" ]; then
+              echo "::error::the installed bundle did not own its MPRIS name (saw ${n:-nothing})"
+              tail -40 "$RUNNER_TEMP/fp-bundle-run.log" || true
+              exit 1
+            fi
+            echo "  the bundle runs and owns $n"
+            flatpak kill co.soulaudio.soulplayer || true
+          '
+          echo "::endgroup::"
 
 
       # macOS: a drag-to-Applications DMG for first installs (the updater keeps using the

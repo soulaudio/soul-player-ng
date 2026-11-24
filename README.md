@@ -16,7 +16,7 @@ Downloads are on the [releases page](https://github.com/soulaudio/soul-player-ng
 | `.deb` | Debian 12+, Ubuntu 22.04+ | `apt upgrade` |
 | `.rpm` | Fedora, openSUSE, RHEL 10+ | `dnf upgrade` |
 | `.AppImage` | anything with glibc 2.35+ | the app itself |
-| Flatpak | anything with Flatpak | `flatpak update` |
+| Flatpak | anything with Flatpak | re-install the bundle |
 
 The glibc floor is **2.35**. The binary also references two glibc 2.39 symbols
 (`pidfd_spawnp`, `pidfd_getpid`, from Rust's process spawning), but those are
@@ -42,11 +42,18 @@ manager.
 sudo apt install ./soul-player_*_amd64.deb     # Debian / Ubuntu (arm64 for ARM)
 sudo dnf install ./soul-player-*.x86_64.rpm         # Fedora (aarch64 for ARM)
 chmod +x soul-player_*.AppImage && ./soul-player_*.AppImage
+flatpak install --bundle ./Soul-Player_*.flatpak        # any distro with Flatpak
 ```
 
-Only the AppImage updates itself. The others are owned by their package
-manager, so the app does not offer an in-app update there — it would have to
-overwrite a root-owned file, which cannot work.
+Only the AppImage updates itself. The `.deb` and `.rpm` are owned by their
+package manager, so the app does not offer an in-app update there — it would
+have to overwrite a root-owned file, which cannot work.
+
+The Flatpak is a **self-hosted bundle**, not a Flathub app: it is one file with
+no repository behind it, and the in-app updater is off under Flatpak for the
+same read-only-`/app` reason. So a new version means downloading the next
+release's `.flatpak` and installing it the same way. Flathub would fix that,
+and is not a one-step submission — `app/rune/PACKAGING.md` says what it needs.
 
 Bit-perfect exclusive output needs direct access to the sound card. Under
 Flatpak that is the `--device=all` permission; revoking it in Flatseal leaves
