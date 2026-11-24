@@ -25,6 +25,7 @@ use soul_audio_desktop::{OwnedDecoder, open_track};
 use soul_audio_import::{ScanCache, ScanProgress, SkippedGroup};
 use soul_audio_index::IndexReader;
 use soul_audio_multicatalog::{MultiCatalog, pack, unpack};
+use soul_audio_playlist::{PlaylistEntry, ResolvedPlaylist};
 
 use crate::types::{TrackLocator, TrackLoudness, TrackView};
 
@@ -335,6 +336,26 @@ impl Library {
         locs.iter()
             .map(|loc| by_key.get(&loc.key()).copied())
             .collect()
+    }
+
+    /// Resolve a playlist's `entries` into the shared [`ResolvedPlaylist`] view-model
+    /// (per-entry availability, the available play context + its index map, total
+    /// duration) by STREAMING this library's catalog through the no_std resolver.
+    /// Memory is O(playlist), not O(catalog): only the playlist's own locator keys
+    /// are held, and the per-track `(key, id, duration)` tuples flow straight through
+    /// without being collected, exactly as the DAP streams its SD-card `.soulidx`.
+    #[must_use]
+    pub fn resolve_playlist(&self, entries: &[PlaylistEntry]) -> ResolvedPlaylist {
+        ResolvedPlaylist::resolve(
+            entries,
+            (0..self.counts.len()).flat_map(move |source| {
+                (0..self.counts[source] as u32).filter_map(move |local| {
+                    let id = pack(source as u32, local);
+                    let loc = self.locator_of(id)?;
+                    Some((loc.key(), id, self.duration_of(id)))
+                })
+            }),
+        )
     }
 
     /// The tag-derived duration (seconds) for `id`, if known (> 0). Used to fill
@@ -787,6 +808,51 @@ mod tests {
             path: "D:/nope/gone.flac".into(),
         };
         assert_eq!(lib.resolve_locators(&[miss]), vec![None]);
+    }
+
+    #[test]
+    fn resolve_playlist_resolves_available_context_and_totals_live_or_snapshot() {
+        fn snap(secs: u32) -> crate::types::TrackSnapshot {
+            crate::types::TrackSnapshot {
+                title: "t".into(),
+                artist: "a".into(),
+                album: "al".into(),
+                duration_secs: secs,
+                track_no: None,
+                disc_no: None,
+            }
+        }
+        let root = tmpdir("resolve_playlist");
+        std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap(); // ~1s live
+        let lib = Library::scan(&root).unwrap();
+        let a_id = lib.views()[0].id;
+        let a_loc = lib.locator_of(a_id).unwrap();
+        let a_dur = lib.duration_of(a_id).unwrap();
+
+        // One resolving entry (its snapshot duration is a WRONG 7s, to prove the live
+        // duration wins) and one whose file is gone (greyed, snapshot 5s used).
+        let entries = vec![
+            PlaylistEntry {
+                locator: a_loc,
+                snapshot: snap(7),
+                mbid: None,
+            },
+            PlaylistEntry {
+                locator: TrackLocator::Local {
+                    path: "D:/gone/x.flac".into(),
+                },
+                snapshot: snap(5),
+                mbid: None,
+            },
+        ];
+        let r = lib.resolve_playlist(&entries);
+        assert_eq!(r.resolved, vec![Some(a_id), None]);
+        assert_eq!(r.play_ids, vec![a_id]); // unavailable entry skipped
+        assert_eq!(r.play_index_of, vec![Some(0), None]);
+        assert_eq!(r.available_count(), 1);
+        // Live duration for the resolved track (NOT its stale snapshot 7), snapshot
+        // for the missing one: a_dur + 5.
+        assert!((r.total_secs - (a_dur + 5.0)).abs() < 1e-6);
     }
 
     #[test]

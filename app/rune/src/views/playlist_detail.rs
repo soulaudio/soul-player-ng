@@ -8,10 +8,13 @@
 //! Mirrors `genres::genre_detail` for the detail-page shape.
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
+
 use rune::{
-    Color, Cursor, Drag, El, FileDialogOptions, Icon, Phase, Picked, ScrollSpec, Tx, col, el, icon,
-    row, text, text_input,
+    Color, Cursor, Drag, El, FileDialogOptions, GrowthSpec, Icon, Phase, Picked, ScrollSpec, Tx,
+    col, el, icon, row, text, text_input,
 };
+#[cfg(test)]
 use soul_player_host::TrackLocator;
 
 use crate::State;
@@ -27,6 +30,12 @@ use crate::views::icons;
 const CTRL_BTN: f32 = 28.0;
 /// The icon glyph drawn inside a [`CTRL_BTN`] box.
 const CTRL_ICON: f32 = 16.0;
+
+/// Estimated playlist-row height (points) for the virtualized list: unvisited rows
+/// use this until measured, seeding the scrollbar + mounted-window math on a long
+/// playlist. A playlist row carries inline reorder controls, so it sits a touch
+/// taller than a plain detail row.
+const PLAYLIST_ROW_EST_H: f32 = 44.0;
 
 /// Seed the rename buffer from playlist `id`'s current name, focus it with
 /// everything selected (typing replaces), and open the inline editor. Mirrors
@@ -530,38 +539,17 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
         None => return missing_playlist(),
     };
 
-    let locators: Vec<TrackLocator> = playlist.entries.iter().map(|e| e.locator.clone()).collect();
-    let resolved: Vec<Option<u32>> = s.host.resolve_locators(&locators);
+    // Resolve the playlist against the live library ONCE (memoized by the library
+    // + playlist fingerprints), NOT per frame: resolving rebuilds a whole-catalog
+    // locator map, so a big playlist was re-paying that every frame. The shared
+    // view-model carries per-entry availability, the available play/enqueue context
+    // (unavailable entries skipped) + its index map, and the total duration.
+    let resolved = s.resolved_playlist(id);
 
-    // The "available" context Play All and every playable row's click share:
-    // unavailable entries are skipped entirely, both from the ids Play All
-    // issues and from the context a row's own click-to-play resumes into.
-    let mut play_ids: Vec<u32> = Vec::new();
-    let mut play_index_of: Vec<Option<usize>> = Vec::with_capacity(resolved.len());
-    for r in &resolved {
-        match r {
-            Some(tid) => {
-                play_index_of.push(Some(play_ids.len()));
-                play_ids.push(*tid);
-            }
-            None => play_index_of.push(None),
-        }
-    }
-
-    let total: f64 = playlist
-        .entries
-        .iter()
-        .zip(&resolved)
-        .map(|(e, r)| {
-            r.and_then(|tid| s.track(tid))
-                .map(|t| t.duration_secs)
-                .unwrap_or(f64::from(e.snapshot.duration_secs))
-        })
-        .sum();
     let meta = format!(
         "{} · {}",
         crate::views::library::tracks_label(playlist.entries.len()),
-        fmt_total_dur(total)
+        fmt_total_dur(resolved.total_secs)
     );
 
     // A user-set custom cover always wins over the cover-track/icon fallback,
@@ -571,7 +559,7 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
             path,
             circular: false,
         },
-        None => match play_ids.first() {
+        None => match resolved.play_ids.first() {
             Some(&cid) if s.host.art(cid).is_some() => HeroArt::Cover {
                 id: cid,
                 circular: false,
@@ -592,39 +580,76 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
         None, // subtitle
         meta,
         Some(&crate::views::icons::CLOCK),
-        hero_actions(s, p, id, play_ids.clone()),
+        hero_actions(s, p, id, resolved.play_ids.clone()),
         None, // playlists manage their cover via their own hero actions
     );
 
-    let last = playlist.entries.len().saturating_sub(1);
-    let mut list = col().key("playlist-tracks").role("list").gap(space::XXS);
-    for (i, entry) in playlist.entries.iter().enumerate() {
-        list = list.child(entry_row(
-            s,
-            p,
-            id,
-            i,
-            last,
-            entry,
-            resolved[i],
-            &play_ids,
-            play_index_of[i],
-        ));
-    }
+    // Fixed hero on top, then the VIRTUALIZED entry list below in its own scroll
+    // viewport: only the on-screen window of rows is built (and only those rows
+    // touch `s.track`), so a thousand-entry playlist stays smooth. The build closure
+    // captures the memoized resolution (an Rc) and looks up only its own entry.
+    // Mirrors `genres::genre_detail`.
+    let top = col()
+        .key("playlist-detail-top")
+        .padding(space::PANE)
+        .child(hero);
 
-    col().key("playlist-detail").grow(1.0).min_h(0.0).child(
+    let body: El = if playlist.entries.is_empty() {
+        col().key("playlist-tracks").px(space::PANE).py(space::SM)
+    } else {
+        let count = playlist.entries.len();
+        let last = count - 1;
+        let pal = *p;
+        let build_resolved = resolved.clone();
         col()
-            .key("playlist-detail-content")
-            .padding(space::PANE)
-            .child(hero)
-            .child(list)
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .scroll_edge_fade(24.0)
-            .grow(1.0)
-            .min_h(0.0),
-    )
+            .key("playlist-tracks")
+            .role("list")
+            .gap(space::XXS)
+            .growth(GrowthSpec::default())
+            .virtual_rows(
+                count,
+                PLAYLIST_ROW_EST_H,
+                // Key each row the SAME as `entry_row`'s own wrapper key
+                // (`playlist-entry-{i}`), so the drag hit-test's pick-parsing and
+                // every finder keep resolving a row by its entry index, and the row
+                // doesn't collide with its inner `playlist-row-{i}` track element.
+                move |_s: &State, i: usize| Cow::Owned(format!("playlist-entry-{i}")),
+                move |s: &State, i: usize| {
+                    let Some(pl) = s.playlists.get(id) else {
+                        return el().key(format!("playlist-entry-{i}"));
+                    };
+                    entry_row(
+                        s,
+                        &pal,
+                        id,
+                        i,
+                        last,
+                        &pl.entries[i],
+                        build_resolved.resolved[i],
+                        &build_resolved.play_ids,
+                        build_resolved.play_index_of[i],
+                    )
+                },
+            )
+    };
+
+    col()
+        .key("playlist-detail")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(top)
+        .child(
+            col()
+                .key("playlist-tracks-scroll")
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_edge_fade(24.0)
+                .grow(1.0)
+                .min_h(0.0)
+                .px(space::PANE)
+                .child(body),
+        )
 }
 
 #[cfg(test)]
@@ -1224,6 +1249,95 @@ mod tests {
             rt.find("playlist-hero-image").is_none(),
             "no custom cover set means no hero image element renders"
         );
+    }
+
+    /// Virtualization: a large playlist builds only the on-screen window of entry
+    /// rows (plus a margin), not every entry, so the detail page stays smooth at a
+    /// thousand-plus entries. Mirrors `track_list` / `genre_detail` virtualization.
+    #[test]
+    fn playlist_detail_virtualizes_a_large_playlist() {
+        let _g = config::use_test_config_dir();
+        let host = PlayerHandle::recording();
+        let views = host.open_folder(&testdata_dir()).expect("scan testdata/");
+        let loc_a = host.locator_of(views[0].id).expect("a resolves");
+        let mut store = PlaylistStore::load();
+        let id = store.create("Big");
+        // 400 entries (the same resolving track repeated): a non-virtualized list
+        // would mount 400 rows.
+        for _ in 0..400 {
+            store.add_entry(id, entry_from(&views[0], loc_a.clone()));
+        }
+        let mut s = State::new(host);
+        s.route = Route::Playlist;
+        s.open_playlist = Some(id);
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env());
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        let built = rt
+            .elements()
+            .iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("playlist-entry-"))
+            })
+            .count();
+        assert!(built > 0, "some rows mount");
+        assert!(
+            built < 400,
+            "virtualized: only a window of 400 entries mounts, got {built}"
+        );
+    }
+
+    /// Quantifies the streaming resolver at scale: resolving a 1000-entry playlist
+    /// against a 100k/1M-track catalog is a single pass that holds only the
+    /// playlist's own keys (O(playlist) memory, never O(catalog)). `#[ignore]`d; run
+    /// `cargo test -p soul-player-rune bench_playlist_resolve -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_playlist_resolve_streaming_at_scale() {
+        use soul_player_host::ResolvedPlaylist;
+        fn mk(key: &str) -> PlaylistEntry {
+            PlaylistEntry {
+                locator: TrackLocator::Local { path: key.into() },
+                snapshot: TrackSnapshot {
+                    title: key.into(),
+                    artist: String::new(),
+                    album: String::new(),
+                    duration_secs: 180,
+                    track_no: None,
+                    disc_no: None,
+                },
+                mbid: None,
+            }
+        }
+        // 999 entries scattered through the catalog plus one ABSENT, so the pass
+        // can't early-exit (the realistic "a track went missing" case = a full scan).
+        let mut entries: Vec<PlaylistEntry> =
+            (0..999u32).map(|i| mk(&format!("k{}", i * 100))).collect();
+        entries.push(mk("absent-key"));
+        for &n in &[100_000u32, 1_000_000] {
+            let t0 = std::time::Instant::now();
+            let r = ResolvedPlaylist::resolve(
+                &entries,
+                (0..n).map(|i| {
+                    (
+                        TrackLocator::Local {
+                            path: format!("k{i}"),
+                        }
+                        .key(),
+                        i,
+                        Some(180.0),
+                    )
+                }),
+            );
+            eprintln!(
+                "catalog={n:>9}  playlist=1000 (1 missing)  streaming resolve {:?} ({} available, O(playlist) mem)",
+                t0.elapsed(),
+                r.available_count()
+            );
+        }
     }
 
     /// End-to-end: pressing **Set cover** opens an open-file dialog; answering

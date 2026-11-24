@@ -290,6 +290,17 @@ type TrackIndexMap = std::rc::Rc<std::collections::HashMap<u32, usize>>;
 /// (see [`State::visible_tracks`]).
 type VisibleTracks = (std::rc::Rc<[usize]>, std::rc::Rc<[u32]>);
 
+/// Memoized playlist resolution: `(library_fp, playlist_id, entries_fp, resolved)`
+/// (see [`State::resolved_playlist`]).
+type ResolvedPlaylistCache = std::cell::RefCell<
+    Option<(
+        u64,
+        soul_player_host::PlaylistId,
+        u64,
+        std::rc::Rc<soul_player_host::ResolvedPlaylist>,
+    )>,
+>;
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -322,6 +333,12 @@ struct State {
     /// built a million-element index Vec per frame even with no query. Recomputed
     /// only when the library or the query changes.
     visible_tracks_cache: std::cell::RefCell<Option<(u64, String, VisibleTracks)>>,
+    /// The current playlist's resolution against the live library (per-entry
+    /// availability, the available play context, total duration), memoized by
+    /// (library fingerprint, playlist id, entries fingerprint). Resolving rebuilds a
+    /// whole-catalog locator map (O(library)), which the detail page otherwise paid
+    /// EVERY frame; recomputed only when the library or the playlist changes.
+    resolved_playlist_cache: ResolvedPlaylistCache,
     /// User-created playlists, loaded from the on-disk store at startup
     /// ([`playlists::PlaylistStore::load`]). Every mutation
     /// (create/rename/delete/reorder) persists through the store itself.
@@ -868,6 +885,7 @@ impl State {
             library_rc_cache: std::cell::RefCell::new(None),
             track_index_cache: std::cell::RefCell::new(None),
             visible_tracks_cache: std::cell::RefCell::new(None),
+            resolved_playlist_cache: std::cell::RefCell::new(None),
             playlists,
             covers,
             playlist_new_buf: rune::TextEdit::new(""),
@@ -1157,6 +1175,33 @@ impl State {
         let vt: VisibleTracks = (vis, ids);
         *self.visible_tracks_cache.borrow_mut() = Some((fp, q.to_string(), vt.clone()));
         vt
+    }
+
+    /// The current playlist's resolution against the live library — per-entry
+    /// availability, the available play/enqueue context + its index map, and the
+    /// total duration — memoized by (library fingerprint, playlist id, entries
+    /// fingerprint). Resolving rebuilds a whole-catalog locator map (O(library)), so
+    /// the virtualized detail page must NOT call the host per frame: this recomputes
+    /// only when the library or the playlist changes, and the rows index the cache.
+    pub(crate) fn resolved_playlist(
+        &self,
+        id: soul_player_host::PlaylistId,
+    ) -> std::rc::Rc<soul_player_host::ResolvedPlaylist> {
+        let Some(playlist) = self.playlists.get(id) else {
+            return std::rc::Rc::new(soul_player_host::ResolvedPlaylist::default());
+        };
+        let lib_fp = self.library_fingerprint();
+        let ent_fp = crate::playlists::entries_fingerprint(playlist);
+        if let Some((clib, cid, cent, rc)) = self.resolved_playlist_cache.borrow().as_ref()
+            && *clib == lib_fp
+            && *cid == id
+            && *cent == ent_fp
+        {
+            return rc.clone();
+        }
+        let resolved = std::rc::Rc::new(self.host.resolve_playlist(&playlist.entries));
+        *self.resolved_playlist_cache.borrow_mut() = Some((lib_fp, id, ent_fp, resolved.clone()));
+        resolved
     }
 
     /// Resolve a library track by id in O(1) via the memoized index map. Shared by
