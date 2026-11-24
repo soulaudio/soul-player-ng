@@ -203,6 +203,33 @@ formats = ["nsis"]
 # won't carry itself (`unsafe_code = "forbid"`). `open_files` already handles the files once
 # they arrive; launch arguments work today. The removed setup is in git history (#265).
 
+# ── Windows (NSIS setup.exe) ────────────────────────────────────────────────
+[package.metadata.packager.nsis]
+# Delete the binary this app used to install as.
+#
+# Up to and including 0.4.2 the executable was `soul-player-rune.exe` (its name
+# comes from the main binary's). An interactive install would offer to remove
+# the previous version first — but that offer lives in a custom NSIS *page*
+# (`Page custom PageReinstall PageLeaveReinstall`), and `/S` and `/P` skip
+# pages, so neither a silent install nor the in-app updater's passive one ever
+# runs it. The renamed build then lands BESIDE the old executable and the
+# install directory keeps both indefinitely, with the stale 0.4.2 binary still
+# launchable. The release e2e caught exactly that: "expected one app exe ...
+# found [soul-player-rune.exe, soul-player.exe]".
+#
+# Shortcuts need no equivalent: they are named `${PRODUCTNAME}.lnk` ("Soul
+# Player.lnk"), which the rename did not touch, and the install recreates them
+# pointing at the new executable.
+#
+# A literal TOML string ('''), not a basic one, so NSIS's `$INSTDIR\...`
+# backslashes are not read as escapes. Runs between `EarlyChecks` and
+# `Install`, which is where cargo-packager injects this block.
+preinstall-section = '''
+Section PreinstallRemoveRenamedBinary
+  Delete "$INSTDIR\soul-player-rune.exe"
+SectionEnd
+'''
+
 [package.metadata.packager.deb]
 # Debian policy §12.5 requires every package to ship a copyright file at
 # `/usr/share/doc/<package>/copyright`; `lintian` reports its absence as an

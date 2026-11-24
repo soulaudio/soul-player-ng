@@ -737,9 +737,21 @@ def auto_update(
     ok(f"downloaded + verified the signed update offered as {offer.manifest['version']}, quit cleanly")
 
     # 2. The OS-level install replaces the files and the new build comes back up.
+    def replaced() -> bool:
+        """Whether the install really put new files in place.
+
+        `is_stale` reads `inst.exe` and reports True when it cannot, to cover
+        the mid-replacement window — but an update that RENAMES the binary
+        deletes that path for good, so a missing file would read as "still
+        stale" forever. Windows does relaunch correctly across a rename (its
+        installer handles the restart, not `relaunch_target`), and without this
+        it would be indistinguishable from a failure.
+        """
+        return not is_stale(inst) or renamed_binary() is not None
+
     def relaunched() -> dict[str, str] | None:
         later = [s for s in startups(env.log_since(mark)) if s.get("pid") != str(p.pid)]
-        return later[-1] if later and not is_stale(inst) else None
+        return later[-1] if later and replaced() else None
 
     def renamed_binary() -> Path | None:
         """The replacement binary, when this update RENAMED it.

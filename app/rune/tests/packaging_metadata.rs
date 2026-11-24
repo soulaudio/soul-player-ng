@@ -204,6 +204,85 @@ fn the_deb_packager_config_uses_only_fields_cargo_packager_accepts() {
     );
 }
 
+/// Same trap, the Windows half. `preinstall-section` is what removes the
+/// pre-rename `soul-player-rune.exe`, and a typo in that key would not fail the
+/// build — cargo-packager would reject the config, or (worse, if it were simply
+/// ignored) the installer would silently stop cleaning up and every Windows
+/// upgrade would leave two executables behind.
+#[test]
+fn the_nsis_packager_config_uses_only_fields_cargo_packager_accepts() {
+    let cargo = read(&repo_root().join("app/rune/Cargo.toml"));
+
+    // `NsisConfig` in cargo-packager 0.11.8, in the three spellings serde takes.
+    const ACCEPTED: &[&str] = &[
+        "compression",
+        "template",
+        "preinstall-section",
+        "preinstallSection",
+        "preinstall_section",
+        "header-image",
+        "headerImage",
+        "header_image",
+        "sidebar-image",
+        "sidebarImage",
+        "sidebar_image",
+        "installer-icon",
+        "installerIcon",
+        "installer_icon",
+        "install-mode",
+        "installMode",
+        "install_mode",
+        "languages",
+        "custom-language-files",
+        "customLanguageFiles",
+        "custom_language_files",
+        "display-language-selector",
+        "displayLanguageSelector",
+        "display_language_selector",
+        "appdata-paths",
+        "appdataPaths",
+        "appdata_paths",
+    ];
+
+    let unsupported: Vec<_> = section_keys(&cargo, "package.metadata.packager.nsis")
+        .into_iter()
+        .filter(|k| !ACCEPTED.contains(&k.as_str()))
+        .collect();
+
+    assert!(
+        unsupported.is_empty(),
+        "[package.metadata.packager.nsis] has key(s) cargo-packager's NsisConfig \
+         does not accept: {unsupported:?}. Accepted: {ACCEPTED:?}"
+    );
+}
+
+/// The pre-rename executable has to actually be named in the NSIS hook, or
+/// Windows upgrades keep both binaries. Easy to lose in a later edit of that
+/// embedded script, and nothing else would notice until a release e2e ran.
+#[test]
+fn the_nsis_hook_deletes_the_pre_rename_executable() {
+    let cargo = read(&repo_root().join("app/rune/Cargo.toml"));
+    let hook = cargo
+        .split_once("preinstall-section = \'\'\'")
+        .expect("[package.metadata.packager.nsis] sets preinstall-section")
+        .1
+        .split_once("\'\'\'")
+        .expect("the preinstall-section literal is terminated")
+        .0;
+
+    assert!(
+        hook.contains("Delete") && hook.contains("soul-player-rune.exe"),
+        "the NSIS preinstall section must delete the pre-rename \
+         soul-player-rune.exe; a silent or passive install never runs the \
+         previous uninstaller (that lives in a skipped page), so without this \
+         the install directory keeps both executables. Hook body: {hook:?}"
+    );
+    assert!(
+        hook.contains("$INSTDIR"),
+        "the Delete must be anchored to $INSTDIR, not a bare filename: {hook:?}"
+    );
+}
+
 /// The .deb ships files that have to exist in the tree, and a missing one is a
 /// build failure deep inside cargo-packager rather than anything readable.
 #[test]
