@@ -21,7 +21,7 @@ sha2 = "0.10"
 soul-player-backend = { path = "../soul-player-backend" }
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
-toml = "0.8"
+toml = "0.9"
 
 [dev-dependencies]
 assert_cmd = "2"
