@@ -36,7 +36,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use cargo_packager_updater::{
-    Config, Update, WindowsConfig, WindowsUpdateInstallMode, check_update,
+    Config, Update, UpdaterBuilder, WindowsConfig, WindowsUpdateInstallMode,
 };
 
 /// Updater public key — pairs with the private key in `.signing/` (held as a CI
@@ -249,6 +249,42 @@ pub struct Found {
     pub version: String,
     /// The manifest's release notes, when it has any.
     pub notes: Option<String>,
+    /// This replaces an Intel build running under Rosetta with the Apple
+    /// silicon one (possibly the same version): see [`under_rosetta`].
+    pub switch_to_native: bool,
+}
+
+/// macOS: this is the Intel build, and macOS is translating it with Rosetta
+/// on an Apple silicon Mac — slower, harder on the battery, and on borrowed
+/// time (Apple is winding Rosetta down). The updater then fetches the Apple
+/// silicon build instead of the Intel one, even for the same version.
+///
+/// An x86_64 binary on hardware that reports Apple silicon can only be running
+/// translated. (`sysctl.proc_translated` would say so directly, but it
+/// describes the process that asks, and asking in-process needs `unsafe`.)
+pub fn under_rosetta() -> bool {
+    static ROSETTA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ROSETTA.get_or_init(|| {
+        cfg!(all(target_os = "macos", target_arch = "x86_64"))
+            && std::process::Command::new("/usr/sbin/sysctl")
+                .args(["-n", "hw.optional.arm64"])
+                .output()
+                .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1")
+    })
+}
+
+/// The updater for `endpoint`. Under Rosetta it targets the Apple silicon
+/// build and accepts the version already running, so switching doesn't have to
+/// wait for a release.
+fn updater(endpoint: &str) -> Result<cargo_packager_updater::Updater> {
+    let current = env!("CARGO_PKG_VERSION").parse()?;
+    let mut b = UpdaterBuilder::new(current, config(endpoint)?);
+    if under_rosetta() {
+        b = b
+            .target("macos-aarch64")
+            .version_comparator(|current, release| release.version >= current);
+    }
+    Ok(b.build()?)
 }
 
 static CHECKING: AtomicBool = AtomicBool::new(false);
@@ -271,10 +307,10 @@ pub fn check() -> Result<Option<Found>> {
 }
 
 fn check_at(endpoint: &str) -> Result<Option<Found>> {
-    let current = env!("CARGO_PKG_VERSION").parse()?;
-    Ok(check_update(current, config(endpoint)?)?.map(|u| Found {
+    Ok(updater(endpoint)?.check()?.map(|u| Found {
         version: u.version,
         notes: u.body.filter(|b| !b.trim().is_empty()),
+        switch_to_native: under_rosetta(),
     }))
 }
 
@@ -371,8 +407,7 @@ fn download_from(
     relaunch: bool,
     on_progress: impl Fn(Progress),
 ) -> Result<Option<String>> {
-    let current = env!("CARGO_PKG_VERSION").parse()?;
-    let Some(update) = check_update(current, config(endpoint)?)? else {
+    let Some(update) = updater(endpoint)?.check()? else {
         return Ok(None);
     };
     let meter = std::cell::RefCell::new(Meter::new(std::time::Instant::now()));
@@ -535,6 +570,7 @@ mod tests {
     use std::net::TcpListener;
 
     use super::*;
+    use cargo_packager_updater::check_update;
 
     /// A rename deletes `current_exe` as part of a SUCCESSFUL install, and the
     /// relaunch then has to find the new binary beside the old path. Getting

@@ -268,13 +268,33 @@ pub(crate) fn on_found(s: &mut State, found: Found) {
         UpdateStatus::Restarting(_) => true,
         _ => false,
     };
-    if s.update.notified.as_deref() != Some(found.version.as_str()) {
+    // Switching an Intel build to Apple silicon at the same version isn't a
+    // new release to announce; the launch prompt and the Updates page offer it.
+    let same_version = found.version == env!("CARGO_PKG_VERSION");
+    if !(found.switch_to_native && same_version)
+        && s.update.notified.as_deref() != Some(found.version.as_str())
+    {
         notify::update_available(&found.version);
         s.update.notified = Some(found.version.clone());
     }
     if !busy_with_it {
         s.update.status = UpdateStatus::Available(found);
     }
+}
+
+/// "Switch to the Apple silicon version" (an Intel build under Rosetta): fetch
+/// the Apple silicon build — the version running, or a newer one on offer —
+/// and restart into it.
+pub(crate) fn switch_to_native(s: &mut State) {
+    s.rosetta_offer = false;
+    if s.update.status.found().is_none() {
+        s.update.status = UpdateStatus::Available(Found {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            notes: None,
+            switch_to_native: true,
+        });
+    }
+    install_now(s);
 }
 
 /// "Install & Restart": quit into the update now. A download that's already

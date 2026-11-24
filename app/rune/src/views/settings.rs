@@ -3624,6 +3624,9 @@ pub(crate) fn update_status_text(s: &State) -> String {
         U::Idle => t!("settings.updateNotChecked").to_string(),
         U::Checking => t!("settings.updateChecking").to_string(),
         U::UpToDate => t!("settings.upToDate").to_string(),
+        U::Available(f) if f.switch_to_native => t!("settings.nativeAvailable").to_string(),
+        U::Downloading(f) if f.switch_to_native => t!("settings.nativeDownloading").to_string(),
+        U::Ready(f) if f.switch_to_native => t!("settings.nativeReady").to_string(),
         U::Available(f) => t!("settings.updateAvailable", version => f.version).to_string(),
         U::Downloading(f) => t!("settings.updateDownloading", version => f.version).to_string(),
         U::Ready(f) => t!("settings.updateReady", version => f.version).to_string(),
@@ -3749,18 +3752,23 @@ fn updates_card(s: &State, p: &Palette) -> El {
         U::Checking | U::Downloading(_) | U::Restarting(_)
     );
     let mut actions = row().gap(space::SM).flex_wrap().center_y();
-    if s.update.status.found().is_some() && !busy {
+    if let Some(f) = s.update.status.found().filter(|_| !busy) {
+        let label = if f.switch_to_native {
+            t!("settings.switchToNative").to_string()
+        } else {
+            t!("settings.installRestart").to_string()
+        };
         actions = actions.child(
             el().key("install-update")
                 .role("button")
-                .label(t!("settings.installRestart").to_string())
+                .label(label.clone())
                 .focusable(true)
                 .padding(space::MD)
                 .radius(radius::MD)
                 .fill(p.primary)
                 .center()
                 .cursor(Cursor::Pointer)
-                .child(text(t!("settings.installRestart").to_string()).color(p.bg))
+                .child(text(label).color(p.bg))
                 .on_press(crate::updater::install_now),
         );
     }

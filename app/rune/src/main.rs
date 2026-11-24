@@ -794,6 +794,9 @@ struct State {
     /// translocated copy) — the "Move to Applications" prompt. `None` once
     /// answered, in tests, and on other platforms.
     move_offer: Option<MoveOffer>,
+    /// macOS: the Intel build is running under Rosetta on Apple silicon — the
+    /// "Switch to the Apple silicon version" prompt. Cleared when answered.
+    rosetta_offer: bool,
     /// The Tracks page filter: a live text field like the other browse pages'
     /// search (case-insensitive substring over title/artist/album; empty = no
     /// filter). `/` on the Tracks page focuses it.
@@ -1028,6 +1031,7 @@ impl State {
             // Set from `logging::begin_session()` in `main`; `false` in tests.
             crashed_last_session: false,
             move_offer: None,
+            rosetta_offer: false,
             library_search: rune::TextEdit::new(""),
             sidebar_width,
             sidebar_collapsed,
@@ -3164,6 +3168,8 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else if let Some(dialog) = move_overlay(s, &p) {
         // One modal at a time: after a crash, that report comes first.
         overlays.push(dialog);
+    } else if let Some(dialog) = rosetta_overlay(s, &p) {
+        overlays.push(dialog);
     }
     el().key("overlay-root")
         .w_full()
@@ -3315,6 +3321,71 @@ fn move_overlay(s: &State, p: &theme::Palette) -> Option<El> {
             .center()
             .fill(rune::Color::BLACK.alpha(0.45))
             .child(card.modal(true, |s: &mut State| s.move_offer = None)),
+    )
+}
+
+/// The "Switch to the Apple silicon version?" modal for an Intel build running
+/// under Rosetta. "Not Now" (or Escape) asks again next launch; the Updates
+/// page keeps offering the switch meanwhile.
+fn rosetta_overlay(s: &State, p: &theme::Palette) -> Option<El> {
+    use crate::ui::{radius, space, type_};
+    if !s.rosetta_offer {
+        return None;
+    }
+    let button = |key: &'static str, label: String, primary: bool| {
+        el().key(key)
+            .role("button")
+            .label(label.clone())
+            .focusable(true)
+            .padding(space::MD)
+            .radius(radius::MD)
+            .fill(if primary { p.primary } else { p.bg })
+            .border(1.0, if primary { p.primary } else { p.border })
+            .center()
+            .cursor(rune::Cursor::Pointer)
+            .child(rune::text(label).color(if primary { p.bg } else { p.fg }))
+    };
+    let card = col()
+        .key("rosetta-dialog")
+        .w(400.0)
+        .fill(p.card)
+        .radius(radius::LG)
+        .border(1.0, p.border)
+        .padding(space::LG)
+        .gap(space::MD)
+        .child(
+            rune::text(t!("rosetta.title").to_string())
+                .font(type_::TITLE)
+                .color(p.fg)
+                .wrap(),
+        )
+        .child(
+            rune::text(t!("rosetta.body").to_string())
+                .color(p.text_secondary)
+                .wrap(),
+        )
+        .child(
+            row()
+                .gap(space::SM)
+                .justify_end()
+                .child(
+                    button("rosetta-later", t!("rosetta.later").to_string(), false)
+                        .on_press(|s: &mut State| s.rosetta_offer = false),
+                )
+                .child(
+                    button("rosetta-switch", t!("rosetta.switch").to_string(), true)
+                        .on_press(updater::switch_to_native),
+                ),
+        );
+    Some(
+        col()
+            .key("rosetta-modal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(rune::Color::BLACK.alpha(0.45))
+            .child(card.modal(true, |s: &mut State| s.rosetta_offer = false)),
     )
 }
 
@@ -3929,6 +4000,7 @@ fn scene_update_found() -> update::Found {
         notes: Some(
             "New\n• Settings → Updates: check on a schedule, install on quit\nFixed\n• A crash when a cover file was unreadable\nFaster\n• Library scans".into(),
         ),
+        switch_to_native: false,
     }
 }
 fn scene_settings_updates_available(s: &mut State) {
@@ -3993,6 +4065,19 @@ fn scene_move_dialog(s: &mut State) {
             mount: PathBuf::from("/Volumes/Soul Player"),
         },
         error: None,
+    });
+}
+/// The Intel build under Rosetta on Apple silicon: the switch prompt.
+fn scene_rosetta_dialog(s: &mut State) {
+    s.rosetta_offer = true;
+}
+/// Settings → Updates offering the switch to the Apple silicon build.
+fn scene_settings_updates_native(s: &mut State) {
+    scene_settings_updates(s);
+    s.update.status = updater::UpdateStatus::Available(update::Found {
+        version: env!("CARGO_PKG_VERSION").into(),
+        notes: None,
+        switch_to_native: true,
     });
 }
 /// The crash-report dialog shown after a crashed session.
@@ -4433,6 +4518,7 @@ fn main() -> anyhow::Result<()> {
         arch = std::env::consts::ARCH,
         cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0),
         exe = %std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
+        rosetta = update::under_rosetta(),
         "Soul Player starting",
     );
     // Whether the previous session ended without a clean exit (and mark this one
@@ -4583,6 +4669,8 @@ fn main() -> anyhow::Result<()> {
             ("add-source-open", scene_add_source_open),
             ("crash-dialog", scene_crash_dialog),
             ("move-dialog", scene_move_dialog),
+            ("rosetta-dialog", scene_rosetta_dialog),
+            ("settings-updates-native", scene_settings_updates_native),
             ("settings-music-skips", scene_settings_music_skips),
             ("settings-music-de", scene_settings_music_de),
             ("settings-audio-de", scene_settings_audio_de),
@@ -4679,6 +4767,9 @@ fn main() -> anyhow::Result<()> {
             let mut s = State::new(init_host.clone());
             s.crashed_last_session = crashed_last_session;
             s.move_offer = move_offer.clone();
+            // Only where the switch can actually happen: updates on, and not
+            // somewhere the move prompt has to deal with first.
+            s.rosetta_offer = update::under_rosetta() && s.update.supported && move_offer.is_none();
             // Set from the start (not in the first-frame update that kicks the scan off): a
             // file that launched the app arrives during AppKit's launch, before that frame.
             s.startup_scan_pending = needs_startup_scan;
@@ -7550,6 +7641,51 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(rt.find("move-error").is_some(), "a failed move says why");
+    }
+
+    /// The Intel build under Rosetta: a launch prompt to switch (after any
+    /// crash or move prompt), "Not Now" closes it, and the Updates page keeps
+    /// offering the switch in its own words — never as a "new version".
+    #[test]
+    fn rosetta_prompt_and_updates_page_offer_the_apple_silicon_build() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = populated_state();
+        s.rosetta_offer = true;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("rosetta-switch").is_some(), "the switch is offered");
+        click_key(&mut rt, "rosetta-later");
+        assert!(rt.find("rosetta-dialog").is_none(), "Not Now closes it");
+
+        let mut s = populated_state();
+        s.rosetta_offer = true;
+        s.move_offer = Some(MoveOffer {
+            bundle: PathBuf::from("/Users/me/Downloads/Soul Player.app"),
+            place: app_location::Place::Elsewhere,
+            error: None,
+        });
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(
+            rt.find("move-dialog").is_some() && rt.find("rosetta-dialog").is_none(),
+            "one prompt at a time"
+        );
+
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Updates;
+        s.update.supported = true;
+        scene_settings_updates_native(&mut s);
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("install-update").is_some());
+        assert_eq!(
+            views::settings::update_status_text(&rt.state),
+            "The Apple silicon version of Soul Player is available for this Mac."
+        );
     }
 
     #[test]
@@ -13555,6 +13691,7 @@ mod tests {
         update::Found {
             version: version.into(),
             notes: notes.map(str::to_string),
+            switch_to_native: false,
         }
     }
 
@@ -15439,6 +15576,7 @@ mod tests {
             ),
             ("crash-dialog", scene_crash_dialog, "crash-dialog"),
             ("move-dialog", scene_move_dialog, "move-dialog"),
+            ("rosetta-dialog", scene_rosetta_dialog, "rosetta-dialog"),
             (
                 "add-source-open",
                 scene_add_source_open,
@@ -15657,6 +15795,7 @@ mod tests {
         ("signal-path-open", scene_signal_path_open),
         ("crash-dialog", scene_crash_dialog),
         ("move-dialog", scene_move_dialog),
+        ("rosetta-dialog", scene_rosetta_dialog),
         ("playlists", scene_playlists),
         ("playlist-detail", scene_playlist_detail),
         ("add-to-playlist-open", scene_add_to_playlist_open),

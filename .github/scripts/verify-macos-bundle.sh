@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verify a packaged macOS release before it is published. Usage:
-#   verify-macos-bundle.sh <version> <arch: arm64|x86_64> <dmg> [app.tar.gz]
+#   verify-macos-bundle.sh <version> <arch: arm64|x86_64|universal> <dmg> [app.tar.gz]
 #
 # The app under test is the one INSIDE the DMG — what users install (packaging the DMG
 # also removes the standalone .app from target/). Checks: DMG layout (app + /Applications
@@ -47,7 +47,9 @@ ok "sealed ad-hoc signature"
 
 exe="$app/Contents/MacOS/$(pb CFBundleExecutable)"
 archs="$(lipo -archs "$exe")"
-[ "$archs" = "$arch" ] || fail "binary architectures '$archs', expected '$arch'"
+want="$arch"
+[ "$arch" = universal ] && want="x86_64 arm64"
+[ "$archs" = "$want" ] || fail "binary architectures '$archs', expected '$want'"
 ok "architecture $archs"
 
 [ "$(pb CFBundleIdentifier)" = "co.soulaudio.soulplayer" ] || fail "bundle id $(pb CFBundleIdentifier)"
