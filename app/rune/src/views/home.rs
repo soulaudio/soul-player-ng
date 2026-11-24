@@ -10,8 +10,6 @@ use soul_player_host::Command;
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::albums::group_albums;
-use crate::views::artists::group_artists;
 use crate::views::icons;
 use crate::views::player::cover;
 
@@ -62,12 +60,16 @@ fn album_tile(s: &State, p: &Palette, slot: usize, name: String, cover_id: u32, 
 /// grid of the library's albums. Empty libraries get a gentle "add a source"
 /// nudge instead of the grid.
 pub fn home_page(s: &State, p: &Palette, _cx: &Cx<State>, scale: f32) -> El {
-    let albums = group_albums(&s.library);
+    // Reuse the memoized groupings (keyed by the library fingerprint) that the
+    // browse grids use, rather than re-grouping the whole library every frame.
+    let albums = s.grouped_albums();
     let tracks = s.library.len();
     // Count artists the same way the Artists page groups them (an Unknown bucket
     // included), so Home's summary matches that page.
-    let artists = group_artists(&s.library).len();
-    let play_ids: Vec<u32> = s.library.iter().map(|t| t.id).collect();
+    let artists = s.grouped_artists().len();
+    // The whole-library play context, memoized (shared `Rc`) rather than a fresh
+    // full-library id Vec allocated every frame just to seed the Play-all closure.
+    let play_ids = s.visible_tracks("").1;
     let empty = tracks == 0;
 
     let summary = t!(
@@ -107,7 +109,7 @@ pub fn home_page(s: &State, p: &Palette, _cx: &Cx<State>, scale: f32) -> El {
                     .press(p.bg.alpha(fx::PRESS_FILL))
                     .on_press(move |st: &mut State| {
                         st.host.send(Command::PlayContext {
-                            ids: play_ids.clone(),
+                            ids: play_ids.to_vec(),
                             start: 0,
                         })
                     })

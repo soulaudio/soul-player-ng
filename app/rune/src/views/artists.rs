@@ -18,7 +18,7 @@ use soul_player_host::{Command, TrackView};
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::albums::{Album, albums_of_artist, detail_track_row};
+use crate::views::albums::{Album, detail_track_row, discography_of};
 use crate::views::detail_page::{ArtworkTarget, HeroArt, detail_actions, detail_hero};
 use crate::views::grid;
 use crate::views::icons;
@@ -260,11 +260,13 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
 /// hero ("ARTIST" eyebrow, name, "{n} albums · {n} tracks", Play All), then Top
 /// Songs (first five, expandable) and a Discography grid of the artist's albums.
 pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
-    let artists = group_artists(&s.library);
+    // Reuse the memoized artist grouping (keyed by the library fingerprint) instead
+    // of re-grouping the whole library every frame to locate one artist.
+    let artists = s.grouped_artists();
     let Some(artist) = s
         .open_artist
         .as_deref()
-        .and_then(|name| artists.into_iter().find(|a| a.name == name))
+        .and_then(|name| artists.iter().find(|a| a.name == name))
     else {
         return col()
             .key("artist-detail")
@@ -273,7 +275,14 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             .padding(space::PANE);
     };
 
-    let discography = albums_of_artist(&s.library, &artist.name, s.album_year);
+    // The artist's own tracks, resolved via the O(1) id->track map and folded into
+    // the Discography — O(artist), not the old O(library) re-scan-and-clone per frame.
+    let subset: Vec<TrackView> = artist
+        .ids
+        .iter()
+        .filter_map(|id| s.track(*id).cloned())
+        .collect();
+    let discography = discography_of(&subset, s.album_year);
     let meta = format!(
         "{} · {}",
         crate::views::library::albums_label(discography.len()),
@@ -575,6 +584,43 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+        }
+    }
+
+    /// The artist detail page builds its Discography from the artist's OWN track ids
+    /// (`group_artists` collects them in library order), resolved back to tracks and
+    /// folded by `discography_of` — O(artist), not the old O(library) name re-scan.
+    /// That id path must reproduce EXACTLY the library-wide `albums_of_artist`: the
+    /// same albums, chronological order, and per-album track ids, for every artist.
+    #[test]
+    fn artist_detail_discography_from_ids_matches_name_filter() {
+        use crate::views::albums::albums_of_artist;
+        let _locale = crate::config::use_test_locale("en");
+        let lib = vec![
+            tv_album(1, "Bach", "Cello Suites"),
+            tv_album(2, "Satie", "Gymnopedies"),
+            tv_album(3, "Bach", "Cello Suites"),
+            tv_album(4, "Bach", "Goldberg"),
+        ];
+        let src = crate::config::AlbumYearSource::Original;
+        for artist in group_artists(&lib) {
+            let by_name = albums_of_artist(&lib, &artist.name, src);
+            let subset: Vec<TrackView> = artist
+                .ids
+                .iter()
+                .filter_map(|id| lib.iter().find(|t| t.id == *id).cloned())
+                .collect();
+            let by_ids = discography_of(&subset, src);
+            assert_eq!(
+                by_ids.len(),
+                by_name.len(),
+                "same album count for {}",
+                artist.name
+            );
+            for (a, b) in by_ids.iter().zip(by_name.iter()) {
+                assert_eq!(a.name, b.name, "same album order for {}", artist.name);
+                assert_eq!(a.ids, b.ids, "same track ids for album {}", a.name);
+            }
         }
     }
 
