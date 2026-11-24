@@ -67,9 +67,16 @@ modules:
       - install -Dm644 co.soulaudio.soulplayer.metainfo.xml
         /app/share/metainfo/co.soulaudio.soulplayer.metainfo.xml
     sources:
-      # Staged by `packaging/flatpak/stage.sh`, which takes the binary and the
+      # Staged by `packaging/stage-linux.sh`, which takes the binary and the
       # desktop entry/icon out of the built .deb so the Flatpak cannot drift
-      # from the other Linux packages.
+      # from the other Linux packages. The release workflow copies this manifest
+      # into that staging dir and builds from there, which is why these are bare
+      # filenames with no path.
+      #
+      # These local `path:` sources are also why this manifest cannot be
+      # submitted to Flathub as-is: Flathub builds from its own repo, where
+      # these files do not exist, so it needs either URL+sha256 sources or a
+      # from-source build. See PACKAGING.md.
       - type: file
         path: soul-player
       - type: file

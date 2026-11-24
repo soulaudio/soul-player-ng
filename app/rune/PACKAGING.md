@@ -140,6 +140,34 @@ podman run --rm -v "$PWD/app/rune/target/release:/w:z" ubuntu:24.04 \
 The release pipeline does this for real on every platform, and its Flatpak step
 starts the sandboxed app and fails unless it owns its MPRIS name.
 
+### Flathub (not submitted, and not a one-step job)
+
+The `.flatpak` we ship is a self-hosted **bundle**: built in CI, installed with
+`flatpak install --bundle`, and verified by running it sandboxed. That is
+independent of Flathub, and it works today.
+
+Submitting to Flathub is a separate project, blocked on two things in this repo
+rather than on paperwork:
+
+1. **The manifest installs prebuilt local files** (`type: file` with a bare
+   `path:`). Flathub builds from a manifest in *its* repository, where those
+   files do not exist, so it needs either sources with a URL + `sha256` or a
+   genuine from-source build.
+2. **A from-source build needs our pinned nightly, offline.** Flathub build
+   machines have no network, so every crate would have to be vendored into a
+   generated sources list — and the toolchain is the harder half: `app/rune`
+   pins `nightly-2026-11-10` because Rune uses unstable features. This is not
+   theoretical: building with stable 1.93.1 fails outright with
+   ``error[E0658]: use of unstable library feature `atomic_try_update` ``. A
+   *rolling* nightly would build until the day it doesn't, which is the reason
+   the pin exists.
+
+So the realistic options are a binary-download manifest (URL + `sha256` of a
+released artifact, keeping the exact bytes we test) or waiting until the Rune
+dependency builds on stable. Either way, `--device=all` is the thing a reviewer
+will ask about — the manifest explains why it is there and what breaks without
+it.
+
 ## Auto-update (implemented, free)
 
 The app updates itself with no paid accounts. **This is independent of OS
