@@ -636,8 +636,85 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  e2e:
+  # One DMG for every Mac. Choosing between "aarch64" and "x86_64" is a choice
+  # people get wrong, and an Apple silicon Mac running the Intel build works,
+  # just slower, through Rosetta — so nobody notices. The universal DMG is the
+  # one the release notes point at; it holds both builds (lipo of the two
+  # binaries the build legs made and signed, packaged the same way). The
+  # in-app updater still fetches the per-architecture .app.tar.gz, so after the
+  # first update the bundle is this Mac's build alone.
+  macos-universal:
     needs: [guard, build]
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain
+        working-directory: app/rune
+        run: rustup show
+
+      - name: Install cargo-packager
+        run: cargo install cargo-packager --locked
+
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: bundle-macos-aarch64
+          path: in/arm64
+
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: bundle-macos-x86_64
+          path: in/x86_64
+
+      # The exact binaries the per-arch builds shipped (and their e2e tests),
+      # taken from their updater archives rather than rebuilt.
+      - name: Universal binary
+        run: |
+          out=app/rune/target/universal-apple-darwin/release
+          mkdir -p "$out"
+          for a in arm64 x86_64; do
+            mkdir -p "ex/$a"
+            tar -xzf in/$a/Soul-Player_${VERSION}_*.app.tar.gz -C "ex/$a"
+          done
+          lipo -create \
+            "ex/arm64/Soul Player.app/Contents/MacOS/soul-player-rune" \
+            "ex/x86_64/Soul Player.app/Contents/MacOS/soul-player-rune" \
+            -output "$out/soul-player-rune"
+          archs=$(lipo -archs "$out/soul-player-rune")
+          echo "universal binary: $archs"
+          [ "$archs" = "x86_64 arm64" ] || { echo "::error::lipo produced '$archs'"; exit 1; }
+
+      # cargo-packager only packages a pre-built binary, so it bundles and
+      # ad-hoc-seals this one exactly as it does the per-arch builds. No
+      # updater key: the universal DMG is a first-install download, not an
+      # update artifact.
+      - name: Package universal DMG
+        working-directory: app/rune
+        run: |
+          cargo packager --release -f dmg --target universal-apple-darwin
+          mkdir -p ../../dist
+          cp target/universal-apple-darwin/release/*.dmg "../../dist/Soul-Player_${VERSION}_universal.dmg"
+
+      - name: Static bundle checks
+        run: .github/scripts/verify-macos-bundle.sh "$VERSION" universal "dist/Soul-Player_${VERSION}_universal.dmg"
+
+      - name: Checksums
+        working-directory: dist
+        run: shasum -a 256 *.dmg > macos-universal.sha256 && cat macos-universal.sha256
+
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: bundle-macos-universal
+          path: dist/*
+          if-no-files-found: error
+
+  e2e:
+    needs: [guard, build, macos-universal]
     strategy:
       fail-fast: false
       matrix:
@@ -674,6 +751,27 @@ jobs:
           name: bundle-${{ matrix.target_key }}
           path: dist
 
+      # macOS: the universal DMG is installed and updated on both Macs too.
+      - uses: actions/download-artifact@v4.3.0
+        if: runner.os == 'macOS'
+        with:
+          name: bundle-macos-universal
+          path: dist-universal
+
+      # Apple silicon: the Intel DMG as well — the wrong download — to check
+      # that it notices Rosetta and switches itself to the Apple silicon build.
+      - uses: actions/download-artifact@v4.3.0
+        if: matrix.target_key == 'macos-aarch64'
+        with:
+          name: bundle-macos-x86_64
+          path: dist-intel
+
+      - name: Rosetta (Apple silicon)
+        if: matrix.target_key == 'macos-aarch64'
+        run: |
+          sudo softwareupdate --install-rosetta --agree-to-license || true
+          arch -x86_64 /bin/sh -c 'uname -m' || echo "::warning::Rosetta may be unavailable"
+
       # Rune renders through wgpu: a software Vulkan adapter (Lavapipe) under Xvfb, and
       # FUSE to mount the AppImage the way a user's desktop does.
       - name: Runtime dependencies (Linux)
@@ -707,6 +805,12 @@ jobs:
                 --target-key ${{ matrix.target_key }} --manifest latest.json --out e2e-out
                 --update-meta dist/${{ matrix.target_key }}.meta.json
                 --previous-manifest "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/latest.json")
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            args+=(--universal-installer "$(ls dist-universal/*.dmg)")
+          fi
+          if [ -d dist-intel ]; then
+            args+=(--rosetta-installer "$(ls dist-intel/*.dmg)")
+          fi
           if [ "$RUNNER_OS" = "Linux" ]; then
             xvfb-run -a -s "-screen 0 1920x1080x24" python "${args[@]}"
           else
@@ -766,7 +870,7 @@ jobs:
           cat > notes.md <<'EOF'
           ## Install
 
-          - **macOS** — download the DMG for your Mac (`aarch64` = Apple silicon, `x86_64` = Intel) and drag Soul Player to Applications. The app isn't notarized by Apple yet, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Soul Player.app"`). Later updates install in-app.
+          - **macOS** — download **`Soul-Player_<version>_universal.dmg`**: it runs natively on every Mac, Apple silicon and Intel. Open it and drag Soul Player to Applications (if you open it straight from the disk image, it offers to move itself). The smaller `aarch64` (Apple silicon) and `x86_64` (Intel) DMGs hold one build each; on Apple silicon the Intel one offers to switch itself over. The app isn't notarized by Apple yet, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Soul Player.app"`). Later updates install in-app.
           - **Windows** — run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
           - **Linux** — `chmod +x` the AppImage and run it.
 
