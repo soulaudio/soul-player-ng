@@ -358,7 +358,9 @@ jobs:
           grep -q "sudo apt remove soul-player" <<<"$out" \
             || { echo "::error::--uninstall didn't name the apt command"; exit 1; }
           sudo apt-get remove -y -qq soul-player
-          ! command -v soul-player >/dev/null || { echo "::error::binary still on PATH"; exit 1; }
+          hash -r # bash remembers where it last found a command
+          [ ! -e /usr/bin/soul-player ] && ! command -v soul-player >/dev/null \
+            || { echo "::error::binary still installed"; exit 1; }
           ! dpkg -s soul-player >/dev/null 2>&1 || { echo "::error::dpkg still lists soul-player"; exit 1; }
           left=$(ls /usr/share/applications/ | grep -i soul || true)
           [ -z "$left" ] || { echo "::error::desktop entry left: $left"; exit 1; }
