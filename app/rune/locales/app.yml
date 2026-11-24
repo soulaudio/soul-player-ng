@@ -2708,3 +2708,10 @@ playback.dismiss:
   zh: '关闭'
   cs: 'Zavřít'
   ja: '閉じる'
+settings.sourceLimit:
+  en: 'Maximum %{max} sources. Remove one to add another.'
+  de: 'Maximal %{max} Quellen. Entferne eine, um eine andere hinzuzufügen.'
+  es: 'Máximo %{max} fuentes. Elimina una para añadir otra.'
+  zh: '最多 %{max} 个来源。请先移除一个再添加。'
+  cs: 'Maximálně %{max} zdrojů. Odeber jeden, abys mohl přidat další.'
+  ja: 'ソースは最大 %{max} 件です。追加するには 1 件削除してください。'

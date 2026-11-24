@@ -571,6 +571,11 @@ struct State {
     /// found. Cleared on the next Sources refresh ([`apply_watch`]) so it reads as
     /// a notice about the *last* scan rather than a permanent banner.
     skip_notice: Option<(PathBuf, Vec<SkippedGroup>)>,
+    /// Set when the user hit the configured-source cap (`soul_player_host::MAX_SOURCES`) while
+    /// trying to add another source: the Sources page shows a notice instead of opening the add
+    /// menu (a 17th source would panic the scan). Cleared when the source set changes
+    /// (`apply_watch`), e.g. after removing one.
+    source_limit_notice: bool,
     /// A "couldn't play that track" banner (from the host's [`Event::PlaybackFailed`]): the
     /// user asked to play something that failed to start, so playback produced silence. Set
     /// from the event, auto-cleared when a track actually plays (a Playing `Tick`), and
@@ -973,6 +978,7 @@ impl State {
             remote_health_open: false,
             removal_notice: None,
             skip_notice: None,
+            source_limit_notice: false,
             playback_notice: None,
             remote_form_open: false,
             remote_url_buf: rune::TextEdit::new(""),
@@ -1410,6 +1416,9 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     // right after and re-sets it, so a format fixed since the last scan stops
     // being reported rather than lingering forever.
     s.skip_notice = None;
+    // The source set just changed (e.g. one was removed): a "too many sources" notice from a
+    // blocked add is no longer current.
+    s.source_limit_notice = false;
     // A WatchUpdate marks a scan complete — retire the title-bar activity widget.
     s.scan_progress = None;
 }
@@ -7613,6 +7622,18 @@ mod tests {
         assert_eq!(
             s.removal_notice, None,
             "a Sources refresh clears the stale deletion warning"
+        );
+    }
+
+    #[test]
+    fn apply_watch_clears_the_source_limit_notice() {
+        let mut s = populated_state();
+        // The user hit the source cap trying to add one; then the set changes (e.g. a removal).
+        s.source_limit_notice = true;
+        apply_watch(&mut s, WatchUpdate::default());
+        assert!(
+            !s.source_limit_notice,
+            "changing the source set retires the 'too many sources' notice"
         );
     }
 

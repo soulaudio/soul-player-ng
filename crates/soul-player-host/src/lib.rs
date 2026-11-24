@@ -93,6 +93,13 @@ type ScanProgressSubscriber = Box<dyn Fn(Option<ScanProgress>) + Send>;
 /// [`fan_out`] serves all three.
 type Subscribers<T> = Mutex<Vec<Box<dyn Fn(T) + Send>>>;
 
+/// The most sources (local folders + remote servers, combined) that can be configured at
+/// once. The core packs a source index into a compound track id with `SOURCE_BITS = 4`, so
+/// `MultiCatalog::new` asserts `<= 16` members and a 17th would panic the scan thread; the add
+/// methods ([`PlayerHandle::add_folder`] / [`PlayerHandle::add_remote_source_with_tokens`])
+/// refuse before it can, and the UI reads this to show a clear message rather than attempt it.
+pub const MAX_SOURCES: usize = 16;
+
 /// Fan `payload` out to every subscriber, isolating each callback so one misbehaving
 /// subscriber can't take down the whole event stream. A panicking callback is **caught**
 /// (`catch_unwind`) rather than allowed to unwind through the held lock, which would POISON the
@@ -1164,6 +1171,36 @@ impl PlayerHandle {
             .expect("loudness_mode mutex")
     }
 
+    /// How many sources are configured right now — local folders plus remote servers. Each
+    /// consumes one of the [`MAX_SOURCES`] compound-id slots; the UI reads this to refuse a
+    /// 17th add before it reaches the scan (which would panic). Counts configured sources
+    /// whether enabled or not: a source keeps its slot while disabled.
+    pub fn source_count(&self) -> usize {
+        let locals = self.inner.folders.lock().expect("folders mutex").len();
+        let remotes = self.inner.remotes.lock().expect("remotes mutex").len();
+        locals + remotes
+    }
+
+    /// Refuse a *new* remote `url` that would push the configured-source count past
+    /// [`MAX_SOURCES`]. An already-configured url is re-added in place (no new slot), so it is
+    /// always allowed. Checked early (before the browser login / index fetch) so a doomed add
+    /// fails fast.
+    fn ensure_room_for_remote(&self, url: &str) -> anyhow::Result<()> {
+        let normalized = url.trim_end_matches('/');
+        let already = self
+            .inner
+            .remotes
+            .lock()
+            .expect("remotes mutex")
+            .iter()
+            .any(|(server, _)| server.url == normalized);
+        anyhow::ensure!(
+            already || self.source_count() < MAX_SOURCES,
+            "cannot add another source: the maximum of {MAX_SOURCES} sources is already configured"
+        );
+        Ok(())
+    }
+
     /// Reconcile the configured-source set to exactly `roots` (deduped, preserving
     /// order), then [`rescan`](Self::rescan). The **enabled flag** of any path
     /// already configured is **preserved**; a newly-introduced path defaults to
@@ -1197,6 +1234,12 @@ impl PlayerHandle {
         let mut set = self.watched_folders();
         let dir = dir.to_path_buf();
         if !set.contains(&dir) {
+            // A genuinely new source: refuse before it can push the scan's MultiCatalog past
+            // its slot cap and panic the scan thread.
+            anyhow::ensure!(
+                self.source_count() < MAX_SOURCES,
+                "cannot add another source: the maximum of {MAX_SOURCES} sources is already configured"
+            );
             set.push(dir);
         }
         self.set_folders(&set)
@@ -1954,6 +1997,8 @@ impl PlayerHandle {
     /// for the shared tail (and for tests/E2E, which drive that entry point
     /// directly to skip the browser and the real OS keychain).
     pub fn add_remote_source(&self, url: &str) -> anyhow::Result<()> {
+        // Fail before the browser login if there's no room for another source.
+        self.ensure_room_for_remote(url)?;
         let tokens = remote::login(url)?;
         remote::KeyringStore.save_refresh(url, &tokens.refresh)?;
         self.add_remote_source_with_tokens(url, tokens)
@@ -1977,6 +2022,8 @@ impl PlayerHandle {
         url: &str,
         tokens: remote::Tokens,
     ) -> anyhow::Result<()> {
+        // Authoritative cap check (covers direct callers: tests / relogin), before the fetch.
+        self.ensure_room_for_remote(url)?;
         let normalized = url.trim_end_matches('/').to_string();
         let server = Arc::new(RemoteServer {
             url: normalized.clone(),
@@ -2373,6 +2420,61 @@ mod tests {
             vec![(PathBuf::from("/a"), b"A".to_vec())],
             "only the freshly re-scanned root is persisted"
         );
+    }
+
+    fn fill_folders(h: &PlayerHandle, n: usize) {
+        let mut f = h.inner.folders.lock().expect("folders");
+        *f = (0..n)
+            .map(|i| FolderConfig {
+                path: PathBuf::from(format!("/src{i}")),
+                enabled: i % 2 == 0, // mix enabled/disabled: a disabled source still holds a slot
+            })
+            .collect();
+    }
+
+    #[test]
+    fn source_count_counts_configured_folders_including_disabled() {
+        let h = PlayerHandle::offline();
+        assert_eq!(h.source_count(), 0);
+        fill_folders(&h, 3);
+        assert_eq!(
+            h.source_count(),
+            3,
+            "all configured folders count, enabled or not"
+        );
+    }
+
+    #[test]
+    fn add_folder_refuses_a_new_source_at_the_cap() {
+        let h = PlayerHandle::offline();
+        fill_folders(&h, MAX_SOURCES);
+        // A 17th distinct source would push MultiCatalog past its slot cap and panic the scan;
+        // it's refused (before any rescan) with a message the UI can surface.
+        let err = h
+            .add_folder(Path::new("/one-too-many"))
+            .expect_err("a new source past the cap must be refused, not accepted");
+        assert!(
+            err.to_string().contains("maximum"),
+            "the refusal names the cap: {err}"
+        );
+    }
+
+    #[test]
+    fn add_remote_source_refuses_a_new_server_at_the_cap() {
+        let h = PlayerHandle::offline();
+        fill_folders(&h, MAX_SOURCES);
+        // The cap check runs BEFORE the index fetch, so this needs no network: a new remote at
+        // the cap is refused up front.
+        let err = h
+            .add_remote_source_with_tokens(
+                "http://new.example",
+                remote::Tokens {
+                    access: "a".into(),
+                    refresh: "r".into(),
+                },
+            )
+            .expect_err("a new remote past the cap must be refused before fetching its index");
+        assert!(err.to_string().contains("maximum"), "names the cap: {err}");
     }
 
     #[test]
