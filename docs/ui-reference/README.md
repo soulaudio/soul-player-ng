@@ -17,7 +17,7 @@ Both apps were driven over the **same library**
   old-schema DB; delete/rename `%APPDATA%/Soul Player Dev/soul-player.db` so it
   creates a fresh current-schema DB, then it re-scans the configured library.)
 - **-ng** (`ng/`): rendered headlessly via
-  `SOUL_PLAYER_FOLDER=<lib> soul-player-rune --snap out.png --size WxH --scene <name> --theme dark`
+  `SOUL_PLAYER_FOLDER=<lib> soul-player --snap out.png --size WxH --scene <name> --theme dark`
   (delete `%LOCALAPPDATA%/soul-player/logs/running.lock` before each shot to
   avoid the crash-recovery banner).
 

@@ -60,7 +60,7 @@ fi
 ( cd "$root/app/rune" && cargo build --release ${CARGO_EXTRA_ARGS:-} )
 HOME="$home" SOUL_PLAYER_FOLDER="$music" SOUL_PLAYER_AUTOPLAY=1 \
   RUST_LOG="${RUST_LOG:-info,soul_player_rune=debug}" \
-  "$root/app/rune/target/release/soul-player-rune" >"$work/app.log" 2>&1 &
+  "$root/app/rune/target/release/soul-player" >"$work/app.log" 2>&1 &
 app_pid=$!
 
 # ---- helpers ------------------------------------------------------------------------

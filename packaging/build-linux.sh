@@ -13,7 +13,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 app="$root/app/rune"
-bin="$app/target/release/soul-player-rune"
+bin="$app/target/release/soul-player"
 version=$(grep -m1 '^version = ' "$app/Cargo.toml" | cut -d'"' -f2)
 
 if [ "${1:-}" != "--skip-build" ]; then
@@ -74,6 +74,21 @@ echo "==> .deb"
 ( cd "$app" && cargo packager --release -f deb )
 deb=$(ls "$app"/target/release/*.deb | head -1)
 echo "    $deb"
+
+# NOTE: no `Provides`/`Conflicts`/`Replaces` here, and none are needed.
+#
+# The binary rename (soul-player-rune -> soul-player) changes the .deb's
+# FILENAME, which cargo-packager builds from the main binary's name, but NOT the
+# package's identity: `Package:` is the kebab-cased `product-name` ("Soul
+# Player" -> soul-player), so it has read `soul-player` since long before the
+# rename — the published 0.4.2 package proves it, filename
+# soul-player-rune_0.4.2_amd64.deb with `Package: soul-player` inside.
+#
+# So an upgrade is an ordinary same-package upgrade in which one file moved,
+# and dpkg removes paths the new version no longer ships: installing 0.4.2 then
+# this build leaves exactly one binary and one desktop entry ("Unpacking
+# soul-player over (0.4.2)"), same as rpm. Adding transition fields would be
+# declaring a rename that never happened.
 
 echo "==> staging shared files (desktop entry + icon, from the .deb)"
 stage="$app/target/release/linux-stage"

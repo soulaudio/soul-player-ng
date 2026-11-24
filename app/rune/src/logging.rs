@@ -19,9 +19,16 @@ const LOG_SUFFIX: &str = "log";
 
 /// Default level filter when `RUST_LOG` isn't set: our crate verbose in debug
 /// builds, INFO everywhere in release.
+///
+/// The target is the BINARY target's name with hyphens underscored, not the
+/// package's — Cargo passes `--crate-name soul_player` for `[[bin]] name =
+/// "soul-player"` even though the package is still `soul-player-rune`. Getting
+/// this wrong costs nothing visible: an `EnvFilter` directive that matches no
+/// target is not an error, so every one of our own debug lines would simply
+/// stop appearing. `the_debug_filter_targets_this_crate` below pins it.
 fn default_filter() -> &'static str {
     if cfg!(debug_assertions) {
-        "soul_player_rune=debug,info"
+        "soul_player=debug,info"
     } else {
         "info"
     }
@@ -270,5 +277,41 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The debug filter names a tracing target, and a directive that matches
+    /// nothing is silently ignored rather than rejected — so if the binary is
+    /// ever renamed again, our own debug logging would just go quiet with no
+    /// error anywhere. `module_path!()` is the same string tracing uses as the
+    /// target, so comparing against its first segment pins the two together.
+    #[test]
+    fn the_debug_filter_targets_this_crate() {
+        let crate_name = module_path!()
+            .split("::")
+            .next()
+            .expect("module_path! always has at least one segment");
+
+        let filter = {
+            // `default_filter` branches on `debug_assertions`, and a test run
+            // with `--release` takes the "info" arm, where there is no target
+            // to check.
+            if !cfg!(debug_assertions) {
+                return;
+            }
+            default_filter()
+        };
+
+        let target = filter
+            .split(',')
+            .find_map(|d| d.split_once('=').map(|(t, _)| t))
+            .expect("the debug filter has a `target=level` directive");
+
+        assert_eq!(
+            target, crate_name,
+            "the debug filter targets `{target}` but this crate's tracing \
+             target is `{crate_name}`; an EnvFilter directive that matches no \
+             target is not an error, so this would silently drop every debug \
+             line we emit"
+        );
     }
 }
