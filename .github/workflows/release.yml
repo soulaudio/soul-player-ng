@@ -336,8 +336,33 @@ jobs:
                  ldd "$(command -v soul-player)" | grep "not found"; exit 1; }
           soul-player --help >/dev/null 2>&1 \
             || { echo "::error::the installed binary does not run"; exit 1; }
+          echo "ok: .deb installs, resolves every library, and runs"
+          echo "::endgroup::"
+
+          # Uninstall (Settings → About → Uninstall / --uninstall) on a
+          # package-managed install: the app removes its data and says which
+          # command removes the package; apt then leaves nothing behind.
+          echo "::group::.deb uninstall leaves nothing"
+          seed() {
+            mkdir -p ~/.config/soul-player ~/.cache/soul-player/now-playing ~/.local/state/soul-player/logs
+            echo 'update_auto_check = false' > ~/.config/soul-player/config.toml
+            echo log > ~/.local/state/soul-player/logs/Soul.log
+            echo art > ~/.cache/soul-player/now-playing/1.png
+          }
+          seed
+          out=$(soul-player --uninstall)
+          echo "$out"
+          for d in ~/.config/soul-player ~/.cache/soul-player ~/.local/state/soul-player; do
+            [ ! -e "$d" ] || { echo "::error::--uninstall left $d"; exit 1; }
+          done
+          grep -q "sudo apt remove soul-player" <<<"$out" \
+            || { echo "::error::--uninstall didn't name the apt command"; exit 1; }
           sudo apt-get remove -y -qq soul-player
-          echo "ok: .deb installs, resolves every library, runs, and uninstalls"
+          ! command -v soul-player >/dev/null || { echo "::error::binary still on PATH"; exit 1; }
+          ! dpkg -s soul-player >/dev/null 2>&1 || { echo "::error::dpkg still lists soul-player"; exit 1; }
+          left=$(ls /usr/share/applications/ | grep -i soul || true)
+          [ -z "$left" ] || { echo "::error::desktop entry left: $left"; exit 1; }
+          echo "ok: --uninstall removed the data, apt removed the rest"
           echo "::endgroup::"
 
           # Upgrading from the published release, across the binary rename.
@@ -417,6 +442,19 @@ jobs:
             # the exit status is what is being checked.
             /usr/bin/soul-player --help >/dev/null 2>&1
             echo "ok: .rpm installs, resolves every library, and runs"
+            mkdir -p ~/.config/soul-player ~/.cache/soul-player ~/.local/state/soul-player/logs
+            echo x > ~/.config/soul-player/config.toml
+            out=$(/usr/bin/soul-player --uninstall)
+            echo "$out"
+            for d in ~/.config/soul-player ~/.cache/soul-player ~/.local/state/soul-player; do
+              [ ! -e "$d" ] || { echo "--uninstall left $d"; exit 1; }
+            done
+            grep -q "sudo dnf remove soul-player" <<<"$out"
+            dnf remove -y -q soul-player
+            ! rpm -q soul-player >/dev/null 2>&1
+            [ ! -e /usr/bin/soul-player ]
+            ! ls /usr/share/applications/ | grep -qi soul
+            echo "ok: .rpm uninstall: --uninstall removed the data, dnf removed the rest"
           '
           echo "::endgroup::"
 
@@ -549,7 +587,20 @@ jobs:
             # exactly how the first run of this gate "failed" — after printing
             # the MPRIS name it was checking for.
             flatpak kill co.soulaudio.soulplayer || true
-          '
+          '''
+
+          # Uninstall: the sandboxed app removes its own data (under
+          # ~/.var/app/<id>) and names the flatpak command; flatpak removes the rest.
+          data="$HOME/.var/app/co.soulaudio.soulplayer"
+          ls -R "$data" | head -20
+          [ -d "$data/config/soul-player" ] || { echo "::error::the sandboxed run wrote no settings"; exit 1; }
+          out=$(flatpak run --user --env=SOUL_PLAYER_NO_UPDATE=1 co.soulaudio.soulplayer --uninstall)
+          echo "$out"
+          for d in config/soul-player cache/soul-player .local/state/soul-player; do
+            [ ! -e "$data/$d" ] || { echo "::error::--uninstall left $data/$d"; exit 1; }
+          done
+          grep -q "flatpak uninstall co.soulaudio.soulplayer" <<<"$out" \
+            || { echo "::error::--uninstall didn't name the flatpak command"; exit 1; }
 
           bundle="dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak"
           flatpak build-bundle "$RUNNER_TEMP/fp-repo" "$bundle" co.soulaudio.soulplayer
@@ -602,6 +653,14 @@ jobs:
             flatpak kill co.soulaudio.soulplayer || true
           '
           echo "::endgroup::"
+
+          # …and flatpak removes the rest: nothing installed, no data dir.
+          flatpak uninstall --user -y --noninteractive --delete-data co.soulaudio.soulplayer
+          ! flatpak info --user co.soulaudio.soulplayer >/dev/null 2>&1 \
+            || { echo "::error::flatpak still lists co.soulaudio.soulplayer"; exit 1; }
+          [ ! -d "$HOME/.var/app/co.soulaudio.soulplayer" ] \
+            || { echo "::error::~/.var/app/co.soulaudio.soulplayer left behind"; exit 1; }
+          echo "ok: Flatpak uninstall: --uninstall removed the data, flatpak removed the rest"
 
 
       # macOS: a drag-to-Applications DMG for first installs (the updater keeps using the
@@ -682,10 +741,10 @@ jobs:
             tar -xzf in/$a/Soul-Player_${VERSION}_*.app.tar.gz -C "ex/$a"
           done
           lipo -create \
-            "ex/arm64/Soul Player.app/Contents/MacOS/soul-player-rune" \
-            "ex/x86_64/Soul Player.app/Contents/MacOS/soul-player-rune" \
-            -output "$out/soul-player-rune"
-          archs=$(lipo -archs "$out/soul-player-rune")
+            "ex/arm64/Soul Player.app/Contents/MacOS/soul-player" \
+            "ex/x86_64/Soul Player.app/Contents/MacOS/soul-player" \
+            -output "$out/soul-player"
+          archs=$(lipo -archs "$out/soul-player")
           echo "universal binary: $archs"
           [ "$archs" = "x86_64 arm64" ] || { echo "::error::lipo produced '$archs'"; exit 1; }
 
@@ -957,6 +1016,49 @@ jobs:
             grep -F "  $name" SHA256SUMS | sha256sum -c - || { echo "::error::$key: $name differs from the tested build"; exit 1; }
             echo "ok: $key → $name"
           done
+
+  # `brew install --cask soulaudio/tap/soul-player`: the cask the e2e installed
+  # and zapped (gen-cask.py), now pointing at the published universal DMG, pushed
+  # to the tap repo. Needs HOMEBREW_TAP_TOKEN (contents: write on
+  # soulaudio/homebrew-tap); without it the step says so and the release stands —
+  # the cask is a distribution channel, not the release.
+  homebrew:
+    needs: [guard, verify]
+    if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      TAG: ${{ needs.guard.outputs.tag }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Update the tap
+        run: |
+          set -euo pipefail
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set; the cask was tested but not published" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          dmg="Soul-Player_${VERSION}_universal.dmg"
+          sha=$(curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/SHA256SUMS" \
+                | awk -v f="$dmg" '$2 == f { print $1 }')
+          [ -n "$sha" ] || { echo "::error::no checksum for $dmg in SHA256SUMS"; exit 1; }
+          git clone -q "https://x-access-token:${TAP_TOKEN}@github.com/soulaudio/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          python .github/scripts/gen-cask.py --version "$VERSION" --sha256 "$sha" --out tap/Casks/soul-player.rb
+          cd tap
+          git config user.name "soul-player release"
+          git config user.email "release@users.noreply.github.com"
+          git add Casks/soul-player.rb
+          if git diff --cached --quiet; then echo "cask already at $VERSION"; exit 0; fi
+          git commit -q -m "soul-player $VERSION"
+          git push -q origin HEAD
+          echo "Published the soul-player $VERSION cask to soulaudio/homebrew-tap" >> "$GITHUB_STEP_SUMMARY"
 
   rollback:
     needs: [guard, draft, publish, verify]
