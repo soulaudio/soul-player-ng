@@ -109,6 +109,51 @@ fn fan_out<T: Clone>(subs: &Subscribers<T>, payload: T) {
     }
 }
 
+/// Interleave freshly-baked bytes (re-scanned roots) with cached bytes (reused roots), in
+/// `to_scan` order, for the scoped-rescan rebuild. `rescan_mask[i]` is `true` when `to_scan[i]`
+/// was freshly scanned (bytes come from `fresh_bytes`, in order) and `false` when it is reused
+/// (bytes come from `cached`).
+///
+/// A reused root whose cached bytes have **vanished** is OMITTED rather than panicked on: a
+/// concurrent rescan can prune `source_bytes` (its own `retain`) between when this rescan's
+/// reuse set was computed and when we read the bytes here, so the "mask is false only when
+/// bytes exist" invariant can race. Dropping the root keeps the returned roots/bytes aligned
+/// for [`Library::from_source_bytes`]; the concurrent rescan produces the authoritative library
+/// a moment later.
+///
+/// Returns `(roots, bytes)` aligned 1:1 for `from_source_bytes`, plus the `(root, bytes)` pairs
+/// to persist for the freshly re-scanned roots.
+#[allow(clippy::type_complexity)]
+fn merge_scoped_bytes(
+    to_scan: &[PathBuf],
+    rescan_mask: &[bool],
+    fresh_bytes: Vec<Vec<u8>>,
+    cached: &HashMap<PathBuf, Vec<u8>>,
+) -> (Vec<PathBuf>, Vec<Vec<u8>>, Vec<(PathBuf, Vec<u8>)>) {
+    let mut fresh_iter = fresh_bytes.into_iter();
+    let mut roots: Vec<PathBuf> = Vec::with_capacity(to_scan.len());
+    let mut merged: Vec<Vec<u8>> = Vec::with_capacity(to_scan.len());
+    let mut store: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    for (root, &scanned_here) in to_scan.iter().zip(rescan_mask) {
+        if scanned_here {
+            let b = fresh_iter.next().expect("fresh bytes per re-scanned root");
+            store.push((root.clone(), b.clone()));
+            roots.push(root.clone());
+            merged.push(b);
+        } else if let Some(b) = cached.get(root).cloned() {
+            roots.push(root.clone());
+            merged.push(b);
+        } else {
+            tracing::debug!(
+                ?root,
+                "a reused root's cached bytes vanished mid-rescan (concurrent rescan pruned \
+                 them); omitting it from this rebuild"
+            );
+        }
+    }
+    (roots, merged, store)
+}
+
 /// Deletions from one rescan: `(root, removed file paths)` for each root that lost
 /// files since its prior cache.
 type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
@@ -923,26 +968,10 @@ impl PlayerHandle {
             (scanned, store)
         } else {
             let cached = self.inner.source_bytes.lock().expect("source_bytes mutex");
-            let mut fresh_iter = fresh_bytes.into_iter();
-            let mut merged: Vec<Vec<u8>> = Vec::with_capacity(to_scan.len());
-            let mut store: Vec<(PathBuf, Vec<u8>)> = Vec::new();
-            for (root, &scanned_here) in to_scan.iter().zip(&rescan_mask) {
-                if scanned_here {
-                    let b = fresh_iter.next().expect("fresh bytes per re-scanned root");
-                    store.push((root.clone(), b.clone()));
-                    merged.push(b);
-                } else {
-                    // Reuse verbatim — the mask is false only when bytes exist.
-                    merged.push(
-                        cached
-                            .get(root)
-                            .cloned()
-                            .expect("cached bytes for a reused root"),
-                    );
-                }
-            }
+            let (roots, merged, store) =
+                merge_scoped_bytes(&to_scan, &rescan_mask, fresh_bytes, &cached);
             drop(cached);
-            (Library::from_source_bytes(&to_scan, merged), store)
+            (Library::from_source_bytes(&roots, merged), store)
         };
 
         let configured: HashSet<&PathBuf> = cfg.iter().map(|f| &f.path).collect();
@@ -2310,6 +2339,39 @@ mod tests {
             2,
             "the good subscriber fired on both fan-outs: the panic was isolated and the \
              lock was never poisoned"
+        );
+    }
+
+    #[test]
+    fn merge_scoped_bytes_omits_a_reused_root_whose_cache_raced_away() {
+        let to_scan = vec![
+            PathBuf::from("/a"),
+            PathBuf::from("/b"),
+            PathBuf::from("/c"),
+        ];
+        // /a was re-scanned; /b and /c are "reused" (mask false).
+        let rescan_mask = vec![true, false, false];
+        let fresh = vec![b"A".to_vec()];
+        let mut cached = HashMap::new();
+        cached.insert(PathBuf::from("/b"), b"B".to_vec());
+        // /c's cached bytes are MISSING: a concurrent rescan pruned them after this rescan's
+        // reuse set was computed. The old code `.expect`'d here and panicked the scan thread.
+        let (roots, merged, store) = merge_scoped_bytes(&to_scan, &rescan_mask, fresh, &cached);
+        assert_eq!(
+            roots,
+            vec![PathBuf::from("/a"), PathBuf::from("/b")],
+            "the raced-away /c is omitted, not panicked on"
+        );
+        assert_eq!(merged, vec![b"A".to_vec(), b"B".to_vec()]);
+        assert_eq!(
+            roots.len(),
+            merged.len(),
+            "roots and bytes stay aligned 1:1 for from_source_bytes"
+        );
+        assert_eq!(
+            store,
+            vec![(PathBuf::from("/a"), b"A".to_vec())],
+            "only the freshly re-scanned root is persisted"
         );
     }
 
