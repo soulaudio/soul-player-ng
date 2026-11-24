@@ -2,7 +2,7 @@
 //! computer — settings, playlists kept with them, the library index, caches,
 //! logs, saved sign-ins (OS keychain) — and never the user's music.
 //!
-//! Started from Settings → About (with a confirmation) or `soul-player-rune
+//! Started from Settings → About (with a confirmation) or `soul-player
 //! --uninstall` (scripts, the release e2e). Runs once the app has let go of its
 //! files: in the quit hook, or before any window for the CLI.
 //!

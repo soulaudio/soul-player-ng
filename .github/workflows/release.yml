@@ -336,8 +336,35 @@ jobs:
                  ldd "$(command -v soul-player)" | grep "not found"; exit 1; }
           soul-player --help >/dev/null 2>&1 \
             || { echo "::error::the installed binary does not run"; exit 1; }
+          echo "ok: .deb installs, resolves every library, and runs"
+          echo "::endgroup::"
+
+          # Uninstall (Settings → About → Uninstall / --uninstall) on a
+          # package-managed install: the app removes its data and says which
+          # command removes the package; apt then leaves nothing behind.
+          echo "::group::.deb uninstall leaves nothing"
+          seed() {
+            mkdir -p ~/.config/soul-player ~/.cache/soul-player/now-playing ~/.local/state/soul-player/logs
+            echo 'update_auto_check = false' > ~/.config/soul-player/config.toml
+            echo log > ~/.local/state/soul-player/logs/Soul.log
+            echo art > ~/.cache/soul-player/now-playing/1.png
+          }
+          seed
+          out=$(soul-player --uninstall)
+          echo "$out"
+          for d in ~/.config/soul-player ~/.cache/soul-player ~/.local/state/soul-player; do
+            [ ! -e "$d" ] || { echo "::error::--uninstall left $d"; exit 1; }
+          done
+          grep -q "sudo apt remove soul-player" <<<"$out" \
+            || { echo "::error::--uninstall didn't name the apt command"; exit 1; }
           sudo apt-get remove -y -qq soul-player
-          echo "ok: .deb installs, resolves every library, runs, and uninstalls"
+          hash -r # bash remembers where it last found a command
+          [ ! -e /usr/bin/soul-player ] && ! command -v soul-player >/dev/null \
+            || { echo "::error::binary still installed"; exit 1; }
+          ! dpkg -s soul-player >/dev/null 2>&1 || { echo "::error::dpkg still lists soul-player"; exit 1; }
+          left=$(ls /usr/share/applications/ | grep -i soul || true)
+          [ -z "$left" ] || { echo "::error::desktop entry left: $left"; exit 1; }
+          echo "ok: --uninstall removed the data, apt removed the rest"
           echo "::endgroup::"
 
           # Upgrading from the published release, across the binary rename.
@@ -417,6 +444,19 @@ jobs:
             # the exit status is what is being checked.
             /usr/bin/soul-player --help >/dev/null 2>&1
             echo "ok: .rpm installs, resolves every library, and runs"
+            mkdir -p ~/.config/soul-player ~/.cache/soul-player ~/.local/state/soul-player/logs
+            echo x > ~/.config/soul-player/config.toml
+            out=$(/usr/bin/soul-player --uninstall)
+            echo "$out"
+            for d in ~/.config/soul-player ~/.cache/soul-player ~/.local/state/soul-player; do
+              [ ! -e "$d" ] || { echo "--uninstall left $d"; exit 1; }
+            done
+            grep -q "sudo dnf remove soul-player" <<<"$out"
+            dnf remove -y -q soul-player
+            ! rpm -q soul-player >/dev/null 2>&1
+            [ ! -e /usr/bin/soul-player ]
+            ! ls /usr/share/applications/ | grep -qi soul
+            echo "ok: .rpm uninstall: --uninstall removed the data, dnf removed the rest"
           '
           echo "::endgroup::"
 
@@ -549,7 +589,20 @@ jobs:
             # exactly how the first run of this gate "failed" — after printing
             # the MPRIS name it was checking for.
             flatpak kill co.soulaudio.soulplayer || true
-          '
+          '''
+
+          # Uninstall: the sandboxed app removes its own data (under
+          # ~/.var/app/<id>) and names the flatpak command; flatpak removes the rest.
+          data="$HOME/.var/app/co.soulaudio.soulplayer"
+          find "$data" -maxdepth 2 -type d
+          [ -d "$data/config/soul-player" ] || { echo "::error::the sandboxed run wrote no settings"; exit 1; }
+          out=$(flatpak run --user --env=SOUL_PLAYER_NO_UPDATE=1 co.soulaudio.soulplayer --uninstall)
+          echo "$out"
+          for d in config/soul-player cache/soul-player .local/state/soul-player; do
+            [ ! -e "$data/$d" ] || { echo "::error::--uninstall left $data/$d"; exit 1; }
+          done
+          grep -q "flatpak uninstall co.soulaudio.soulplayer" <<<"$out" \
+            || { echo "::error::--uninstall didn't name the flatpak command"; exit 1; }
 
           bundle="dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak"
           flatpak build-bundle "$RUNNER_TEMP/fp-repo" "$bundle" co.soulaudio.soulplayer
@@ -603,6 +656,14 @@ jobs:
           '
           echo "::endgroup::"
 
+          # …and flatpak removes the rest: nothing installed, no data dir.
+          flatpak uninstall --user -y --noninteractive --delete-data co.soulaudio.soulplayer
+          ! flatpak info --user co.soulaudio.soulplayer >/dev/null 2>&1 \
+            || { echo "::error::flatpak still lists co.soulaudio.soulplayer"; exit 1; }
+          [ ! -d "$HOME/.var/app/co.soulaudio.soulplayer" ] \
+            || { echo "::error::~/.var/app/co.soulaudio.soulplayer left behind"; exit 1; }
+          echo "ok: Flatpak uninstall: --uninstall removed the data, flatpak removed the rest"
+
 
       # macOS: a drag-to-Applications DMG for first installs (the updater keeps using the
       # .app.tar.gz above). Same binary, no rebuild.
@@ -611,7 +672,15 @@ jobs:
         working-directory: app/rune
         run: |
           rm -f target/release/*.dmg
-          cargo packager --release -f dmg
+          # create-dmg mounts a scratch image with hdiutil, which now and then
+          # fails on hosted runners ("Mounting disk image..." then nothing): retry.
+          for attempt in 1 2 3; do
+            cargo packager --release -f dmg && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::DMG packaging failed (attempt $attempt), retrying"
+            rm -f target/release/*.dmg target/release/rw.*.dmg
+            sleep 10
+          done
           cp target/release/*.dmg "../../dist/Soul-Player_${VERSION}_${{ matrix.asset_arch }}.dmg"
 
       - name: Static bundle checks (macOS)
@@ -682,10 +751,10 @@ jobs:
             tar -xzf in/$a/Soul-Player_${VERSION}_*.app.tar.gz -C "ex/$a"
           done
           lipo -create \
-            "ex/arm64/Soul Player.app/Contents/MacOS/soul-player-rune" \
-            "ex/x86_64/Soul Player.app/Contents/MacOS/soul-player-rune" \
-            -output "$out/soul-player-rune"
-          archs=$(lipo -archs "$out/soul-player-rune")
+            "ex/arm64/Soul Player.app/Contents/MacOS/soul-player" \
+            "ex/x86_64/Soul Player.app/Contents/MacOS/soul-player" \
+            -output "$out/soul-player"
+          archs=$(lipo -archs "$out/soul-player")
           echo "universal binary: $archs"
           [ "$archs" = "x86_64 arm64" ] || { echo "::error::lipo produced '$archs'"; exit 1; }
 
@@ -696,7 +765,13 @@ jobs:
       - name: Package universal DMG
         working-directory: app/rune
         run: |
-          cargo packager --release -f dmg --target universal-apple-darwin
+          for attempt in 1 2 3; do  # hdiutil flakes on hosted runners: retry
+            cargo packager --release -f dmg --target universal-apple-darwin && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::DMG packaging failed (attempt $attempt), retrying"
+            rm -f target/universal-apple-darwin/release/*.dmg target/universal-apple-darwin/release/rw.*.dmg
+            sleep 10
+          done
           mkdir -p ../../dist
           cp target/universal-apple-darwin/release/*.dmg "../../dist/Soul-Player_${VERSION}_universal.dmg"
 
@@ -831,6 +906,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: write
+      id-token: write # Sigstore signing identity for the provenance attestations
+      attestations: write
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ needs.guard.outputs.release_tag }}
@@ -861,6 +938,26 @@ jobs:
           rm dist/*.sha256 dist/*.meta.json
           (cd dist && sha256sum -c SHA256SUMS && ls -la)
 
+      # SLSA build provenance for every file the release ships: a Sigstore-signed
+      # statement that this repo's release workflow, at this commit, built these
+      # exact bytes. Anyone can check a download with
+      # `gh attestation verify <file> --repo soulaudio/soul-player-ng`.
+      - name: Build provenance attestations
+        uses: actions/attest-build-provenance@v4.2.2
+        with:
+          subject-path: dist/*
+
+      # Checked here as well as after publishing, so a rehearsal proves it too.
+      - name: Verify the attestations
+        run: |
+          set -euo pipefail
+          for f in dist/*; do
+            gh attestation verify "$f" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" >/dev/null \
+              || { echo "::error::no valid provenance for $f"; exit 1; }
+            echo "ok: provenance for ${f#dist/}"
+          done
+
       - name: Create the draft release
         run: |
           if gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null | grep -qx true; then
@@ -874,7 +971,7 @@ jobs:
           - **Windows** — run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
           - **Linux** — `chmod +x` the AppImage and run it.
 
-          Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`.
+          Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`, and that this repository's release workflow built it with `gh attestation verify <file> --repo soulaudio/soul-player-ng`.
           EOF
           if [ "$REHEARSAL" = "true" ]; then
             # A draft creates no git tag until it is published, so nothing leaks.
@@ -930,7 +1027,11 @@ jobs:
     needs: [guard, publish]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
+      attestations: read
     env:
+      GH_TOKEN: ${{ github.token }}
       VERSION: ${{ needs.guard.outputs.version }}
       TAG: ${{ needs.guard.outputs.tag }}
     steps:
@@ -955,8 +1056,54 @@ jobs:
             name="${url##*/}"
             curl -fsSL "$url" -o "$name"
             grep -F "  $name" SHA256SUMS | sha256sum -c - || { echo "::error::$key: $name differs from the tested build"; exit 1; }
+            gh attestation verify "$name" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" >/dev/null \
+              || { echo "::error::$key: $name has no valid build provenance"; exit 1; }
             echo "ok: $key → $name"
           done
+
+  # `brew install --cask soulaudio/tap/soul-player`: the cask the e2e installed
+  # and zapped (gen-cask.py), now pointing at the published universal DMG, pushed
+  # to the tap repo. Needs HOMEBREW_TAP_TOKEN (contents: write on
+  # soulaudio/homebrew-tap); without it the step says so and the release stands —
+  # the cask is a distribution channel, not the release.
+  homebrew:
+    needs: [guard, verify]
+    if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      VERSION: ${{ needs.guard.outputs.version }}
+      TAG: ${{ needs.guard.outputs.tag }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Update the tap
+        run: |
+          set -euo pipefail
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "::notice::HOMEBREW_TAP_TOKEN is not set; the cask was tested but not published" \
+              | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          dmg="Soul-Player_${VERSION}_universal.dmg"
+          sha=$(curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG/SHA256SUMS" \
+                | awk -v f="$dmg" '$2 == f { print $1 }')
+          [ -n "$sha" ] || { echo "::error::no checksum for $dmg in SHA256SUMS"; exit 1; }
+          git clone -q "https://x-access-token:${TAP_TOKEN}@github.com/soulaudio/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          python .github/scripts/gen-cask.py --version "$VERSION" --sha256 "$sha" --out tap/Casks/soul-player.rb
+          cd tap
+          git config user.name "soul-player release"
+          git config user.email "release@users.noreply.github.com"
+          git add Casks/soul-player.rb
+          if git diff --cached --quiet; then echo "cask already at $VERSION"; exit 0; fi
+          git commit -q -m "soul-player $VERSION"
+          git push -q origin HEAD
+          echo "Published the soul-player $VERSION cask to soulaudio/homebrew-tap" >> "$GITHUB_STEP_SUMMARY"
 
   rollback:
     needs: [guard, draft, publish, verify]

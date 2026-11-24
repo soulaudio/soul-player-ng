@@ -207,11 +207,16 @@ offers to switch itself to the Apple silicon build, same version (#368). ✅ **F
 saved sign-ins; music kept. Release e2e runs it before the upgrade/rollback legs.
 
 TODO:
-- ⬜ **Homebrew cask** (`brew install --cask soul-player`): a cask in a tap
-  (`soulaudio/homebrew-tap`) bumped by the release workflow (version + both sha256s).
-  Homebrew is phasing out casks that fail Gatekeeper, so this most likely waits for Developer
-  ID signing + notarization — check the current policy before starting. `auto_updates true`
-  (the app updates itself) and a `zap` stanza listing the same paths the in-app uninstall removes.
+- 🔨 **Homebrew cask** (`brew install --cask soulaudio/tap/soul-player`):
+  ✅ `.github/scripts/gen-cask.py` generates it from the release (universal DMG, `auto_updates
+  true`, `zap` = the in-app uninstall's paths); ✅ the release e2e on both Macs installs it from a
+  local tap with `brew`, checks style + audit, runs the app and `brew uninstall --zap`s it to
+  nothing; ✅ the `homebrew` release job pushes it to the tap after `verify`.
+  ⬜ Create `soulaudio/homebrew-tap` and the `HOMEBREW_TAP_TOKEN` secret (contents: write on
+  that repo) — until then the job says the cask was tested but not published.
+  Newer Homebrew refuses casks from a tap until `brew trust soulaudio/tap` (the e2e does it);
+  the tap's README must say so.
+  ⬜ homebrew/cask (the main repo) once notarized — it rejects casks that fail Gatekeeper.
 - ⬜ Saved sign-ins across updates: the Keychain ties an item to the app's code signature, and
   an ad-hoc signature changes every build, so a remote server's refresh token may prompt or be
   unreadable after an update (`KeyringStore::load_refresh` treats any error as "none"). Verify;
