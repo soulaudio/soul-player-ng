@@ -87,6 +87,28 @@ type WatchSubscriber = Box<dyn Fn(WatchUpdate) + Send>;
 /// and then reliably retire a progress indicator (see
 /// [`PlayerHandle::on_scan_progress`]).
 type ScanProgressSubscriber = Box<dyn Fn(Option<ScanProgress>) + Send>;
+
+/// A registered list of event subscribers over payload `T` — the shape behind the
+/// `subscribers` / `watch_subscribers` / `scan_progress_subscribers` mutexes — generic so one
+/// [`fan_out`] serves all three.
+type Subscribers<T> = Mutex<Vec<Box<dyn Fn(T) + Send>>>;
+
+/// Fan `payload` out to every subscriber, isolating each callback so one misbehaving
+/// subscriber can't take down the whole event stream. A panicking callback is **caught**
+/// (`catch_unwind`) rather than allowed to unwind through the held lock, which would POISON the
+/// `Mutex` and brick every future `emit`/`broadcast`; and a lock already poisoned by some other
+/// path is recovered (`into_inner`) instead of propagating the panic. Callbacks are expected to
+/// be cheap (they marshal onto the app's UI thread), so holding the lock across them is fine.
+fn fan_out<T: Clone>(subs: &Subscribers<T>, payload: T) {
+    let subs = subs.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    for sub in subs.iter() {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sub(payload.clone()))).is_err()
+        {
+            tracing::error!("an event subscriber panicked; isolated so the others still fire");
+        }
+    }
+}
+
 /// Deletions from one rescan: `(root, removed file paths)` for each root that lost
 /// files since its prior cache.
 type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
@@ -1562,15 +1584,7 @@ impl PlayerHandle {
     /// (e.g. a rescan's [`Event::TracksRemoved`] deletion warning) rather than the
     /// playing actor. Holds only the subscribers lock, briefly.
     fn emit(&self, ev: Event) {
-        for sub in self
-            .inner
-            .subscribers
-            .lock()
-            .expect("subscribers mutex")
-            .iter()
-        {
-            sub(ev.clone());
-        }
+        fan_out(&self.inner.subscribers, ev);
     }
 
     /// Register a handler for background (watcher-triggered) library refreshes. The
@@ -1586,15 +1600,7 @@ impl PlayerHandle {
 
     /// Fan a background rescan's [`WatchUpdate`] out to the watch subscribers.
     fn broadcast_watch(&self, up: WatchUpdate) {
-        for sub in self
-            .inner
-            .watch_subscribers
-            .lock()
-            .expect("watch_subscribers mutex")
-            .iter()
-        {
-            sub(up.clone());
-        }
+        fan_out(&self.inner.watch_subscribers, up);
     }
 
     /// Register a handler for live scan progress. It fires `Some(p)` on every tick
@@ -1613,15 +1619,7 @@ impl PlayerHandle {
 
     /// Fan one scan-progress update (`Some` tick / terminal `None`) out to subscribers.
     fn broadcast_scan_progress(&self, p: Option<ScanProgress>) {
-        for sub in self
-            .inner
-            .scan_progress_subscribers
-            .lock()
-            .expect("scan_progress_subscribers mutex")
-            .iter()
-        {
-            sub(p);
-        }
+        fan_out(&self.inner.scan_progress_subscribers, p);
     }
 
     /// Start — or re-arm — the live filesystem watcher over the currently enabled
@@ -2169,9 +2167,7 @@ impl PlayerHandle {
                     .expect("loudness map mutex")
                     .insert(path.clone(), *loudness);
             }
-            for sub in inner.subscribers.lock().expect("subscribers mutex").iter() {
-                sub(ev.clone());
-            }
+            fan_out(&inner.subscribers, ev);
         };
         // Share the desired output config (device / exclusive / strict) with the pump.
         // It's the SAME cell `set_output_device` / `set_exclusive` /
@@ -2288,6 +2284,34 @@ impl PlayerHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fan_out_isolates_a_panicking_subscriber_and_never_poisons() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let seen = Arc::new(AtomicUsize::new(0));
+        let s2 = Arc::clone(&seen);
+        let subs: Subscribers<u32> = Mutex::new(vec![
+            // A subscriber that blows up on every event...
+            Box::new(|_| panic!("a subscriber blew up")),
+            // ...must not stop this one from receiving every event.
+            Box::new(move |_| {
+                s2.fetch_add(1, Ordering::SeqCst);
+            }),
+        ]);
+        // Silence the expected panic's default output so the test run stays clean.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        fan_out(&subs, 1u32);
+        // The real regression: a poisoned lock would make THIS call panic/propagate.
+        fan_out(&subs, 2u32);
+        std::panic::set_hook(prev);
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            2,
+            "the good subscriber fired on both fan-outs: the panic was isolated and the \
+             lock was never poisoned"
+        );
+    }
 
     #[test]
     fn offline_handle_has_empty_views_before_open() {
