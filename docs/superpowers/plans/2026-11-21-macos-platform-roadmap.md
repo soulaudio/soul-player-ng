@@ -196,6 +196,29 @@ mounts, correct bundle id, arm64); release.yml ships it on macOS. ⏸ Developer 
 notarization — **later** (owner, 2026-11-22). Note: `cargo packager` only wraps the existing
 binary — always `cargo build --release` first (release.yml does).
 
+Install / update / uninstall (2026-11-24), each covered by the release e2e on every OS:
+✅ In-app updates (scheduled checks, signature-verified, Install & Restart, install-on-quit —
+including a real ⌘Q / Quit Apple Event, #358). ✅ **Move to Applications** when run from the
+DMG, Downloads or a translocated copy (#360). ✅ Download progress (bar, size, speed, time
+left) on a throttled connection; a dropped download is retried soon, not in 12 h (#367).
+✅ **Universal DMG** — one download for every Mac; the Intel build on Apple silicon (Rosetta)
+offers to switch itself to the Apple silicon build, same version (#368). ✅ **Full uninstall**
+(Settings → About, or `--uninstall`): app to the Trash, settings, playlists, caches, logs,
+saved sign-ins; music kept. Release e2e runs it before the upgrade/rollback legs.
+
+TODO:
+- ⬜ **Homebrew cask** (`brew install --cask soul-player`): a cask in a tap
+  (`soulaudio/homebrew-tap`) bumped by the release workflow (version + both sha256s).
+  Homebrew is phasing out casks that fail Gatekeeper, so this most likely waits for Developer
+  ID signing + notarization — check the current policy before starting. `auto_updates true`
+  (the app updates itself) and a `zap` stanza listing the same paths the in-app uninstall removes.
+- ⬜ Saved sign-ins across updates: the Keychain ties an item to the app's code signature, and
+  an ad-hoc signature changes every build, so a remote server's refresh token may prompt or be
+  unreadable after an update (`KeyringStore::load_refresh` treats any error as "none"). Verify;
+  Developer ID signing fixes it at the root, a "sign in again" prompt is the fallback.
+- ⬜ Standard users updating an app an admin put in `/Applications`: detect the bundle isn't
+  writable before downloading and say so (Sparkle asks for an admin password instead).
+
 ## Phase 7 — Hardware-in-the-loop ❎
 
 **Not planned** (2026-11-22): there's no Apple hardware beyond one MacBook Pro. Device

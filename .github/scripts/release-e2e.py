@@ -1188,6 +1188,53 @@ def rosetta_migration(installer: Path, work: Path, library: Path, update: tuple,
         uninstall(inst)
 
 
+def data_dirs(env: AppEnv) -> list[Path]:
+    """Every folder Soul Player writes for this profile (`uninstall::data_paths`)."""
+    if IS_MAC:
+        lib = env.home / "Library"
+        return [lib / "Application Support" / "soul-player", lib / "Logs" / APP_NAME,
+                lib / "Caches" / "soul-player"]
+    if IS_WIN:
+        return [Path(os.environ["APPDATA"]) / "soul-player", Path(os.environ["LOCALAPPDATA"]) / "soul-player"]
+    return [env.home / ".config" / "soul-player", env.home / ".local" / "state" / "soul-player",
+            env.home / ".cache" / "soul-player"]
+
+
+def full_uninstall(installer: Path, work: Path, library: Path, version: str) -> None:
+    """Settings → About → Uninstall, through the same code as `--uninstall`:
+    after a real session has written settings, logs and caches, the app and
+    every one of those is gone, the OS no longer lists it, and the music
+    library is untouched."""
+    env = AppEnv(work, "uninstall")
+    inst = install(installer, work)
+    live_run(inst, env, version, library, secs=8)
+    set_config(env, update_auto_check=False)  # a settings file, as a user's would be
+    before = [d for d in data_dirs(env) if d.exists()]
+    check(config_file(env).parent in before and env.log_dir.exists(),
+          f"the session wrote no settings/logs to remove: {before}")
+    songs = sorted(p.name for p in library.iterdir())
+    r = subprocess.run([str(inst.exe), "--uninstall"], env=env.env, capture_output=True, text=True,
+                       timeout=120)
+    log("  " + "\n  ".join((r.stdout + r.stderr).strip().splitlines()))
+    check(r.returncode == 0, f"--uninstall exited {r.returncode}")
+    left = [d for d in data_dirs(env) if d.exists()]
+    check(not left, f"left behind: {left}")
+    ok(f"removed settings, logs and caches ({len(before)} folders)")
+    if IS_MAC:
+        check(not inst.app.exists(), f"{inst.app} is still there")
+        trashed = env.home / ".Trash" / f"{APP_NAME}.app"
+        ok("app moved to the Trash" if trashed.exists() else "app removed")
+    elif IS_WIN:
+        gone = wait_until(lambda: not WindowsInstall.entries() and not inst.exe.exists(), 120)
+        check(gone, f"still installed: {WindowsInstall.entries()} / {inst.exe.exists()}")
+        ok("the uninstaller ran: no Apps & features entry, program files gone")
+    else:
+        check(not inst.exe.exists(), f"{inst.exe} is still there")
+        ok("AppImage removed")
+    check(sorted(p.name for p in library.iterdir()) == songs, "the music library changed")
+    ok("music library untouched")
+
+
 def bump_patch(v: str) -> str:
     a, b, c = (semver(v) + (0, 0, 0))[:3]
     return f"{a}.{b}.{c + 1}"
@@ -1302,6 +1349,13 @@ def main() -> int:
         section("uninstall")
         uninstall(inst)
         steps.append(("uninstall, nothing left", "pass"))
+        end_section()
+
+        # Before the upgrade/rollback legs: an uninstall that leaves anything
+        # behind fails the release here, before anything is published.
+        section("full uninstall: the app and everything it stored")
+        full_uninstall(installer, work, library, a.version)
+        steps.append(("full uninstall (Settings → About): app, settings, logs, caches gone; music kept", "pass"))
         end_section()
 
         if a.universal_installer and update:
