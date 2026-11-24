@@ -110,6 +110,17 @@ pub fn deframe_index(bytes: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
 
     let mut pos = 0usize;
     let n = read_u32(bytes, &mut pos)? as usize;
+    // Reject a hostile or corrupt blob count BEFORE reserving for it: a frame holds
+    // at most one blob per 4-byte length prefix, so a count the remaining bytes
+    // cannot satisfy would otherwise drive `Vec::with_capacity` to request a
+    // multi-gigabyte allocation (which aborts the process). Mirrors the identical
+    // guard in `soul_player_host::remote::deframe` (the two share this wire format).
+    if n > (bytes.len() - pos) / 4 {
+        anyhow::bail!(
+            "framed index claims {n} blobs, more than the remaining {} bytes can hold",
+            bytes.len() - pos
+        );
+    }
     let mut blobs = Vec::with_capacity(n);
     for _ in 0..n {
         let len = read_u32(bytes, &mut pos)? as usize;
@@ -148,6 +159,15 @@ mod tests {
         // A length-4 count header claiming one blob, but no blob bytes follow.
         let truncated = 1u32.to_le_bytes().to_vec();
         assert!(deframe_index(&truncated).is_err());
+    }
+
+    /// A hostile or corrupt blob-count header must be rejected cleanly (an `Err`),
+    /// never fed to `Vec::with_capacity`: a near-`u32::MAX` count would otherwise
+    /// reserve ~100 GiB and abort the process.
+    #[test]
+    fn deframe_index_rejects_an_implausible_blob_count() {
+        let hostile = u32::MAX.to_le_bytes().to_vec();
+        assert!(deframe_index(&hostile).is_err());
     }
 
     #[test]
