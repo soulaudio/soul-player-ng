@@ -76,6 +76,34 @@ pub(crate) fn host_label(url: &str) -> String {
         .to_string()
 }
 
+/// Connect timeout for every remote HTTP request: a server that does not accept
+/// the connection within this window is treated as unreachable instead of hanging
+/// the calling thread. `reqwest::blocking` has NO default timeout.
+const HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Total timeout for a BOUNDED remote request (the framed index, an OAuth token or
+/// discovery document, or one 512 KiB range chunk): generous for the payload but
+/// finite, so a server that stalls mid-response can't hang playback or a sync.
+const HTTP_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Total timeout for a WHOLE-track download ([`DownloadCache`] pulls the entire
+/// file in one request): a large track on a slow link legitimately takes a while,
+/// so this is generous, but still finite so a stalled server fails instead of
+/// hanging the loader forever.
+const HTTP_DOWNLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// A blocking HTTP client with a connect timeout plus the given total-request
+/// timeout, so a dead or stalled remote server fails fast instead of hanging the
+/// calling thread forever. `reqwest::blocking` sets neither timeout by default, so
+/// every remote call in this module builds its client through here rather than via
+/// `Client::new()`. Panics only where `Client::new()` already would (a TLS/backend
+/// init failure), so this is a drop-in with the same contract plus the timeouts.
+fn http_client(request_timeout: std::time::Duration) -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(HTTP_CONNECT_TIMEOUT)
+        .timeout(request_timeout)
+        .build()
+        .expect("a blocking HTTP client with static timeout config always builds")
+}
+
 /// Where a track's original media lives.
 ///
 /// `Remote`'s `server` is an index into whatever list of [`RemoteServer`]s
@@ -154,7 +182,7 @@ impl MediaFetch for DownloadCache {
             .with_context(|| format!("creating download cache dir {}", dir.display()))?;
 
         let endpoint = format!("{}/v0/track/{track_id}", server.url);
-        let response = reqwest::blocking::Client::new()
+        let response = http_client(HTTP_DOWNLOAD_TIMEOUT)
             .get(&endpoint)
             .bearer_auth(&server.access_token)
             .send()
@@ -408,7 +436,7 @@ impl HttpRangeReader {
     /// probe followed by a second request for the first chunk.
     pub fn new(server: &RemoteServer, track_id: u32) -> anyhow::Result<Self> {
         let mut reader = Self {
-            client: reqwest::blocking::Client::new(),
+            client: http_client(HTTP_REQUEST_TIMEOUT),
             url: server.url.clone(),
             track_id,
             access_token: server.access_token.clone(),
@@ -657,7 +685,7 @@ impl TokenStore for MemStore {
 /// (see [`deframe`]). A non-2xx response is an `Err`.
 pub fn fetch_index(server: &RemoteServer) -> anyhow::Result<Vec<Vec<u8>>> {
     let endpoint = format!("{}/v0/index", server.url);
-    let response = reqwest::blocking::Client::new()
+    let response = http_client(HTTP_REQUEST_TIMEOUT)
         .get(&endpoint)
         .bearer_auth(&server.access_token)
         .send()
@@ -788,7 +816,7 @@ pub struct Tokens {
 /// (`token_endpoint`).
 fn discover(url: &str) -> anyhow::Result<(String, String)> {
     let endpoint = format!("{url}/.well-known/openid-configuration");
-    let response = reqwest::blocking::Client::new()
+    let response = http_client(HTTP_REQUEST_TIMEOUT)
         .get(&endpoint)
         .send()
         .with_context(|| format!("GET {endpoint}"))?;
@@ -908,7 +936,7 @@ fn percent_decode(s: &str) -> String {
 /// [`Tokens`]. Shared by [`exchange_code`] and [`refresh`] — the only
 /// difference between the two grants is which form fields they send.
 fn post_token(token_endpoint: &str, form: &[(&str, &str)]) -> anyhow::Result<Tokens> {
-    let response = reqwest::blocking::Client::new()
+    let response = http_client(HTTP_REQUEST_TIMEOUT)
         .post(token_endpoint)
         .form(form)
         .send()
@@ -1573,6 +1601,43 @@ mod tests {
         // A count header of u32::MAX with no blob bytes following it.
         let hostile = u32::MAX.to_le_bytes().to_vec();
         assert!(deframe(&hostile).is_err());
+    }
+
+    /// A remote server that accepts the connection but never answers must not hang
+    /// the calling thread: `http_client`'s total timeout has to fire. Guards the
+    /// anti-hang contract against a bare `reqwest::blocking::Client::new()` (which
+    /// has NO default timeout) creeping back into any remote call site.
+    #[test]
+    fn http_client_times_out_on_a_stalled_server() {
+        use std::io::Read;
+        use std::time::{Duration, Instant};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+        let addr = listener.local_addr().expect("local addr");
+        // Accept one connection, drain the request, then stall without ever sending
+        // a response. Fire-and-forget: the client must give up on its own timeout
+        // long before this thread's stall elapses.
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 256];
+                let _ = sock.read(&mut buf);
+                std::thread::sleep(Duration::from_secs(10));
+            }
+        });
+
+        let client = http_client(Duration::from_millis(300));
+        let start = Instant::now();
+        let result = client.get(format!("http://{addr}/stall")).send();
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "a stalled server must surface an error, not hang"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the 300ms-timeout client should give up quickly, took {elapsed:?}"
+        );
     }
 
     /// Bake `root` (a single-root scan) and hand back its one `.soulidx`
