@@ -38,6 +38,7 @@ mod i18n_tests;
 mod logging;
 #[cfg(unix)]
 mod signal_quit;
+mod uninstall;
 mod updater;
 // macOS-only at runtime; still compiled for tests everywhere so its pure mapping is
 // unit-tested on Linux/Windows CI too.
@@ -797,6 +798,8 @@ struct State {
     /// macOS: the Intel build is running under Rosetta on Apple silicon — the
     /// "Switch to the Apple silicon version" prompt. Cleared when answered.
     rosetta_offer: bool,
+    /// Settings → About → "Uninstall…" pressed: the confirmation is open.
+    uninstall_confirm: bool,
     /// The Tracks page filter: a live text field like the other browse pages'
     /// search (case-insensitive substring over title/artist/album; empty = no
     /// filter). `/` on the Tracks page focuses it.
@@ -1032,6 +1035,7 @@ impl State {
             crashed_last_session: false,
             move_offer: None,
             rosetta_offer: false,
+            uninstall_confirm: false,
             library_search: rune::TextEdit::new(""),
             sidebar_width,
             sidebar_collapsed,
@@ -3171,6 +3175,9 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
     } else if let Some(dialog) = rosetta_overlay(s, &p) {
         overlays.push(dialog);
     }
+    if let Some(dialog) = uninstall_overlay(s, &p) {
+        overlays.push(dialog);
+    }
     el().key("overlay-root")
         .w_full()
         .h_full()
@@ -3387,6 +3394,115 @@ fn rosetta_overlay(s: &State, p: &theme::Palette) -> Option<El> {
             .fill(rune::Color::BLACK.alpha(0.45))
             .child(card.modal(true, |s: &mut State| s.rosetta_offer = false)),
     )
+}
+
+/// The uninstall confirmation: exactly what goes (and that music stays), the
+/// package-manager command where the package isn't ours to remove, then Cancel
+/// or a red Uninstall that quits the app and removes everything as it closes.
+fn uninstall_overlay(s: &State, p: &theme::Palette) -> Option<El> {
+    use crate::ui::{radius, space, type_};
+    if !s.uninstall_confirm {
+        return None;
+    }
+    let plan_app = uninstall::app_removal();
+    let mut items = vec![
+        t!("uninstall.itemSettings").to_string(),
+        t!("uninstall.itemCaches").to_string(),
+        t!("uninstall.itemSignIns").to_string(),
+    ];
+    match &plan_app {
+        uninstall::AppRemoval::Trash(_) => items.push(t!("uninstall.itemAppTrash").to_string()),
+        uninstall::AppRemoval::Uninstaller(_) | uninstall::AppRemoval::AppImage(_) => {
+            items.push(t!("uninstall.itemApp").to_string());
+        }
+        _ => {}
+    }
+    let button = |key: &'static str, label: String, danger: bool| {
+        el().key(key)
+            .role("button")
+            .label(label.clone())
+            .focusable(true)
+            .padding(space::MD)
+            .radius(radius::MD)
+            .fill(if danger { p.danger } else { p.bg })
+            .border(1.0, if danger { p.danger } else { p.border })
+            .center()
+            .cursor(rune::Cursor::Pointer)
+            .child(rune::text(label).color(if danger { rune::Color::WHITE } else { p.fg }))
+    };
+    let mut card = col()
+        .key("uninstall-dialog")
+        .w(420.0)
+        .fill(p.card)
+        .radius(radius::LG)
+        .border(1.0, p.border)
+        .padding(space::LG)
+        .gap(space::MD)
+        .child(
+            rune::text(t!("uninstall.confirmTitle").to_string())
+                .font(type_::TITLE)
+                .color(p.fg)
+                .wrap(),
+        )
+        .child(
+            col().gap(space::XS).children(
+                items
+                    .into_iter()
+                    .map(|i| rune::text(format!("• {i}")).color(p.fg).wrap()),
+            ),
+        )
+        .child(
+            rune::text(t!("uninstall.keepsMusic").to_string())
+                .color(p.text_secondary)
+                .wrap(),
+        );
+    if let uninstall::AppRemoval::PackageManager(cmd) = &plan_app {
+        card = card.child(
+            rune::text(t!("uninstall.packageManager", command => cmd).to_string())
+                .key("uninstall-package-hint")
+                .color(p.text_secondary)
+                .wrap(),
+        );
+    }
+    let card = card.child(
+        row()
+            .gap(space::SM)
+            .justify_end()
+            .child(
+                button(
+                    "uninstall-cancel",
+                    t!("uninstall.cancel").to_string(),
+                    false,
+                )
+                .on_press(|s: &mut State| s.uninstall_confirm = false),
+            )
+            .child(
+                button(
+                    "uninstall-confirm",
+                    t!("uninstall.confirm").to_string(),
+                    true,
+                )
+                .on_press_tx(confirm_uninstall),
+            ),
+    );
+    Some(
+        col()
+            .key("uninstall-modal")
+            .absolute(0.0, 0.0)
+            .w_full()
+            .h_full()
+            .center()
+            .fill(rune::Color::BLACK.alpha(0.45))
+            .child(card.modal(true, |s: &mut State| s.uninstall_confirm = false)),
+    )
+}
+
+/// Confirmed: stage the uninstall and quit; the quit hook removes everything.
+fn confirm_uninstall(s: &mut State, tx: &mut Tx) {
+    s.uninstall_confirm = false;
+    tracing::info!("uninstalling: removing Soul Player and its data on quit");
+    uninstall::stage(uninstall::plan());
+    tx.quit();
 }
 
 /// Hide the crash prompt for this session — also the modal's Escape / outside-press
@@ -4080,6 +4196,12 @@ fn scene_settings_updates_native(s: &mut State) {
         switch_to_native: true,
     });
 }
+/// Settings → About with the uninstall confirmation open.
+fn scene_uninstall_dialog(s: &mut State) {
+    s.route = Route::Settings;
+    s.settings_tab = SettingsTab::About;
+    s.uninstall_confirm = true;
+}
 /// The crash-report dialog shown after a crashed session.
 fn scene_crash_dialog(s: &mut State) {
     s.crashed_last_session = true;
@@ -4506,6 +4628,11 @@ fn scene_remote_health_open(s: &mut State) {
 }
 
 fn main() -> anyhow::Result<()> {
+    // `--uninstall`: remove the app and everything it stored, then exit —
+    // before logging starts, so it doesn't recreate what it removes.
+    if std::env::args().skip(1).any(|a| a == "--uninstall") {
+        std::process::exit(uninstall::cli());
+    }
     // Start file logging before anything else, so startup, every subsystem, and
     // any panic are recorded. The guard must outlive the process — binding it to
     // a named local keeps the non-blocking writer thread alive until `main` ends.
@@ -4670,6 +4797,7 @@ fn main() -> anyhow::Result<()> {
             ("crash-dialog", scene_crash_dialog),
             ("move-dialog", scene_move_dialog),
             ("rosetta-dialog", scene_rosetta_dialog),
+            ("uninstall-dialog", scene_uninstall_dialog),
             ("settings-updates-native", scene_settings_updates_native),
             ("settings-music-skips", scene_settings_music_skips),
             ("settings-music-de", scene_settings_music_de),
@@ -4820,6 +4948,8 @@ fn main() -> anyhow::Result<()> {
         .on_close(|s: &mut State, _tx: &mut Tx| flush_on_exit(s))
         .on_quit(|s: &mut State, _tx: &mut Tx| {
             flush_on_exit(s);
+            // A confirmed uninstall goes once nothing will write again.
+            uninstall::finish();
             // macOS Quit (⌘Q, the Dock, logout, an Apple Event) ends the process
             // from `applicationWillTerminate:` right after these hooks: `app.run()`
             // never returns, so an install-on-quit update has to go in here or it
@@ -4997,6 +5127,7 @@ fn main() -> anyhow::Result<()> {
     logging::end_session();
     // "Install & Restart" quit us to get here: now that every quit hook has run,
     // put the verified update in place and start it (no-op without one).
+    uninstall::finish();
     update::apply_pending();
     app_location::finish_move();
     Ok(())
@@ -7686,6 +7817,30 @@ mod tests {
             views::settings::update_status_text(&rt.state),
             "The Apple silicon version of Soul Player is available for this Mac."
         );
+    }
+
+    /// Settings → About → Uninstall…: the confirmation lists what goes and
+    /// says the music stays; Cancel (or Escape) backs out without a trace.
+    #[test]
+    fn uninstall_asks_first_and_cancel_backs_out() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::About;
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("uninstall").is_some(), "About offers the uninstall");
+        assert!(rt.find("uninstall-dialog").is_none());
+        click_key(&mut rt, "uninstall-open");
+        assert!(rt.state.uninstall_confirm);
+        for key in ["uninstall-dialog", "uninstall-confirm", "uninstall-cancel"] {
+            assert!(rt.find(key).is_some(), "the confirmation shows {key}");
+        }
+        click_key(&mut rt, "uninstall-cancel");
+        assert!(!rt.state.uninstall_confirm && rt.find("uninstall-dialog").is_none());
     }
 
     #[test]
@@ -15578,6 +15733,11 @@ mod tests {
             ("move-dialog", scene_move_dialog, "move-dialog"),
             ("rosetta-dialog", scene_rosetta_dialog, "rosetta-dialog"),
             (
+                "uninstall-dialog",
+                scene_uninstall_dialog,
+                "uninstall-dialog",
+            ),
+            (
                 "add-source-open",
                 scene_add_source_open,
                 "add-source-opt-local",
@@ -15796,6 +15956,7 @@ mod tests {
         ("crash-dialog", scene_crash_dialog),
         ("move-dialog", scene_move_dialog),
         ("rosetta-dialog", scene_rosetta_dialog),
+        ("uninstall-dialog", scene_uninstall_dialog),
         ("playlists", scene_playlists),
         ("playlist-detail", scene_playlist_detail),
         ("add-to-playlist-open", scene_add_to_playlist_open),

@@ -19,7 +19,7 @@
 /// Our stable reverse-DNS AppUserModelID (matches the packager identifier).
 /// Only referenced by the Windows toast + registry paths.
 #[cfg(windows)]
-const AUMID: &str = "co.soulaudio.soulplayer";
+pub(crate) const AUMID: &str = "co.soulaudio.soulplayer";
 
 /// Escape text for inclusion in XML character data. `&` first so we don't
 /// double-escape the entities we introduce. A track titled "Rock & Roll" or
