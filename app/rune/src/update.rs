@@ -496,7 +496,10 @@ mod tests {
             None,
             "the old name alone is not a replacement"
         );
-        assert_eq!(pick_replacement_binary("soul-player-rune", &[], false), None);
+        assert_eq!(
+            pick_replacement_binary("soul-player-rune", &[], false),
+            None
+        );
 
         // Ambiguous: two plausible binaries, so refuse.
         assert_eq!(
