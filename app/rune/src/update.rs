@@ -81,6 +81,17 @@ pub fn enabled() -> bool {
             std::env::var_os("APPIMAGE").is_some(),
             std::env::current_exe().ok().as_deref(),
         )
+        && !needs_move()
+}
+
+/// macOS: the app runs from a disk image or a translocated copy, where the
+/// bundle can't be replaced — downloading an update there would only fail at
+/// the install. Moving it to Applications (`app_location`) fixes it, and the
+/// Settings page says so.
+pub fn needs_move() -> bool {
+    static NEEDS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *NEEDS
+        .get_or_init(|| crate::app_location::current().is_some_and(|(_, place)| !place.updatable()))
 }
 
 /// Whether something other than this app is responsible for updating it.

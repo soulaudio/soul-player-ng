@@ -3612,7 +3612,9 @@ pub(crate) fn update_status_text(s: &State) -> String {
         // A package-managed install is not "updates off" — it updates through
         // apt / dnf / flatpak, and saying so is the difference between a user
         // who knows what to do and one who files a bug.
-        return if s.update.managed_elsewhere {
+        return if s.update.needs_move {
+            t!("settings.updatesNeedMove").to_string()
+        } else if s.update.managed_elsewhere {
             t!("settings.updatesViaPackageManager").to_string()
         } else {
             t!("settings.updatesUnavailable").to_string()
