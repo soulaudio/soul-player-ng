@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use rune::{
     Align, Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row,
@@ -41,6 +42,10 @@ pub(crate) struct Album {
     /// The album's dynamic-range indicator: the mean of its analyzed tracks' DR (the TT /
     /// dr.loudness-war convention), or `None` until at least one member track is analyzed.
     pub(crate) dr: Option<f32>,
+    /// The distinct genres across the album's tracks (sorted, deduped). Lets the
+    /// Albums page's genre Filters narrow the MEMOIZED grouping instead of
+    /// re-grouping a filtered library subset every frame.
+    pub(crate) genres: Vec<String>,
 }
 
 /// An album's DR indicator: the mean of its member tracks' DR over those analyzed so far (the
@@ -73,6 +78,7 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
                 release_date: t.release_date,
                 remote_source: None, // resolved below, once every member track is known
                 dr: None,            // resolved below from the member tracks' loudness
+                genres: Vec::new(),  // resolved below from the member tracks' genres
             });
             albums.len() - 1
         });
@@ -103,6 +109,27 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     for album in &mut albums {
         album.dr = album_dr(album.ids.iter().filter_map(|id| dr_by_id.get(id).copied()));
     }
+    // Album genres = the distinct genres over its member tracks. Same `id -> genre`
+    // map rationale as the passes above (avoid an O(n²) find per member id).
+    let genre_by_id: HashMap<u32, &str> = library
+        .iter()
+        .filter_map(|t| {
+            t.genre
+                .as_deref()
+                .filter(|g| !g.is_empty())
+                .map(|g| (t.id, g))
+        })
+        .collect();
+    for album in &mut albums {
+        let mut gs: Vec<String> = album
+            .ids
+            .iter()
+            .filter_map(|id| genre_by_id.get(id).map(|g| g.to_string()))
+            .collect();
+        gs.sort_unstable();
+        gs.dedup();
+        album.genres = gs;
+    }
     albums
 }
 
@@ -110,6 +137,7 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
 /// case-insensitive substring match; `query` must already be lowercased (the
 /// caller lowercases the search box's text once rather than per-album). An
 /// empty query keeps every album, same convention as the genre-detail search.
+#[cfg(test)]
 pub(crate) fn filter_albums(albums: Vec<Album>, query: &str) -> Vec<Album> {
     if query.is_empty() {
         return albums;
@@ -269,42 +297,44 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
     })
 }
 
+/// An album card's non-cover height (title + "Artist · year" subtitle): the
+/// `virtual_grid` row stride is a `card_w`-square cover plus this.
+const ALBUM_CAPTION_H: f32 = 48.0;
+
 /// The Albums page: an always-visible search box above a responsive grid of
 /// album cards, scrolled vertically. Mirrors the original soul-player's
 /// per-page search (and the genre-detail page's own search box, which this
 /// copies the styling of).
 pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let q = s.album_search.text.to_lowercase();
-    // Genre Filters (the old app's Filters chips): narrow the library to the
-    // selected genres before grouping, so an album shows when it has at least
-    // one track in a selected genre. Empty selection = every album.
-    let grouped = if s.album_genre_filter.is_empty() {
-        group_albums(&s.library)
-    } else {
-        let subset: Vec<TrackView> = s
-            .library
-            .iter()
-            .filter(|t| {
-                t.genre
-                    .as_deref()
-                    .is_some_and(|g| s.album_genre_filter.contains(g))
-            })
-            .cloned()
-            .collect();
-        group_albums(&subset)
-    };
-    let albums = filter_albums(grouped, &q);
-    // Responsive grid (the old app's `grid-cols-2 sm:3 md:4 lg:5 xl:6 2xl:8`): fill
-    // the content pane, adding columns as it widens. Read the pane's laid-out width
-    // (minus the grid's own padding); the first frame has no prior layout, so fall
-    // back to a sensible desktop width.
+    // The grouping is MEMOIZED (recomputed only when the library changes, not every
+    // frame — see `State::grouped_albums`, which turned a ~2 s/frame cost at 1M
+    // tracks into a cache hit). Genre Filters + search then narrow it to a list of
+    // INDICES into that shared grouping, never cloning the (up to hundreds of
+    // thousands of) albums per frame. An album matches a genre filter when any of
+    // its tracks is in a selected genre (its `genres` set, resolved at group time).
+    let grouped = s.grouped_albums();
+    let genre_filter = &s.album_genre_filter;
+    let visible: Vec<usize> = grouped
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| {
+            (genre_filter.is_empty() || a.genres.iter().any(|g| genre_filter.contains(g)))
+                && (q.is_empty()
+                    || a.name.to_lowercase().contains(&q)
+                    || a.artist.to_lowercase().contains(&q))
+        })
+        .map(|(i, _)| i)
+        .collect();
+    // Responsive grid (the old app's `grid-cols-2 sm:3 md:4 lg:5 xl:6 2xl:8`). Read
+    // the page's laid-out width; the first frame has no prior layout, so fall back
+    // to a sensible desktop width.
     let pane = cx.layout_size("albums").map(|[w, _]| w).unwrap_or(820.0);
-    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
     let search = crate::views::library::search_box(
         &s.album_search,
         "albums-search",
-        t!("albums.searchPlaceholder", count => albums.len()).to_string(),
+        t!("albums.searchPlaceholder", count => grouped.len()).to_string(),
         p,
         |st: &mut State| &mut st.album_search,
     );
@@ -400,17 +430,24 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         chip_row
     });
 
-    let mut grid = row()
-        .key("albums-grid")
-        .role("grid")
-        .flex_wrap()
-        // Rows a touch tighter than columns: each card's caption adds visual
-        // whitespace below the tile, so an even gap reads as too much between rows.
-        .gaps(space::MD, space::GUTTER)
-        .padding(space::PANE);
-    for (slot, a) in albums.iter().enumerate() {
-        grid = grid.child(album_card(s, p, slot, a, card_w, scale));
-    }
+    // Virtualized grid: chunk the visible albums into rows of cards; only the
+    // on-screen window is ever built. The build closure captures the memoized
+    // grouping + the visible index list by `Rc`, so it borrows nothing from `s`.
+    let grouped_cards = grouped.clone();
+    let visible: Rc<[usize]> = visible.into();
+    let count = visible.len();
+    let vis_cards = visible.clone();
+    let pal = *p;
+    let grid = grid::virtual_grid(
+        "albums-grid",
+        pane,
+        count,
+        1.0, // square cover
+        ALBUM_CAPTION_H,
+        Rc::new(move |s: &State, pos: usize, card_w: f32| {
+            album_card(s, &pal, pos, &grouped_cards[vis_cards[pos]], card_w, scale)
+        }),
+    );
     let mut page = col().key("albums").grow(1.0).min_h(0.0).child(search_bar);
     if let Some(chip_row) = chips {
         // Fully shown while open; the shared `reveal` fade+collapse (same as the
@@ -803,6 +840,81 @@ mod tests {
         }
     }
 
+    /// A realistic library of `n` tracks: ~12 tracks per album, ~8 albums per
+    /// artist, so grouping produces a believable album/artist fan-out.
+    fn synth_library(n: u32) -> Vec<TrackView> {
+        (0..n)
+            .map(|i| {
+                let album_idx = i / 12;
+                let artist_idx = album_idx / 8;
+                atv(
+                    i,
+                    &format!("Artist {artist_idx}"),
+                    &format!("Album {album_idx}"),
+                )
+            })
+            .collect()
+    }
+
+    /// Benchmark: how long per-render grouping + filtering takes as the library
+    /// scales toward millions. `#[ignore]` so it never runs in the normal suite;
+    /// run with `cargo test -p soul-player-rune bench_grouping -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_grouping_at_scale() {
+        use std::time::Instant;
+        for &n in &[10_000u32, 100_000, 1_000_000] {
+            let lib = synth_library(n);
+            let t = Instant::now();
+            let albums = group_albums(&lib);
+            let d_group = t.elapsed();
+            let q = "album 5".to_string();
+            let t = Instant::now();
+            let shown = filter_albums(albums.clone(), &q);
+            let d_filter = t.elapsed();
+            eprintln!(
+                "n={n:>9}  group_albums={d_group:>10.2?} ({} albums)  filter={d_filter:>10.2?} ({} shown)",
+                albums.len(),
+                shown.len()
+            );
+        }
+    }
+
+    /// The Albums grid is virtualized: a 100k-track library (~8k albums) mounts
+    /// only a bounded WINDOW of card rows, not all ~1400 rows, so the page stays
+    /// smooth at scale. Also exercises the memoized grouping (one `group_albums`,
+    /// not one per frame).
+    #[test]
+    fn albums_grid_virtualizes_a_huge_library() {
+        use rune::{Env, Runtime};
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            albums_page(s, &p, cx, cx.env().scale)
+        }
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = synth_library(100_000);
+        s.route = crate::Route::Albums;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 900.0), env);
+        rt.frame(0.0);
+        let rows = rt
+            .elements()
+            .into_iter()
+            .filter(|e| {
+                e.key
+                    .as_deref()
+                    .is_some_and(|k| k.starts_with("albums-grid-row-"))
+            })
+            .count();
+        assert!(
+            (1..60).contains(&rows),
+            "the grid windows its rows at 100k tracks, got {rows}"
+        );
+    }
+
     /// An album's `remote_source` is the unanimous host across every one of
     /// its tracks; a mix of remote and local has no consensus and must show
     /// no badge.
@@ -854,6 +966,7 @@ mod tests {
             release_date: 2015u32 << 9,
             remote_source: None,
             dr: None,
+            genres: Vec::new(),
         };
         assert_eq!(album_year(&a, Original), Some(1973));
         assert_eq!(album_year(&a, Release), Some(2015));
