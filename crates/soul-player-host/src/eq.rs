@@ -97,38 +97,55 @@ impl<K: Sink> DspSink<K> {
         }
     }
 
+    /// The shared chain cloned ONLY if its generation moved since the last applied one
+    /// (else `None`), paired with whether the chain is currently active. The clone is
+    /// the costly part — a `Vec` of units, each a `Vec` of bands plus an
+    /// `Option<String>` name — so gating it on the generation keeps the per-block
+    /// [`sync`](Self::sync) path allocation-free in steady state; an edit (which bumps
+    /// the generation) is rare. The lock is held only to read the generation + active
+    /// flag (and to clone on the rare change), never across the filter-bank rebuild.
+    fn chain_if_changed(&self) -> (Option<DspChain>, bool) {
+        let guard = self.shared.lock().expect("dsp chain mutex");
+        let active = guard.is_active();
+        let changed = (self.applied_gen != Some(guard.generation)).then(|| guard.clone());
+        (changed, active)
+    }
+
     /// Redesign from the shared chain if it changed since the last block; returns
     /// whether the chain is currently active (so `write` can fast-path passthrough).
+    /// On the steady-state path (unchanged generation) this neither clones nor
+    /// reallocates — critical, since it runs on the audio feeder thread every block.
     fn sync(&mut self) -> bool {
-        let chain = self.shared.lock().expect("dsp chain mutex").clone();
-        if self.applied_gen != Some(chain.generation) {
-            self.applied_gen = Some(chain.generation);
-            // Grow/shrink the equalizer bank to match the chain (keeping existing
-            // units' filter state so an edit doesn't click).
-            self.units.resize_with(chain.units.len(), Equalizer::new);
-            self.preamps.resize(chain.units.len(), 1.0);
-            for (i, unit) in chain.units.iter().enumerate() {
-                match unit {
-                    DspUnit::Eq(eq) => {
-                        for b in 0..MAX_BANDS {
-                            let filter = match eq.bands.get(b) {
-                                Some(band) => design(band, self.rate as f32),
-                                None => Biquad::bypass(),
-                            };
-                            self.units[i].set_band(b, filter);
-                        }
-                        self.units[i].set_enabled(eq.enabled);
-                        // A disabled unit is a full passthrough — no preamp either.
-                        self.preamps[i] = if eq.enabled {
-                            db_to_lin(eq.preamp_db)
-                        } else {
-                            1.0
+        let (changed, active) = self.chain_if_changed();
+        let Some(chain) = changed else {
+            return active;
+        };
+        self.applied_gen = Some(chain.generation);
+        // Grow/shrink the equalizer bank to match the chain (keeping existing
+        // units' filter state so an edit doesn't click).
+        self.units.resize_with(chain.units.len(), Equalizer::new);
+        self.preamps.resize(chain.units.len(), 1.0);
+        for (i, unit) in chain.units.iter().enumerate() {
+            match unit {
+                DspUnit::Eq(eq) => {
+                    for b in 0..MAX_BANDS {
+                        let filter = match eq.bands.get(b) {
+                            Some(band) => design(band, self.rate as f32),
+                            None => Biquad::bypass(),
                         };
+                        self.units[i].set_band(b, filter);
                     }
+                    self.units[i].set_enabled(eq.enabled);
+                    // A disabled unit is a full passthrough — no preamp either.
+                    self.preamps[i] = if eq.enabled {
+                        db_to_lin(eq.preamp_db)
+                    } else {
+                        1.0
+                    };
                 }
             }
         }
-        chain.is_active()
+        active
     }
 }
 
@@ -311,6 +328,94 @@ mod tests {
             units: vec![DspUnit::Eq(unit)],
             generation: 1,
         }))
+    }
+
+    /// A sink that discards everything (no capture buffer), so a benchmark of
+    /// `DspSink`'s own per-block cost isn't dominated by an inner sink growing a Vec.
+    struct Discard {
+        info: StreamInfo,
+    }
+    impl Sink for Discard {
+        fn stream_info(&self) -> StreamInfo {
+            self.info
+        }
+        fn write(&mut self, _frames: &[i32]) -> Result<(), SinkError> {
+            Ok(())
+        }
+        fn flush(&mut self) -> Result<(), SinkError> {
+            Ok(())
+        }
+    }
+
+    /// The per-audio-block `sync` must clone the chain ONLY when the generation moved
+    /// (a UI edit), never on the steady-state path — otherwise it heap-allocates a Vec
+    /// of units (each a Vec of bands + a name) on the audio feeder thread every block,
+    /// under the UI-shared chain lock. `chain_if_changed` encodes that decision, so the
+    /// unchanged path returns `None` (no clone).
+    #[test]
+    fn sync_clones_the_chain_only_when_the_generation_changes() {
+        let shared = chain_with(|eq| eq.enabled = true); // generation 1
+        let mut sink = dsp_sink(
+            Capture {
+                info: info(48_000, 2),
+                out: Vec::new(),
+            },
+            shared.clone(),
+        );
+        let frames = sine(1_000.0, FS, 256, 0.3 * 8_388_607.0);
+
+        // The first block applies generation 1: a clone to build the bank is expected.
+        assert!(
+            sink.chain_if_changed().0.is_some(),
+            "the first sync clones to apply the chain"
+        );
+        sink.write(&frames).unwrap();
+
+        // Steady state: the generation hasn't moved, so no clone per block.
+        assert!(
+            sink.chain_if_changed().0.is_none(),
+            "an unchanged generation must not re-clone the chain every block"
+        );
+
+        // A UI edit bumps the generation → a clone is needed again to rebuild the bank.
+        shared.lock().unwrap().generation = 2;
+        assert!(
+            sink.chain_if_changed().0.is_some(),
+            "a bumped generation re-clones to rebuild the filter bank"
+        );
+    }
+
+    /// Microbenchmark (ignored): the steady-state per-block `write` cost with an active
+    /// one-unit EQ chain, over a discarding sink. Run with
+    /// `cargo test -p soul-player-host bench_dsp_sink_write -- --ignored --nocapture`.
+    /// After the `sync` fix the hot path no longer clones the chain per block, so the
+    /// cost is just the i32↔f32 conversions + the biquad cascade.
+    #[test]
+    #[ignore = "timing benchmark; run with --ignored --nocapture"]
+    fn bench_dsp_sink_write_per_block() {
+        let shared = chain_with(|eq| {
+            eq.enabled = true;
+            eq.bands = vec![bell(1_000.0, 6.0, 1.0)];
+        });
+        let mut sink = DspSink::new(
+            Discard {
+                info: info(48_000, 2),
+            },
+            shared,
+            Arc::new(Mutex::new(SpectrumFrame::default())),
+            Arc::new(Mutex::new(LiveLoudnessFrame::default())),
+        );
+        let frames = sine(1_000.0, FS, 512, 0.3 * 8_388_607.0);
+        for _ in 0..10 {
+            sink.write(&frames).unwrap();
+        }
+        let n = 100_000u32;
+        let t = std::time::Instant::now();
+        for _ in 0..n {
+            sink.write(&frames).unwrap();
+        }
+        let per = t.elapsed() / n;
+        eprintln!("DspSink::write steady-state = {per:?}/block (512 stereo frames, 1-unit EQ)");
     }
 
     // ---- DspSink behaviour ----------------------------------------------------
