@@ -138,7 +138,9 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
             }
             Phase::Move => {
                 if let Some((from, _)) = st.queue_drag {
-                    let to = drop_index(from, d.dy, st.up_next.len());
+                    // Index 0 is drawn at the BOTTOM (the list reads bottom-up), so
+                    // dragging DOWN moves toward the front of the queue: negate dy.
+                    let to = drop_index(from, -d.dy, st.up_next.len());
                     st.queue_drag = Some((from, to));
                 }
             }
@@ -342,7 +344,33 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
         .pt(space::SM)
         .pb(space::SM);
 
-    // Manual band ("Next in queue") — hidden entirely when empty.
+    // The queue reads BOTTOM-UP into the now-playing panel below it: the very next
+    // track sits at the bottom (adjacent to now playing) and later tracks stack
+    // upward. So the context band (plays last) renders ABOVE the manual band (plays
+    // first), and within each band the rows run furthest-future -> soonest (`.rev()`).
+
+    // Context band — the shuffle-correct remainder of what's playing. "Up next"
+    // (short, like Spotify's queue) rather than a verbose "Next from <album>".
+    // On top because it plays after the manual queue.
+    if !s.context_ids.is_empty() {
+        let mut band = col()
+            .key("queue-context-band")
+            .gap(space::XXS)
+            .child(band_header(
+                "queue-next-from",
+                t!("queue.upNext").to_string(),
+                None,
+                p,
+            ));
+        for (j, &id) in s.context_ids.iter().enumerate().rev() {
+            let k = (manual_len + j + 1) as u32;
+            band = band.child(context_row(s, p, scale, id, k));
+        }
+        content = content.child(band);
+    }
+
+    // Manual band ("Next in queue") at the bottom — its first row (index 0) is the
+    // immediate next track, drawn last so it lands just above now playing.
     if !s.up_next.is_empty() {
         let mut band = col()
             .key("queue-manual-band")
@@ -354,32 +382,12 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
                 p,
             ));
         let target = s.queue_drag.map(|(_, to)| to);
-        for (i, &id) in s.up_next.iter().enumerate() {
+        for (i, &id) in s.up_next.iter().enumerate().rev() {
             if target == Some(i) {
                 band = band.child(drop_line(p));
             }
             let dragged = s.queue_drag.is_some_and(|(from, _)| from == i);
             band = band.child(manual_row(s, p, scale, i, id, (i + 1) as u32, dragged));
-        }
-        content = content.child(band);
-    }
-
-    // Context band — the real shuffle-correct remainder of what's playing. Just
-    // "Up next" (short, like Spotify's queue) rather than a verbose
-    // "Next from <album>".
-    if !s.context_ids.is_empty() {
-        let mut band = col()
-            .key("queue-context-band")
-            .gap(space::XXS)
-            .child(band_header(
-                "queue-next-from",
-                t!("queue.upNext").to_string(),
-                None,
-                p,
-            ));
-        for (j, &id) in s.context_ids.iter().enumerate() {
-            let k = (manual_len + j + 1) as u32;
-            band = band.child(context_row(s, p, scale, id, k));
         }
         content = content.child(band);
     }
@@ -390,9 +398,9 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
         .min_h(0.0)
         .child(scrollbar::attach(
             content
-                .scroll(ScrollSpec {
-                    stick_bottom: false,
-                })
+                // Anchor to the bottom so the soonest track (next to play) stays in
+                // view against the now-playing panel as the queue drains.
+                .scroll(ScrollSpec { stick_bottom: true })
                 .scroll_edge_fade(FADE_H)
                 .grow(1.0)
                 .min_h(0.0),

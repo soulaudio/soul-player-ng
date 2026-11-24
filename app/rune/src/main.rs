@@ -8996,25 +8996,28 @@ mod tests {
         let (vp, _) = rt
             .presented("queue-content")
             .expect("the queue viewport renders");
-        let (top, _) = rt
+        // The queue anchors at the bottom (`stick_bottom`: the next track sits
+        // against now playing), so the thumb starts at the BOTTOM of its track.
+        let (start, _) = rt
             .presented("queue-scrollbar")
             .expect("the queue thumb lays out");
         assert!(
-            top[3] > 0.0,
-            "precondition: the queue overflows, got {top:?}"
+            start[3] > 0.0,
+            "precondition: the queue overflows, got {start:?}"
         );
-        rt.update(|_, tx| tx.scroll_to_instant("queue-content", 0.0, 100_000.0));
+        // Scroll to the top; the thumb must ride UP and stay inside the viewport.
+        rt.update(|_, tx| tx.scroll_to_instant("queue-content", 0.0, 0.0));
         rt.frame(0.0);
-        let (bottom, _) = rt
+        let (scrolled, _) = rt
             .presented("queue-scrollbar")
             .expect("the queue thumb after scroll");
         assert!(
-            bottom[1] > top[1] + 1.0,
-            "the thumb moved down with the scroll: top {top:?} bottom {bottom:?}"
+            scrolled[1] < start[1] - 1.0,
+            "the thumb moved up with the scroll: start {start:?} scrolled {scrolled:?}"
         );
         assert!(
-            bottom[1] >= vp[1] - 1.0 && bottom[1] + bottom[3] <= vp[1] + vp[3] + 1.0,
-            "the thumb stays inside the viewport frame: thumb {bottom:?} viewport {vp:?}"
+            scrolled[1] >= vp[1] - 1.0 && scrolled[1] + scrolled[3] <= vp[1] + vp[3] + 1.0,
+            "the thumb stays inside the viewport frame: thumb {scrolled:?} viewport {vp:?}"
         );
     }
 
@@ -15195,13 +15198,14 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        // Press row 0's grip, drag down exactly one row (→ target index 1), release.
+        // The list reads bottom-up (index 0 at the bottom), so moving row 0 to
+        // index 1 means dragging it UP exactly one row. Release.
         let (gx, gy) = rt.find("grip-0").expect("manual row grip");
         rt.pointer_move(gx, gy);
         rt.pointer_down(gx, gy);
-        rt.pointer_move(gx, gy + QUEUE_ROW_H);
+        rt.pointer_move(gx, gy - QUEUE_ROW_H);
         rt.frame(0.0);
-        rt.pointer_up(gx, gy + QUEUE_ROW_H);
+        rt.pointer_up(gx, gy - QUEUE_ROW_H);
         rt.frame(0.0);
         assert_eq!(
             rt.state.host.recorded_commands(),
@@ -15213,8 +15217,9 @@ mod tests {
     /// Dragging a track that appears twice in the manual queue moves the row the
     /// user actually grabbed, not the first copy. Rows and grips are keyed by
     /// position, and the drag reads the row's own index — so grabbing the second
-    /// copy (index 2) and nudging it up one row commits a move FROM index 2, not
-    /// index 0 (where a search-by-track-id would land).
+    /// copy (index 2, drawn at the TOP of the bottom-up list) and nudging it DOWN
+    /// one row commits a move FROM index 2, not index 0 (where a search-by-track-id
+    /// would land).
     #[test]
     fn dragging_a_repeated_manual_track_moves_the_grabbed_row() {
         use crate::views::queue::QUEUE_ROW_H;
@@ -15228,13 +15233,14 @@ mod tests {
             },
         );
         rt.frame(0.0);
-        // Grab the SECOND copy (index 2) by its position-keyed grip, drag up one row.
+        // Grab the SECOND copy (index 2, at the top) by its position-keyed grip, drag
+        // DOWN one row (→ index 1 in the bottom-up list).
         let (gx, gy) = rt.find("grip-2").expect("the third manual row's grip");
         rt.pointer_move(gx, gy);
         rt.pointer_down(gx, gy);
-        rt.pointer_move(gx, gy - QUEUE_ROW_H);
+        rt.pointer_move(gx, gy + QUEUE_ROW_H);
         rt.frame(0.0);
-        rt.pointer_up(gx, gy - QUEUE_ROW_H);
+        rt.pointer_up(gx, gy + QUEUE_ROW_H);
         rt.frame(0.0);
         assert_eq!(
             rt.state.host.recorded_commands(),
@@ -15266,13 +15272,14 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
 
-        // Press the first manual row's grip (index 0) and drag it down ~1.5 rows.
+        // Press the first manual row's grip (index 0, at the bottom) and drag it UP
+        // ~1.5 rows (the list reads bottom-up, so up = toward later slots).
         let (gx, gy) = rt
             .find("grip-0")
             .expect("the first manual row has a drag grip");
         rt.pointer_move(gx, gy);
         rt.pointer_down(gx, gy);
-        rt.pointer_move(gx, gy + QUEUE_ROW_H * 1.5);
+        rt.pointer_move(gx, gy - QUEUE_ROW_H * 1.5);
         rt.frame(0.0);
         assert_eq!(
             rt.state.queue_drag.map(|(from, _)| from),
@@ -15281,7 +15288,7 @@ mod tests {
         );
         assert!(
             rt.state.queue_drag.map(|(_, to)| to).unwrap_or(0) >= 1,
-            "dragging down advances the drop target"
+            "dragging up advances the drop target"
         );
         assert!(
             rt.find("drop-line").is_some(),
@@ -15289,7 +15296,7 @@ mod tests {
         );
 
         // Release ends the gesture and clears the transient drag state.
-        rt.pointer_up(gx, gy + QUEUE_ROW_H * 1.5);
+        rt.pointer_up(gx, gy - QUEUE_ROW_H * 1.5);
         rt.frame(0.0);
         assert_eq!(rt.state.queue_drag, None, "releasing ends the drag");
         assert!(
