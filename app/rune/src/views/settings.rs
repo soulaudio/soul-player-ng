@@ -3528,6 +3528,33 @@ fn support_button(key: &'static str, label: String, glyph: &'static Icon, p: &Pa
         )
 }
 
+/// "Uninstall Soul Player": what it removes, and the (destructive-looking)
+/// button that opens the confirmation (`uninstall_overlay` in main).
+fn uninstall_card(p: &Palette) -> El {
+    card("uninstall", p)
+        .child(heading(
+            t!("uninstall.title").to_string(),
+            t!("uninstall.desc").to_string(),
+            p,
+        ))
+        .child(
+            row().child(
+                el().key("uninstall-open")
+                    .role("button")
+                    .label(t!("uninstall.button").to_string())
+                    .focusable(true)
+                    .padding(space::MD)
+                    .radius(radius::MD)
+                    .fill(p.bg)
+                    .border(1.0, p.danger)
+                    .center()
+                    .cursor(Cursor::Pointer)
+                    .child(text(t!("uninstall.button").to_string()).color(p.danger))
+                    .on_press(|s: &mut crate::State| s.uninstall_confirm = true),
+            ),
+        )
+}
+
 /// The About card's support actions: reveal the log folder, or open a pre-filled
 /// GitHub issue carrying version + OS + a redacted recent-log tail. Both run off
 /// the UI thread — launching the file manager or browser can block briefly — and
@@ -4059,7 +4086,8 @@ pub fn settings_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
         SettingsTab::About => col()
             .key("settings-content")
             .gap(space::LG)
-            .child(about_card(p)),
+            .child(about_card(p))
+            .child(uninstall_card(p)),
     };
     // Padding lives INSIDE the scroll viewport (no fixed dead gap above the first
     // card; the bottom margin travels with the content). The top inset is `LG` —
