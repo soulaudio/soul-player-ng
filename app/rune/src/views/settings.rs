@@ -3712,6 +3712,9 @@ fn updates_card(s: &State, p: &Palette) -> El {
         );
     }
     c = c.child(status);
+    if let (U::Downloading(_), Some(pr)) = (&s.update.status, &s.update.progress) {
+        c = c.child(download_progress(pr, p));
+    }
     if let Some(notes) = s.update.status.found().and_then(|f| f.notes.clone()) {
         c = c.child(
             col()
@@ -3773,6 +3776,104 @@ fn updates_card(s: &State, p: &Palette) -> El {
         );
     }
     c.child(actions)
+}
+
+/// The download bar under "Downloading version …": a determinate bar when the
+/// size is known (an accessible progressbar), then "12.3 MB of 45.6 MB" and
+/// "42 % · 2.1 MB/s · about 20 s left" once there's a speed to go on.
+fn download_progress(pr: &crate::updater::DownloadProgress, p: &Palette) -> El {
+    let frac = pr.fraction();
+    let mut bar = el()
+        .key("update-progress-bar")
+        .role("progressbar")
+        .label(t!("settings.downloadProgress").to_string())
+        .w_full()
+        .h(BAR_H)
+        .radius(BAR_H * 0.5)
+        .fill(p.muted)
+        .clip_soft(0.0);
+    if let Some(f) = frac {
+        let pct = (f * 100.0).floor();
+        bar = bar
+            .range_value(f64::from(f), 0.0, 1.0)
+            .a11y_value(format!("{pct}%"))
+            .child(
+                el().key("update-progress-fill")
+                    .h_full()
+                    .w_frac(f)
+                    .radius(BAR_H * 0.5)
+                    .fill(p.primary),
+            );
+    }
+    let size = match pr.total {
+        Some(total) => t!(
+            "settings.downloadSize",
+            done => format_size(pr.done),
+            total => format_size(total)
+        )
+        .to_string(),
+        None => format_size(pr.done),
+    };
+    let mut detail: Vec<String> = Vec::new();
+    if let Some(f) = frac {
+        let pct = (f * 100.0).floor();
+        // "42 %" in German, Spanish and Czech; "42%" elsewhere.
+        detail.push(if matches!(&*rust_i18n::locale(), "de" | "es" | "cs") {
+            format!("{pct}\u{a0}%")
+        } else {
+            format!("{pct}%")
+        });
+    }
+    if let Some(rate) = pr.rate.filter(|&r| r >= 1.0) {
+        detail.push(t!("settings.downloadSpeed", rate => format_size(rate as u64)).to_string());
+    }
+    if let Some(secs) = pr.seconds_left().filter(|_| frac.is_some_and(|f| f < 1.0)) {
+        detail.push(if secs < 60 {
+            t!("settings.downloadSecondsLeft", n => secs.max(1)).to_string()
+        } else {
+            t!("settings.downloadMinutesLeft", n => secs.div_ceil(60)).to_string()
+        });
+    }
+    col()
+        .key("update-progress")
+        .w_full()
+        .gap(space::XS)
+        .child(bar)
+        .child(
+            row()
+                .gap(space::SM)
+                .flex_wrap()
+                .child(
+                    text(size)
+                        .key("update-progress-size")
+                        .font(type_::CAPTION.mono())
+                        .color(p.text_secondary),
+                )
+                .child(el().grow(1.0))
+                .child(
+                    text(detail.join(" · "))
+                        .key("update-progress-detail")
+                        .font(type_::CAPTION.mono())
+                        .color(p.text_secondary),
+                ),
+        )
+}
+
+/// The download bar's thickness.
+const BAR_H: f32 = 6.0;
+
+/// A byte count for people: "850 KB", "12.3 MB", with the locale's decimal
+/// separator (a comma in German, Spanish and Czech).
+pub(crate) fn format_size(bytes: u64) -> String {
+    let comma = matches!(&*rust_i18n::locale(), "de" | "es" | "cs");
+    let s = if bytes < 1_000_000 {
+        format!("{} KB", bytes.div_ceil(1000))
+    } else if bytes < 1_000_000_000 {
+        format!("{:.1} MB", bytes as f64 / 1e6)
+    } else {
+        format!("{:.2} GB", bytes as f64 / 1e9)
+    };
+    if comma { s.replace('.', ",") } else { s }
 }
 
 /// Automatic updates: the two switches. Checking is on by default; installing

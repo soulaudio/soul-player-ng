@@ -3854,6 +3854,27 @@ fn scene_settings_updates_available(s: &mut State) {
     scene_settings_updates(s);
     s.update.status = updater::UpdateStatus::Available(scene_update_found());
 }
+/// A download in flight: 18.4 of 43.2 MB at 2.6 MB/s.
+fn scene_settings_updates_downloading(s: &mut State) {
+    scene_settings_updates(s);
+    s.update.status = updater::UpdateStatus::Downloading(scene_update_found());
+    s.update.progress = Some(scene_download_progress(Some(43_200_000)));
+}
+/// A download's progress, 18.4 MB in after a steady 2.6 MB/s.
+fn scene_download_progress(total: Option<u64>) -> updater::DownloadProgress {
+    let t0 = std::time::Instant::now();
+    let mut pr = updater::DownloadProgress::start(t0);
+    for i in 1..=8_u64 {
+        pr.update(
+            update::Progress {
+                done: 2_300_000 * i,
+                total,
+            },
+            t0 + std::time::Duration::from_millis(885 * i),
+        );
+    }
+    pr
+}
 fn scene_settings_updates_ready(s: &mut State) {
     scene_settings_updates(s);
     s.update.auto_install = true;
@@ -4469,6 +4490,10 @@ fn main() -> anyhow::Result<()> {
             (
                 "settings-updates-available",
                 scene_settings_updates_available,
+            ),
+            (
+                "settings-updates-downloading",
+                scene_settings_updates_downloading,
             ),
             ("settings-updates-ready", scene_settings_updates_ready),
             ("settings-updates-failed", scene_settings_updates_failed),
@@ -13508,6 +13533,87 @@ mod tests {
                 "no double-starts while {status:?}"
             );
         }
+    }
+
+    /// A download shows a determinate bar, its size and speed, and the page
+    /// still fits in every locale at a roomy and a cramped window. Without a
+    /// known size there's no fill to fake.
+    #[test]
+    fn updates_page_shows_download_progress_in_every_locale() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut failures = Vec::new();
+        for viewport in [(1100.0_f32, 720.0_f32), (900.0, 640.0)] {
+            for &loc in LOCALES {
+                let mut s = settings_state(&[], &[]);
+                s.settings_tab = SettingsTab::Updates;
+                s.update.supported = true;
+                scene_settings_updates_downloading(&mut s);
+                apply_locale(loc);
+                let mut rt = Runtime::new(s, view, viewport, env);
+                rt.frame(0.0);
+                for key in [
+                    "update-progress-bar",
+                    "update-progress-fill",
+                    "update-progress-size",
+                    "update-progress-detail",
+                ] {
+                    if rt.find(key).is_none() {
+                        failures.push(format!("[{loc}@{}] no {key}", viewport.0));
+                    }
+                }
+                for bad in horizontal_overflows(&rt, viewport.0) {
+                    failures.push(format!("[{loc}@{}] {bad}", viewport.0));
+                }
+            }
+        }
+        apply_locale("en");
+        assert!(failures.is_empty(), "{failures:#?}");
+
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::Updates;
+        s.update.supported = true;
+        s.update.status = updater::UpdateStatus::Downloading(found("9.9.9", None));
+        s.update.progress = Some(scene_download_progress(None));
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("update-progress-bar").is_some());
+        assert!(
+            rt.find("update-progress-fill").is_none(),
+            "size unknown: an empty track, not a made-up fraction"
+        );
+
+        // Once the download is done the bar goes with the Downloading state.
+        let rt = updates_rt(updater::UpdateStatus::Ready(found("9.9.9", None)), true);
+        assert!(rt.find("update-progress").is_none());
+    }
+
+    /// Speed is smoothed, the estimate follows it, and sizes read naturally in
+    /// each locale's number format.
+    #[test]
+    fn download_speed_eta_and_sizes() {
+        let pr = scene_download_progress(Some(43_200_000));
+        let rate = pr.rate.unwrap();
+        assert!(
+            (rate - 2_598_870.0).abs() < 10_000.0,
+            "steady 2.6 MB/s, got {rate}"
+        );
+        assert_eq!(pr.fraction(), Some(18_400_000.0 / 43_200_000.0));
+        assert_eq!(pr.seconds_left(), Some(10), "24.8 MB left at 2.6 MB/s");
+        assert_eq!(scene_download_progress(None).seconds_left(), None);
+
+        let _locale = config::use_test_locale("en");
+        use views::settings::format_size;
+        assert_eq!(format_size(850_000), "850 KB");
+        assert_eq!(format_size(1), "1 KB");
+        assert_eq!(format_size(43_210_000), "43.2 MB");
+        assert_eq!(format_size(1_500_000_000), "1.50 GB");
+        apply_locale("de");
+        assert_eq!(format_size(43_210_000), "43,2 MB");
+        apply_locale("en");
     }
 
     #[test]

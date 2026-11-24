@@ -280,6 +280,66 @@ fn check_at(endpoint: &str) -> Result<Option<Found>> {
 
 // ── Download + install ───────────────────────────────────────────────────────
 
+/// How far a download is: bytes received, and the size the server announced
+/// (`None` when it sent no `Content-Length`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Progress {
+    pub done: u64,
+    pub total: Option<u64>,
+}
+
+/// How often the UI hears about download progress: smooth enough for a bar,
+/// rare enough not to flood the UI thread on a fast connection.
+pub const PROGRESS_EVERY: Duration = Duration::from_millis(100);
+
+/// Folds the downloader's chunks into throttled [`Progress`] reports, and the
+/// 10 % steps the log records (what the release e2e reads).
+struct Meter {
+    done: u64,
+    last_report: Option<std::time::Instant>,
+    logged_step: u64,
+}
+
+impl Meter {
+    fn new(_start: std::time::Instant) -> Self {
+        Self {
+            done: 0,
+            last_report: None,
+            logged_step: 0,
+        }
+    }
+
+    /// Count `n` more bytes. Returns the report to send now, if any, and the
+    /// percentage to log, if a new 10 % step was crossed.
+    fn add(
+        &mut self,
+        n: u64,
+        total: Option<u64>,
+        now: std::time::Instant,
+    ) -> (Option<Progress>, Option<u64>) {
+        self.done += n;
+        let finished = total.is_some_and(|t| self.done >= t);
+        let due = self
+            .last_report
+            .is_none_or(|at| now.duration_since(at) >= PROGRESS_EVERY);
+        let report = (due || finished).then(|| {
+            self.last_report = Some(now);
+            Progress {
+                done: self.done,
+                total,
+            }
+        });
+        let logged = total.filter(|&t| t > 0).and_then(|t| {
+            let step = (self.done.min(t) * 10 / t).min(10);
+            (step > self.logged_step).then(|| {
+                self.logged_step = step;
+                step * 10
+            })
+        });
+        (report, logged)
+    }
+}
+
 /// A downloaded, signature-verified update, held until the app has quit cleanly.
 struct Staged {
     update: Update,
@@ -300,16 +360,40 @@ fn staged() -> std::sync::MutexGuard<'static, Option<Staged>> {
 /// when already up to date. Blocks on the network: call it off the UI thread.
 /// `relaunch`: restart into it after installing (then quit the app), or install it
 /// silently whenever the app is next quit.
-pub fn download(relaunch: bool) -> Result<Option<String>> {
-    download_from(&endpoint(), relaunch)
+/// `on_progress` hears how far the download is, at most every
+/// [`PROGRESS_EVERY`] and once more when it completes.
+pub fn download(relaunch: bool, on_progress: impl Fn(Progress)) -> Result<Option<String>> {
+    download_from(&endpoint(), relaunch, on_progress)
 }
 
-fn download_from(endpoint: &str, relaunch: bool) -> Result<Option<String>> {
+fn download_from(
+    endpoint: &str,
+    relaunch: bool,
+    on_progress: impl Fn(Progress),
+) -> Result<Option<String>> {
     let current = env!("CARGO_PKG_VERSION").parse()?;
     let Some(update) = check_update(current, config(endpoint)?)? else {
         return Ok(None);
     };
-    let bytes = update.download()?;
+    let meter = std::cell::RefCell::new(Meter::new(std::time::Instant::now()));
+    let bytes = update.download_extended(
+        |n, total| {
+            let mut m = meter.borrow_mut();
+            let (report, logged) = m.add(n as u64, total, std::time::Instant::now());
+            if let Some(pct) = logged {
+                tracing::info!(
+                    percent = pct,
+                    done = m.done,
+                    total,
+                    "update download progress"
+                );
+            }
+            if let Some(p) = report {
+                on_progress(p);
+            }
+        },
+        || {},
+    )?;
     let version = update.version.clone();
     *staged() = Some(Staged {
         update,
@@ -763,12 +847,16 @@ mod tests {
         };
         let mut tampered = FIXTURE.to_vec();
         tampered[0] ^= 0xFF;
-        assert!(download_from(&serve_update(tampered, FIXTURE_SIG.trim()), true).is_err());
+        assert!(download_from(&serve_update(tampered, FIXTURE_SIG.trim()), true, |_| {}).is_err());
         assert!(take().is_none(), "a failed verification stages nothing");
 
-        let version = download_from(&serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim()), false)
-            .expect("verifies")
-            .expect("99.0.0 is newer");
+        let version = download_from(
+            &serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim()),
+            false,
+            |_| {},
+        )
+        .expect("verifies")
+        .expect("99.0.0 is newer");
         assert_eq!(version, "99.0.0");
         assert_eq!(
             take(),
@@ -779,7 +867,12 @@ mod tests {
 
         // Install-on-quit download → "Install & Restart" upgrades it in place, no
         // re-download; switching auto-install off drops it.
-        download_from(&serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim()), false).unwrap();
+        download_from(
+            &serve_update(FIXTURE.to_vec(), FIXTURE_SIG.trim()),
+            false,
+            |_| {},
+        )
+        .unwrap();
         assert_eq!(staged_version().as_deref(), Some("99.0.0"));
         assert!(!STAGED.lock().unwrap().as_ref().unwrap().relaunch);
         assert!(
@@ -793,11 +886,56 @@ mod tests {
 
         let older: &'static str = Box::leak(manifest("0.0.1").into_boxed_str());
         assert_eq!(
-            download_from(&serve(older), true).unwrap(),
+            download_from(&serve(older), true, |_| {}).unwrap(),
             None,
             "nothing newer, nothing staged"
         );
         assert!(take().is_none());
+    }
+
+    /// Progress reaches the UI at most every `PROGRESS_EVERY` (plus the final
+    /// chunk, so the bar always ends full), and the log records each 10 % step
+    /// once, in order, even when one chunk jumps several steps.
+    #[test]
+    fn download_progress_is_throttled_and_logged_in_steps() {
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + Duration::from_millis(n);
+        let mut m = Meter::new(t0);
+        let total = Some(1000);
+        let (r, l) = m.add(50, total, ms(0));
+        assert_eq!(
+            r,
+            Some(Progress { done: 50, total }),
+            "the first chunk reports"
+        );
+        assert_eq!(l, None, "5 % crosses no step");
+        let (r, l) = m.add(100, total, ms(40));
+        assert_eq!(r, None, "too soon after the last report");
+        assert_eq!(l, Some(10));
+        let (r, _) = m.add(10, total, ms(120));
+        assert_eq!(r, Some(Progress { done: 160, total }));
+        let (_, l) = m.add(400, total, ms(130));
+        assert_eq!(l, Some(50), "a big chunk logs the step it lands in");
+        let (r, l) = m.add(440, total, ms(140));
+        assert_eq!(
+            r,
+            Some(Progress { done: 1000, total }),
+            "the last chunk always reports"
+        );
+        assert_eq!(l, Some(100));
+        assert_eq!(m.add(0, total, ms(150)).1, None, "100 % is logged once");
+
+        let mut m = Meter::new(t0);
+        let (r, l) = m.add(10, None, ms(0));
+        assert_eq!(
+            r,
+            Some(Progress {
+                done: 10,
+                total: None
+            }),
+            "size unknown"
+        );
+        assert_eq!(l, None, "no percentages without a size");
     }
 
     /// Live smoke test against the real published GitHub release: fetch the live
