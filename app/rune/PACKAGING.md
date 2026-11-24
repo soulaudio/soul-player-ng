@@ -9,7 +9,7 @@ Desktop installers are produced with [cargo-packager](https://github.com/crabneb
 ```sh
 cargo install cargo-packager          # once
 cd app/rune
-cargo packager --release              # → target/release/soul-player-rune_<ver>_x64-setup.exe
+cargo packager --release              # → target/release/soul-player_<ver>_x64-setup.exe
 ```
 
 The build uses `app/rune`'s pinned nightly (`rust-toolchain.toml`); cargo-packager
@@ -62,6 +62,42 @@ those values are written down. Re-deriving them per format would give three
 chances to disagree about the app's name, category or icon — and an entry that
 disagrees with the window's `app_id` silently costs the icon.
 
+### The package name, and what the rename did and did not change
+
+Every Linux package is `soul-player`. The crate stays `soul-player-rune`:
+"rune" names this UI head, which means nothing to someone installing a music
+player, so it is kept to places only developers see (the crate, `cargo test
+-p`, the `nix develop .#rune` shell).
+
+Two different names come from two different places, and conflating them is easy:
+
+| | source | changed by the rename? |
+|---|---|---|
+| `.deb`/AppImage/NSIS **filename** | main binary's name | **yes** |
+| installed binary, desktop entry, MPRIS suffix | main binary's name | **yes** |
+| `.deb` **`Package:`** field | kebab-cased `product-name` | no — always `soul-player` |
+| `.rpm` package name | `[package.metadata.generate-rpm] name` | no |
+
+So **no package was ever renamed**, and neither the `.deb` nor the `.rpm` needs
+`Provides`/`Conflicts`/`Replaces` or `Obsoletes` — do not add them. The
+published 0.4.2 `.deb` settles it: the file is
+`soul-player-rune_0.4.2_amd64.deb` and inside it is `Package: soul-player`.
+
+What the rename actually does is move `/usr/bin/soul-player-rune` to
+`/usr/bin/soul-player` *within* one package, and both package managers drop
+paths a new version no longer ships. Verified in containers rather than
+reasoned about — install the published package, upgrade to the renamed build,
+and exactly one binary and one desktop entry remain (`Unpacking soul-player
+over (0.4.2)` on Debian; the same on Fedora with `rpm -U`).
+
+This was originally built the other way round, on the assumption that
+`Package:` followed the binary name: a transition apparatus with three control
+fields patched into the built `.deb`, plus a gate that hunted for "the last
+old-named release". The release workflow's own upgrade check disproved it by
+failing on an assertion that the old package name was installed — it never was.
+The check remains, asserting the thing that can actually break: that the
+previous release's binary path is gone after the upgrade.
+
 ### What differs per format
 
 | | identity | updates | notes |
@@ -101,13 +137,52 @@ evidence:
 
 ```sh
 podman run --rm -v "$PWD/app/rune/target/release:/w:z" ubuntu:24.04 \
-  bash -c 'apt-get update -qq && apt-get install -y -qq /w/*.deb && soul-player-rune --help'
+  bash -c 'apt-get update -qq && apt-get install -y -qq /w/*.deb && soul-player --help'
 ```
 
 The release pipeline does this for real on every platform, and its Flatpak step
 starts the sandboxed app and fails unless it owns its MPRIS name.
 
+### Flathub (not submitted, and not a one-step job)
+
+The `.flatpak` we ship is a self-hosted **bundle**: built in CI, installed with
+`flatpak install --bundle`, and verified by running it sandboxed. That is
+independent of Flathub, and it works today.
+
+Submitting to Flathub is a separate project, blocked on two things in this repo
+rather than on paperwork:
+
+1. **The manifest installs prebuilt local files** (`type: file` with a bare
+   `path:`). Flathub builds from a manifest in *its* repository, where those
+   files do not exist, so it needs either sources with a URL + `sha256` or a
+   genuine from-source build.
+2. **A from-source build needs our pinned nightly, offline.** Flathub build
+   machines have no network, so every crate would have to be vendored into a
+   generated sources list — and the toolchain is the harder half: `app/rune`
+   pins `nightly-2026-11-10` because Rune uses unstable features. This is not
+   theoretical: building with stable 1.93.1 fails outright with
+   ``error[E0658]: use of unstable library feature `atomic_try_update` ``. A
+   *rolling* nightly would build until the day it doesn't, which is the reason
+   the pin exists.
+
+So the realistic options are a binary-download manifest (URL + `sha256` of a
+released artifact, keeping the exact bytes we test) or waiting until the Rune
+dependency builds on stable. Either way, `--device=all` is the thing a reviewer
+will ask about — the manifest explains why it is there and what breaks without
+it.
+
 ## Auto-update (implemented, free)
+
+> **One-time, 0.4.2 → 0.4.3 only (macOS and Windows):** the update installs
+> correctly but the app does **not** reopen by itself; it starts normally when
+> launched again. The relaunch is done by the build being replaced, using its
+> own `current_exe` — and the rename deleted that path. Nothing in the new build
+> can change that, because the code performing the relaunch already shipped in
+> 0.4.2. `relaunch_target` now resolves the renamed binary beside the old path
+> so a future rename cannot repeat it, and the release e2e detects this exact
+> situation and verifies the installed build runs when started rather than
+> failing the release. The AppImage is unaffected (one file, same path).
+
 
 The app updates itself with no paid accounts. **This is independent of OS
 code-signing.** On launch, release builds check GitHub Releases for a newer
@@ -162,11 +237,27 @@ AppImage in place, and the app starts the new build itself.
 
 ## Cutting a release
 
-1. **Dry run first** (on the branch with the version bump):
+1. **Bump `version` in `app/rune/Cargo.toml` first** — before the dry run, not after.
+2. **Dry run** on that branch:
    `gh workflow run release.yml --ref <branch> -f dry_run=true` — builds and runs the full
    per-OS e2e, publishes nothing; the installers stay as run artifacts.
-2. Bump `version` in `app/rune/Cargo.toml`, merge to `main`.
-3. Tag the merge commit: `git tag v0.4.0 && git push origin v0.4.0`.
+3. Merge to `main`, then tag the merge commit:
+   `git tag v0.4.3 && git push origin v0.4.3`.
+
+The order matters more than it looks. While the built version **equals** the
+published one, every upgrade path quietly tests nothing, each in its own way:
+
+| | with an equal version |
+|---|---|
+| `apt-get install` | "already the newest version" — does nothing at all |
+| NSIS installer | takes its `reinst_done` branch and **skips the uninstall** |
+| in-app updater | sees no newer version to offer |
+
+None of those announce themselves as skipped; two of them look like a clean
+pass. A rename shipped this way would leave the old binary beside the new one
+on Windows and nobody would learn it from a green dry run — which is exactly
+what happened while preparing the `soul-player` rename, three times, before the
+version was bumped.
 
 `.github/workflows/release.yml` then runs, stage by stage — nothing reaches users
 until every earlier stage is green:

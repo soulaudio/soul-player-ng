@@ -234,9 +234,9 @@ jobs:
       - name: Strip the Linux binary
         if: runner.os == 'Linux'
         run: |
-          before=$(stat -c%s app/rune/target/release/soul-player-rune)
-          strip app/rune/target/release/soul-player-rune
-          after=$(stat -c%s app/rune/target/release/soul-player-rune)
+          before=$(stat -c%s app/rune/target/release/soul-player)
+          strip app/rune/target/release/soul-player
+          after=$(stat -c%s app/rune/target/release/soul-player)
           echo "stripped: $before -> $after bytes"
 
       - name: Package + updater-sign
@@ -259,7 +259,7 @@ jobs:
       - name: glibc floor (Linux)
         if: runner.os == 'Linux'
         run: |
-          need=$(objdump -T app/rune/target/release/soul-player-rune | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          need=$(objdump -T app/rune/target/release/soul-player | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
           echo "binary needs $need"
           [ "$(printf '%s\nGLIBC_2.39\n' "$need" | sort -V | tail -1)" = "GLIBC_2.39" ] \
             || { echo "::error::binary needs $need, above the GLIBC_2.39 floor (Ubuntu 24.04)"; exit 1; }
@@ -320,32 +320,102 @@ jobs:
       # Fedora container, which inherits the host architecture.
       - name: Install-check the .deb and .rpm (Linux)
         if: runner.os == 'Linux'
+        # For `gh release download` in the upgrade group below.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "::group::.deb installs and runs"
           sudo apt-get install -y -o Acquire::Retries=3 ./dist/*.deb
-          command -v soul-player-rune >/dev/null \
-            || { echo "::error::soul-player-rune is not on PATH after installing the .deb"; exit 1; }
+          command -v soul-player >/dev/null \
+            || { echo "::error::soul-player is not on PATH after installing the .deb"; exit 1; }
           # `ldd` naming an unresolved library is the failure a dependency list
           # exists to prevent, and it is silent until the app is launched.
-          missing=$(ldd "$(command -v soul-player-rune)" | grep -c "not found" || true)
+          missing=$(ldd "$(command -v soul-player)" | grep -c "not found" || true)
           [ "$missing" = "0" ] \
             || { echo "::error::$missing libraries unresolved after install"; \
-                 ldd "$(command -v soul-player-rune)" | grep "not found"; exit 1; }
-          soul-player-rune --help >/dev/null 2>&1 \
+                 ldd "$(command -v soul-player)" | grep "not found"; exit 1; }
+          soul-player --help >/dev/null 2>&1 \
             || { echo "::error::the installed binary does not run"; exit 1; }
           sudo apt-get remove -y -qq soul-player
           echo "ok: .deb installs, resolves every library, runs, and uninstalls"
           echo "::endgroup::"
 
+          # Upgrading from the published release, across the binary rename.
+          #
+          # The rename changed the .deb's FILENAME but not its identity:
+          # `Package:` is the kebab-cased product name, so it has been
+          # `soul-player` all along (the published 0.4.2 asset is named
+          # soul-player-rune_0.4.2_amd64.deb and carries `Package:
+          # soul-player`). So this is a same-package upgrade in which
+          # /usr/bin/soul-player-rune becomes /usr/bin/soul-player, and what
+          # needs proving is that dpkg drops the path the new version no longer
+          # ships rather than leaving two binaries and two desktop entries.
+          #
+          # An earlier version of this gate asserted the OLD PACKAGE NAME was
+          # installed first, which was never true and failed here — that failure
+          # is what established the above.
+          echo "::group::upgrade from the published release, across the rename"
+          old=$(mktemp -d)
+          prev="${{ needs.guard.outputs.previous }}"
+          if [ -n "$prev" ] && gh release download "$prev" --dir "$old" \
+               --pattern "*_${{ matrix.deb_arch }}.deb" 2>/dev/null; then
+            echo "upgrading from $prev"
+            sudo apt-get install -y -o Acquire::Retries=3 "$old"/*.deb
+            # Identify by the path it installs, not by a package name: the point
+            # is which binary is on disk before and after.
+            old_bin=$(dpkg -L soul-player | grep -E "^/usr/bin/" | head -1)
+            echo "  $prev installs $old_bin"
+
+            # `dpkg -i`, not `apt-get install`: whenever the built version
+            # equals the published one — every dry run between a release and
+            # the next version bump — apt answers "already the newest version"
+            # and does nothing, so the upgrade silently never happens. dpkg
+            # unpacks over regardless of version, which is what exercises the
+            # file move, and behaves identically when the version is higher.
+            # Dependencies are already satisfied by the install above, so dpkg's
+            # lack of resolution costs nothing here.
+            #
+            # This is not a workaround for a test artefact: the assertion below
+            # CAUGHT the no-op (it reported the old binary path still installed
+            # after the "upgrade"), which is exactly what it is for.
+            sudo dpkg -i ./dist/*.deb
+
+            new_bin=$(dpkg -L soul-player | grep -E "^/usr/bin/" | head -1)
+            echo "  this build installs $new_bin"
+            [ "$new_bin" = "/usr/bin/soul-player" ] \
+              || { echo "::error::expected /usr/bin/soul-player, got $new_bin"; exit 1; }
+
+            # The actual risk: the previous version's binary left behind.
+            if [ "$old_bin" != "$new_bin" ] && [ -e "$old_bin" ]; then
+              echo "::error::$old_bin survived the upgrade — two binaries installed"
+              ls -la /usr/bin/soul-player* || true
+              exit 1
+            fi
+            bins=$(ls /usr/bin/soul-player* 2>/dev/null | wc -l)
+            [ "$bins" = "1" ] \
+              || { echo "::error::expected 1 binary in /usr/bin, found $bins"; \
+                   ls -la /usr/bin/soul-player*; exit 1; }
+            entries=$(ls /usr/share/applications/ | grep -c "soul-player" || true)
+            [ "$entries" = "1" ] \
+              || { echo "::error::expected 1 desktop entry, found $entries"; \
+                   ls /usr/share/applications/ | grep soul-player; exit 1; }
+            soul-player --help >/dev/null 2>&1 \
+              || { echo "::error::the upgraded binary does not run"; exit 1; }
+            sudo apt-get remove -y -qq soul-player
+            echo "ok: $prev -> this build upgrades cleanly across the rename"
+          else
+            echo "::warning::no previous release .deb for ${{ matrix.deb_arch }}; upgrade path unverified"
+          fi
+          echo "::endgroup::"
           echo "::group::.rpm installs and runs (Fedora container, host arch)"
           docker run --rm -v "$PWD/dist:/w:ro" fedora:latest bash -c '
             set -e
             dnf install -y -q /w/*.rpm
-            m=$(ldd /usr/bin/soul-player-rune | grep -c "not found" || true)
-            [ "$m" = "0" ] || { ldd /usr/bin/soul-player-rune | grep "not found"; exit 1; }
+            m=$(ldd /usr/bin/soul-player | grep -c "not found" || true)
+            [ "$m" = "0" ] || { ldd /usr/bin/soul-player | grep "not found"; exit 1; }
             # `--help` writes to stderr, so both streams go to /dev/null;
             # the exit status is what is being checked.
-            /usr/bin/soul-player-rune --help >/dev/null 2>&1
+            /usr/bin/soul-player --help >/dev/null 2>&1
             echo "ok: .rpm installs, resolves every library, and runs"
           '
           echo "::endgroup::"
@@ -375,7 +445,7 @@ jobs:
             # file, which says nothing about why.
             xvfb-run -a -s "-screen 0 1600x1000x24" \
               env SOUL_PLAYER_FOLDER=testdata SOUL_PLAYER_NO_UPDATE=1 \
-              app/rune/target/release/soul-player-rune \
+              app/rune/target/release/soul-player \
                 --snap "dist/screenshot-$1.png" --size 1400x900 ${2:+--scene "$2"} \
               >"$RUNNER_TEMP/shot-$1.log" 2>&1 || true
           }
@@ -408,6 +478,16 @@ jobs:
       # missing, media keys are silently dead and everything else looks fine.
       - name: Package + verify Flatpak (Linux)
         if: runner.os == 'Linux'
+        # NO step timeout here, deliberately. This step's duration is dominated
+        # by fetching the freedesktop runtime/SDK and the Flathub linter, which
+        # is network-bound and wildly variable: observed at 1m18s, 1m28s, 1m42s
+        # and 24m02s — and the 24-minute run SUCCEEDED. A cap tight enough to
+        # catch a hang would have killed that working release four minutes from
+        # the end, which is worse than the slow run it was meant to catch.
+        #
+        # If this does start hanging for real, the fix is retries or a cache
+        # around the flatpak fetches, not a blanket cap: a timeout cannot tell
+        # a stall from a slow mirror, and only one of those is a bug.
         run: |
           sudo apt-get install -y -o Acquire::Retries=3 \
             flatpak flatpak-builder appstream xvfb dbus-x11
@@ -462,7 +542,7 @@ jobs:
                 org.freedesktop.DBus.ListNames 2>/dev/null | grep -oE "[a-z][A-Za-z0-9_.-]+" | tail -20
               exit 1
             fi
-            # `flatpak kill`, NOT `pkill -f soul-player-rune`: the shell running
+            # `flatpak kill`, NOT `pkill -f soul-player`: the shell running
             # this very script has that string in its own command line (right
             # here), so pkill matches its parent, SIGTERMs it, and the step
             # fails with 143 having already passed every assertion. That is
@@ -471,9 +551,57 @@ jobs:
             flatpak kill co.soulaudio.soulplayer || true
           '
 
-          flatpak build-bundle "$RUNNER_TEMP/fp-repo" \
-            "dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak" co.soulaudio.soulplayer
+          bundle="dist/Soul-Player_${VERSION}_${{ matrix.rpm_arch }}.flatpak"
+          flatpak build-bundle "$RUNNER_TEMP/fp-repo" "$bundle" co.soulaudio.soulplayer
           ls -la dist/
+
+          # Install the SHIPPED BUNDLE and run it.
+          #
+          # Everything above tests the app as `flatpak-builder --install` left
+          # it, which is not the artifact anyone downloads. The bundle is a
+          # separate file produced by a separate command, and until now it was
+          # uploaded to the release without ever being installed — the only
+          # Linux format whose shipped bytes were not install-tested.
+          echo "::group::the shipped .flatpak installs and runs"
+          flatpak uninstall --user -y co.soulaudio.soulplayer >/dev/null 2>&1 || true
+          flatpak install --user -y --noninteractive --bundle "$bundle"
+          flatpak info co.soulaudio.soulplayer | sed 's/^/  /'
+
+          # What a user's `flatpak update` can actually do with this app. A
+          # bundle is a single file with no repository behind it, so the origin
+          # it records is what decides whether updates are possible at all —
+          # and the in-app updater is deliberately off under Flatpak
+          # (update.rs: `manager_owned`). If this prints no usable remote then
+          # the README's "updates via flatpak update" is wrong for the bundle
+          # and the honest instruction is to install the next one.
+          origin=$(flatpak info --show-origin co.soulaudio.soulplayer 2>/dev/null || echo "<none>")
+          echo "  bundle origin: $origin"
+          flatpak remotes --user --columns=name,url | sed 's/^/  remote: /'
+
+          # Same nesting as the build-install run above (dbus outside, xvfb
+          # inside) because that order is the one proven to work on this runner.
+          dbus-run-session -- bash -c '
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              flatpak run --user --socket=x11 \
+                --env=SOUL_PLAYER_FOLDER="$HOME/Music" \
+                --env=SOUL_PLAYER_NO_UPDATE=1 \
+                co.soulaudio.soulplayer >"$RUNNER_TEMP/fp-bundle-run.log" 2>&1 &
+            for i in $(seq 1 60); do
+              n=$(dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
+                    org.freedesktop.DBus.ListNames 2>/dev/null \
+                  | grep -oE "org\.mpris\.MediaPlayer2\.[A-Za-z0-9_.-]+" | head -1)
+              [ -n "$n" ] && break
+              sleep 1
+            done
+            if [ "$n" != "org.mpris.MediaPlayer2.co.soulaudio.soulplayer" ]; then
+              echo "::error::the installed bundle did not own its MPRIS name (saw ${n:-nothing})"
+              tail -40 "$RUNNER_TEMP/fp-bundle-run.log" || true
+              exit 1
+            fi
+            echo "  the bundle runs and owns $n"
+            flatpak kill co.soulaudio.soulplayer || true
+          '
+          echo "::endgroup::"
 
 
       # macOS: a drag-to-Applications DMG for first installs (the updater keeps using the

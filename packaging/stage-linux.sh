@@ -22,7 +22,7 @@ deb=$(readlink -f "${1:?usage: stage-linux.sh <deb> <out-dir>}")
 out=${2:?usage: stage-linux.sh <deb> <out-dir>}
 [ -f "$deb" ] || { echo "no such .deb: $deb" >&2; exit 1; }
 
-bin_name=soul-player-rune
+bin_name=soul-player
 app_id=co.soulaudio.soulplayer
 
 rm -rf "$out"

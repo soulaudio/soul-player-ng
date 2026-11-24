@@ -89,7 +89,7 @@ fn the_app_id_is_the_same_string_everywhere_it_is_written() {
     // `CARGO_BIN_NAME` is not set for an integration-test target, so this reads
     // the name off the binary path Cargo does provide — which is the same thing
     // the session e2e does, and for the same reason.
-    let bin_name = Path::new(env!("CARGO_BIN_EXE_soul-player-rune"))
+    let bin_name = Path::new(env!("CARGO_BIN_EXE_soul-player"))
         .file_stem()
         .and_then(|s| s.to_str())
         .expect("the built binary has a name");
@@ -127,6 +127,159 @@ fn the_appstream_metadata_has_no_illegal_double_hyphens() {
         "`--` inside an XML comment is illegal XML and `appstreamcli validate` \
          rejects the whole file, which blocks Flathub submission. Offending \
          comment(s) begin: {offenders:?}"
+    );
+}
+
+/// Top-level keys of a `[section]` in a TOML file, skipping comments and
+/// anything nested inside an array or inline table (`depends = [ ... ]` spans
+/// many lines, and its entries are not keys).
+fn section_keys(src: &str, section: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut depth = 0i32;
+    let mut inside = false;
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with('[') && depth == 0 {
+            inside = t.starts_with(&format!("[{section}]"));
+            continue;
+        }
+        if !inside || t.starts_with('#') {
+            continue;
+        }
+        if depth == 0
+            && let Some((k, _)) = t.split_once('=')
+        {
+            let k = k.trim();
+            if !k.is_empty() && !k.starts_with('"') {
+                keys.push(k.to_string());
+            }
+        }
+        depth += (t.matches(['[', '{']).count() as i32) - (t.matches([']', '}']).count() as i32);
+    }
+    keys
+}
+
+/// cargo-packager deserializes `[package.metadata.packager]` with its OWN
+/// types, and `cargo metadata` / `cargo build` never look at it — so an
+/// unsupported key is not a manifest error, it is a packaging failure that only
+/// appears once CI has already spent minutes on a release build.
+///
+/// This caught nothing in review and everything in CI: `conflicts` was added
+/// here from the provides/conflicts/replaces trio in cargo-packager's config
+/// module, which turns out to belong to its PACMAN config — `DebianConfig` has
+/// no such fields, so the build died with ``unknown field `conflicts` `` after
+/// a 5-minute compile. (Those three now live in `packaging/build-linux.sh`,
+/// which patches them into the built package's control file.)
+#[test]
+fn the_deb_packager_config_uses_only_fields_cargo_packager_accepts() {
+    let cargo = read(&repo_root().join("app/rune/Cargo.toml"));
+
+    // `DebianConfig` in cargo-packager 0.11.8. Serde accepts three spellings of
+    // the multi-word ones, so all are listed. Update this when the dependency
+    // is bumped — the error message names the full set.
+    const ACCEPTED: &[&str] = &[
+        "depends",
+        "desktop-template",
+        "desktopTemplate",
+        "desktop_template",
+        "section",
+        "priority",
+        "files",
+        "package-name",
+        "packageName",
+        "package_name",
+    ];
+
+    let unsupported: Vec<_> = section_keys(&cargo, "package.metadata.packager.deb")
+        .into_iter()
+        .filter(|k| !ACCEPTED.contains(&k.as_str()))
+        .collect();
+
+    assert!(
+        unsupported.is_empty(),
+        "[package.metadata.packager.deb] has key(s) cargo-packager's DebianConfig \
+         does not accept: {unsupported:?}. It rejects the whole config at package \
+         time — AFTER the release build — so this never shows up in `cargo build`. \
+         Accepted: {ACCEPTED:?}"
+    );
+}
+
+/// Same trap, the Windows half. `preinstall-section` is what removes the
+/// pre-rename `soul-player-rune.exe`, and a typo in that key would not fail the
+/// build — cargo-packager would reject the config, or (worse, if it were simply
+/// ignored) the installer would silently stop cleaning up and every Windows
+/// upgrade would leave two executables behind.
+#[test]
+fn the_nsis_packager_config_uses_only_fields_cargo_packager_accepts() {
+    let cargo = read(&repo_root().join("app/rune/Cargo.toml"));
+
+    // `NsisConfig` in cargo-packager 0.11.8, in the three spellings serde takes.
+    const ACCEPTED: &[&str] = &[
+        "compression",
+        "template",
+        "preinstall-section",
+        "preinstallSection",
+        "preinstall_section",
+        "header-image",
+        "headerImage",
+        "header_image",
+        "sidebar-image",
+        "sidebarImage",
+        "sidebar_image",
+        "installer-icon",
+        "installerIcon",
+        "installer_icon",
+        "install-mode",
+        "installMode",
+        "install_mode",
+        "languages",
+        "custom-language-files",
+        "customLanguageFiles",
+        "custom_language_files",
+        "display-language-selector",
+        "displayLanguageSelector",
+        "display_language_selector",
+        "appdata-paths",
+        "appdataPaths",
+        "appdata_paths",
+    ];
+
+    let unsupported: Vec<_> = section_keys(&cargo, "package.metadata.packager.nsis")
+        .into_iter()
+        .filter(|k| !ACCEPTED.contains(&k.as_str()))
+        .collect();
+
+    assert!(
+        unsupported.is_empty(),
+        "[package.metadata.packager.nsis] has key(s) cargo-packager's NsisConfig \
+         does not accept: {unsupported:?}. Accepted: {ACCEPTED:?}"
+    );
+}
+
+/// The pre-rename executable has to actually be named in the NSIS hook, or
+/// Windows upgrades keep both binaries. Easy to lose in a later edit of that
+/// embedded script, and nothing else would notice until a release e2e ran.
+#[test]
+fn the_nsis_hook_deletes_the_pre_rename_executable() {
+    let cargo = read(&repo_root().join("app/rune/Cargo.toml"));
+    let hook = cargo
+        .split_once("preinstall-section = \'\'\'")
+        .expect("[package.metadata.packager.nsis] sets preinstall-section")
+        .1
+        .split_once("\'\'\'")
+        .expect("the preinstall-section literal is terminated")
+        .0;
+
+    assert!(
+        hook.contains("Delete") && hook.contains("soul-player-rune.exe"),
+        "the NSIS preinstall section must delete the pre-rename \
+         soul-player-rune.exe; a silent or passive install never runs the \
+         previous uninstaller (that lives in a skipped page), so without this \
+         the install directory keeps both executables. Hook body: {hook:?}"
+    );
+    assert!(
+        hook.contains("$INSTDIR"),
+        "the Delete must be anchored to $INSTDIR, not a bare filename: {hook:?}"
     );
 }
 

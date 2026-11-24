@@ -1,13 +1,27 @@
 [package]
 name = "soul-player-rune"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
 description = "Rune (native GPU) UI head for Soul Player, over soul-player-host."
 
 [[bin]]
-name = "soul-player-rune"
+# The USER-VISIBLE name, and deliberately not the crate's. This name becomes
+# `/usr/bin/<name>`, the installed desktop entry's basename, the MPRIS bus name
+# (via `desktop_id()`'s fallback) and the .deb/AppImage/NSIS FILENAMES —
+# cargo-packager builds those from the main binary's name
+# (`package/deb/mod.rs`: `format!("{}_{}_{}", config.main_binary_name()?, ..)`).
+#
+# It does NOT set the .deb's `Package:` field: that is the kebab-cased
+# `product-name` below, and has read `soul-player` all along. Worth stating
+# because assuming otherwise produced a whole unnecessary package-transition
+# apparatus here before the published 0.4.2 .deb disproved it.
+#
+# "rune" is the internal name of this UI head, which means nothing to anyone
+# installing a music player, so it stays on the crate (`[package] name` above,
+# where only developers see it) and never reaches a package.
+name = "soul-player"
 path = "src/main.rs"
 
 [workspace]
@@ -189,6 +203,33 @@ formats = ["nsis"]
 # won't carry itself (`unsafe_code = "forbid"`). `open_files` already handles the files once
 # they arrive; launch arguments work today. The removed setup is in git history (#265).
 
+# ── Windows (NSIS setup.exe) ────────────────────────────────────────────────
+[package.metadata.packager.nsis]
+# Delete the binary this app used to install as.
+#
+# Up to and including 0.4.2 the executable was `soul-player-rune.exe` (its name
+# comes from the main binary's). An interactive install would offer to remove
+# the previous version first — but that offer lives in a custom NSIS *page*
+# (`Page custom PageReinstall PageLeaveReinstall`), and `/S` and `/P` skip
+# pages, so neither a silent install nor the in-app updater's passive one ever
+# runs it. The renamed build then lands BESIDE the old executable and the
+# install directory keeps both indefinitely, with the stale 0.4.2 binary still
+# launchable. The release e2e caught exactly that: "expected one app exe ...
+# found [soul-player-rune.exe, soul-player.exe]".
+#
+# Shortcuts need no equivalent: they are named `${PRODUCTNAME}.lnk` ("Soul
+# Player.lnk"), which the rename did not touch, and the install recreates them
+# pointing at the new executable.
+#
+# A literal TOML string ('''), not a basic one, so NSIS's `$INSTDIR\...`
+# backslashes are not read as escapes. Runs between `EarlyChecks` and
+# `Install`, which is where cargo-packager injects this block.
+preinstall-section = '''
+Section PreinstallRemoveRenamedBinary
+  Delete "$INSTDIR\soul-player-rune.exe"
+SectionEnd
+'''
+
 [package.metadata.packager.deb]
 # Debian policy §12.5 requires every package to ship a copyright file at
 # `/usr/share/doc/<package>/copyright`; `lintian` reports its absence as an
@@ -262,6 +303,20 @@ depends = [
     # want it.
     "libvulkan1",
 ]
+# NOTE: no `Provides`/`Conflicts`/`Replaces`, for two separate reasons.
+#
+# They are not NEEDED: `Package:` is the kebab-cased `product-name`, so it has
+# been `soul-player` since before the binary rename (the published 0.4.2 .deb
+# is named soul-player-rune_0.4.2_amd64.deb and carries `Package: soul-player`).
+# The rename moves a file within one package, which dpkg handles by removing
+# paths the new version no longer ships.
+#
+# They would also not WORK here: cargo-packager 0.11.8's `DebianConfig` accepts
+# only depends/section/priority/files/package-name/desktop-template, and the
+# provides/conflicts/replaces trio in its config module belongs to
+# `PacmanConfig` — writing them here fails the build with "unknown field
+# `conflicts`", which is now caught by
+# `the_deb_packager_config_uses_only_fields_cargo_packager_accepts`.
 
 # ── RPM (Fedora / openSUSE / RHEL) ──────────────────────────────────────────
 # cargo-packager has no RPM backend (it does deb, AppImage and pacman), so the
@@ -276,9 +331,9 @@ url = "https://github.com/soulaudio/soul-player-ng"
 # build script already produced; the desktop entry and icon come out of the
 # .deb so the two packages cannot disagree about the app's identity.
 assets = [
-    { source = "target/release/soul-player-rune", dest = "/usr/bin/soul-player-rune", mode = "755" },
-    { source = "target/release/linux-stage/soul-player-rune.desktop", dest = "/usr/share/applications/soul-player-rune.desktop", mode = "644" },
-    { source = "target/release/linux-stage/soul-player-rune.png", dest = "/usr/share/icons/hicolor/128x128/apps/soul-player-rune.png", mode = "644" },
+    { source = "target/release/soul-player", dest = "/usr/bin/soul-player", mode = "755" },
+    { source = "target/release/linux-stage/soul-player.desktop", dest = "/usr/share/applications/soul-player.desktop", mode = "644" },
+    { source = "target/release/linux-stage/soul-player.png", dest = "/usr/share/icons/hicolor/128x128/apps/soul-player.png", mode = "644" },
     { source = "../../LICENSE", dest = "/usr/share/licenses/soul-player/LICENSE", mode = "644", doc = true },
 ]
 

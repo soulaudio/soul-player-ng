@@ -18,7 +18,7 @@ app-id: co.soulaudio.soulplayer
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
-command: soul-player-rune
+command: soul-player
 
 finish-args:
   # Wayland first, with X11 only as a fallback: `fallback-x11` grants the X
@@ -59,7 +59,7 @@ modules:
   - name: soul-player
     buildsystem: simple
     build-commands:
-      - install -Dm755 soul-player-rune /app/bin/soul-player-rune
+      - install -Dm755 soul-player /app/bin/soul-player
       - install -Dm644 co.soulaudio.soulplayer.desktop
         /app/share/applications/co.soulaudio.soulplayer.desktop
       - install -Dm644 co.soulaudio.soulplayer.png
@@ -67,11 +67,18 @@ modules:
       - install -Dm644 co.soulaudio.soulplayer.metainfo.xml
         /app/share/metainfo/co.soulaudio.soulplayer.metainfo.xml
     sources:
-      # Staged by `packaging/flatpak/stage.sh`, which takes the binary and the
+      # Staged by `packaging/stage-linux.sh`, which takes the binary and the
       # desktop entry/icon out of the built .deb so the Flatpak cannot drift
-      # from the other Linux packages.
+      # from the other Linux packages. The release workflow copies this manifest
+      # into that staging dir and builds from there, which is why these are bare
+      # filenames with no path.
+      #
+      # These local `path:` sources are also why this manifest cannot be
+      # submitted to Flathub as-is: Flathub builds from its own repo, where
+      # these files do not exist, so it needs either URL+sha256 sources or a
+      # from-source build. See PACKAGING.md.
       - type: file
-        path: soul-player-rune
+        path: soul-player
       - type: file
         path: co.soulaudio.soulplayer.desktop
       - type: file
