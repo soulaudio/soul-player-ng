@@ -289,7 +289,7 @@ fn cover_placeholder(size: f32, corner: f32, p: &Palette) -> El {
 /// The seed of the generated cover for track `id` when it has no art: its album (by title,
 /// matching how the library groups albums), else its artist; `None` when it has neither.
 pub(crate) fn generated_seed_for_track(s: &State, id: u32) -> Option<u64> {
-    let t = s.library.iter().find(|t| t.id == id)?;
+    let t = s.track(id)?;
     t.album
         .as_deref()
         .and_then(generated_cover::album_seed)
