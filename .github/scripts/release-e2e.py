@@ -1126,6 +1126,68 @@ def interrupted_download(inst: Install, env: AppEnv, library: Path, update: tupl
     check("panicked" not in env.log_since(mark), "panic")
 
 
+def mac_archs(inst: Install) -> str:
+    return subprocess.check_output(["lipo", "-archs", str(inst.exe)], text=True).strip()
+
+
+def universal_dmg(installer: Path, work: Path, library: Path, update: tuple, version: str, key: str) -> None:
+    """The universal DMG (one download for every Mac): both architectures in
+    the bundle, runs natively here, and the in-app updater takes it to this
+    Mac's own build."""
+    env = AppEnv(work, "universal")
+    inst = install(installer, work)
+    try:
+        archs = set(mac_archs(inst).split())
+        check(archs == {"arm64", "x86_64"}, f"universal binary has {archs}")
+        ok("universal binary: arm64 + x86_64")
+        mark = env.log_mark()
+        live_run(inst, env, version, library, secs=8)
+        first = startups(env.log_since(mark))[0]
+        native = "aarch64" if key == "macos-aarch64" else "x86_64"
+        check(first.get("arch") == native and first.get("rosetta") == "false",
+              f"ran as {first.get('arch')} (rosetta={first.get('rosetta')}), expected native {native}")
+        ok(f"runs natively as {native}")
+        offer = UpdateServer(bump_patch(version), key, *update)
+        try:
+            auto_update(inst, env, library, offer, version)
+        finally:
+            offer.close()
+        thin = mac_archs(inst)
+        check(thin == ("arm64" if native == "aarch64" else "x86_64"), f"after updating: {thin}")
+        ok(f"updated in-app to this Mac's own build ({thin})")
+    finally:
+        uninstall(inst)
+
+
+def rosetta_migration(installer: Path, work: Path, library: Path, update: tuple, version: str) -> None:
+    """Apple silicon running the INTEL build (the wrong DMG): it knows it runs
+    under Rosetta, and the in-app switch fetches the Apple silicon build of the
+    SAME version, swaps it in and comes back native."""
+    env = AppEnv(work, "rosetta")
+    inst = install(installer, work)
+    try:
+        check(mac_archs(inst) == "x86_64", f"expected the Intel build, got {mac_archs(inst)}")
+        mark = env.log_mark()
+        live_run(inst, env, version, library, secs=8)
+        first = startups(env.log_since(mark))[0]
+        check(first.get("arch") == "x86_64" and first.get("rosetta") == "true",
+              f"Intel build on Apple silicon not detected as Rosetta: {first}")
+        ok("the Intel build knows it runs under Rosetta")
+        # Same version, Apple silicon package: the switch doesn't wait for a release.
+        offer = UpdateServer(version, "macos-aarch64", *update)
+        try:
+            text = auto_update(inst, env, library, offer, version)
+        finally:
+            offer.close()
+        last = startups(text)[-1]
+        check(last.get("arch") == "aarch64" and last.get("rosetta") == "false",
+              f"after switching it runs as {last.get('arch')} (rosetta={last.get('rosetta')})")
+        check(mac_archs(inst) == "arm64", f"installed binary is {mac_archs(inst)}")
+        ok(f"switched to the Apple silicon build of {version}; runs natively")
+    finally:
+        uninstall(inst)
+
+
 def bump_patch(v: str) -> str:
     a, b, c = (semver(v) + (0, 0, 0))[:3]
     return f"{a}.{b}.{c + 1}"
@@ -1172,6 +1234,10 @@ def main() -> int:
         "--previous-manifest",
         help="URL of the currently published latest.json (default: none → upgrade/rollback skipped)",
     )
+    ap.add_argument("--universal-installer", type=Path,
+                    help="macOS: the universal DMG, installed and updated here too")
+    ap.add_argument("--rosetta-installer", type=Path,
+                    help="macOS on Apple silicon: the Intel DMG, to check the switch to Apple silicon")
     ap.add_argument("--out", type=Path, default=Path("e2e-out"))
     a = ap.parse_args()
     # Never hang silently until the job timeout: dump every thread's stack and abort.
@@ -1237,6 +1303,17 @@ def main() -> int:
         uninstall(inst)
         steps.append(("uninstall, nothing left", "pass"))
         end_section()
+
+        if a.universal_installer and update:
+            section("universal DMG → runs natively → updates to this Mac's build")
+            universal_dmg(a.universal_installer.resolve(), work, library, update, a.version, a.target_key)
+            steps.append(("universal DMG: both architectures, native here, updates in-app", "pass"))
+            end_section()
+        if a.rosetta_installer and update:
+            section("Intel build on Apple silicon → switches itself to the Apple silicon build")
+            rosetta_migration(a.rosetta_installer.resolve(), work, library, update, a.version)
+            steps.append(("Intel build under Rosetta → switches to Apple silicon, same version", "pass"))
+            end_section()
 
         # 2 + 3. upgrade from, then roll back to, the previous release
         prev = fetch_previous(a.previous_manifest, a.target_key, work) if a.previous_manifest else None
