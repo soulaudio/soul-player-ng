@@ -11,9 +11,11 @@
 //! unchanged — only the backing store moved from an in-memory `CatalogInput` to
 //! the baked index the DAP also reads.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicUsize;
 
@@ -361,19 +363,22 @@ impl Library {
         use std::collections::HashMap;
         let cat = self.cat();
         let n = cat.order_len(axis);
-        // Memoize the interned artist/album/genre resolutions (and album dates) by
-        // their interned id across the WHOLE library: a million tracks share a few
-        // thousand artists/albums, so each distinct id is decoded ONCE here instead
-        // of once per track — millions of fewer catalog decodes on a big library's
-        // load. (The owned `String` is still cloned per track; interning the strings
-        // themselves into shared `Arc<str>` would also cut the per-track allocation +
-        // the library's memory — a wider `TrackView` change, noted as a follow-up.)
-        let mut artists: HashMap<u32, Option<String>> = HashMap::new();
-        let mut albums: HashMap<u32, Option<String>> = HashMap::new();
-        let mut genres: HashMap<u32, Option<String>> = HashMap::new();
+        // Intern the low-cardinality fields by their interned id across the WHOLE
+        // library, as shared `Arc<str>`: a million tracks share a few thousand
+        // artists/albums (and a handful of genres/formats), so each distinct value
+        // is decoded AND allocated ONCE here, then cloned per track as a cheap Arc
+        // refcount bump — not one fresh `String` per track. On a big library's load
+        // that's millions of fewer catalog decodes AND heap allocations, and the
+        // resident `Vec<TrackView>` shares those strings instead of duplicating them.
+        let mut artists: HashMap<u32, Option<Arc<str>>> = HashMap::new();
+        let mut albums: HashMap<u32, Option<Arc<str>>> = HashMap::new();
+        let mut genres: HashMap<u32, Option<Arc<str>>> = HashMap::new();
         let mut dates: HashMap<u32, (u32, u32)> = HashMap::new();
-        // Reused across tracks: each file name is decoded into THIS buffer for its
-        // FORMAT label, not a fresh per-track heap `String` that's thrown away.
+        // The handful of distinct FORMAT labels ("FLAC", "MP3", …), interned so a
+        // million tracks share ~10 `Arc<str>` instead of allocating a label each.
+        let mut formats: HashMap<Box<str>, Arc<str>> = HashMap::new();
+        // Reused across tracks: each file name is decoded into THIS buffer to read
+        // its extension, not a fresh per-track heap `String` that's thrown away.
         let mut name_buf: Vec<u8> = Vec::new();
         let mut out = Vec::with_capacity(n as usize);
         for i in 0..n {
@@ -384,19 +389,21 @@ impl Library {
                 .or_insert_with(|| album_dates(&cat, t.album));
             let artist = artists
                 .entry(t.artist)
-                .or_insert_with(|| real_name(artist_name(&cat, t.artist)))
+                .or_insert_with(|| real_name(artist_name(&cat, t.artist)).map(Arc::from))
                 .clone();
             let album = albums
                 .entry(t.album)
-                .or_insert_with(|| real_name(album_title(&cat, t.album)))
+                .or_insert_with(|| real_name(album_title(&cat, t.album)).map(Arc::from))
                 .clone();
             // Genre keeps its raw value — "Unknown Genre" is a real bucket, NOT
             // filtered through `real_name` like artist/album sentinels.
             let genre = genres
                 .entry(t.genre)
-                .or_insert_with(|| genre_name(&cat, t.genre))
+                .or_insert_with(|| genre_name(&cat, t.genre).map(Arc::from))
                 .clone();
-            let format = decode_into(&cat, t.file_name, &mut name_buf).and_then(format_label);
+            let format = decode_into(&cat, t.file_name, &mut name_buf)
+                .and_then(format_label)
+                .map(|label| intern_format(&mut formats, label));
             out.push(TrackView {
                 id,
                 title: resolve(&cat, t.title),
@@ -517,22 +524,54 @@ fn album_dates(cat: &MultiCatalog, album: u32) -> (u32, u32) {
 /// `MP2`). `None` when the name has no extension: the importer only ever hands
 /// this already-supported audio file names, so every real call resolves to
 /// `Some`.
-fn format_label(file_name: &str) -> Option<String> {
-    let ext = Path::new(file_name).extension()?.to_str()?.to_lowercase();
-    Some(match ext.as_str() {
-        "flac" => "FLAC".to_string(),
-        "mp3" => "MP3".to_string(),
-        "wav" => "WAV".to_string(),
-        "m4a" => "M4A".to_string(),
-        "aac" => "AAC".to_string(),
-        "ogg" | "oga" => "OGG".to_string(),
-        "opus" => "OPUS".to_string(),
-        "aif" | "aiff" => "AIFF".to_string(),
-        "dsf" => "DSF".to_string(),
-        "dff" => "DFF".to_string(),
-        "wv" => "WV".to_string(),
-        _ => ext.to_uppercase(),
-    })
+fn format_label(file_name: &str) -> Option<Cow<'static, str>> {
+    let ext = Path::new(file_name).extension()?.to_str()?;
+    // Known extensions map to a `&'static str` with NO per-track allocation (the
+    // case-insensitive compare avoids even the `to_lowercase` temporary). Only an
+    // unrecognized extension allocates, and that's rare — the importer only hands
+    // this already-supported audio names.
+    let known = |label: &'static str| Some(Cow::Borrowed(label));
+    if ext.eq_ignore_ascii_case("flac") {
+        known("FLAC")
+    } else if ext.eq_ignore_ascii_case("mp3") {
+        known("MP3")
+    } else if ext.eq_ignore_ascii_case("wav") {
+        known("WAV")
+    } else if ext.eq_ignore_ascii_case("m4a") {
+        known("M4A")
+    } else if ext.eq_ignore_ascii_case("aac") {
+        known("AAC")
+    } else if ext.eq_ignore_ascii_case("ogg") || ext.eq_ignore_ascii_case("oga") {
+        known("OGG")
+    } else if ext.eq_ignore_ascii_case("opus") {
+        known("OPUS")
+    } else if ext.eq_ignore_ascii_case("aif") || ext.eq_ignore_ascii_case("aiff") {
+        known("AIFF")
+    } else if ext.eq_ignore_ascii_case("dsf") {
+        known("DSF")
+    } else if ext.eq_ignore_ascii_case("dff") {
+        known("DFF")
+    } else if ext.eq_ignore_ascii_case("wv") {
+        known("WV")
+    } else {
+        Some(Cow::Owned(ext.to_uppercase()))
+    }
+}
+
+/// Intern a FORMAT label into a shared `Arc<str>`, keyed by the label text. The
+/// first track of each format allocates the key + `Arc`; every later track with
+/// that format gets a cheap `Arc` clone (refcount bump), so a million-track
+/// library holds ~10 format `Arc`s, not a million label `String`s.
+fn intern_format(
+    cache: &mut std::collections::HashMap<Box<str>, Arc<str>>,
+    label: Cow<'static, str>,
+) -> Arc<str> {
+    if let Some(existing) = cache.get(label.as_ref()) {
+        return existing.clone();
+    }
+    let arc: Arc<str> = Arc::from(label.as_ref());
+    cache.insert(Box::from(label.as_ref()), arc.clone());
+    arc
 }
 
 /// Map the importer's `"Unknown Artist"` / `"Unknown Album"` placeholders back to
@@ -549,9 +588,9 @@ fn real_name(s: Option<String>) -> Option<String> {
 mod tests {
     use super::*;
 
-    /// Quantifies the memory the repeated artist/album/genre strings cost as OWNED
-    /// `String`s vs shared `Arc<str>` (interned), to size the `TrackView` interning
-    /// win before taking it on. `#[ignore]`d; run with
+    /// Quantifies the memory the `Arc<str>` interning of `TrackView`'s
+    /// artist/album/genre saves over owned `String`s at scale — the delivered win,
+    /// not a what-if. `#[ignore]`d; run with
     /// `cargo test -p soul-player-backend bench_string_memory -- --ignored --nocapture`.
     #[test]
     #[ignore]
@@ -566,9 +605,9 @@ mod tests {
                     TrackView {
                         id: i,
                         title: Some(format!("Track {i}")),
-                        artist: Some(format!("Artist {artist}")),
-                        album: Some(format!("Album {album}")),
-                        genre: Some(format!("Genre {}", artist % 10)),
+                        artist: Some(Arc::from(format!("Artist {artist}"))),
+                        album: Some(Arc::from(format!("Album {album}"))),
+                        genre: Some(Arc::from(format!("Genre {}", artist % 10))),
                         duration_secs: 180.0,
                         remote_source: None,
                         original_date: 0,
@@ -580,7 +619,7 @@ mod tests {
                 .collect();
             // Owned String: a 24-byte header per field per track + its heap bytes,
             // DUPLICATED across every track that shares the value.
-            let owned = |o: &Option<String>| o.as_ref().map_or(0, |s| 24 + s.len());
+            let owned = |o: &Option<Arc<str>>| o.as_ref().map_or(0, |s| 24 + s.len());
             let owned_total: usize = views
                 .iter()
                 .map(|t| owned(&t.artist) + owned(&t.album) + owned(&t.genre))

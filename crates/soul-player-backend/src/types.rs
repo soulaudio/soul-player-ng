@@ -3,6 +3,7 @@
 //! `soul_audio_control::Command<C>` (generic, frames).
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use soul_audio_core::DeckState;
@@ -386,17 +387,22 @@ pub struct QueueState {
 pub struct TrackView {
     /// The track's (possibly compound, source-tagged) id.
     pub id: u32,
-    /// Track title, or `None` when the file carries no title tag.
+    /// Track title, or `None` when the file carries no title tag. Kept an owned
+    /// `String` (not interned): titles are ~unique per track, so there's no
+    /// sharing to gain, unlike the low-cardinality `artist`/`album`/`genre`/`format`.
     pub title: Option<String>,
-    /// Track artist, or `None` when untagged.
-    pub artist: Option<String>,
-    /// Album title, or `None` when untagged.
-    pub album: Option<String>,
+    /// Track artist, or `None` when untagged. Interned as `Arc<str>` so the many
+    /// tracks sharing one artist share one allocation — `Library::views_by`
+    /// materializes the distinct-artist count of strings, not one-per-track.
+    pub artist: Option<Arc<str>>,
+    /// Album title, or `None` when untagged. Interned as `Arc<str>` (see `artist`).
+    pub album: Option<Arc<str>>,
     /// The track's genre bucket, interned from file tags. Unlike `artist` /
     /// `album`, the importer's `"Unknown Genre"` sentinel is **kept** (not mapped
     /// back to `None`): every track has a genre bucket, and the blank/absent case
     /// is a real, browse-able "Unknown Genre" group that keys the Genre axis.
-    pub genre: Option<String>,
+    /// Interned as `Arc<str>` (see `artist`): genre cardinality is tiny.
+    pub genre: Option<Arc<str>>,
     /// Track duration in seconds, tag-derived (0.0 when unknown).
     pub duration_secs: f64,
     /// `None` when this track sits on local disk; `Some(host)` when it
@@ -422,8 +428,10 @@ pub struct TrackView {
     /// (`"FLAC"`, `"MP3"`, `"WAV"`, `"M4A"`, …), for the Tracks table's color-coded
     /// FORMAT badge. `None` when the name can't resolve or carries no extension.
     /// Cheap: the backend projection (`Library::views_by`) derives this from the
-    /// already-resolved file name, no extra decode or path join.
-    pub format: Option<String>,
+    /// already-resolved file name, no extra decode or path join. Interned as
+    /// `Arc<str>` — only a handful of distinct extensions exist across a library,
+    /// so one allocation per format is shared by every track that uses it.
+    pub format: Option<Arc<str>>,
 }
 
 /// The current track's ORIGINAL source format, for the signal-path display.

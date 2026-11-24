@@ -3388,8 +3388,8 @@ fn feed_media_session(s: &mut State) {
         let _ = tx.send(media_session::Update::Track(media_session::TrackMeta {
             id: track.id,
             title: track.title.clone().unwrap_or_default(),
-            artist: track.artist.clone().unwrap_or_default(),
-            album: track.album.clone().unwrap_or_default(),
+            artist: track.artist.as_deref().unwrap_or_default().to_string(),
+            album: track.album.as_deref().unwrap_or_default().to_string(),
             duration_secs: track.duration_secs,
         }));
     }
@@ -3781,9 +3781,9 @@ fn seed_demo_library(s: &mut State) {
             lib.push(soul_player_host::TrackView {
                 id,
                 title: Some(format!("Track {t}")),
-                artist: Some(artist.to_string()),
-                album: Some(album.clone()),
-                genre: Some(genre.to_string()),
+                artist: Some(artist.into()),
+                album: Some(album.as_str().into()),
+                genre: Some(genre.into()),
                 duration_secs: f64::from(120 + id % 180),
                 remote_source: None,
                 original_date: 0,
@@ -3829,7 +3829,10 @@ fn scene_demo_artists(s: &mut State) {
 fn scene_demo_artist(s: &mut State) {
     seed_demo_library(s);
     s.route = Route::Artist;
-    s.open_artist = s.library.first().and_then(|t| t.artist.clone());
+    s.open_artist = s
+        .library
+        .first()
+        .and_then(|t| t.artist.as_deref().map(str::to_string));
 }
 /// Same, at 150 % zoom — checks the content-pane zoom on a non-grid detail page.
 fn scene_demo_artist_z150(s: &mut State) {
@@ -3840,7 +3843,10 @@ fn scene_demo_artist_z150(s: &mut State) {
 fn scene_demo_genre(s: &mut State) {
     seed_demo_library(s);
     s.route = Route::Genre;
-    s.open_genre = s.library.first().and_then(|t| t.genre.clone());
+    s.open_genre = s
+        .library
+        .first()
+        .and_then(|t| t.genre.as_deref().map(str::to_string));
 }
 /// Seeded Artist detail with the Discography in LIST mode (the row view), so
 /// `--snap` can validate the grid/list toggle's compact-row layout — the lit
@@ -3858,13 +3864,19 @@ fn scene_demo_genre_search(s: &mut State) {
 }
 fn scene_artist_detail(s: &mut State) {
     s.route = Route::Artist;
-    s.open_artist = s.library.first().and_then(|t| t.artist.clone());
+    s.open_artist = s
+        .library
+        .first()
+        .and_then(|t| t.artist.as_deref().map(str::to_string));
     s.now_playing_id = s.library.first().map(|t| t.id);
     s.playing = true;
 }
 fn scene_album_detail(s: &mut State) {
     s.route = Route::Album;
-    s.open_album = s.library.first().and_then(|t| t.album.clone());
+    s.open_album = s
+        .library
+        .first()
+        .and_then(|t| t.album.as_deref().map(str::to_string));
     s.now_playing_id = s.library.first().map(|t| t.id);
     s.playing = true;
 }
@@ -4025,8 +4037,9 @@ fn scene_artwork_crop(s: &mut State) {
     let album = s
         .library
         .iter()
-        .find_map(|t| t.album.clone())
+        .find_map(|t| t.album.as_deref())
         .filter(|a| !a.is_empty())
+        .map(str::to_string)
         .unwrap_or_else(|| "Album".to_string());
     s.route = Route::Album;
     s.open_album = Some(album.clone());
@@ -4058,8 +4071,9 @@ fn scene_artwork_edit(s: &mut State) {
     let album = s
         .library
         .iter()
-        .find_map(|t| t.album.clone())
+        .find_map(|t| t.album.as_deref())
         .filter(|a| !a.is_empty())
+        .map(str::to_string)
         .unwrap_or_else(|| "Album".to_string());
     s.route = Route::Album;
     s.open_album = Some(album.clone());
@@ -5571,8 +5585,8 @@ mod tests {
                         (
                             t.id,
                             t.title.clone().unwrap_or_default(),
-                            t.artist.clone().unwrap_or_default(),
-                            t.album.clone().unwrap_or_default(),
+                            t.artist.as_deref().unwrap_or_default().to_string(),
+                            t.album.as_deref().unwrap_or_default().to_string(),
                             t.duration_secs,
                         )
                     })
@@ -5807,8 +5821,8 @@ mod tests {
                     locator,
                     snapshot: soul_player_host::TrackSnapshot {
                         title: track.title.clone().unwrap_or_default(),
-                        artist: track.artist.clone().unwrap_or_default(),
-                        album: track.album.clone().unwrap_or_default(),
+                        artist: track.artist.as_deref().unwrap_or_default().to_string(),
+                        album: track.album.as_deref().unwrap_or_default().to_string(),
                         duration_secs: track.duration_secs.round() as u32,
                         track_no: None,
                         disc_no: None,
@@ -5897,7 +5911,7 @@ mod tests {
         let album_name = s
             .library
             .iter()
-            .find_map(|t| t.album.clone())
+            .find_map(|t| t.album.as_deref().map(str::to_string))
             .filter(|a| !a.is_empty())
             .expect("the testdata library has at least one named album");
         // Isolation: a sibling album-cover test shares this per-process config
@@ -5974,7 +5988,7 @@ mod tests {
     fn first_album_name(s: &State) -> String {
         s.library
             .iter()
-            .find_map(|t| t.album.clone())
+            .find_map(|t| t.album.as_deref().map(str::to_string))
             .filter(|a| !a.is_empty())
             .expect("the testdata library has at least one named album")
     }
@@ -6151,7 +6165,7 @@ mod tests {
         let artist = s
             .library
             .iter()
-            .filter_map(|t| t.artist.clone())
+            .filter_map(|t| t.artist.as_deref().map(str::to_string))
             .find(|a| !a.is_empty())
             .expect("the testdata library has a named artist");
         // A plain avatar (no custom cover) so the hero is the circular
@@ -6208,7 +6222,7 @@ mod tests {
         let artist = s
             .library
             .iter()
-            .filter_map(|t| t.artist.clone())
+            .filter_map(|t| t.artist.as_deref().map(str::to_string))
             .find(|a| !a.is_empty())
             .expect("the testdata library has a named artist");
         s.covers.clear_artist_cover(&artist);
@@ -11765,7 +11779,7 @@ mod tests {
         soul_player_host::TrackView {
             id,
             title: Some(format!("T{id}")),
-            artist: Some(artist.to_string()),
+            artist: Some(artist.into()),
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
@@ -11783,7 +11797,7 @@ mod tests {
             title: Some(format!("T{id}")),
             artist: Some("A".into()),
             album: Some("Alb".into()),
-            genre: Some(genre.to_string()),
+            genre: Some(genre.into()),
             duration_secs: 1.0,
             remote_source: None,
             original_date: 0,
@@ -12273,8 +12287,8 @@ mod tests {
         soul_player_host::TrackView {
             id,
             title: Some(format!("T{id}")),
-            artist: Some(artist.to_string()),
-            album: Some(album.to_string()),
+            artist: Some(artist.into()),
+            album: Some(album.into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote_source: None,
@@ -13695,7 +13709,7 @@ mod tests {
         let needle = first
             .title
             .clone()
-            .or_else(|| first.artist.clone())
+            .or_else(|| first.artist.as_deref().map(str::to_string))
             .expect("first track has a title or artist to search for");
         s.library_search = rune::TextEdit::new(&needle);
         let env = Env {
@@ -14310,7 +14324,7 @@ mod tests {
                 id: a,
                 title: Some(format!("T{a}")),
                 artist: Some("A".into()),
-                album: Some(format!("Album {a:02}")),
+                album: Some(format!("Album {a:02}").into()),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote_source: None,
@@ -14392,7 +14406,7 @@ mod tests {
                 id: a,
                 title: Some(format!("T{a}")),
                 artist: Some("A".into()),
-                album: Some(format!("Album {a:02}")),
+                album: Some(format!("Album {a:02}").into()),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote_source: None,
@@ -14502,7 +14516,7 @@ mod tests {
                 id,
                 title: Some(format!("T{id}")),
                 artist: Some("A".into()),
-                album: Some(format!("Album {id:02}")),
+                album: Some(format!("Album {id:02}").into()),
                 genre: Some("Rock".into()),
                 duration_secs: 1.0,
                 remote_source: None,
@@ -14556,8 +14570,8 @@ mod tests {
         soul_player_host::TrackView {
             id,
             title: Some(format!("T{id}")),
-            artist: Some(format!("Artist {id:02}")),
-            album: Some(format!("Album {id:02}")),
+            artist: Some(format!("Artist {id:02}").into()),
+            album: Some(format!("Album {id:02}").into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote_source: None,

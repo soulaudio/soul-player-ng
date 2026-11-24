@@ -50,8 +50,8 @@ pub(crate) fn add_track_to_playlist(s: &mut State, track_id: u32, playlist_id: P
     };
     let snapshot = TrackSnapshot {
         title: view.title.clone().unwrap_or_default(),
-        artist: view.artist.clone().unwrap_or_default(),
-        album: view.album.clone().unwrap_or_default(),
+        artist: view.artist.as_deref().unwrap_or_default().to_string(),
+        album: view.album.as_deref().unwrap_or_default().to_string(),
         duration_secs: view.duration_secs.round() as u32,
         track_no: None,
         disc_no: None,
