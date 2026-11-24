@@ -20,6 +20,8 @@ import sys
 SECTIONS = [("feat", "New"), ("fix", "Fixed"), ("perf", "Faster")]
 SUBJECT = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]*)\))?(?P<bang>!)?: (?P<desc>.+)$")
 PR_SUFFIX = re.compile(r"\s*\(#\d+\)\s*$")
+# A fix to the release pipeline or the test harness is nothing a listener notices.
+INTERNAL_SCOPES = {"ci", "e2e", "release", "release-e2e", "test", "tests"}
 
 
 def previous_tag(tag: str) -> str | None:
@@ -48,7 +50,7 @@ def notes(subs: list[str], limit: int = 12) -> str:
     grouped: dict[str, list[str]] = {t: [] for t, _ in SECTIONS}
     for s in subs:
         m = SUBJECT.match(s.strip())
-        if not m or m["type"] not in grouped:
+        if not m or m["type"] not in grouped or (m["scope"] or "") in INTERNAL_SCOPES:
             continue
         desc = PR_SUFFIX.sub("", m["desc"]).strip()
         desc = desc[:1].upper() + desc[1:]
@@ -75,6 +77,7 @@ def selftest() -> None:
         "fix(linux): make the Next session e2e deterministic (#316)",
         "ci: bump actions",
         "test(release-e2e): mark stale via rename",
+        "fix(release-e2e): install the AppImage by rename (#352)",
         "perf(output): pre-warm the audio device at startup (#330)",
         "feat!: drop the old config format",
         "Merge branch 'main'",
