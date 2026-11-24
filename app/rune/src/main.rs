@@ -4215,7 +4215,16 @@ fn main() -> anyhow::Result<()> {
         // an app Quit / OS logout (Cmd+Q, `WM_ENDSESSION`), where the run loop may
         // not return cleanly.
         .on_close(|s: &mut State, _tx: &mut Tx| flush_on_exit(s))
-        .on_quit(|s: &mut State, _tx: &mut Tx| flush_on_exit(s))
+        .on_quit(|s: &mut State, _tx: &mut Tx| {
+            flush_on_exit(s);
+            // macOS Quit (⌘Q, the Dock, logout, an Apple Event) ends the process
+            // from `applicationWillTerminate:` right after these hooks: `app.run()`
+            // never returns, so an install-on-quit update has to go in here or it
+            // never does. Elsewhere the run loop returns and the call after it does
+            // the install (an update is applied once; the later call is a no-op).
+            #[cfg(target_os = "macos")]
+            update::apply_pending();
+        })
         // Track focus so now-playing toasts fire only while backgrounded.
         .on_focus(|s: &mut State, focused: bool, _tx: &mut Tx| s.focused = focused);
     let ah = app.handle();
