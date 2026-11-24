@@ -146,12 +146,12 @@ fn section_keys(src: &str, section: &str) -> Vec<String> {
         if !inside || t.starts_with('#') {
             continue;
         }
-        if depth == 0 {
-            if let Some((k, _)) = t.split_once('=') {
-                let k = k.trim();
-                if !k.is_empty() && !k.starts_with('"') {
-                    keys.push(k.to_string());
-                }
+        if depth == 0
+            && let Some((k, _)) = t.split_once('=')
+        {
+            let k = k.trim();
+            if !k.is_empty() && !k.starts_with('"') {
+                keys.push(k.to_string());
             }
         }
         depth += (t.matches(['[', '{']).count() as i32) - (t.matches([']', '}']).count() as i32);
