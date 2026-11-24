@@ -1308,14 +1308,23 @@ impl PlayerHandle {
             .map(|(server, _blobs)| Arc::clone(server))
             .collect();
         let now = now_unix();
+        // Probe the network WITHOUT holding `remote_health`: each probe blocks up to
+        // the 5s ping timeout, and `sources()` / `remote_statuses()` read this same
+        // lock on the UI thread, so holding it across the probes would stall the UI
+        // for the whole refresh (seconds, worse with several remotes). Collect the
+        // results first, then take the lock only for the fast inserts.
+        let probed: Vec<(String, RemoteHealth)> = servers
+            .iter()
+            .map(|server| (server.url.clone(), remote::probe_health(server, now)))
+            .collect();
         {
             let mut cache = self
                 .inner
                 .remote_health
                 .lock()
                 .expect("remote_health mutex");
-            for server in &servers {
-                cache.insert(server.url.clone(), remote::probe_health(server, now));
+            for (url, health) in probed {
+                cache.insert(url, health);
             }
         }
         self.sources()
@@ -2284,6 +2293,62 @@ mod tests {
     fn offline_handle_has_empty_views_before_open() {
         let h = PlayerHandle::offline();
         assert!(h.views().is_empty());
+    }
+
+    /// `refresh_remote_health` must NOT hold the `remote_health` lock while it probes
+    /// the network: `sources()` reads that lock on the UI thread, so holding it across
+    /// the (up to 5s) blocking pings would stall the UI for the whole refresh. Inject a
+    /// remote pointing at a server that accepts the ping then stalls, run the refresh on
+    /// another thread, and assert the lock is still immediately available while that
+    /// probe is in flight.
+    #[test]
+    fn refresh_remote_health_does_not_hold_the_lock_while_probing() {
+        use std::io::Read;
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = listener.local_addr().expect("local addr");
+        let (hit_tx, hit_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        // Accept the /v0/ping, signal that the probe is now in flight, wait until the
+        // test has checked the lock, then close so `probe_health` returns promptly.
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 256];
+                let _ = sock.read(&mut buf);
+                let _ = hit_tx.send(());
+                let _ = release_rx.recv_timeout(Duration::from_secs(5));
+                // Dropping `sock` closes the connection so the probe stops waiting.
+            }
+        });
+
+        let h = PlayerHandle::offline();
+        h.inner.remotes.lock().expect("remotes mutex").push((
+            Arc::new(RemoteServer {
+                url: format!("http://{addr}"),
+                access_token: String::new(),
+            }),
+            Vec::new(),
+        ));
+
+        std::thread::scope(|s| {
+            let refresher = s.spawn(|| h.refresh_remote_health());
+            // Wait until the probe is definitely in flight (the server got the ping).
+            hit_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("the probe should reach the stalled server");
+            // With the probe blocked mid-flight, remote_health MUST still be free.
+            let start = Instant::now();
+            drop(h.inner.remote_health.lock().expect("remote_health mutex"));
+            let waited = start.elapsed();
+            let _ = release_tx.send(());
+            let _ = refresher.join();
+            assert!(
+                waited < Duration::from_secs(1),
+                "remote_health was held across the network probe (waited {waited:?})"
+            );
+        });
     }
 
     #[test]
