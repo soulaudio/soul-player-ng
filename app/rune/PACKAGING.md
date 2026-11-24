@@ -81,6 +81,12 @@ Replaces: soul-player-rune
 which is one idiom, not three independent fields (Debian policy §7.6): together
 they let dpkg *remove* the old package instead of refusing the file overlap.
 
+The **`.rpm` needs no equivalent** — do not add `Obsoletes` by analogy. Its
+package name was already `soul-player`, so the rename only moves a file inside
+the same package, which rpm handles itself: installing the old rpm and running
+`rpm -U` on the renamed one leaves exactly one binary and one desktop entry
+(tested in a Fedora container, not assumed).
+
 `build-linux.sh` patches these into the built package's control file, and fails
 if they do not read back. They are **not** in `Cargo.toml`: cargo-packager
 0.11.8's Debian config has no such fields (the provides/conflicts/replaces in
