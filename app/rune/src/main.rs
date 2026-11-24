@@ -14012,6 +14012,63 @@ mod tests {
         );
     }
 
+    /// Frame-time benchmark: the steady-state (warm-cache) render cost of each
+    /// browse page as the library scales to a MILLION tracks, proving the
+    /// memoization + virtualization keep the per-frame cost FLAT instead of growing
+    /// with the library. `#[ignore]`d (it allocates a 1M-track library); run with
+    /// `cargo test -p soul-player-rune bench_page_frame -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_page_frame_time_at_scale() {
+        use std::time::Instant;
+        // ~12 tracks/album, ~8 albums/artist, 10 genres — a believable fan-out.
+        fn synth(n: u32) -> Vec<TrackView> {
+            (0..n)
+                .map(|i| {
+                    let album = i / 12;
+                    let artist = album / 8;
+                    TrackView {
+                        id: i,
+                        title: Some(format!("T{i}")),
+                        artist: Some(format!("Artist {artist}")),
+                        album: Some(format!("Album {album}")),
+                        genre: Some(format!("Genre {}", artist % 10)),
+                        duration_secs: 180.0,
+                        remote_source: None,
+                        original_date: 0,
+                        release_date: 0,
+                        loudness: None,
+                        format: Some("FLAC".into()),
+                    }
+                })
+                .collect()
+        }
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        for &n in &[100_000u32, 1_000_000] {
+            for (name, route) in [
+                ("Albums", Route::Albums),
+                ("Artists", Route::Artists),
+                ("Genres", Route::Genres),
+                ("Tracks", Route::Library),
+            ] {
+                let mut s = State::new(PlayerHandle::offline());
+                s.library = synth(n);
+                s.route = route;
+                let mut rt = Runtime::new(s, view, (1280.0, 900.0), env);
+                // Two warmup frames: build the grouping/index caches + establish
+                // layout, so the third frame is the steady-state cost.
+                rt.frame(0.0);
+                rt.frame(0.0);
+                let t = Instant::now();
+                rt.frame(0.0);
+                eprintln!("n={n:>9}  {name:<8} warm frame = {:?}", t.elapsed());
+            }
+        }
+    }
+
     /// Nothing queued and nothing upcoming shows the empty state, not stale rows.
     #[test]
     fn empty_queue_shows_the_empty_state() {
