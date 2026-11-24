@@ -173,6 +173,17 @@ it.
 
 ## Auto-update (implemented, free)
 
+> **One-time, 0.4.2 → 0.4.3 only (macOS and Windows):** the update installs
+> correctly but the app does **not** reopen by itself; it starts normally when
+> launched again. The relaunch is done by the build being replaced, using its
+> own `current_exe` — and the rename deleted that path. Nothing in the new build
+> can change that, because the code performing the relaunch already shipped in
+> 0.4.2. `relaunch_target` now resolves the renamed binary beside the old path
+> so a future rename cannot repeat it, and the release e2e detects this exact
+> situation and verifies the installed build runs when started rather than
+> failing the release. The AppImage is unaffected (one file, same path).
+
+
 The app updates itself with no paid accounts. **This is independent of OS
 code-signing.** On launch, release builds check GitHub Releases for a newer
 build; if one exists, **Settings → Updates** shows **Install & Restart**, which

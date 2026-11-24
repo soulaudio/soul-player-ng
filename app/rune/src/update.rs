@@ -375,11 +375,74 @@ pub fn apply_pending() {
 
 /// What to start after an in-place update: the AppImage file itself on Linux
 /// (`current_exe` is inside its now-stale mount), else this executable's path,
-/// which now holds the new build (the macOS updater swaps the whole bundle).
+/// which normally now holds the new build (the macOS updater swaps the whole
+/// bundle).
+///
+/// "Normally" is the catch. `current_exe` is the path of the build being
+/// REPLACED, so it only survives while the new build keeps the same binary
+/// name. Renaming the binary (`soul-player-rune` -> `soul-player` after 0.4.2)
+/// deletes that path as part of a perfectly successful install, and the relaunch
+/// then fails with ENOENT — the update is applied, the app just never comes
+/// back. That cannot be fixed for an upgrade FROM an already-published build,
+/// because the old build is the one running this code; it can only be stopped
+/// from happening again.
 fn relaunch_target() -> Option<PathBuf> {
-    std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        return Some(PathBuf::from(appimage));
+    }
+    let exe = std::env::current_exe().ok()?;
+    if exe.exists() {
+        return Some(exe);
+    }
+    // The install renamed the binary out from under us. Look for its
+    // replacement beside it: on macOS that is the one binary in
+    // `Contents/MacOS`, on Windows the install directory minus the NSIS
+    // uninstaller.
+    let dir = exe.parent()?;
+    let names = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| {
+            let e = e.ok()?;
+            e.file_type().ok()?.is_file().then_some(())?;
+            e.file_name().into_string().ok()
+        })
+        .collect::<Vec<_>>();
+    let old = exe.file_name()?.to_str()?;
+    let name = pick_replacement_binary(old, &names, cfg!(windows))?;
+    tracing::warn!(
+        %old, %name,
+        "the update renamed the binary; relaunching its replacement"
+    );
+    Some(dir.join(name))
+}
+
+/// Choose the renamed binary from what is sitting next to the old path.
+///
+/// Deliberately refuses to guess: with no single obvious candidate it returns
+/// `None` and the caller logs that the path is unknown, which is a better
+/// outcome than launching an uninstaller. `Update::config` carries no binary
+/// name, so there is nothing authoritative to compare against.
+///
+/// `windows` is a parameter rather than `cfg!(windows)` for the same reason
+/// [`manager_owned`] takes its inputs: CI runs this crate's tests on Linux and
+/// macOS only, so a `#[cfg(windows)]` test of the uninstaller filter would
+/// never execute anywhere — which is worse than not having one.
+fn pick_replacement_binary(old: &str, names: &[String], windows: bool) -> Option<String> {
+    let mut candidates: Vec<&String> = names
+        .iter()
+        .filter(|n| n.as_str() != old)
+        // NSIS writes `uninstall.exe` into the install directory; starting it
+        // after an update would be the worst possible outcome here.
+        .filter(|n| !n.to_ascii_lowercase().contains("unins"))
+        // Windows only ships `.exe` as startable; elsewhere the bundle's
+        // `Contents/MacOS` holds exactly the binary.
+        .filter(|n| !windows || n.to_ascii_lowercase().ends_with(".exe"))
+        .collect();
+    candidates.sort();
+    match candidates.as_slice() {
+        [only] => Some((*only).clone()),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -388,6 +451,64 @@ mod tests {
     use std::net::TcpListener;
 
     use super::*;
+
+    /// A rename deletes `current_exe` as part of a SUCCESSFUL install, and the
+    /// relaunch then has to find the new binary beside the old path. Getting
+    /// this wrong is worse than doing nothing: the NSIS uninstaller lives in the
+    /// same directory on Windows, so a naive "take the other file" would start
+    /// an uninstaller for the app the user just updated.
+    #[test]
+    fn the_renamed_binary_is_found_beside_the_old_path() {
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+        // The macOS case: `Contents/MacOS` holds exactly the new binary.
+        assert_eq!(
+            pick_replacement_binary("soul-player-rune", &names(&["soul-player"]), false),
+            Some("soul-player".to_string())
+        );
+
+        // The Windows case: the install directory also holds the uninstaller,
+        // which must never be the thing we start.
+        assert_eq!(
+            pick_replacement_binary(
+                "soul-player-rune.exe",
+                &names(&["soul-player.exe", "uninstall.exe"]),
+                true
+            ),
+            Some("soul-player.exe".to_string()),
+            "uninstall.exe must be filtered out, leaving one candidate"
+        );
+        assert_eq!(
+            pick_replacement_binary("soul-player-rune.exe", &names(&["uninstall.exe"]), true),
+            None,
+            "with only an uninstaller there is no valid target"
+        );
+
+        // Non-.exe files are not startable on Windows.
+        assert_eq!(
+            pick_replacement_binary("soul-player-rune.exe", &names(&["README.txt"]), true),
+            None
+        );
+
+        // Nothing to go on — decline rather than guess.
+        assert_eq!(
+            pick_replacement_binary("soul-player-rune", &names(&["soul-player-rune"]), false),
+            None,
+            "the old name alone is not a replacement"
+        );
+        assert_eq!(pick_replacement_binary("soul-player-rune", &[], false), None);
+
+        // Ambiguous: two plausible binaries, so refuse.
+        assert_eq!(
+            pick_replacement_binary(
+                "soul-player-rune",
+                &names(&["soul-player", "soul-player-old"]),
+                false
+            ),
+            None,
+            "two candidates must not be resolved by luck"
+        );
+    }
 
     /// Who owns the install decides whether the updater may run at all, and the
     /// AppImage case is the trap: a running AppImage mounts itself under
