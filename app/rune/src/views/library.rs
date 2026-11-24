@@ -621,10 +621,18 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             );
     }
     let q = s.library_search.text.to_lowercase();
-    let visible: Vec<&TrackView> = if q.is_empty() {
-        s.library.iter().collect()
+    // A shared `Rc` snapshot of the library (memoized; see `State::library_rc`), so
+    // the virtual-row closures INDEX it rather than cloning every visible track every
+    // frame. The filter yields a `Vec<usize>` of indices into that snapshot.
+    let lib = s.library_rc();
+    let visible: Vec<usize> = if q.is_empty() {
+        (0..lib.len()).collect()
     } else {
-        s.library.iter().filter(|t| track_matches(t, &q)).collect()
+        lib.iter()
+            .enumerate()
+            .filter(|(_, t)| track_matches(t, &q))
+            .map(|(i, _)| i)
+            .collect()
     };
     let body = if visible.is_empty() {
         col().key("no-matches").grow(1.0).min_h(0.0).center().child(
@@ -633,18 +641,17 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         )
     } else {
         // Virtualized rows: only the window the viewport shows (plus a margin either
-        // side) is ever built, so the Tracks page stays smooth on a 10k+ track
-        // library instead of laying out every row. `virtual_rows`' build/key closures
-        // take `&State` and can borrow nothing, so they capture OWNED data: an
-        // `Rc<[TrackView]>` of the visible tracks (cloned once per render, cheap to
-        // index), the context ids, the palette, and the row width + scale. Each row is
-        // keyed by its track id (handlers find their track by id, never the index).
-        let ids: std::rc::Rc<[u32]> = visible.iter().map(|t| t.id).collect();
-        let rows: std::rc::Rc<[TrackView]> = visible.iter().map(|t| (*t).clone()).collect();
+        // side) is ever built. The build/key closures take `&State` and can borrow
+        // nothing, so they capture OWNED data: the memoized library `Rc`, the
+        // visible-INDEX list, and the context ids (cheap `u32`s) — NEVER a per-frame
+        // clone of the visible TrackViews, which was a million clones/frame at a
+        // million tracks. Each row is keyed by its track id.
+        let ids: std::rc::Rc<[u32]> = visible.iter().map(|&i| lib[i].id).collect();
+        let visible: std::rc::Rc<[usize]> = visible.into();
         let pal = *p;
-        let count = rows.len();
-        let key_rows = rows.clone();
-        let (build_rows, build_ids) = (rows.clone(), ids.clone());
+        let count = visible.len();
+        let (key_lib, key_vis) = (lib.clone(), visible.clone());
+        let (build_lib, build_vis, build_ids) = (lib.clone(), visible.clone(), ids.clone());
         // `role("list")` announces the rows to assistive tech; each built row is a
         // focusable button Tab reaches and Space plays. Only built (windowed) rows
         // are in the element/a11y tree, which is how virtualization pays off.
@@ -658,10 +665,18 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 move |_s: &State, i: usize| {
                     // Key each row the SAME as `track_row`'s own key ("track-{id}"),
                     // so finders/tests keep resolving a row by its id.
-                    std::borrow::Cow::Owned(format!("track-{}", key_rows[i].id))
+                    std::borrow::Cow::Owned(format!("track-{}", key_lib[key_vis[i]].id))
                 },
                 move |s: &State, i: usize| {
-                    track_row(s, &pal, &build_rows[i], &build_ids, i, width, scale)
+                    track_row(
+                        s,
+                        &pal,
+                        &build_lib[build_vis[i]],
+                        &build_ids,
+                        i,
+                        width,
+                        scale,
+                    )
                 },
             );
         scrollbar::attach(

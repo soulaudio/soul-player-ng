@@ -396,7 +396,7 @@ fn entry_row(
     play_index: Option<usize>,
 ) -> El {
     let track_el = resolved
-        .and_then(|tid| s.library.iter().find(|t| t.id == tid))
+        .and_then(|tid| s.track(tid))
         .map(|t| {
             detail_track_row(
                 s.now_playing_id,
@@ -553,7 +553,7 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
         .iter()
         .zip(&resolved)
         .map(|(e, r)| {
-            r.and_then(|tid| s.library.iter().find(|t| t.id == tid))
+            r.and_then(|tid| s.track(tid))
                 .map(|t| t.duration_secs)
                 .unwrap_or(f64::from(e.snapshot.duration_secs))
         })

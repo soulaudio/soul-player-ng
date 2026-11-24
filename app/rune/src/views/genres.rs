@@ -257,10 +257,11 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         .iter()
         .copied()
         .filter(|id| {
+            // `s.track` is O(1) (memoized index map), so filtering a big genre is
+            // O(genre tracks), not the O(genre tracks x library) a per-id library
+            // scan would cost.
             q.is_empty()
-                || s.library
-                    .iter()
-                    .find(|t| t.id == *id)
+                || s.track(*id)
                     .is_some_and(|t| crate::views::library::track_matches(t, &q))
         })
         .collect();
@@ -283,7 +284,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         );
     } else {
         for (i, &id) in shown.iter().enumerate() {
-            if let Some(t) = s.library.iter().find(|t| t.id == id) {
+            if let Some(t) = s.track(id) {
                 list = list.child(detail_track_row(
                     s.now_playing_id,
                     s.playing,

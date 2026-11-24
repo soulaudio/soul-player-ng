@@ -45,7 +45,7 @@ pub(crate) fn add_track_to_playlist(s: &mut State, track_id: u32, playlist_id: P
     let Some(locator) = s.host.locator_of(track_id) else {
         return;
     };
-    let Some(view) = s.library.iter().find(|t| t.id == track_id) else {
+    let Some(view) = s.track(track_id) else {
         return;
     };
     let snapshot = TrackSnapshot {

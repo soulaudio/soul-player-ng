@@ -34,6 +34,10 @@ pub(crate) struct Artist {
     cover_id: u32,
     ids: Vec<u32>,
     remote_source: Option<String>,
+    /// The number of distinct albums across this artist's tracks, resolved once at
+    /// group time. The card used to recompute it with `albums_of_artist`, which
+    /// SCANS THE WHOLE LIBRARY per card — O(n) × every visible card every frame.
+    album_count: usize,
 }
 
 /// Group the flat library by artist, preserving first-seen (library) order so
@@ -53,6 +57,7 @@ pub(crate) fn group_artists(library: &[TrackView]) -> Vec<Artist> {
                 cover_id: t.id,
                 ids: Vec::new(),
                 remote_source: None, // resolved below, once every member track is known
+                album_count: 0,      // resolved below from the member tracks' albums
             });
             artists.len() - 1
         });
@@ -69,6 +74,21 @@ pub(crate) fn group_artists(library: &[TrackView]) -> Vec<Artist> {
                 .iter()
                 .filter_map(|id| remote_by_id.get(id).copied()),
         );
+    }
+    // Album count = distinct albums across the artist's tracks (a `None` album is
+    // the shared "Unknown" bucket, same as `group_albums`). Same `id -> album` map
+    // rationale as the remote pass: avoid an O(n²) find per member id.
+    let album_by_id: HashMap<u32, Option<&str>> =
+        library.iter().map(|t| (t.id, t.album.as_deref())).collect();
+    for artist in &mut artists {
+        let mut albums: Vec<Option<&str>> = artist
+            .ids
+            .iter()
+            .filter_map(|id| album_by_id.get(id).copied())
+            .collect();
+        albums.sort_unstable();
+        albums.dedup();
+        artist.album_count = albums.len();
     }
     artists
 }
@@ -94,7 +114,7 @@ pub(crate) fn filter_artists(artists: Vec<Artist>, query: &str) -> Vec<Artist> {
 /// tracks.
 fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, scale: f32) -> El {
     let name = a.name.clone();
-    let album_count = albums_of_artist(&s.library, &a.name, s.album_year).len();
+    let album_count = a.album_count;
     // The right-click menu's play context (all of the artist's tracks) + artwork
     // target, cloned so the outer handler stays `Fn`.
     let menu_ids = a.ids.clone();
@@ -305,7 +325,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 .color(p.fg),
         );
     for (i, &id) in artist.ids.iter().take(shown).enumerate() {
-        if let Some(t) = s.library.iter().find(|t| t.id == id) {
+        if let Some(t) = s.track(id) {
             top = top.child(detail_track_row(
                 s.now_playing_id,
                 s.playing,
@@ -459,7 +479,7 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
     let total: f64 = alb
         .ids
         .iter()
-        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .filter_map(|id| s.track(*id))
         .map(|t| t.duration_secs)
         .sum();
     let meta = format!(

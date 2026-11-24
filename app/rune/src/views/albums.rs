@@ -717,7 +717,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     let total: f64 = album
         .ids
         .iter()
-        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .filter_map(|id| s.track(*id))
         .map(|t| t.duration_secs)
         .sum();
     let mut meta = format!(
@@ -778,7 +778,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
 
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
     for (i, &id) in album.ids.iter().enumerate() {
-        if let Some(t) = s.library.iter().find(|t| t.id == id) {
+        if let Some(t) = s.track(id) {
             list = list.child(detail_track_row(
                 s.now_playing_id,
                 s.playing,
