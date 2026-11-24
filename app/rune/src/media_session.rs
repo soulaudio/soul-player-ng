@@ -137,6 +137,10 @@ pub(crate) fn artwork_file_name(id: u32, mime: &str) -> String {
 
 /// A `file://` URL for an absolute `path`, each segment percent-encoded (spaces, `#`,
 /// `?`, non-ASCII album names …) so `NSURL URLWithString:` accepts it.
+// The Windows SMTC path uses `cover_url_for_session`'s raw-native-path form instead, so this
+// RFC form is unused in the Windows binary (still used by the macOS / MPRIS backends and its
+// own tests).
+#[cfg_attr(windows, allow(dead_code))]
 pub(crate) fn file_url(path: &std::path::Path) -> String {
     use std::path::Component;
     let mut url = String::from("file://");
@@ -159,8 +163,28 @@ pub(crate) fn file_url(path: &std::path::Path) -> String {
     url
 }
 
+/// The cover URL to hand souvlaki for a local art file at `path`. souvlaki's backends disagree
+/// on the format, so this is platform-specific:
+/// - **Windows (SMTC):** souvlaki 0.9.3 does `url.trim_start_matches("file://")` then
+///   `StorageFile::GetFileFromPathAsync(rest)`, so it needs `file://` + the RAW native path
+///   (`file://C:\…`). The RFC [`file_url`] form (`file:///C:/…`, percent-encoded) leaves a
+///   leading slash before the drive and `%20` escapes after the trim — an invalid Windows path
+///   that fails with `ERROR_BAD_PATHNAME` (0x800700A1) on every track, so the art never reaches
+///   the volume OSD.
+/// - **macOS / MPRIS:** want a proper RFC `file://` URL (`NSURL URLWithString:` / the
+///   `mpris:artUrl` field), which is exactly what [`file_url`] produces.
+#[cfg(windows)]
+fn cover_url_for_session(path: &std::path::Path) -> String {
+    format!("file://{}", path.display())
+}
+#[cfg(not(windows))]
+fn cover_url_for_session(path: &std::path::Path) -> String {
+    file_url(path)
+}
+
 /// Write track `id`'s cover into `dir` (replacing any older cover files there) and return
-/// its `file://` URL; `None` when the track has no art or the write fails.
+/// its cover URL (see [`cover_url_for_session`]); `None` when the track has no art or the
+/// write fails.
 fn publish_artwork(
     dir: &std::path::Path,
     id: u32,
@@ -181,7 +205,7 @@ fn publish_artwork(
     }
     let path = dir.join(&name);
     std::fs::write(&path, &cover.bytes).ok()?;
-    Some(file_url(&path))
+    Some(cover_url_for_session(&path))
 }
 
 /// Size of a generated Now Playing cover (Control Center / lock screen draw it large).
@@ -500,6 +524,33 @@ mod tests {
         assert_eq!(
             file_url(odd),
             "file:///C:/Music/AC%23DC%20%3F/Bj%C3%B6rk.png"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_cover_url_is_a_raw_native_path_souvlaki_can_open() {
+        // souvlaki 0.9.3's SMTC backend does `url.trim_start_matches("file://")` then
+        // `StorageFile::GetFileFromPathAsync(rest)`. So our Windows cover URL must leave a VALID
+        // native path after that trim: the drive letter directly (NO leading slash) and NO
+        // percent-encoding. The RFC `file_url` form (`file:///C:/…%20…`) leaves `/C:/…%20…`,
+        // which Windows rejects with ERROR_BAD_PATHNAME (0x800700A1) — the "art never reaches
+        // the volume OSD" bug this guards against.
+        let p =
+            std::path::Path::new(r"C:\Users\a b\AppData\Local\soul-player\now-playing\cover-5.png");
+        let url = cover_url_for_session(p);
+        let after_trim = url.trim_start_matches("file://");
+        assert_eq!(
+            after_trim, r"C:\Users\a b\AppData\Local\soul-player\now-playing\cover-5.png",
+            "souvlaki feeds exactly this to GetFileFromPathAsync"
+        );
+        assert!(
+            !after_trim.starts_with('/'),
+            "no leading slash before the drive (that was the 0x800700A1 cause)"
+        );
+        assert!(
+            !after_trim.contains('%'),
+            "a raw native path, not a percent-encoded URL"
         );
     }
 
