@@ -649,9 +649,15 @@ class UpdateServer:
     still has the endpoint in its environment, sees no update and stays up instead of
     updating in a loop."""
 
-    def __init__(self, version: str, target_key: str, artifact: Path, signature: str, fmt: str):
+    def __init__(self, version: str, target_key: str, artifact: Path, signature: str, fmt: str,
+                 rate: int | None = None, drop_first_at: float | None = None):
+        """`rate` (bytes/s) throttles the download, like a slow connection.
+        `drop_first_at` (0..1) cuts the FIRST download off after that fraction,
+        like a dropped connection; later ones complete."""
         self.requests: list[str] = []
         self.offering = True  # False: "no release yet" (404), until flipped
+        self.delivered = False  # a complete artifact went out
+        self.size = artifact.stat().st_size
         outer = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -661,7 +667,7 @@ class UpdateServer:
             def do_GET(self):  # noqa: N802 (stdlib name)
                 outer.requests.append(self.path)
                 if (self.path.startswith("/latest.json") and outer.offering
-                        and "/artifact" not in outer.requests):
+                        and not outer.delivered):
                     body, ctype = json.dumps(outer.manifest).encode(), "application/json"
                 elif self.path == "/artifact":
                     body, ctype = artifact.read_bytes(), "application/octet-stream"
@@ -672,7 +678,30 @@ class UpdateServer:
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(body)
+                if self.path != "/artifact":
+                    self.wfile.write(body)
+                    return
+                first = outer.requests.count("/artifact") == 1
+                cut = (int(len(body) * drop_first_at) if first and drop_first_at is not None
+                       else len(body))
+                chunk, sent, t0 = 64 * 1024, 0, time.monotonic()
+                try:
+                    while sent < cut:
+                        n = min(chunk, cut - sent)
+                        self.wfile.write(body[sent:sent + n])
+                        sent += n
+                        if rate:  # hold the average to `rate`
+                            ahead = sent / rate - (time.monotonic() - t0)
+                            if ahead > 0:
+                                time.sleep(ahead)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                if sent < len(body):
+                    # Hang up mid-body: the client sees the connection drop.
+                    self.close_connection = True
+                    self.connection.shutdown(2)
+                    return
+                outer.delivered = True
 
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         base = f"http://127.0.0.1:{self.srv.server_address[1]}"
@@ -943,18 +972,47 @@ def auto_check_off(inst: Install, env: AppEnv, library: Path, update: tuple, ver
     ok("no update traffic in 15s with automatic checks off (re-checks every 2s otherwise)")
 
 
+PROGRESS = re.compile(r"^(\S+)\s.*update download progress percent=(\d+)", re.M)
+
+
+def check_progress(text: str, min_secs: float) -> None:
+    """The log's 10 % download steps: in order, up to 100 %, spread over at
+    least `min_secs` (the throttled server's pace — progress was reported as
+    the bytes arrived, not all at the end)."""
+    steps = [(m.group(1), int(m.group(2))) for m in PROGRESS.finditer(text)]
+    pcts = [p for _, p in steps]
+    check(len(pcts) >= 5 and pcts == sorted(set(pcts)) and pcts[-1] == 100,
+          f"download progress steps {pcts}")
+
+    def ts(s: str) -> float:
+        return time.mktime(time.strptime(s[:19], "%Y-%m-%dT%H:%M:%S")) + float("0." + s[20:-1] or 0)
+
+    span = ts(steps[-1][0]) - ts(steps[0][0])
+    check(span >= min_secs, f"progress {pcts} came in {span:.1f}s, expected it spread over ≥{min_secs}s")
+    ok(f"download progress reported as it arrived: {pcts} over {span:.1f}s")
+
+
+def slow_rate(update: tuple, secs: float) -> int:
+    """Bytes/s that makes this update's download take about `secs`."""
+    return max(64 * 1024, int(update[0].stat().st_size / secs))
+
+
 def install_on_quit(inst: Install, env: AppEnv, library: Path, update: tuple, version: str, key: str) -> None:
     """"Install updates automatically": download in the background, install nothing
     mid-session, install when the user quits (on macOS with the Quit Apple Event, as
     ⌘Q does), and do not reopen the app."""
     set_config(env, update_auto_check=True, update_auto_install=True)
-    offer = UpdateServer(bump_patch(version), key, *update)
+    # A slow connection: the download takes ~8 s, so progress has to arrive
+    # in steps while the app keeps running.
+    offer = UpdateServer(bump_patch(version), key, *update, rate=slow_rate(update, 8))
     mark_stale(inst)
     p, mark, console = launch_with_updater(inst, env, library, offer)
     try:
-        ready = wait_until(lambda: "installs when you quit" in env.log_since(mark), 180)
-        check(ready, f"no background download\n{env.log_since(mark)[-3000:]}")
+        ready = wait_until(lambda: "installs when you quit" in env.log_since(mark)
+                           or p.poll() is not None, 180)
+        check(ready and p.poll() is None, f"no background download\n{env.log_since(mark)[-3000:]}")
         check("/artifact" in offer.requests, "staged without downloading?")
+        check_progress(env.log_since(mark), 5)
         time.sleep(5)
         check(p.poll() is None, "the app quit/restarted on its own after downloading")
         check(is_stale(inst), "it installed mid-session")
@@ -1033,6 +1091,39 @@ def installed_version_at(app: Path) -> str:
     return subprocess.check_output(
         ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleShortVersionString", str(app / "Contents" / "Info.plist")],
         text=True).strip()
+
+
+def interrupted_download(inst: Install, env: AppEnv, library: Path, update: tuple, version: str,
+                         key: str) -> None:
+    """The connection drops 40 % into a background download: the app says so,
+    keeps running, retries on its own soon after (not at the next 12-hour
+    check), and the retry completes and verifies."""
+    set_config(env, update_auto_check=True, update_auto_install=True)
+    offer = UpdateServer(bump_patch(version), key, *update, rate=slow_rate(update, 4),
+                         drop_first_at=0.4)
+    mark_stale(inst)
+    p, mark, _ = launch_with_updater(inst, env, library, offer, interval=3)
+    try:
+        failed = wait_until(lambda: "update download failed" in env.log_since(mark)
+                            or p.poll() is not None, 120)
+        check(failed and p.poll() is None,
+              f"the dropped download wasn't reported\n{env.log_since(mark)[-3000:]}")
+        ok("the dropped connection was reported; the app kept running")
+        ready = wait_until(lambda: "installs when you quit" in env.log_since(mark)
+                           or p.poll() is not None, 120)
+        check(ready and p.poll() is None, f"no retry after the drop\n{env.log_since(mark)[-3000:]}")
+        n = offer.requests.count("/artifact")
+        check(n == 2, f"expected one dropped and one complete download, saw {n}")
+        check(is_stale(inst), "it installed mid-session")
+        ok("retried on its own, downloaded in full and verified")
+    finally:
+        status = graceful_quit(p, apple_event=True)
+        offer.close()
+        set_config(env, update_auto_install=False)
+    check(status == 0, f"quit with {status}")
+    check(wait_until(lambda: not is_stale(inst), 180), "the retried download didn't install on quit")
+    ok("installed on quit")
+    check("panicked" not in env.log_since(mark), "panic")
 
 
 def bump_patch(v: str) -> str:
@@ -1131,7 +1222,9 @@ def main() -> int:
             for title, fn in [
                 ("scheduled re-check finds a new release; default settings never install", scheduled_check),
                 ("automatic checks off → no update traffic", auto_check_off),
-                ("install updates automatically → background download, installs on quit", install_on_quit),
+                ("install updates automatically → slow background download with progress, installs on quit",
+                 install_on_quit),
+                ("connection drops mid-download → reported, retried, installs on quit", interrupted_download),
             ]:
                 section(f"update settings: {title}")
                 fn(inst, env, library, update, a.version, a.target_key)
