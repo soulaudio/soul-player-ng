@@ -234,9 +234,9 @@ jobs:
       - name: Strip the Linux binary
         if: runner.os == 'Linux'
         run: |
-          before=$(stat -c%s app/rune/target/release/soul-player-rune)
-          strip app/rune/target/release/soul-player-rune
-          after=$(stat -c%s app/rune/target/release/soul-player-rune)
+          before=$(stat -c%s app/rune/target/release/soul-player)
+          strip app/rune/target/release/soul-player
+          after=$(stat -c%s app/rune/target/release/soul-player)
           echo "stripped: $before -> $after bytes"
 
       - name: Package + updater-sign
@@ -259,7 +259,7 @@ jobs:
       - name: glibc floor (Linux)
         if: runner.os == 'Linux'
         run: |
-          need=$(objdump -T app/rune/target/release/soul-player-rune | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          need=$(objdump -T app/rune/target/release/soul-player | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
           echo "binary needs $need"
           [ "$(printf '%s\nGLIBC_2.39\n' "$need" | sort -V | tail -1)" = "GLIBC_2.39" ] \
             || { echo "::error::binary needs $need, above the GLIBC_2.39 floor (Ubuntu 24.04)"; exit 1; }
@@ -320,32 +320,78 @@ jobs:
       # Fedora container, which inherits the host architecture.
       - name: Install-check the .deb and .rpm (Linux)
         if: runner.os == 'Linux'
+        # For `gh release download` in the upgrade group below.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "::group::.deb installs and runs"
           sudo apt-get install -y -o Acquire::Retries=3 ./dist/*.deb
-          command -v soul-player-rune >/dev/null \
-            || { echo "::error::soul-player-rune is not on PATH after installing the .deb"; exit 1; }
+          command -v soul-player >/dev/null \
+            || { echo "::error::soul-player is not on PATH after installing the .deb"; exit 1; }
           # `ldd` naming an unresolved library is the failure a dependency list
           # exists to prevent, and it is silent until the app is launched.
-          missing=$(ldd "$(command -v soul-player-rune)" | grep -c "not found" || true)
+          missing=$(ldd "$(command -v soul-player)" | grep -c "not found" || true)
           [ "$missing" = "0" ] \
             || { echo "::error::$missing libraries unresolved after install"; \
-                 ldd "$(command -v soul-player-rune)" | grep "not found"; exit 1; }
-          soul-player-rune --help >/dev/null 2>&1 \
+                 ldd "$(command -v soul-player)" | grep "not found"; exit 1; }
+          soul-player --help >/dev/null 2>&1 \
             || { echo "::error::the installed binary does not run"; exit 1; }
           sudo apt-get remove -y -qq soul-player
           echo "ok: .deb installs, resolves every library, runs, and uninstalls"
+          echo "::endgroup::"
+
+          # The package was named `soul-player-rune` through 0.4.1, because its
+          # name came from the binary's. `Provides`/`Conflicts`/`Replaces` in
+          # Cargo.toml are what make dpkg REMOVE the old package instead of
+          # installing alongside it — without them the upgrade silently leaves
+          # two binaries and two desktop entries, which was verified by
+          # building both packages and watching it happen.
+          #
+          # v0.4.1 is pinned deliberately: it is the LAST release under the old
+          # name, so this is the only upgrade path the rename can break. Once no
+          # supported upgrade starts at <= 0.4.1, delete this group and the
+          # three fields it guards.
+          echo "::group::upgrade from the last old-named release (0.4.1)"
+          old=$(mktemp -d)
+          if gh release download v0.4.1 --dir "$old" \
+               --pattern "soul-player-rune_*_${{ matrix.deb_arch }}.deb" 2>/dev/null; then
+            sudo apt-get install -y -o Acquire::Retries=3 "$old"/*.deb
+            dpkg -l | grep -q "^ii  soul-player-rune " \
+              || { echo "::error::the 0.4.1 package did not install"; exit 1; }
+
+            sudo apt-get install -y -o Acquire::Retries=3 ./dist/*.deb
+
+            # The rename worked only if the OLD package is gone, not merely if
+            # the new one arrived.
+            if dpkg -l | grep -q "^ii  soul-player-rune "; then
+              echo "::error::soul-player-rune is still installed after upgrading"
+              dpkg -l | grep soul-player
+              exit 1
+            fi
+            [ -e /usr/bin/soul-player-rune ] \
+              && { echo "::error::/usr/bin/soul-player-rune survived the upgrade"; exit 1; }
+            entries=$(ls /usr/share/applications/ | grep -c "soul-player" || true)
+            [ "$entries" = "1" ] \
+              || { echo "::error::expected 1 desktop entry, found $entries"; \
+                   ls /usr/share/applications/ | grep soul-player; exit 1; }
+            soul-player --help >/dev/null 2>&1 \
+              || { echo "::error::the upgraded binary does not run"; exit 1; }
+            sudo apt-get remove -y -qq soul-player
+            echo "ok: 0.4.1 -> this build replaces the old package cleanly"
+          else
+            echo "::warning::could not fetch the 0.4.1 ${{ matrix.deb_arch }} .deb; upgrade path unverified"
+          fi
           echo "::endgroup::"
 
           echo "::group::.rpm installs and runs (Fedora container, host arch)"
           docker run --rm -v "$PWD/dist:/w:ro" fedora:latest bash -c '
             set -e
             dnf install -y -q /w/*.rpm
-            m=$(ldd /usr/bin/soul-player-rune | grep -c "not found" || true)
-            [ "$m" = "0" ] || { ldd /usr/bin/soul-player-rune | grep "not found"; exit 1; }
+            m=$(ldd /usr/bin/soul-player | grep -c "not found" || true)
+            [ "$m" = "0" ] || { ldd /usr/bin/soul-player | grep "not found"; exit 1; }
             # `--help` writes to stderr, so both streams go to /dev/null;
             # the exit status is what is being checked.
-            /usr/bin/soul-player-rune --help >/dev/null 2>&1
+            /usr/bin/soul-player --help >/dev/null 2>&1
             echo "ok: .rpm installs, resolves every library, and runs"
           '
           echo "::endgroup::"
@@ -375,7 +421,7 @@ jobs:
             # file, which says nothing about why.
             xvfb-run -a -s "-screen 0 1600x1000x24" \
               env SOUL_PLAYER_FOLDER=testdata SOUL_PLAYER_NO_UPDATE=1 \
-              app/rune/target/release/soul-player-rune \
+              app/rune/target/release/soul-player \
                 --snap "dist/screenshot-$1.png" --size 1400x900 ${2:+--scene "$2"} \
               >"$RUNNER_TEMP/shot-$1.log" 2>&1 || true
           }
@@ -462,7 +508,7 @@ jobs:
                 org.freedesktop.DBus.ListNames 2>/dev/null | grep -oE "[a-z][A-Za-z0-9_.-]+" | tail -20
               exit 1
             fi
-            # `flatpak kill`, NOT `pkill -f soul-player-rune`: the shell running
+            # `flatpak kill`, NOT `pkill -f soul-player`: the shell running
             # this very script has that string in its own command line (right
             # here), so pkill matches its parent, SIGTERMs it, and the step
             # fails with 143 having already passed every assertion. That is

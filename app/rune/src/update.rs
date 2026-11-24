@@ -404,7 +404,7 @@ mod tests {
             !manager_owned(
                 false,
                 true,
-                Some(Path::new("/tmp/.mount_soulpl123/usr/bin/soul-player-rune"))
+                Some(Path::new("/tmp/.mount_soulpl123/usr/bin/soul-player"))
             ),
             "an AppImage must keep self-update despite its /usr-shaped mount path"
         );
@@ -414,12 +414,12 @@ mod tests {
         assert!(manager_owned(
             false,
             false,
-            Some(Path::new("/usr/bin/soul-player-rune"))
+            Some(Path::new("/usr/bin/soul-player"))
         ));
         assert!(manager_owned(
             false,
             false,
-            Some(Path::new("/opt/soul-player/soul-player-rune"))
+            Some(Path::new("/opt/soul-player/soul-player"))
         ));
 
         // Flatpak: read-only install, sandboxed; `flatpak update` owns it. The
@@ -427,14 +427,14 @@ mod tests {
         assert!(manager_owned(
             true,
             false,
-            Some(Path::new("/app/bin/soul-player-rune"))
+            Some(Path::new("/app/bin/soul-player"))
         ));
 
         // A loose build the user put somewhere writable keeps self-update.
         assert!(!manager_owned(
             false,
             false,
-            Some(Path::new("/home/me/Applications/soul-player-rune"))
+            Some(Path::new("/home/me/Applications/soul-player"))
         ));
         // Unknown path: assume self-update works rather than silently disabling
         // it — the install can still fail loudly, which is more debuggable.

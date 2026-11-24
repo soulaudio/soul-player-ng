@@ -39,9 +39,9 @@ Debian 11 (2.31) and RHEL 9 (2.34) are correctly refused by the package
 manager.
 
 ```sh
-sudo apt install ./soul-player-rune_*_amd64.deb     # Debian / Ubuntu (arm64 for ARM)
+sudo apt install ./soul-player_*_amd64.deb     # Debian / Ubuntu (arm64 for ARM)
 sudo dnf install ./soul-player-*.x86_64.rpm         # Fedora (aarch64 for ARM)
-chmod +x Soul-Player*.AppImage && ./Soul-Player*.AppImage
+chmod +x soul-player_*.AppImage && ./soul-player_*.AppImage
 ```
 
 Only the AppImage updates itself. The others are owned by their package

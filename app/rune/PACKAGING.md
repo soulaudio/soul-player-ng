@@ -9,7 +9,7 @@ Desktop installers are produced with [cargo-packager](https://github.com/crabneb
 ```sh
 cargo install cargo-packager          # once
 cd app/rune
-cargo packager --release              # → target/release/soul-player-rune_<ver>_x64-setup.exe
+cargo packager --release              # → target/release/soul-player_<ver>_x64-setup.exe
 ```
 
 The build uses `app/rune`'s pinned nightly (`rust-toolchain.toml`); cargo-packager
@@ -62,6 +62,30 @@ those values are written down. Re-deriving them per format would give three
 chances to disagree about the app's name, category or icon — and an entry that
 disagrees with the window's `app_id` silently costs the icon.
 
+### The package name, and the 0.4.1 rename
+
+Every Linux package is `soul-player`, from `[[bin]] name` — cargo-packager takes
+the .deb's filename *and* its `Package:` field from the main binary's name. The
+crate stays `soul-player-rune`: "rune" names this UI head, which means nothing
+to someone installing a music player, so it is kept to places only developers
+see (the crate, `cargo test -p`, the `nix develop .#rune` shell).
+
+Through 0.4.1 the packages carried the crate's name. The .deb therefore declares
+
+```toml
+provides = ["soul-player-rune"]
+conflicts = ["soul-player-rune"]
+replaces = ["soul-player-rune"]
+```
+
+which is one idiom, not three independent fields (Debian policy §7.6): together
+they let dpkg *remove* the old package instead of refusing the file overlap.
+Without them the upgrade leaves two packages, two binaries and two desktop
+entries — verified by building both and watching it happen. The release workflow
+installs the published 0.4.1 .deb and upgrades to the build under test, so the
+one upgrade path the rename can break is gated. Once nothing upgrades from
+≤ 0.4.1, that gate and these three fields can go.
+
 ### What differs per format
 
 | | identity | updates | notes |
@@ -101,7 +125,7 @@ evidence:
 
 ```sh
 podman run --rm -v "$PWD/app/rune/target/release:/w:z" ubuntu:24.04 \
-  bash -c 'apt-get update -qq && apt-get install -y -qq /w/*.deb && soul-player-rune --help'
+  bash -c 'apt-get update -qq && apt-get install -y -qq /w/*.deb && soul-player --help'
 ```
 
 The release pipeline does this for real on every platform, and its Flatpak step

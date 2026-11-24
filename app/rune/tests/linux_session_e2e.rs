@@ -50,7 +50,7 @@ fn bus() -> String {
 /// suffix. `CARGO_BIN_NAME` is not set for an integration-test target, so this
 /// reads it off the binary path Cargo does provide.
 fn bin_name() -> &'static str {
-    Path::new(env!("CARGO_BIN_EXE_soul-player-rune"))
+    Path::new(env!("CARGO_BIN_EXE_soul-player"))
         .file_stem()
         .and_then(|s| s.to_str())
         .expect("the built binary has a name")
@@ -103,7 +103,7 @@ impl App {
         for sub in ["config", "data", "state", "cache"] {
             std::fs::create_dir_all(home.path().join(sub)).expect("create an XDG subdir");
         }
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_soul-player-rune"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_soul-player"));
         cmd.env("XDG_CONFIG_HOME", home.path().join("config"))
             .env("XDG_DATA_HOME", home.path().join("data"))
             .env("XDG_STATE_HOME", home.path().join("state"))
@@ -689,7 +689,7 @@ fn window_advertises_its_app_id_to_the_compositor() {
     // thing `main` passes to `rune::set_app_id`, and the same thing
     // cargo-packager names the `.desktop` entry after. Derived rather than
     // written out, so a rename can't leave this test asserting a stale id.
-    let expected = Path::new(env!("CARGO_BIN_EXE_soul-player-rune"))
+    let expected = Path::new(env!("CARGO_BIN_EXE_soul-player"))
         .file_stem()
         .and_then(|s| s.to_str())
         .expect("the built binary has a name");
@@ -711,7 +711,7 @@ fn window_advertises_its_app_id_to_the_compositor() {
 /// resolves the player by matching the bus-name suffix against installed desktop
 /// entries — so the suffix, the entry's basename and the `app_id` all have to be
 /// the same string. They were not: the bus said `soul_player` while the entry and
-/// `app_id` said `soul-player-rune`, and a media applet had nothing to match.
+/// `app_id` said `soul-player`, and a media applet had nothing to match.
 ///
 /// Both halves are read back from the SYSTEM — the bus name from the session bus,
 /// the `app_id` from the compositor's own tree — rather than compared against the

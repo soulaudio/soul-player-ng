@@ -7,7 +7,15 @@ publish = false
 description = "Rune (native GPU) UI head for Soul Player, over soul-player-host."
 
 [[bin]]
-name = "soul-player-rune"
+# The USER-VISIBLE name, and deliberately not the crate's. cargo-packager derives
+# the .deb's filename AND its `Package:` field from the main binary's name
+# (`package/deb/mod.rs`: `format!("{}_{}_{}", config.main_binary_name()?, ..)`),
+# and the same name becomes `/usr/bin/<name>`, the desktop entry's basename and
+# — via `desktop_id()`'s fallback — the MPRIS bus name. "rune" is the internal
+# name of this UI head, which is meaningless to anyone installing a music
+# player, so it stays on the crate (`[package] name` above, where only
+# developers see it) and never reaches a package.
+name = "soul-player"
 path = "src/main.rs"
 
 [workspace]
@@ -262,6 +270,20 @@ depends = [
     # want it.
     "libvulkan1",
 ]
+# The package was called `soul-player-rune` up to and including 0.4.1, because
+# its name came from the binary's. Renaming it is not enough on its own: to
+# dpkg, `soul-player` is simply a different package, so anyone who installed
+# 0.4.1 would end up with BOTH — two copies of the binary under different
+# names, two desktop entries, and whichever one the menu happened to index.
+#
+# The three fields are one idiom and need each other (Debian policy §7.6):
+# `Conflicts` + `Replaces` together are what let dpkg remove the old package
+# rather than refuse the file overlap, and `Provides` keeps anything that
+# depended on the old name satisfied. Dropping any one of them leaves a
+# half-working upgrade, which is why they are written together here.
+provides = ["soul-player-rune"]
+conflicts = ["soul-player-rune"]
+replaces = ["soul-player-rune"]
 
 # ── RPM (Fedora / openSUSE / RHEL) ──────────────────────────────────────────
 # cargo-packager has no RPM backend (it does deb, AppImage and pacman), so the
@@ -276,9 +298,9 @@ url = "https://github.com/soulaudio/soul-player-ng"
 # build script already produced; the desktop entry and icon come out of the
 # .deb so the two packages cannot disagree about the app's identity.
 assets = [
-    { source = "target/release/soul-player-rune", dest = "/usr/bin/soul-player-rune", mode = "755" },
-    { source = "target/release/linux-stage/soul-player-rune.desktop", dest = "/usr/share/applications/soul-player-rune.desktop", mode = "644" },
-    { source = "target/release/linux-stage/soul-player-rune.png", dest = "/usr/share/icons/hicolor/128x128/apps/soul-player-rune.png", mode = "644" },
+    { source = "target/release/soul-player", dest = "/usr/bin/soul-player", mode = "755" },
+    { source = "target/release/linux-stage/soul-player.desktop", dest = "/usr/share/applications/soul-player.desktop", mode = "644" },
+    { source = "target/release/linux-stage/soul-player.png", dest = "/usr/share/icons/hicolor/128x128/apps/soul-player.png", mode = "644" },
     { source = "../../LICENSE", dest = "/usr/share/licenses/soul-player/LICENSE", mode = "644", doc = true },
 ]
 

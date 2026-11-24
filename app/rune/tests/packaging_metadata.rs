@@ -89,7 +89,7 @@ fn the_app_id_is_the_same_string_everywhere_it_is_written() {
     // `CARGO_BIN_NAME` is not set for an integration-test target, so this reads
     // the name off the binary path Cargo does provide — which is the same thing
     // the session e2e does, and for the same reason.
-    let bin_name = Path::new(env!("CARGO_BIN_EXE_soul-player-rune"))
+    let bin_name = Path::new(env!("CARGO_BIN_EXE_soul-player"))
         .file_stem()
         .and_then(|s| s.to_str())
         .expect("the built binary has a name");

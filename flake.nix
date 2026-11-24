@@ -93,6 +93,9 @@
           # The Rune UI head (app/rune) — pinned nightly, plus the packaging and
           # headless-test tooling.
           rune = mkShell {
+            # Developer-facing: this name is what the shell prompt shows, and it
+            # has to tell the two shells apart (the stable one is "soul-player"),
+            # so it keeps the head's internal name. Only PACKAGES drop "rune".
             name = "soul-player-rune";
             toolchain = nightlyToolchain;
             extraPackages = lib.optionals pkgs.stdenv.hostPlatform.isLinux [

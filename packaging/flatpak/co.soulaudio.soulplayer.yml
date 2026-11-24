@@ -18,7 +18,7 @@ app-id: co.soulaudio.soulplayer
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
 sdk: org.freedesktop.Sdk
-command: soul-player-rune
+command: soul-player
 
 finish-args:
   # Wayland first, with X11 only as a fallback: `fallback-x11` grants the X
@@ -59,7 +59,7 @@ modules:
   - name: soul-player
     buildsystem: simple
     build-commands:
-      - install -Dm755 soul-player-rune /app/bin/soul-player-rune
+      - install -Dm755 soul-player /app/bin/soul-player
       - install -Dm644 co.soulaudio.soulplayer.desktop
         /app/share/applications/co.soulaudio.soulplayer.desktop
       - install -Dm644 co.soulaudio.soulplayer.png
@@ -71,7 +71,7 @@ modules:
       # desktop entry/icon out of the built .deb so the Flatpak cannot drift
       # from the other Linux packages.
       - type: file
-        path: soul-player-rune
+        path: soul-player
       - type: file
         path: co.soulaudio.soulplayer.desktop
       - type: file

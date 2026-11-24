@@ -13,7 +13,7 @@ set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 app="$root/app/rune"
-bin="$app/target/release/soul-player-rune"
+bin="$app/target/release/soul-player"
 version=$(grep -m1 '^version = ' "$app/Cargo.toml" | cut -d'"' -f2)
 
 if [ "${1:-}" != "--skip-build" ]; then

@@ -18,7 +18,7 @@ mkdir -p "$out"
 
 # The Rune head is a nested nightly workspace; its toolchain resolves from CWD.
 ( cd "$root/app/rune" && cargo build )
-exe="$root/app/rune/target/debug/soul-player-rune"
+exe="$root/app/rune/target/debug/soul-player"
 [ -f "$exe.exe" ] && exe="$exe.exe"
 
 # The app expects a native path; convert from the MSYS path on Windows.

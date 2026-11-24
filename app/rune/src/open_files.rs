@@ -1,5 +1,5 @@
 //! Opening audio files handed to the app: today the audio files among the launch arguments
-//! (`soul-player-rune song.flac`); Finder "Open With" / double-click / Dock drop once Rune
+//! (`soul-player song.flac`); Finder "Open With" / double-click / Dock drop once Rune
 //! exposes the macOS open-documents event (anomalyco/rune#157) — the app won't carry the
 //! AppKit `unsafe` itself.
 //!
