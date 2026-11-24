@@ -31,14 +31,18 @@ use crate::views::player::{cover, cover_from_path};
 /// never panics without a library loaded: everything just resolves to
 /// `PlaylistCover::Placeholder`.
 fn playlist_cover(s: &State, summary: &PlaylistSummary) -> PlaylistCover {
-    let resolved: Vec<(u32, String)> = s
-        .host
-        .resolve_locators(&summary.cover)
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .map(|(i, id)| (id, i.to_string()))
-        .collect();
+    // Index the memoized per-playlist cover ids (resolved ONCE per library/playlists
+    // change) instead of rebuilding a full-catalog locator map per card per frame.
+    let cover_ids = s.playlist_cover_ids();
+    let resolved: Vec<(u32, String)> = cover_ids
+        .get(&summary.id)
+        .map(|ids| {
+            ids.iter()
+                .enumerate()
+                .map(|(i, &id)| (id, i.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
     let custom = summary
         .custom_cover
         .clone()
@@ -481,6 +485,35 @@ mod tests {
             mods: Mods::default(),
         });
         rt.frame(0.0);
+    }
+
+    /// `State::playlist_cover_ids` resolves every playlist's cover ONCE and memoizes
+    /// it by (library fingerprint, playlists fingerprint): repeated calls return the
+    /// SAME `Rc` (a cache hit, not the old per-card/per-frame `resolve_locators`
+    /// rebuild), and adding a playlist invalidates it.
+    #[test]
+    fn playlist_cover_ids_memoizes_and_invalidates() {
+        let _g = crate::config::use_test_config_dir();
+        reset_store();
+        let mut s = State::new(PlayerHandle::offline());
+        s.playlists.create("A");
+        s.playlists.create("B");
+
+        let first = s.playlist_cover_ids();
+        let second = s.playlist_cover_ids();
+        assert!(
+            std::rc::Rc::ptr_eq(&first, &second),
+            "same inputs return the same Rc (a cache hit, not a rebuild)"
+        );
+        assert_eq!(first.len(), 2, "one entry per playlist");
+
+        s.playlists.create("C");
+        let third = s.playlist_cover_ids();
+        assert!(
+            !std::rc::Rc::ptr_eq(&first, &third),
+            "adding a playlist invalidates the memo"
+        );
+        assert_eq!(third.len(), 3);
     }
 
     /// Each playlist row shows its name and its track count.
