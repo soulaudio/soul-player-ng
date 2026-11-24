@@ -366,7 +366,18 @@ jobs:
             old_bin=$(dpkg -L soul-player | grep -E "^/usr/bin/" | head -1)
             echo "  $prev installs $old_bin"
 
-            sudo apt-get install -y -o Acquire::Retries=3 ./dist/*.deb
+            # `dpkg -i`, not `apt-get install`: on a DRY RUN the built version
+            # equals the published one (the manifest is only bumped when a
+            # release is cut), and apt answers "already the newest version" and
+            # does nothing — the upgrade silently never happens. dpkg unpacks
+            # over regardless of version, which is what exercises the file move.
+            # Dependencies are already satisfied by the install above, so dpkg's
+            # lack of resolution costs nothing here.
+            #
+            # This is not a workaround for a test artefact: the assertion below
+            # CAUGHT the no-op (it reported the old binary path still installed
+            # after the "upgrade"), which is exactly what it is for.
+            sudo dpkg -i ./dist/*.deb
 
             new_bin=$(dpkg -L soul-player | grep -E "^/usr/bin/" | head -1)
             echo "  this build installs $new_bin"
