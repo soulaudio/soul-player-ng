@@ -282,6 +282,9 @@ pub(crate) enum OrganizePhase {
     Done(organize::Summary),
 }
 
+/// A memoized `track id -> library index` map (see [`State::track_positions`]).
+type TrackIndexMap = std::rc::Rc<std::collections::HashMap<u32, usize>>;
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -297,6 +300,16 @@ struct State {
     albums_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::albums::Album]>)>>,
     artists_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::artists::Artist]>)>>,
     genres_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::genres::Genre]>)>>,
+    /// A shared `Rc` snapshot of the library for the virtualized Tracks list, so its
+    /// per-row closures index the track data by `Rc` instead of CLONING every
+    /// visible track every frame — a million clones/frame otherwise. Rebuilt only
+    /// when the library changes (keyed by the same fingerprint as the groupings).
+    library_rc_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[TrackView]>)>>,
+    /// A memoized `track id -> library index` map so [`State::track`] (and the
+    /// detail pages) resolve a track in O(1) instead of an O(n) `library.iter().find`
+    /// — that linear scan, run per queue row and per now-playing lookup, was ~150M
+    /// scans/frame at a million tracks. Rebuilt only when the library changes.
+    track_index_cache: std::cell::RefCell<Option<(u64, TrackIndexMap)>>,
     /// User-created playlists, loaded from the on-disk store at startup
     /// ([`playlists::PlaylistStore::load`]). Every mutation
     /// (create/rename/delete/reorder) persists through the store itself.
@@ -836,6 +849,8 @@ impl State {
             albums_cache: std::cell::RefCell::new(None),
             artists_cache: std::cell::RefCell::new(None),
             genres_cache: std::cell::RefCell::new(None),
+            library_rc_cache: std::cell::RefCell::new(None),
+            track_index_cache: std::cell::RefCell::new(None),
             playlists,
             covers,
             playlist_new_buf: rune::TextEdit::new(""),
@@ -1058,11 +1073,48 @@ impl State {
         grouped
     }
 
-    /// Resolve a library track by id. Shared by the now-playing panel
-    /// (`now_playing_id`) and the sidebar queue (`up_next`) so both compose
-    /// the same lookup rather than each re-scanning `library` inline.
+    /// A shared `Rc` snapshot of the library, memoized against the library
+    /// fingerprint. The virtualized Tracks list indexes this instead of cloning
+    /// every visible track every frame; the one copy here is rebuilt only when the
+    /// library changes.
+    pub(crate) fn library_rc(&self) -> std::rc::Rc<[TrackView]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, rc)) = self.library_rc_cache.borrow().as_ref()
+            && *cfp == fp
+        {
+            return rc.clone();
+        }
+        let rc: std::rc::Rc<[TrackView]> = self.library.as_slice().into();
+        *self.library_rc_cache.borrow_mut() = Some((fp, rc.clone()));
+        rc
+    }
+
+    /// A memoized `track id -> library index` map, rebuilt only when the library
+    /// changes. Resolving a track by id through this is O(1); the previous
+    /// `library.iter().find` was O(n) per lookup.
+    pub(crate) fn track_positions(&self) -> TrackIndexMap {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, rc)) = self.track_index_cache.borrow().as_ref()
+            && *cfp == fp
+        {
+            return rc.clone();
+        }
+        let map: std::collections::HashMap<u32, usize> = self
+            .library
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.id, i))
+            .collect();
+        let rc = std::rc::Rc::new(map);
+        *self.track_index_cache.borrow_mut() = Some((fp, rc.clone()));
+        rc
+    }
+
+    /// Resolve a library track by id in O(1) via the memoized index map. Shared by
+    /// the now-playing panel (`now_playing_id`) and the sidebar queue (`up_next`).
     fn track(&self, id: u32) -> Option<&TrackView> {
-        self.library.iter().find(|t| t.id == id)
+        let idx = *self.track_positions().get(&id)?;
+        self.library.get(idx)
     }
 
     /// Fold one backend event into the UI state (the UI's event sink).
