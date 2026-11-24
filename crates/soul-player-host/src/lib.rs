@@ -87,6 +87,23 @@ type WatchSubscriber = Box<dyn Fn(WatchUpdate) + Send>;
 /// and then reliably retire a progress indicator (see
 /// [`PlayerHandle::on_scan_progress`]).
 type ScanProgressSubscriber = Box<dyn Fn(Option<ScanProgress>) + Send>;
+
+/// A lock-guarded list of handlers for one notification channel (events, watch
+/// updates, or scan progress), fanned out via [`notify_subscribers`].
+type SubscriberList<T> = Mutex<Vec<Box<dyn Fn(T) + Send>>>;
+
+/// Fan `arg` out to every subscriber in `subs`, isolating each callback with
+/// [`catch_unwind`](std::panic::catch_unwind) so a panicking subscriber can neither
+/// poison the lock (which would brick ALL future notifications) nor stop its
+/// siblings from being notified. A caught panic is logged and the fan-out continues.
+fn notify_subscribers<T: Clone>(subs: &SubscriberList<T>, arg: T, kind: &str) {
+    for sub in subs.lock().expect("subscribers mutex").iter() {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sub(arg.clone()))).is_err() {
+            tracing::error!("a {kind} subscriber panicked; dropped that notification, continuing");
+        }
+    }
+}
+
 /// Deletions from one rescan: `(root, removed file paths)` for each root that lost
 /// files since its prior cache.
 type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
@@ -1553,15 +1570,7 @@ impl PlayerHandle {
     /// (e.g. a rescan's [`Event::TracksRemoved`] deletion warning) rather than the
     /// playing actor. Holds only the subscribers lock, briefly.
     fn emit(&self, ev: Event) {
-        for sub in self
-            .inner
-            .subscribers
-            .lock()
-            .expect("subscribers mutex")
-            .iter()
-        {
-            sub(ev.clone());
-        }
+        notify_subscribers(&self.inner.subscribers, ev, "event");
     }
 
     /// Register a handler for background (watcher-triggered) library refreshes. The
@@ -1577,15 +1586,7 @@ impl PlayerHandle {
 
     /// Fan a background rescan's [`WatchUpdate`] out to the watch subscribers.
     fn broadcast_watch(&self, up: WatchUpdate) {
-        for sub in self
-            .inner
-            .watch_subscribers
-            .lock()
-            .expect("watch_subscribers mutex")
-            .iter()
-        {
-            sub(up.clone());
-        }
+        notify_subscribers(&self.inner.watch_subscribers, up, "watch-update");
     }
 
     /// Register a handler for live scan progress. It fires `Some(p)` on every tick
@@ -1604,15 +1605,7 @@ impl PlayerHandle {
 
     /// Fan one scan-progress update (`Some` tick / terminal `None`) out to subscribers.
     fn broadcast_scan_progress(&self, p: Option<ScanProgress>) {
-        for sub in self
-            .inner
-            .scan_progress_subscribers
-            .lock()
-            .expect("scan_progress_subscribers mutex")
-            .iter()
-        {
-            sub(p);
-        }
+        notify_subscribers(&self.inner.scan_progress_subscribers, p, "scan-progress");
     }
 
     /// Start — or re-arm — the live filesystem watcher over the currently enabled
@@ -2160,9 +2153,7 @@ impl PlayerHandle {
                     .expect("loudness map mutex")
                     .insert(path.clone(), *loudness);
             }
-            for sub in inner.subscribers.lock().expect("subscribers mutex").iter() {
-                sub(ev.clone());
-            }
+            notify_subscribers(&inner.subscribers, ev, "event");
         };
         // Share the desired output config (device / exclusive / strict) with the pump.
         // It's the SAME cell `set_output_device` / `set_exclusive` /
@@ -2284,6 +2275,41 @@ mod tests {
     fn offline_handle_has_empty_views_before_open() {
         let h = PlayerHandle::offline();
         assert!(h.views().is_empty());
+    }
+
+    /// A panicking subscriber must not poison the subscribers lock (which would brick
+    /// EVERY future event) nor stop the other subscribers from being notified: the
+    /// fan-out isolates each callback with `catch_unwind`.
+    #[test]
+    fn a_panicking_subscriber_does_not_brick_the_event_fan_out() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let h = PlayerHandle::offline();
+        let seen = Arc::new(AtomicUsize::new(0));
+        h.subscribe(|_ev| panic!("boom from a subscriber"));
+        let seen2 = Arc::clone(&seen);
+        h.subscribe(move |_ev| {
+            seen2.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let removed = || Event::TracksRemoved {
+            root: std::path::PathBuf::from("/x"),
+            count: 1,
+        };
+        // Silence the expected panic's default hook so the test output stays clean,
+        // restoring it immediately after the two emits.
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        h.emit(removed());
+        // A second emit proves the lock was not poisoned by the first panic.
+        h.emit(removed());
+        std::panic::set_hook(prev);
+
+        assert_eq!(
+            seen.load(Ordering::SeqCst),
+            2,
+            "the healthy subscriber keeps receiving events despite a panicking sibling"
+        );
     }
 
     #[test]
