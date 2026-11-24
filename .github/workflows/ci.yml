@@ -9,9 +9,15 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR supersedes the older one, so its run is cancelled. On
+# main every commit keeps its own run (its own group: a shared group still lets
+# only one run wait, so a third push would cancel the second's). A release tag
+# waits for "CI success" on its exact commit, and a merge landing right after a
+# release bump used to cancel that commit's CI and fail the release (v0.4.5's
+# first attempt).
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   rust:
