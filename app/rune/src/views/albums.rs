@@ -66,12 +66,13 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     for t in library {
         let name = t
             .album
-            .clone()
+            .as_deref()
+            .map(str::to_string)
             .unwrap_or_else(|| t!("library.unknown").to_string());
         let i = *index.entry(name.clone()).or_insert_with(|| {
             albums.push(Album {
                 name,
-                artist: t.artist.clone().unwrap_or_default(),
+                artist: t.artist.as_deref().unwrap_or_default().to_string(),
                 cover_id: t.id,
                 ids: Vec::new(),
                 original_date: t.original_date,
@@ -203,8 +204,9 @@ pub(crate) fn albums_of_artist(
         .filter(|t| {
             let a = t
                 .artist
-                .clone()
+                .as_deref()
                 .filter(|a| !a.is_empty())
+                .map(str::to_string)
                 .unwrap_or_else(|| t!("library.unknown").to_string());
             a == artist
         })
@@ -567,7 +569,7 @@ pub(crate) fn detail_track_row(
     // sharing the row with the title, shown only where it adds information.
     if show_artist {
         r = r.child(
-            text(t.artist.clone().unwrap_or_default())
+            text(t.artist.as_deref().unwrap_or_default())
                 .font(type_::ITEM)
                 .color(p.text_secondary)
                 .truncate()
@@ -577,7 +579,7 @@ pub(crate) fn detail_track_row(
     }
     if show_album {
         r = r.child(
-            text(t.album.clone().unwrap_or_default())
+            text(t.album.as_deref().unwrap_or_default())
                 .font(type_::ITEM)
                 .color(p.text_secondary)
                 .truncate()
@@ -828,8 +830,8 @@ mod tests {
         TrackView {
             id,
             title: Some(format!("T{id}")),
-            artist: Some(artist.to_string()),
-            album: Some(album.to_string()),
+            artist: Some(artist.into()),
+            album: Some(album.into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote_source: None,

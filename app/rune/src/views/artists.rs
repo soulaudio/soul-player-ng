@@ -48,8 +48,9 @@ pub(crate) fn group_artists(library: &[TrackView]) -> Vec<Artist> {
     for t in library {
         let name = t
             .artist
-            .clone()
+            .as_deref()
             .filter(|a| !a.is_empty())
+            .map(str::to_string)
             .unwrap_or_else(|| t!("library.unknown").to_string());
         let i = *index.entry(name.clone()).or_insert_with(|| {
             artists.push(Artist {
@@ -547,7 +548,7 @@ mod tests {
         TrackView {
             id,
             title: Some(format!("T{id}")),
-            artist: (!artist.is_empty()).then(|| artist.to_string()),
+            artist: (!artist.is_empty()).then(|| artist.into()),
             album: Some("Alb".into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
@@ -565,8 +566,8 @@ mod tests {
         TrackView {
             id,
             title: Some(format!("T{id}")),
-            artist: Some(artist.to_string()),
-            album: Some(album.to_string()),
+            artist: Some(artist.into()),
+            album: Some(album.into()),
             genre: Some("Rock".into()),
             duration_secs: 1.0,
             remote_source: None,

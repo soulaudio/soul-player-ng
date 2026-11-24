@@ -688,8 +688,8 @@ mod tests {
             locator,
             snapshot: TrackSnapshot {
                 title: v.title.clone().unwrap_or_default(),
-                artist: v.artist.clone().unwrap_or_default(),
-                album: v.album.clone().unwrap_or_default(),
+                artist: v.artist.as_deref().unwrap_or_default().to_string(),
+                album: v.album.as_deref().unwrap_or_default().to_string(),
                 duration_secs: v.duration_secs.round() as u32,
                 track_no: None,
                 disc_no: None,
