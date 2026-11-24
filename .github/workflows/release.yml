@@ -366,11 +366,12 @@ jobs:
             old_bin=$(dpkg -L soul-player | grep -E "^/usr/bin/" | head -1)
             echo "  $prev installs $old_bin"
 
-            # `dpkg -i`, not `apt-get install`: on a DRY RUN the built version
-            # equals the published one (the manifest is only bumped when a
-            # release is cut), and apt answers "already the newest version" and
-            # does nothing — the upgrade silently never happens. dpkg unpacks
-            # over regardless of version, which is what exercises the file move.
+            # `dpkg -i`, not `apt-get install`: whenever the built version
+            # equals the published one — every dry run between a release and
+            # the next version bump — apt answers "already the newest version"
+            # and does nothing, so the upgrade silently never happens. dpkg
+            # unpacks over regardless of version, which is what exercises the
+            # file move, and behaves identically when the version is higher.
             # Dependencies are already satisfied by the install above, so dpkg's
             # lack of resolution costs nothing here.
             #
