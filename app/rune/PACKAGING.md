@@ -226,11 +226,27 @@ AppImage in place, and the app starts the new build itself.
 
 ## Cutting a release
 
-1. **Dry run first** (on the branch with the version bump):
+1. **Bump `version` in `app/rune/Cargo.toml` first** — before the dry run, not after.
+2. **Dry run** on that branch:
    `gh workflow run release.yml --ref <branch> -f dry_run=true` — builds and runs the full
    per-OS e2e, publishes nothing; the installers stay as run artifacts.
-2. Bump `version` in `app/rune/Cargo.toml`, merge to `main`.
-3. Tag the merge commit: `git tag v0.4.0 && git push origin v0.4.0`.
+3. Merge to `main`, then tag the merge commit:
+   `git tag v0.4.3 && git push origin v0.4.3`.
+
+The order matters more than it looks. While the built version **equals** the
+published one, every upgrade path quietly tests nothing, each in its own way:
+
+| | with an equal version |
+|---|---|
+| `apt-get install` | "already the newest version" — does nothing at all |
+| NSIS installer | takes its `reinst_done` branch and **skips the uninstall** |
+| in-app updater | sees no newer version to offer |
+
+None of those announce themselves as skipped; two of them look like a clean
+pass. A rename shipped this way would leave the old binary beside the new one
+on Windows and nobody would learn it from a green dry run — which is exactly
+what happened while preparing the `soul-player` rename, three times, before the
+version was bumped.
 
 `.github/workflows/release.yml` then runs, stage by stage — nothing reaches users
 until every earlier stage is green:
