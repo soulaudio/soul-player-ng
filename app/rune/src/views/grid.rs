@@ -4,7 +4,18 @@
 //! discography. Factored out of the album grid so the pages stay consistent.
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
+use std::rc::Rc;
+
+use rune::{El, GrowthSpec, col, row};
+
+use crate::State;
 use crate::ui::space;
+
+/// The per-card builder a [`virtual_grid`] caller supplies: `(state, item_index,
+/// card_width) -> card element`. Boxed so the grid helper stays generic over the
+/// card type; the caller captures its (memoized) item list by `Rc` inside.
+pub(crate) type CardBuilder = Rc<dyn Fn(&State, usize, f32) -> El>;
 
 /// Smallest card width before the grid drops a column. Tuned so the column count
 /// tracks the original's `grid-cols-2..8` viewport breakpoints and cards land
@@ -41,6 +52,56 @@ pub(crate) fn columns(avail: f32, min_card: f32, gap: f32) -> (usize, f32) {
 /// and test share one rule.
 pub(crate) fn responsive_grid(pane_w: f32, min_card: f32, gap: f32) -> (usize, f32) {
     columns(pane_w - 2.0 * space::PANE, min_card, gap)
+}
+
+/// A VIRTUALIZED responsive grid: the same column rule as [`responsive_grid`], but
+/// the `count` items are chunked into rows of `cols` cards and only the on-screen
+/// window of rows is ever built (via [`rune::El::virtual_rows`]), so a browse grid
+/// stays smooth at hundreds of thousands of items instead of laying out every card.
+/// `cover_aspect` is the card's cover height as a fraction of `card_w` (1.0 for a
+/// square album/artist cover, 0.0 for a cover-less genre tile) and `caption_h` its
+/// text height, so a row is `card_w * cover_aspect + caption_h` tall.
+/// `build_card(state, item_index, card_w)` builds one card; it captures the
+/// (memoized) item list by `Rc`, so it borrows nothing and indexes cheaply. Must be
+/// the direct child of a `.scroll()` viewport (the `growth` contract), like Tracks.
+pub(crate) fn virtual_grid(
+    key: &'static str,
+    pane_w: f32,
+    count: usize,
+    cover_aspect: f32,
+    caption_h: f32,
+    build_card: CardBuilder,
+) -> El {
+    let (cols, card_w) = responsive_grid(pane_w, MIN_CARD, space::GUTTER);
+    let cols = cols.max(1);
+    let rows = count.div_ceil(cols);
+    // One grid row is `cols` cards side by side; its height is the cover (a fraction
+    // of the card width) plus the caption, and it carries a bottom gap so rows don't
+    // touch. That total is the stride `virtual_rows` windows by.
+    let row_h = card_w * cover_aspect + caption_h + space::GUTTER;
+    col()
+        .key(key)
+        .role("grid")
+        .growth(GrowthSpec::default())
+        .virtual_rows(
+            rows,
+            row_h,
+            move |_s: &State, r: usize| Cow::Owned(format!("{key}-row-{r}")),
+            move |s: &State, r: usize| {
+                let start = r * cols;
+                let end = (start + cols).min(count);
+                let mut row_el = row()
+                    .key(format!("{key}-row-{r}"))
+                    .w_full()
+                    .gap(space::GUTTER)
+                    .px(space::PANE)
+                    .pb(space::GUTTER);
+                for pos in start..end {
+                    row_el = row_el.child(build_card(s, pos, card_w));
+                }
+                row_el
+            },
+        )
 }
 
 #[cfg(test)]
