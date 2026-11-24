@@ -301,6 +301,16 @@ type ResolvedPlaylistCache = std::cell::RefCell<
     )>,
 >;
 
+/// Memoized playlist-cover resolution: `(library_fp, playlists_fp, id -> cover ids)`
+/// (see [`State::playlist_cover_ids`]).
+type PlaylistCoverCache = std::cell::RefCell<
+    Option<(
+        u64,
+        u64,
+        std::rc::Rc<std::collections::HashMap<soul_player_host::PlaylistId, std::rc::Rc<[u32]>>>,
+    )>,
+>;
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -339,6 +349,12 @@ struct State {
     /// whole-catalog locator map (O(library)), which the detail page otherwise paid
     /// EVERY frame; recomputed only when the library or the playlist changes.
     resolved_playlist_cache: ResolvedPlaylistCache,
+    /// Every playlist's resolved cover track ids, memoized by (library fingerprint,
+    /// playlists fingerprint). The Playlists LIST grid otherwise rebuilt a full
+    /// catalog locator map PER CARD PER FRAME (`host.resolve_locators` inside
+    /// `playlist_cover`); this resolves all covers in ONE pass per change, so a card
+    /// is a lookup per frame.
+    playlist_cover_cache: PlaylistCoverCache,
     /// User-created playlists, loaded from the on-disk store at startup
     /// ([`playlists::PlaylistStore::load`]). Every mutation
     /// (create/rename/delete/reorder) persists through the store itself.
@@ -886,6 +902,7 @@ impl State {
             track_index_cache: std::cell::RefCell::new(None),
             visible_tracks_cache: std::cell::RefCell::new(None),
             resolved_playlist_cache: std::cell::RefCell::new(None),
+            playlist_cover_cache: std::cell::RefCell::new(None),
             playlists,
             covers,
             playlist_new_buf: rune::TextEdit::new(""),
@@ -1202,6 +1219,60 @@ impl State {
         let resolved = std::rc::Rc::new(self.host.resolve_playlist(&playlist.entries));
         *self.resolved_playlist_cache.borrow_mut() = Some((lib_fp, id, ent_fp, resolved.clone()));
         resolved
+    }
+
+    /// Every playlist's resolved cover track ids (`id -> ids`), memoized by (library
+    /// fingerprint, playlists fingerprint). The Playlists list grid's cards index
+    /// this instead of each calling `host.resolve_locators` (a full-catalog map
+    /// build) every frame; the single resolve pass runs only when the library or the
+    /// playlists' covers change. The fingerprint it hashes is O(playlists) (a small
+    /// set), not O(library).
+    pub(crate) fn playlist_cover_ids(
+        &self,
+    ) -> std::rc::Rc<std::collections::HashMap<soul_player_host::PlaylistId, std::rc::Rc<[u32]>>>
+    {
+        use std::hash::{Hash, Hasher};
+        let summaries = self.playlists.list();
+        let lib_fp = self.library_fingerprint();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for sum in &summaries {
+            sum.id.hash(&mut h);
+            for loc in &sum.cover {
+                loc.key().hash(&mut h);
+            }
+        }
+        let pl_fp = h.finish();
+        if let Some((clib, cpl, rc)) = self.playlist_cover_cache.borrow().as_ref()
+            && *clib == lib_fp
+            && *cpl == pl_fp
+        {
+            return rc.clone();
+        }
+        // Resolve EVERY playlist's cover locators in one pass (one catalog map build),
+        // then slice the flat result back out per playlist.
+        let mut all_locs: Vec<soul_player_host::TrackLocator> = Vec::new();
+        let mut spans: Vec<(soul_player_host::PlaylistId, usize, usize)> = Vec::new();
+        for sum in &summaries {
+            let start = all_locs.len();
+            all_locs.extend(sum.cover.iter().cloned());
+            spans.push((sum.id, start, sum.cover.len()));
+        }
+        let resolved = self.host.resolve_locators(&all_locs);
+        let map: std::collections::HashMap<soul_player_host::PlaylistId, std::rc::Rc<[u32]>> =
+            spans
+                .into_iter()
+                .map(|(id, start, len)| {
+                    let ids: std::rc::Rc<[u32]> = resolved[start..start + len]
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .collect();
+                    (id, ids)
+                })
+                .collect();
+        let rc = std::rc::Rc::new(map);
+        *self.playlist_cover_cache.borrow_mut() = Some((lib_fp, pl_fp, rc.clone()));
+        rc
     }
 
     /// Resolve a library track by id in O(1) via the memoized index map. Shared by
