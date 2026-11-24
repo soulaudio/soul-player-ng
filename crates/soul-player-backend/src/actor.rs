@@ -15,7 +15,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use soul_audio_control::Player;
-use soul_audio_core::{Deck, Progress, Quality, Sink};
+use soul_audio_core::{Deck, DeckError, DecodeError, Progress, Quality, Sink, SinkError};
 use soul_audio_desktop::OwnedDecoder;
 use soul_audio_engine::{Engine, Provided};
 
@@ -32,6 +32,33 @@ use crate::types::{Command, Event, LoudnessAnalysisMode, PlayState, ReplayGainMo
 /// Golden-ratio odd constant; advanced per shuffle to vary the permutation seed
 /// without an RNG dependency (deterministic across runs).
 const SEED_STEP: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// Whether `cmd` starts or changes the playing track. Used to decide if a failed
+/// `apply_command` means the user got silence (worth an [`Event::PlaybackFailed`]) versus a
+/// Seek / Volume / queue-management op whose failure is not "nothing played".
+fn command_starts_playback(cmd: &Command) -> bool {
+    matches!(
+        cmd,
+        Command::Play
+            | Command::TogglePlay
+            | Command::PlayContext { .. }
+            | Command::Next
+            | Command::Prev
+            | Command::PlayNext(_)
+            | Command::PlayUpcoming(_)
+            | Command::Goto(_)
+    )
+}
+
+/// Whether a failed track-start is because this build cannot decode the format (gated-off
+/// AAC, or a sink that rejects it) rather than another failure (unreadable / corrupt). Drives
+/// the `unsupported` flag on [`Event::PlaybackFailed`] so the UI can name the reason.
+fn deck_error_is_unsupported(e: &DeckError) -> bool {
+    matches!(
+        e,
+        DeckError::Decode(DecodeError::Unsupported) | DeckError::Sink(SinkError::Unsupported)
+    )
+}
 
 /// Handle to the running player actor. Dropping it stops the threads.
 pub struct AudioPlayer {
@@ -334,8 +361,19 @@ fn pump_thread<K, Mk, Pk, Ev>(
                     } else {
                         cmd
                     };
+                    // Whether this command starts/changes the playing track, captured BEFORE
+                    // `apply_command` consumes it: a failure of such a command means the user
+                    // got silence and should be told why.
+                    let starts_playback = command_starts_playback(&applied);
                     if let Err(e) = apply_command(&mut player, applied, seed) {
                         tracing::warn!(error = ?e, "command error");
+                        if starts_playback {
+                            // Tell the app WHY nothing played (so a gated-off format like AAC is
+                            // not a silent no-op), classifying the can't-decode case.
+                            on_event(Event::PlaybackFailed {
+                                unsupported: deck_error_is_unsupported(&e),
+                            });
+                        }
                     }
                     changed = true;
                 }
@@ -652,6 +690,58 @@ mod tests {
     use crate::testutil::NullSink;
     use std::path::PathBuf;
     use std::sync::mpsc::RecvTimeoutError;
+
+    #[test]
+    fn only_track_start_commands_count_as_playback_for_the_failure_notice() {
+        // A failure of these means the user got silence -> worth a PlaybackFailed notice.
+        for c in [
+            Command::Play,
+            Command::TogglePlay,
+            Command::PlayContext {
+                ids: vec![1],
+                start: 0,
+            },
+            Command::Next,
+            Command::Prev,
+            Command::PlayNext(1),
+            Command::PlayUpcoming(1),
+            Command::Goto(1),
+        ] {
+            assert!(command_starts_playback(&c), "{c:?} starts playback");
+        }
+        // A failure of these is NOT "nothing played" -> no notice (would be a false alarm).
+        for c in [
+            Command::Pause,
+            Command::Stop,
+            Command::Seek { secs: 1.0 },
+            Command::SetVolume(0.5),
+            Command::ToggleMute,
+            Command::Enqueue(1),
+            Command::ClearQueue,
+            Command::SetShuffle(true),
+        ] {
+            assert!(
+                !command_starts_playback(&c),
+                "{c:?} does not start playback"
+            );
+        }
+    }
+
+    #[test]
+    fn deck_error_unsupported_is_the_cant_decode_case_only() {
+        // The two "this build can't play that format" shapes -> unsupported = true.
+        assert!(deck_error_is_unsupported(&DeckError::Decode(
+            DecodeError::Unsupported
+        )));
+        assert!(deck_error_is_unsupported(&DeckError::Sink(
+            SinkError::Unsupported
+        )));
+        // Any other decode/sink failure is a different problem (corrupt/unreadable/io),
+        // so the notice says "couldn't play" rather than "format not supported".
+        assert!(!deck_error_is_unsupported(&DeckError::Decode(
+            DecodeError::Io
+        )));
+    }
 
     fn wav(rate: u32, frames: u32) -> Vec<u8> {
         // Minimal stereo-16-bit WAV writer (same as library.rs tests).
