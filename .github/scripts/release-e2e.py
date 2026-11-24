@@ -786,11 +786,22 @@ def set_config(env: AppEnv, **values: bool) -> None:
     f.write_text("\n".join(head + lines) + "\n", encoding="utf-8")  # top-level keys first
 
 
-def graceful_quit(p: subprocess.Popen, timeout: int = 60) -> int:
+def graceful_quit(p: subprocess.Popen, timeout: int = 60, apple_event: bool = False) -> int:
     """Quit the way a user does: SIGTERM (handled like ⌘Q) or, on Windows, a
-    window close (WM_CLOSE via taskkill without /F). Returns the exit status."""
+    window close (WM_CLOSE via taskkill without /F). Returns the exit status.
+
+    `apple_event` (macOS): send the Quit Apple Event instead, the path ⌘Q, the
+    Dock and logout take. AppKit then ends the process from
+    `applicationWillTerminate:` and the app's run loop never returns, unlike the
+    SIGTERM quit, which the app turns into its own quit. 0.4.1 installed an
+    install-on-quit update only after the run loop returned, so a real ⌘Q never
+    installed it while every SIGTERM-driven check passed."""
     if IS_WIN:
         subprocess.run(["taskkill", "/PID", str(p.pid)], capture_output=True)
+    elif IS_MAC and apple_event:
+        r = subprocess.run(["osascript", "-e", f'tell application id "{BUNDLE_ID}" to quit'],
+                           capture_output=True, text=True, timeout=60)
+        check(r.returncode == 0, f"the Quit Apple Event failed: {r.stderr.strip()}")
     else:
         p.send_signal(signal.SIGTERM)
     try:
@@ -867,7 +878,8 @@ def auto_check_off(inst: Install, env: AppEnv, library: Path, update: tuple, ver
 
 def install_on_quit(inst: Install, env: AppEnv, library: Path, update: tuple, version: str, key: str) -> None:
     """"Install updates automatically": download in the background, install nothing
-    mid-session, install when the user quits, and do not reopen the app."""
+    mid-session, install when the user quits (on macOS with the Quit Apple Event, as
+    ⌘Q does), and do not reopen the app."""
     set_config(env, update_auto_check=True, update_auto_install=True)
     offer = UpdateServer(bump_patch(version), key, *update)
     mark_stale(inst)
@@ -884,7 +896,7 @@ def install_on_quit(inst: Install, env: AppEnv, library: Path, update: tuple, ve
         p.kill()
         offer.close()
         raise
-    status = graceful_quit(p)
+    status = graceful_quit(p, apple_event=True)
     offer.close()
     check(status == 0, f"quit with {status}")
     check(wait_until(lambda: not is_stale(inst), 180),
