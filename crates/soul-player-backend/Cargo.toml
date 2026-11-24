@@ -38,7 +38,11 @@ soul-audio-playlist = { git = "https://github.com/soulaudio/soul-audio-core", br
 # sources"); the DAP is the N=1 case and never links this.
 soul-audio-multicatalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 anyhow = "1"
-serde = { version = "1", features = ["derive"] }
+# "rc" lets the derive serialize the `Arc<str>` interned fields on TrackView
+# (artist/album/genre/format). Note: deserialization does NOT re-share Arcs
+# (each occurrence allocates) — fine here, since interning is an in-process
+# materialization concern (views_by), never relied on across a serde roundtrip.
+serde = { version = "1", features = ["derive", "rc"] }
 embedded-io-adapters = { workspace = true, features = ["std"] }
 # Acoustic fingerprinting (Chromaprint, default Algorithm 2) for cloud track
 # identity. Pure-Rust (MIT, rubato resampler) so the distributed client stays

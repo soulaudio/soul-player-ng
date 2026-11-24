@@ -59,7 +59,7 @@ fn row_text(s: &State, p: &Palette, id: u32) -> El {
             t.title
                 .clone()
                 .unwrap_or_else(|| t!("library.unknown").to_string()),
-            t.artist.clone().unwrap_or_default(),
+            t.artist.as_deref().unwrap_or_default().to_string(),
         ),
         None => (t!("library.unknown").to_string(), String::new()),
     };
