@@ -210,9 +210,13 @@ TODO:
 - ✅ **Homebrew cask** — `brew tap soulaudio/tap && brew trust soulaudio/tap && brew install --cask
   soul-player`. `gen-cask.py` generates it (universal DMG, `auto_updates true`, `zap` = the in-app
   uninstall's paths); the release e2e installs, runs and zaps it on both Macs before publishing.
-  [soulaudio/homebrew-tap](https://github.com/soulaudio/homebrew-tap) follows releases itself:
-  an hourly workflow regenerates the cask from the new release, installs + launches + zaps it on
-  a Mac, then commits (pull-based: deploy keys are off org-wide and no token crosses repos).
+  Published from this repo: after `verify`, the release's `homebrew` job (`homebrew.yml`,
+  `publish-cask.py`) pre-flight tests the new cask on a Mac, PRs it to
+  [soulaudio/homebrew-tap](https://github.com/soulaudio/homebrew-tap) with the tap GitHub App's
+  token, merges only when the tap's required `cask-ci` passes (style, audit, livecheck, install
+  quarantined, launch, zap), then installs from the live tap as a user would and reverts through
+  the same gate if that fails. `homebrew.yml` also does `rollback` (revert a version) and `drill`
+  (publish + roll back on a throwaway tap branch), and every rehearsal runs the drill.
   ⬜ homebrew/cask (the main repo) once notarized — it rejects casks that fail Gatekeeper.
 - ⬜ Saved sign-ins across updates: the Keychain ties an item to the app's code signature, and
   an ad-hoc signature changes every build, so a remote server's refresh token may prompt or be

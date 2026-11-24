@@ -980,7 +980,7 @@ jobs:
           ## Install
 
           - **macOS** — download **`Soul-Player_<version>_universal.dmg`**: it runs natively on every Mac, Apple silicon and Intel. Open it and drag Soul Player to Applications (if you open it straight from the disk image, it offers to move itself). The smaller `aarch64` (Apple silicon) and `x86_64` (Intel) DMGs hold one build each; on Apple silicon the Intel one offers to switch itself over. The app isn't notarized by Apple yet, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Soul Player.app"`). Later updates install in-app.
-          - **Homebrew** — `brew tap soulaudio/tap && brew trust soulaudio/tap && brew install --cask soul-player` (the cask follows within the hour).
+          - **Homebrew** — `brew tap soulaudio/tap && brew trust soulaudio/tap && brew install --cask soul-player`.
           - **Windows** — run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
           - **Linux** — `chmod +x` the AppImage and run it.
 
@@ -1075,10 +1075,29 @@ jobs:
             echo "ok: $key → $name"
           done
 
-  # Homebrew: github.com/soulaudio/homebrew-tap follows releases on its own. Its
-  # hourly "Update cask" workflow sees the new latest release, regenerates the
-  # cask with this release's gen-cask.py, installs + launches + zaps it on a Mac,
-  # and only then commits it. Pull-based, so no token here can write there.
+  # Homebrew (homebrew.yml): PR the new cask to soulaudio/homebrew-tap, merge only
+  # when the tap's cask-ci passes, install from the live tap as a user would, and
+  # revert the same way if that fails. A Homebrew failure fails this run but never
+  # demotes the release: the release itself was verified, the cask is one channel.
+  homebrew:
+    needs: [guard, verify]
+    if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      mode: publish
+      version: ${{ needs.guard.outputs.version }}
+    secrets: inherit
+
+  # A rehearsal publishes nothing, so it proves the Homebrew path with a drill:
+  # publish + roll back the tap's current version on a throwaway branch, through
+  # cask-ci, with the real App token.
+  homebrew-drill:
+    needs: [guard, draft]
+    if: github.event.inputs.rehearsal == 'true'
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      mode: drill
+    secrets: inherit
 
   rollback:
     needs: [guard, draft, publish, verify]
