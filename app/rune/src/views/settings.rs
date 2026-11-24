@@ -237,7 +237,21 @@ fn add_source_trigger(p: &Palette) -> El {
         .fill(p.primary)
         .cursor(Cursor::Pointer)
         .child(text(t!("settings.addSource").to_string()).color(p.bg))
-        .on_press(move |s: &mut State| crate::toggle_dropdown(s, ADD_SOURCE_MENU))
+        .on_press(open_add_source_menu)
+}
+
+/// Open the add-source menu — unless the source cap is already reached, in which case raise a
+/// notice instead of the menu. Adding a 17th source would exceed the core's compound-id source
+/// slots ([`soul_player_host::MAX_SOURCES`]) and panic the scan, so the add is refused at the
+/// host too; this just explains why up front rather than letting the user pick a folder that
+/// then silently fails.
+fn open_add_source_menu(s: &mut State) {
+    if s.host.source_count() >= soul_player_host::MAX_SOURCES {
+        s.source_limit_notice = true;
+    } else {
+        s.source_limit_notice = false;
+        crate::toggle_dropdown(s, ADD_SOURCE_MENU);
+    }
 }
 
 /// An add-source option's label stacked over a one-line description, growing to fill
@@ -1829,6 +1843,16 @@ fn music_data_card(s: &State, p: &Palette) -> El {
             text(skip_notice_text(root, groups))
                 .key("skip-notice")
                 .color(p.text_secondary)
+                .wrap(),
+        );
+    }
+    // The user tried to add a source past the cap (see `open_add_source_menu`): say why, in
+    // accent so it reads as "action needed" (remove one first), not a passive note.
+    if s.source_limit_notice {
+        c = c.child(
+            text(t!("settings.sourceLimit", max => soul_player_host::MAX_SOURCES).to_string())
+                .key("source-limit-notice")
+                .color(p.accent)
                 .wrap(),
         );
     }
