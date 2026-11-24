@@ -182,22 +182,50 @@ pub fn run(plan: &Plan) -> Report {
             // Windows won't delete our still-open log file: a detached shell
             // waits for this process to exit, clears what's left of our data,
             // then runs the uninstaller.
-            let mut script = String::from("ping -n 3 127.0.0.1 >nul");
-            for p in plan.data.iter().filter(|p| ours(p)) {
-                script.push_str(&format!(" & rmdir /s /q \"{}\" 2>nul", p.display()));
-            }
-            script.push_str(&format!(" & \"{}\" /S", u.display()));
-            match std::process::Command::new("cmd")
-                .args(["/C", &script])
-                .spawn()
-            {
-                Ok(_) => r.removed.push(u.clone()),
+            match spawn_cmd(&windows_script(&plan.data, u)) {
+                Ok(()) => r.removed.push(u.clone()),
                 Err(e) => r.failed.push((u.clone(), e.to_string())),
             }
         }
         AppRemoval::PackageManager(_) | AppRemoval::Nothing => {}
     }
     r
+}
+
+/// The detached shell's script (Windows): wait for this process to exit, clear
+/// what's left of our data, then run the uninstaller silently.
+fn windows_script(data: &[PathBuf], uninstaller: &Path) -> String {
+    let mut script = String::from("ping -n 3 127.0.0.1 >nul");
+    for p in data.iter().filter(|p| ours(p)) {
+        script.push_str(&format!(" & rmdir /s /q \"{}\" 2>nul", p.display()));
+    }
+    script.push_str(&format!(" & \"{}\" /S", uninstaller.display()));
+    script
+}
+
+/// `cmd /C "<script>"` with the command line passed verbatim. The usual
+/// argument quoting escapes inner quotes as `\"`, which cmd doesn't
+/// understand: the quoted uninstaller path came through mangled and never ran
+/// (the release e2e caught it). With /C, cmd strips the outer pair of quotes
+/// and keeps the inner ones. Detached, so it outlives this process.
+#[cfg(windows)]
+fn spawn_cmd(script: &str) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    std::process::Command::new("cmd")
+        .raw_arg(format!("/C \"{script}\""))
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(drop)
+}
+
+#[cfg(not(windows))]
+fn spawn_cmd(_script: &str) -> std::io::Result<()> {
+    Err(std::io::Error::other("Windows only"))
 }
 
 fn remove(p: &Path, r: &mut Report) {
@@ -325,6 +353,22 @@ mod tests {
         ] {
             assert!(!ours(Path::new(p)), "{p} must never be removed");
         }
+    }
+
+    #[test]
+    fn the_windows_script_waits_clears_our_data_then_uninstalls() {
+        let s = windows_script(
+            &[
+                PathBuf::from(r"C:/Users/me/AppData/Roaming/soul-player"),
+                PathBuf::from(r"C:/Users/me/Music"),
+            ],
+            Path::new(r"C:/Users/me/AppData/Local/Soul Player/uninstall.exe"),
+        );
+        assert_eq!(
+            s,
+            r#"ping -n 3 127.0.0.1 >nul & rmdir /s /q "C:/Users/me/AppData/Roaming/soul-player" 2>nul & "C:/Users/me/AppData/Local/Soul Player/uninstall.exe" /S"#,
+            "waits, removes only our folder, then runs the quoted uninstaller"
+        );
     }
 
     #[test]
