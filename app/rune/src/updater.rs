@@ -74,9 +74,61 @@ pub(crate) struct UpdateUi {
     /// disk image or a translocated copy (macOS) — moving it to Applications
     /// turns updates on.
     pub(crate) needs_move: bool,
+    /// The download in flight (while `status` is `Downloading`).
+    pub(crate) progress: Option<DownloadProgress>,
     /// The version already announced with an OS notification this session, so
     /// the scheduled re-checks don't repeat it.
     notified: Option<String>,
+}
+
+/// A download's progress as the Settings page shows it: the bytes, and a
+/// smoothed speed for the time-left estimate.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DownloadProgress {
+    pub(crate) done: u64,
+    pub(crate) total: Option<u64>,
+    /// Bytes per second, exponentially smoothed so the estimate doesn't jump
+    /// with every chunk. `None` until there are two samples.
+    pub(crate) rate: Option<f64>,
+    last: (Instant, u64),
+}
+
+impl DownloadProgress {
+    pub(crate) fn start(now: Instant) -> Self {
+        Self {
+            done: 0,
+            total: None,
+            rate: None,
+            last: (now, 0),
+        }
+    }
+
+    /// Fold in a report taken at `now`.
+    pub(crate) fn update(&mut self, p: update::Progress, now: Instant) {
+        let dt = now.duration_since(self.last.0).as_secs_f64();
+        if dt >= 0.05 {
+            let sample = p.done.saturating_sub(self.last.1) as f64 / dt;
+            // ~1 s time constant at 10 reports a second.
+            self.rate = Some(self.rate.map_or(sample, |r| r + 0.2 * (sample - r)));
+            self.last = (now, p.done);
+        }
+        self.done = p.done;
+        self.total = p.total;
+    }
+
+    /// Fraction done, when the size is known.
+    pub(crate) fn fraction(&self) -> Option<f32> {
+        self.total
+            .filter(|&t| t > 0)
+            .map(|t| (self.done as f64 / t as f64).clamp(0.0, 1.0) as f32)
+    }
+
+    /// Seconds left at the current speed, when both are known.
+    pub(crate) fn seconds_left(&self) -> Option<u64> {
+        let left = self.total?.saturating_sub(self.done) as f64;
+        let rate = self.rate.filter(|&r| r > 1.0)?;
+        Some((left / rate).ceil() as u64)
+    }
 }
 
 impl UpdateUi {
@@ -91,6 +143,7 @@ impl UpdateUi {
             supported: update::enabled(),
             managed_elsewhere: update::managed_elsewhere(),
             needs_move: update::needs_move(),
+            progress: None,
             notified: None,
         }
     }
@@ -142,8 +195,17 @@ pub(crate) fn check_now(s: &mut State) {
 /// whether it failed (the scheduler then retries sooner).
 fn check_blocking(ah: &AppHandle<State>) -> bool {
     if !update::begin_check() {
-        return false; // another check is already running
+        return false; // another check (or its download) is already running
     }
+    // Held until any background download this check starts has finished, so
+    // a check firing mid-download never starts a second one.
+    struct Slot;
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            update::end_check();
+        }
+    }
+    let _slot = Slot;
     ah.update(|s: &mut State, _tx: &mut Tx| {
         // Don't paint over a download in progress or one that's ready.
         if matches!(
@@ -157,7 +219,6 @@ fn check_blocking(ah: &AppHandle<State>) -> bool {
         }
     });
     let result = update::check();
-    update::end_check();
     match result {
         Ok(Some(found)) => {
             tracing::info!(version = %found.version, "update available");
@@ -168,7 +229,9 @@ fn check_blocking(ah: &AppHandle<State>) -> bool {
             } else if update::auto_install()
                 && update::staged_version().as_deref() != Some(found.version.as_str())
             {
-                download_for_quit(ah.clone(), found);
+                // A download that fails (the connection dropped) is retried
+                // like a failed check: soon, not at the next 12-hour check.
+                return !download_for_quit(ah, found);
             }
             false
         }
@@ -235,9 +298,11 @@ fn install_now_with(ah: AppHandle<State>) {
     ah.update(|s: &mut State, _tx: &mut Tx| {
         if let Some(f) = s.update.status.found().cloned() {
             s.update.status = UpdateStatus::Downloading(f);
+            s.update.progress = Some(DownloadProgress::start(Instant::now()));
         }
     });
-    std::thread::spawn(move || match update::download(true) {
+    let reporter = progress_reporter(ah.clone());
+    std::thread::spawn(move || match update::download(true, reporter) {
         Ok(Some(version)) => {
             tracing::info!(
                 version,
@@ -262,12 +327,30 @@ fn install_now_with(ah: AppHandle<State>) {
     });
 }
 
+/// Forwards download progress from the download thread to the Settings page.
+fn progress_reporter(ah: AppHandle<State>) -> impl Fn(update::Progress) + Send + 'static {
+    move |p| {
+        ah.update(move |s: &mut State, _tx: &mut Tx| {
+            if let (UpdateStatus::Downloading(_), Some(pr)) =
+                (&s.update.status, s.update.progress.as_mut())
+            {
+                pr.update(p, Instant::now());
+            }
+        });
+    }
+}
+
 /// "Install updates automatically": fetch + verify in the background and stage
-/// it to install when the user next quits — never mid-session.
-fn download_for_quit(ah: AppHandle<State>, found: Found) {
+/// it to install when the user next quits — never mid-session. Runs on the
+/// calling (background) thread; returns whether the download succeeded.
+fn download_for_quit(ah: &AppHandle<State>, found: Found) -> bool {
     let f = found.clone();
-    ah.update(move |s: &mut State, _tx: &mut Tx| s.update.status = UpdateStatus::Downloading(f));
-    std::thread::spawn(move || match update::download(false) {
+    ah.update(move |s: &mut State, _tx: &mut Tx| {
+        s.update.status = UpdateStatus::Downloading(f);
+        s.update.progress = Some(DownloadProgress::start(Instant::now()));
+    });
+    let reporter = progress_reporter(ah.clone());
+    match update::download(false, reporter) {
         Ok(Some(version)) => {
             tracing::info!(
                 version,
@@ -285,9 +368,11 @@ fn download_for_quit(ah: AppHandle<State>, found: Found) {
                     update::discard_staged();
                 }
             });
+            true
         }
         Ok(None) => {
             ah.update(|s: &mut State, _tx: &mut Tx| s.update.status = UpdateStatus::UpToDate);
+            true
         }
         Err(e) => {
             tracing::error!("update download failed: {e}");
@@ -295,8 +380,9 @@ fn download_for_quit(ah: AppHandle<State>, found: Found) {
             ah.update(move |s: &mut State, _tx: &mut Tx| {
                 s.update.status = UpdateStatus::Failed(msg);
             });
+            false
         }
-    });
+    }
 }
 
 /// Settings switch: "Check for updates automatically". Turning it on checks at
@@ -320,8 +406,14 @@ pub(crate) fn set_auto_install(s: &mut State, on: bool) {
     update::set_auto_install(on);
     match (&s.update.status, on) {
         (UpdateStatus::Available(f), true) => {
-            if let Some(ah) = s.app_handle.clone() {
-                download_for_quit(ah, f.clone());
+            if let Some(ah) = s.app_handle.clone()
+                && update::begin_check()
+            {
+                let f = f.clone();
+                std::thread::spawn(move || {
+                    download_for_quit(&ah, f);
+                    update::end_check();
+                });
             }
         }
         (UpdateStatus::Ready(f) | UpdateStatus::Downloading(f), false) => {
