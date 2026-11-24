@@ -330,10 +330,20 @@ jobs:
             || { echo "::error::soul-player is not on PATH after installing the .deb"; exit 1; }
           # `ldd` naming an unresolved library is the failure a dependency list
           # exists to prevent, and it is silent until the app is launched.
-          missing=$(ldd "$(command -v soul-player)" | grep -c "not found" || true)
+          #
+          # `=> not found`, not a bare `not found`: ldd uses that arrow only for
+          # a SONAME it could not resolve. The looser pattern also matches
+          # "weak version `GLIBC_2.39' not found", which is NOT a missing
+          # library — it is the documented weak-symbol fallback
+          # (pidfd_spawnp/pidfd_getpid), and the binary runs without them. That
+          # line is absent on this runner (glibc 2.39) and present on anything
+          # older, so the loose pattern passes here while being wrong: on
+          # Debian 12 the published package reports it and still runs. Verified
+          # by installing v0.4.4 there — 0 missing libraries, 1 weak notice.
+          missing=$(ldd "$(command -v soul-player)" | grep -c "=> not found" || true)
           [ "$missing" = "0" ] \
             || { echo "::error::$missing libraries unresolved after install"; \
-                 ldd "$(command -v soul-player)" | grep "not found"; exit 1; }
+                 ldd "$(command -v soul-player)" | grep "=> not found"; exit 1; }
           soul-player --help >/dev/null 2>&1 \
             || { echo "::error::the installed binary does not run"; exit 1; }
           sudo apt-get remove -y -qq soul-player
@@ -411,8 +421,10 @@ jobs:
           docker run --rm -v "$PWD/dist:/w:ro" fedora:latest bash -c '
             set -e
             dnf install -y -q /w/*.rpm
-            m=$(ldd /usr/bin/soul-player | grep -c "not found" || true)
-            [ "$m" = "0" ] || { ldd /usr/bin/soul-player | grep "not found"; exit 1; }
+            # `=> not found` only — see the .deb check above for why a bare
+            # "not found" also catches the harmless weak-symbol notice.
+            m=$(ldd /usr/bin/soul-player | grep -c "=> not found" || true)
+            [ "$m" = "0" ] || { ldd /usr/bin/soul-player | grep "=> not found"; exit 1; }
             # `--help` writes to stderr, so both streams go to /dev/null;
             # the exit status is what is being checked.
             /usr/bin/soul-player --help >/dev/null 2>&1
