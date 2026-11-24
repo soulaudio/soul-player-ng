@@ -1179,8 +1179,22 @@ def main() -> int:
                 steps.append((f"{prev_version} auto-updates itself to {a.version}", "pass"))
                 new = old
                 new.version = a.version
+                # Re-read where the app actually lives now, rather than trusting
+                # the pre-update object: an update may RENAME the binary, and
+                # `old.exe` then points at a path the update deleted. Windows
+                # already re-read its registry entry; macOS has to re-read the
+                # bundle's own record of its executable, or everything after this
+                # tries to launch the previous build's name and dies with
+                # ENOENT. (That is what the rename did here: the upgrade
+                # succeeded, then `exercise` failed on
+                # .../MacOS/soul-player-rune.)
                 if IS_WIN:  # re-read: the installer may have rewritten the registry entry
                     new = WindowsInstall(WindowsInstall.entries()[0])
+                elif IS_MAC:
+                    new.exe = new.app / "Contents" / "MacOS" / subprocess.check_output(
+                        ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleExecutable",
+                         str(new.app / "Contents" / "Info.plist")], text=True
+                    ).strip()
             else:
                 if older and update:
                     log(f"::notice::{prev_version} cannot install updates unattended; installing over it")
