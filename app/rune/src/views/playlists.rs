@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 use std::path::Path;
+use std::rc::Rc;
 
 use rune::{Color, Cursor, Cx, El, ScrollSpec, col, el, row, text, text_input};
 
@@ -261,21 +262,24 @@ pub fn new_playlist_overlay(s: &State, p: &Palette) -> Option<El> {
 /// responsive card grid the Albums page uses — one [`playlist_card`] per playlist
 /// — or an empty-state message when there are none. Pressing "New playlist"
 /// reveals the inline name field under the bar.
+/// A playlist card's non-cover height (name + track count): the `virtual_grid`
+/// row stride is a `card_w`-square cover mosaic plus this.
+const PLAYLIST_CAPTION_H: f32 = 48.0;
+
 pub fn page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
-    let summaries = s.playlists.list();
+    let summaries: Rc<[PlaylistSummary]> = s.playlists.list().into();
     let q = s.playlist_search.text.to_lowercase();
-    let visible: Vec<&PlaylistSummary> = if q.is_empty() {
-        summaries.iter().collect()
-    } else {
-        summaries
-            .iter()
-            .filter(|pl| pl.name.to_lowercase().contains(&q))
-            .collect()
-    };
+    // Search narrows to a list of INDICES into `summaries`, so the grid can be
+    // virtualized (only on-screen cards mount) the same way the Albums grid is.
+    let visible: Vec<usize> = summaries
+        .iter()
+        .enumerate()
+        .filter(|(_, pl)| q.is_empty() || pl.name.to_lowercase().contains(&q))
+        .map(|(i, _)| i)
+        .collect();
     // Responsive grid, the same rule as the Albums grid: read this page's own pane
     // width (first frame has no prior layout → a sensible desktop fallback).
     let pane = cx.layout_size("playlists").map(|[w, _]| w).unwrap_or(820.0);
-    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
     let search = crate::views::library::search_box(
         &s.playlist_search,
@@ -318,16 +322,23 @@ pub fn page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 .color(p.text_secondary),
         )
     } else {
-        let mut grid_el = row()
-            .key("playlists-grid")
-            .role("grid")
-            .flex_wrap()
-            .gaps(space::MD, space::GUTTER)
-            .padding(space::PANE);
-        for &summary in &visible {
-            grid_el = grid_el.child(playlist_card(s, p, summary, card_w, scale));
-        }
-        grid_el
+        // Virtualized grid: only the on-screen window of cards is built. The closure
+        // captures the summaries + visible index list by `Rc`.
+        let sums = summaries.clone();
+        let visible: Rc<[usize]> = visible.into();
+        let count = visible.len();
+        let vis_cards = visible.clone();
+        let pal = *p;
+        grid::virtual_grid(
+            "playlists-grid",
+            pane,
+            count,
+            1.0, // square 2x2 cover mosaic
+            PLAYLIST_CAPTION_H,
+            Rc::new(move |s: &State, pos: usize, card_w: f32| {
+                playlist_card(s, &pal, &sums[vis_cards[pos]], card_w, scale)
+            }),
+        )
     };
 
     let page = col()
