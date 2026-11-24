@@ -286,6 +286,10 @@ pub(crate) enum OrganizePhase {
 /// A memoized `track id -> library index` map (see [`State::track_positions`]).
 type TrackIndexMap = std::rc::Rc<std::collections::HashMap<u32, usize>>;
 
+/// The virtualized Tracks list's memoized `(visible indices, play-context ids)`
+/// (see [`State::visible_tracks`]).
+type VisibleTracks = (std::rc::Rc<[usize]>, std::rc::Rc<[u32]>);
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -311,6 +315,13 @@ struct State {
     /// — that linear scan, run per queue row and per now-playing lookup, was ~150M
     /// scans/frame at a million tracks. Rebuilt only when the library changes.
     track_index_cache: std::cell::RefCell<Option<(u64, TrackIndexMap)>>,
+    /// The virtualized Tracks list's `(visible indices, play-context ids)`,
+    /// memoized by the library fingerprint AND the lowercased search query.
+    /// `track_list` otherwise re-filtered the WHOLE library every frame (O(n) per
+    /// frame during a search, ~1M `track_matches`/frame at a million tracks) and
+    /// built a million-element index Vec per frame even with no query. Recomputed
+    /// only when the library or the query changes.
+    visible_tracks_cache: std::cell::RefCell<Option<(u64, String, VisibleTracks)>>,
     /// User-created playlists, loaded from the on-disk store at startup
     /// ([`playlists::PlaylistStore::load`]). Every mutation
     /// (create/rename/delete/reorder) persists through the store itself.
@@ -856,6 +867,7 @@ impl State {
             genres_cache: std::cell::RefCell::new(None),
             library_rc_cache: std::cell::RefCell::new(None),
             track_index_cache: std::cell::RefCell::new(None),
+            visible_tracks_cache: std::cell::RefCell::new(None),
             playlists,
             covers,
             playlist_new_buf: rune::TextEdit::new(""),
@@ -1114,6 +1126,37 @@ impl State {
         let rc = std::rc::Rc::new(map);
         *self.track_index_cache.borrow_mut() = Some((fp, rc.clone()));
         rc
+    }
+
+    /// The virtualized Tracks list's `(visible indices, play-context ids)`, memoized
+    /// by the library fingerprint AND the lowercased query `q`. The filter
+    /// (`track_matches` over the whole library) and the index/id vectors are rebuilt
+    /// only when the library or the query changes, not every frame: an O(n)-per-frame
+    /// search (and a per-frame million-element index Vec even with no query) becomes a
+    /// cache hit while scrolling or re-rendering at a fixed query.
+    pub(crate) fn visible_tracks(&self, q: &str) -> VisibleTracks {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, cq, vt)) = self.visible_tracks_cache.borrow().as_ref()
+            && *cfp == fp
+            && cq == q
+        {
+            return vt.clone();
+        }
+        let lib = &self.library;
+        let visible: Vec<usize> = if q.is_empty() {
+            (0..lib.len()).collect()
+        } else {
+            lib.iter()
+                .enumerate()
+                .filter(|(_, t)| views::library::track_matches(t, q))
+                .map(|(i, _)| i)
+                .collect()
+        };
+        let ids: std::rc::Rc<[u32]> = visible.iter().map(|&i| lib[i].id).collect();
+        let vis: std::rc::Rc<[usize]> = visible.into();
+        let vt: VisibleTracks = (vis, ids);
+        *self.visible_tracks_cache.borrow_mut() = Some((fp, q.to_string(), vt.clone()));
+        vt
     }
 
     /// Resolve a library track by id in O(1) via the memoized index map. Shared by

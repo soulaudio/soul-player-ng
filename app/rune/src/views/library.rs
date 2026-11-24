@@ -623,17 +623,14 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let q = s.library_search.text.to_lowercase();
     // A shared `Rc` snapshot of the library (memoized; see `State::library_rc`), so
     // the virtual-row closures INDEX it rather than cloning every visible track every
-    // frame. The filter yields a `Vec<usize>` of indices into that snapshot.
+    // frame.
     let lib = s.library_rc();
-    let visible: Vec<usize> = if q.is_empty() {
-        (0..lib.len()).collect()
-    } else {
-        lib.iter()
-            .enumerate()
-            .filter(|(_, t)| track_matches(t, &q))
-            .map(|(i, _)| i)
-            .collect()
-    };
+    // The visible-INDEX list and its play-context ids, MEMOIZED by (library
+    // fingerprint, query) — see `State::visible_tracks`. Re-filtering the whole
+    // library here otherwise ran every frame (O(n)/frame during a search, plus a
+    // million-element index Vec per frame with no query); now it's a cache hit while
+    // scrolling or re-rendering at a fixed query.
+    let (visible, ids) = s.visible_tracks(&q);
     let body = if visible.is_empty() {
         col().key("no-matches").grow(1.0).min_h(0.0).center().child(
             text(t!("library.noMatch", query => s.library_search.text).to_string())
@@ -646,8 +643,6 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
         // visible-INDEX list, and the context ids (cheap `u32`s) — NEVER a per-frame
         // clone of the visible TrackViews, which was a million clones/frame at a
         // million tracks. Each row is keyed by its track id.
-        let ids: std::rc::Rc<[u32]> = visible.iter().map(|&i| lib[i].id).collect();
-        let visible: std::rc::Rc<[usize]> = visible.into();
         let pal = *p;
         let count = visible.len();
         let (key_lib, key_vis) = (lib.clone(), visible.clone());
@@ -1104,5 +1099,68 @@ mod tests {
             built < 300,
             "virtualized: only a window of rows mounts out of 5000, got {built}"
         );
+    }
+
+    /// `State::visible_tracks` memoizes the filtered index/id vectors by (library
+    /// fingerprint, query): the same inputs return the SAME `Rc` (a cache hit, not a
+    /// per-frame rebuild), while a changed query or a changed library recomputes.
+    #[test]
+    fn visible_tracks_memoizes_by_library_and_query() {
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        // `tv` gives every track title "T{id}", artist "A", album "Alb".
+        s.library = (0..5u32).map(|i| tv(i, Some("FLAC"))).collect();
+
+        // Empty query => every index in order, with matching ids.
+        let (vis, ids) = s.visible_tracks("");
+        assert_eq!(vis.to_vec(), vec![0usize, 1, 2, 3, 4]);
+        assert_eq!(ids.to_vec(), vec![0u32, 1, 2, 3, 4]);
+
+        // Same (library, query) => the SAME Rc, i.e. a cache hit, not a rebuild.
+        let (vis2, ids2) = s.visible_tracks("");
+        assert!(std::rc::Rc::ptr_eq(&vis, &vis2));
+        assert!(std::rc::Rc::ptr_eq(&ids, &ids2));
+
+        // A query narrows to the matching title ("T3"); keyed by the query, this is a
+        // fresh compute rather than the empty-query result.
+        let (vis3, _) = s.visible_tracks("t3");
+        assert_eq!(vis3.to_vec(), vec![3usize]);
+        assert!(!std::rc::Rc::ptr_eq(&vis, &vis3));
+        // Re-asking the same query is a hit again.
+        let (vis3b, _) = s.visible_tracks("t3");
+        assert!(std::rc::Rc::ptr_eq(&vis3, &vis3b));
+
+        // A library change invalidates the memo even for a repeated query.
+        s.library.push(tv(99, Some("FLAC")));
+        let (vis4, _) = s.visible_tracks("");
+        assert_eq!(vis4.len(), 6);
+        assert!(!std::rc::Rc::ptr_eq(&vis, &vis4));
+    }
+
+    /// Quantifies the search-filter memoization: the cold filter is O(n), but every
+    /// later frame at the same query (scrolling, re-render) is a cache hit. Before
+    /// this memo, `track_list` paid the cold cost EVERY frame. `#[ignore]`d; run with
+    /// `cargo test -p soul-player-rune bench_search_filter -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_search_filter_at_scale() {
+        for &n in &[100_000u32, 1_000_000] {
+            let mut s = State::new(soul_player_host::PlayerHandle::offline());
+            s.library = (0..n).map(|i| tv(i, Some("FLAC"))).collect();
+            // Cold: the first filter at this query builds the index/id vectors.
+            let t0 = std::time::Instant::now();
+            let (vis, _) = s.visible_tracks("t3");
+            let cold = t0.elapsed();
+            // Warm: a re-render at the SAME query is a cache hit (every frame after
+            // the keystroke, while the list stays on screen).
+            let t1 = std::time::Instant::now();
+            for _ in 0..1000 {
+                let _ = s.visible_tracks("t3");
+            }
+            let warm = t1.elapsed() / 1000;
+            eprintln!(
+                "n={n:>9}  search filter: cold {cold:?} ({} matches) -> memoized hit {warm:?}/call",
+                vis.len(),
+            );
+        }
     }
 }
