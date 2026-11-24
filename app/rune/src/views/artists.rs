@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use rune::{
     Color, Cursor, Cx, El, PointerPress, PopupItem, PopupMenu, ScrollSpec, Tx, col, el, icon, row,
@@ -76,6 +77,7 @@ pub(crate) fn group_artists(library: &[TrackView]) -> Vec<Artist> {
 /// substring match; `query` must already be lowercased (the caller lowercases
 /// the search box's text once rather than per-artist). An empty query keeps
 /// every artist, same convention as the genre-detail search.
+#[cfg(test)]
 pub(crate) fn filter_artists(artists: Vec<Artist>, query: &str) -> Vec<Artist> {
     if query.is_empty() {
         return artists;
@@ -166,32 +168,51 @@ fn artist_card(s: &State, p: &Palette, slot: usize, a: &Artist, card_w: f32, sca
 /// artist cards, scrolled vertically. Mirrors the original soul-player's
 /// per-page search (and the genre-detail page's own search box, which this
 /// copies the styling of).
+/// An artist card's non-cover height (name + "{n} albums · {n} tracks").
+const ARTIST_CAPTION_H: f32 = 48.0;
+
 pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let q = s.artist_search.text.to_lowercase();
-    let artists = filter_artists(group_artists(&s.library), &q);
+    // Grouping is MEMOIZED (see `State::grouped_artists`); search narrows it to a
+    // list of INDICES, never cloning the (potentially huge) artist list per frame.
+    let grouped = s.grouped_artists();
+    let visible: Vec<usize> = grouped
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| q.is_empty() || a.name.to_lowercase().contains(&q))
+        .map(|(i, _)| i)
+        .collect();
     // Reuse the albums grid's responsive column rule; read this page's own pane
     // width (first frame has no prior layout → a sensible desktop fallback).
     let pane = cx.layout_size("artists").map(|[w, _]| w).unwrap_or(820.0);
-    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
     let search = crate::views::library::search_box(
         &s.artist_search,
         "artists-search",
-        t!("artists.searchPlaceholder", count => artists.len()).to_string(),
+        t!("artists.searchPlaceholder", count => grouped.len()).to_string(),
         p,
         |st: &mut State| &mut st.artist_search,
     );
     let search_bar = crate::views::library::page_search_bar("artists", search, None);
 
-    let mut grid = row()
-        .key("artists-grid")
-        .role("grid")
-        .flex_wrap()
-        .gaps(space::MD, space::GUTTER)
-        .padding(space::PANE);
-    for (slot, a) in artists.iter().enumerate() {
-        grid = grid.child(artist_card(s, p, slot, a, card_w, scale));
-    }
+    // Virtualized grid: only the on-screen window of cards is built (see
+    // `grid::virtual_grid`). The closure captures the memoized grouping + visible
+    // indices by `Rc`.
+    let grouped_cards = grouped.clone();
+    let visible: Rc<[usize]> = visible.into();
+    let count = visible.len();
+    let vis_cards = visible.clone();
+    let pal = *p;
+    let grid = grid::virtual_grid(
+        "artists-grid",
+        pane,
+        count,
+        1.0, // square (circular) avatar
+        ARTIST_CAPTION_H,
+        Rc::new(move |s: &State, pos: usize, card_w: f32| {
+            artist_card(s, &pal, pos, &grouped_cards[vis_cards[pos]], card_w, scale)
+        }),
+    );
     col()
         .key("artists")
         .grow(1.0)

@@ -286,6 +286,17 @@ struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
     library: Vec<TrackView>,
+    /// Memoized library groupings for the browse grids. Grouping the whole
+    /// library (`group_albums`/`group_artists`/`group_genres`) is O(n) and was
+    /// being done every frame inside the page views — ~260 ms per frame at 100k
+    /// tracks, ~2 s at 1M, which is unusable. These cache the result keyed by a
+    /// cheap library fingerprint ([`State::library_fingerprint`]) so the grouping
+    /// runs only when the library actually changes. Interior mutability
+    /// (`RefCell`) so the `&State` views can fill the cache lazily on the first
+    /// frame after a change.
+    albums_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::albums::Album]>)>>,
+    artists_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::artists::Artist]>)>>,
+    genres_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::genres::Genre]>)>>,
     /// User-created playlists, loaded from the on-disk store at startup
     /// ([`playlists::PlaylistStore::load`]). Every mutation
     /// (create/rename/delete/reorder) persists through the store itself.
@@ -822,6 +833,9 @@ impl State {
         Self {
             host,
             library,
+            albums_cache: std::cell::RefCell::new(None),
+            artists_cache: std::cell::RefCell::new(None),
+            genres_cache: std::cell::RefCell::new(None),
             playlists,
             covers,
             playlist_new_buf: rune::TextEdit::new(""),
@@ -975,6 +989,73 @@ impl State {
             .get(id)
             .copied()
             .unwrap_or(if self.nav_visible(id) { 1.0 } else { 0.0 })
+    }
+
+    /// A cheap fingerprint of the current library that changes whenever the set
+    /// OR ORDER of tracks changes, used to invalidate the grouping caches. Samples
+    /// ~16 track ids at even strides plus the length rather than hashing every
+    /// track, so it stays O(1)-ish even at a million tracks. A scan (content
+    /// change) moves the length/ids; a sort (reorder) moves the sampled ids.
+    fn library_fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let lib = &self.library;
+        lib.len().hash(&mut h);
+        let n = lib.len();
+        if n > 0 {
+            let step = (n / 16).max(1);
+            let mut i = 0;
+            while i < n {
+                lib[i].id.hash(&mut h);
+                i += step;
+            }
+            lib[n - 1].id.hash(&mut h);
+        }
+        h.finish()
+    }
+
+    /// The library grouped into albums, memoized against [`library_fingerprint`]
+    /// so the O(n) grouping runs only when the library changes, not every frame.
+    /// Returns a cheap `Rc` clone of the shared grouping.
+    pub(crate) fn grouped_albums(&self) -> std::rc::Rc<[views::albums::Album]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, rc)) = self.albums_cache.borrow().as_ref()
+            && *cfp == fp
+        {
+            return rc.clone();
+        }
+        let grouped: std::rc::Rc<[views::albums::Album]> =
+            views::albums::group_albums(&self.library).into();
+        *self.albums_cache.borrow_mut() = Some((fp, grouped.clone()));
+        grouped
+    }
+
+    /// The library grouped into artists, memoized like [`grouped_albums`].
+    pub(crate) fn grouped_artists(&self) -> std::rc::Rc<[views::artists::Artist]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, rc)) = self.artists_cache.borrow().as_ref()
+            && *cfp == fp
+        {
+            return rc.clone();
+        }
+        let grouped: std::rc::Rc<[views::artists::Artist]> =
+            views::artists::group_artists(&self.library).into();
+        *self.artists_cache.borrow_mut() = Some((fp, grouped.clone()));
+        grouped
+    }
+
+    /// The library grouped into genres, memoized like [`grouped_albums`].
+    pub(crate) fn grouped_genres(&self) -> std::rc::Rc<[views::genres::Genre]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, rc)) = self.genres_cache.borrow().as_ref()
+            && *cfp == fp
+        {
+            return rc.clone();
+        }
+        let grouped: std::rc::Rc<[views::genres::Genre]> =
+            views::genres::group_genres(&self.library).into();
+        *self.genres_cache.borrow_mut() = Some((fp, grouped.clone()));
+        grouped
     }
 
     /// Resolve a library track by id. Shared by the now-playing panel

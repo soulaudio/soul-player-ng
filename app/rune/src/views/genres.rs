@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use rune::{Cursor, Cx, El, ScrollSpec, col, row, text};
 use soul_player_host::TrackView;
@@ -137,49 +138,60 @@ fn genre_tile(p: &Palette, slot: usize, g: &Genre, card_w: f32) -> El {
 /// The Genres page: a responsive grid of genre card tiles, scrolled vertically.
 /// Mirrors the Albums/Artists grid (`grid::responsive_grid`), just without
 /// cover art.
+/// A genre tile's height (title + track-count + padding): its `virtual_grid` row
+/// stride, since the tile has no cover.
+const GENRE_TILE_H: f32 = 64.0;
+
 pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     // A per-page search box above the grid, matching the old app's Genres page
     // (and the Albums/Artists grids). Reuses `genre_search` (which resets on
     // nav, so it never leaks between this list and a genre's detail page).
     let q = s.genre_search.text.to_lowercase();
-    let genres = group_genres(&s.library);
+    // Grouping is MEMOIZED (see `State::grouped_genres`); search narrows it to a
+    // list of INDICES, never cloning the genre list per frame.
+    let grouped = s.grouped_genres();
+    let visible: Vec<usize> = grouped
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| q.is_empty() || g.name.to_lowercase().contains(&q))
+        .map(|(i, _)| i)
+        .collect();
     // Read this page's own pane width (first frame has no prior layout → a
     // sensible desktop fallback), same rule the Albums/Artists grids use.
     let pane = cx.layout_size("genres").map(|[w, _]| w).unwrap_or(820.0);
-    let card_w = grid::responsive_grid(pane, grid::MIN_CARD, space::GUTTER).1;
 
     let search = crate::views::library::search_box(
         &s.genre_search,
         "genres-search",
-        t!("genres.searchPlaceholder", count => genres.len()).to_string(),
+        t!("genres.searchPlaceholder", count => grouped.len()).to_string(),
         p,
         |st: &mut State| &mut st.genre_search,
     );
     let search_bar = crate::views::library::page_search_bar("genres", search, None);
 
-    let mut tiles = row()
-        .key("genres-grid")
-        .role("grid")
-        .flex_wrap()
-        .gaps(space::MD, space::GUTTER)
-        .padding(space::PANE);
-    for (slot, g) in genres
-        .iter()
-        .filter(|g| q.is_empty() || g.name.to_lowercase().contains(&q))
-        .enumerate()
-    {
-        tiles = tiles.child(genre_tile(p, slot, g, card_w));
-    }
+    // Virtualized grid of cover-less tiles (cover_aspect 0.0); only the on-screen
+    // window is built. The closure captures the memoized grouping + visible indices.
+    let grouped_cards = grouped.clone();
+    let visible: Rc<[usize]> = visible.into();
+    let count = visible.len();
+    let vis_cards = visible.clone();
+    let pal = *p;
+    let grid = grid::virtual_grid(
+        "genres-grid",
+        pane,
+        count,
+        0.0, // no cover — the tile is just a title + count
+        GENRE_TILE_H,
+        Rc::new(move |_s: &State, pos: usize, card_w: f32| {
+            genre_tile(&pal, pos, &grouped_cards[vis_cards[pos]], card_w)
+        }),
+    );
     col()
         .key("genres")
         .grow(1.0)
         .min_h(0.0)
         .child(search_bar)
         .child(
-            // Scroll on the growing wrapper, not the grid itself, see `albums_page`: a
-            // flex-wrap grid that is itself the growing scroll element stretches its
-            // wrapped rows down the viewport when they don't fill it. Natural-height
-            // grid, growing scroll viewport around it.
             col()
                 .key("genres-scroll")
                 .scroll(ScrollSpec {
@@ -188,7 +200,7 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 .scroll_edge_fade(24.0)
                 .grow(1.0)
                 .min_h(0.0)
-                .child(tiles),
+                .child(grid),
         )
 }
 
