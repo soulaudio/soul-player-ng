@@ -594,7 +594,7 @@ jobs:
           # Uninstall: the sandboxed app removes its own data (under
           # ~/.var/app/<id>) and names the flatpak command; flatpak removes the rest.
           data="$HOME/.var/app/co.soulaudio.soulplayer"
-          ls -R "$data" | head -20
+          find "$data" -maxdepth 2 -type d
           [ -d "$data/config/soul-player" ] || { echo "::error::the sandboxed run wrote no settings"; exit 1; }
           out=$(flatpak run --user --env=SOUL_PLAYER_NO_UPDATE=1 co.soulaudio.soulplayer --uninstall)
           echo "$out"
@@ -672,7 +672,15 @@ jobs:
         working-directory: app/rune
         run: |
           rm -f target/release/*.dmg
-          cargo packager --release -f dmg
+          # create-dmg mounts a scratch image with hdiutil, which now and then
+          # fails on hosted runners ("Mounting disk image..." then nothing): retry.
+          for attempt in 1 2 3; do
+            cargo packager --release -f dmg && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::DMG packaging failed (attempt $attempt), retrying"
+            rm -f target/release/*.dmg target/release/rw.*.dmg
+            sleep 10
+          done
           cp target/release/*.dmg "../../dist/Soul-Player_${VERSION}_${{ matrix.asset_arch }}.dmg"
 
       - name: Static bundle checks (macOS)
@@ -757,7 +765,13 @@ jobs:
       - name: Package universal DMG
         working-directory: app/rune
         run: |
-          cargo packager --release -f dmg --target universal-apple-darwin
+          for attempt in 1 2 3; do  # hdiutil flakes on hosted runners: retry
+            cargo packager --release -f dmg --target universal-apple-darwin && break
+            [ "$attempt" = 3 ] && exit 1
+            echo "::warning::DMG packaging failed (attempt $attempt), retrying"
+            rm -f target/universal-apple-darwin/release/*.dmg target/universal-apple-darwin/release/rw.*.dmg
+            sleep 10
+          done
           mkdir -p ../../dist
           cp target/universal-apple-darwin/release/*.dmg "../../dist/Soul-Player_${VERSION}_universal.dmg"
 
