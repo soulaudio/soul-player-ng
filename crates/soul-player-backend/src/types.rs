@@ -337,6 +337,17 @@ pub enum Event {
         /// The skipped files grouped by extension, each with its count and reason.
         groups: Vec<SkippedGroup>,
     },
+    /// A track the user asked to play could not be started, so playback produced
+    /// silence. `unsupported` is `true` when the format can't be decoded in this
+    /// build (e.g. AAC, gated off behind a patent) versus `false` for another
+    /// failure (unreadable / corrupt file). Emitted once per failed track-start
+    /// command so the UI can say WHY nothing played instead of only logging it. The
+    /// track is deliberately not named: a rapid auto-skip through several unplayable
+    /// tracks collapses to one standing notice rather than a burst of them.
+    PlaybackFailed {
+        /// The format can't be decoded in this build (vs. a different failure).
+        unsupported: bool,
+    },
 }
 
 /// Now-playing + transport snapshot, emitted ~8×/s and on any change.

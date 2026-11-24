@@ -571,6 +571,11 @@ struct State {
     /// found. Cleared on the next Sources refresh ([`apply_watch`]) so it reads as
     /// a notice about the *last* scan rather than a permanent banner.
     skip_notice: Option<(PathBuf, Vec<SkippedGroup>)>,
+    /// A "couldn't play that track" banner (from the host's [`Event::PlaybackFailed`]): the
+    /// user asked to play something that failed to start, so playback produced silence. Set
+    /// from the event, auto-cleared when a track actually plays (a Playing `Tick`), and
+    /// dismissable by clicking the banner. `None` when the last track-start succeeded.
+    playback_notice: Option<PlaybackNotice>,
     /// Whether the Remote server connect form is open (Settings → Add Source →
     /// Remote server). Opened by `open_remote_form` (which also closes the
     /// add-source menu), closed by Cancel/Escape/a successful connect.
@@ -968,6 +973,7 @@ impl State {
             remote_health_open: false,
             removal_notice: None,
             skip_notice: None,
+            playback_notice: None,
             remote_form_open: false,
             remote_url_buf: rune::TextEdit::new(""),
             remote_error: None,
@@ -1307,6 +1313,11 @@ impl State {
                 self.duration_secs = t.duration_secs.unwrap_or(0.0);
                 self.playing = matches!(t.state, PlayState::Playing);
                 self.play_state = t.state;
+                // Something is actually playing now, so any "couldn't play that track" banner
+                // is stale (e.g. an auto-skip reached a playable track) — retire it.
+                if self.playing {
+                    self.playback_notice = None;
+                }
                 // Don't let a stale tick overwrite the volume mid-drag (the drag
                 // sets it optimistically; the host echo catches up after release).
                 if self.dragging_slider.as_deref() != Some("volume") {
@@ -1355,6 +1366,17 @@ impl State {
             // deletion warning: a notice about THIS scan, cleared by the next one.
             Event::TracksSkipped { root, groups } => {
                 self.skip_notice = Some((root.clone(), groups.clone()));
+            }
+            // A track the user tried to play could not start (so they got silence). Stand up a
+            // banner saying why, distinguishing a format this build can't decode (gated-off
+            // AAC) from another failure. Cleared when a track actually plays (the Tick handler)
+            // or when the user clicks the banner.
+            Event::PlaybackFailed { unsupported } => {
+                self.playback_notice = Some(if *unsupported {
+                    PlaybackNotice::Unsupported
+                } else {
+                    PlaybackNotice::Failed
+                });
             }
         }
     }
@@ -3187,6 +3209,56 @@ fn view(s: &State, cx: &mut Cx<State>) -> El {
 
 /// The routed main content area, keyed `"content"`. On desktop it fills the
 /// space beside the sidebar; on mobile it is the whole window.
+/// Why the "couldn't play that track" banner is showing (see [`State::playback_notice`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PlaybackNotice {
+    /// The track's format can't be decoded in this build (e.g. AAC, gated off behind a
+    /// patent): the file is fine, but THIS build won't play it.
+    Unsupported,
+    /// The track failed to start for another reason (unreadable / corrupt file).
+    Failed,
+}
+
+/// The dismissable "couldn't play that track" banner, or `None` when the last track-start
+/// succeeded. Rendered at the top of the content pane (always visible, unlike a per-page
+/// notice) so a track that silently refuses to play — a gated-off AAC file, say — tells the
+/// user WHY instead of being an unexplained no-op. The ✕ dismisses it; it also clears itself
+/// when a track actually plays (see the `Tick` handler).
+fn playback_notice_banner(s: &State, p: &theme::Palette) -> Option<El> {
+    use crate::ui::{radius, space};
+    let msg = match s.playback_notice? {
+        PlaybackNotice::Unsupported => t!("playback.cantPlayUnsupported"),
+        PlaybackNotice::Failed => t!("playback.cantPlay"),
+    };
+    let dismiss = el()
+        .key("playback-notice-dismiss")
+        .role("button")
+        .label(t!("playback.dismiss").to_string())
+        .focusable(true)
+        .padding(space::XS)
+        .radius(radius::SM)
+        .cursor(rune::Cursor::Pointer)
+        .on_press(|st: &mut State| st.playback_notice = None)
+        .child(rune::text("\u{2715}".to_string()).color(p.text_secondary));
+    Some(
+        row()
+            .key("playback-notice")
+            .w_full()
+            .gap(space::SM)
+            .padding(space::MD)
+            .fill(p.card)
+            .border(1.0, p.border)
+            .child(
+                rune::text(msg.to_string())
+                    .key("playback-notice-text")
+                    .color(p.warning)
+                    .wrap()
+                    .grow(1.0),
+            )
+            .child(dismiss),
+    )
+}
+
 fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -> El {
     let page = match s.route {
         Route::Home => views::home::home_page(s, p, cx, scale).grow(1.0),
@@ -3219,7 +3291,13 @@ fn content_pane(s: &State, p: &theme::Palette, cx: &mut Cx<State>, scale: f32) -
             .origin(0.0, 0.0)
             .child(page)
     };
-    col().key("content").grow(1.0).min_h(0.0).child(inner)
+    let mut content = col().key("content").grow(1.0).min_h(0.0);
+    // A standing "couldn't play that track" banner sits above whatever page is showing, so the
+    // reason a play attempt produced silence is visible everywhere, not buried in one page.
+    if let Some(banner) = playback_notice_banner(s, p) {
+        content = content.child(banner);
+    }
+    content.child(inner)
 }
 
 /// The "Move to Applications" prompt's state (see `app_location`).
@@ -7467,6 +7545,49 @@ mod tests {
         assert!(
             playable(&rt, "playlist-row-0"),
             "re-enabling the source restores playability"
+        );
+    }
+
+    #[test]
+    fn playback_failed_event_raises_the_matching_notice() {
+        let mut s = State::new(PlayerHandle::offline());
+        assert_eq!(s.playback_notice, None, "no notice before anything fails");
+
+        s.apply(&Event::PlaybackFailed { unsupported: true });
+        assert_eq!(
+            s.playback_notice,
+            Some(PlaybackNotice::Unsupported),
+            "an unsupported-format failure gets the format-specific notice"
+        );
+
+        s.apply(&Event::PlaybackFailed { unsupported: false });
+        assert_eq!(
+            s.playback_notice,
+            Some(PlaybackNotice::Failed),
+            "another failure gets the generic couldn't-play notice"
+        );
+    }
+
+    #[test]
+    fn a_playing_tick_retires_the_playback_notice() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.playback_notice = Some(PlaybackNotice::Unsupported);
+        // A Tick showing a track actually playing (e.g. an auto-skip reached a playable
+        // track) makes the stale "couldn't play that" banner moot, so it clears.
+        s.apply(&Event::Tick(soul_player_host::Tick {
+            now_playing_id: Some(1),
+            position_secs: 0.0,
+            duration_secs: None,
+            state: PlayState::Playing,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            volume: 1.0,
+            muted: false,
+            analysis_pending: 0,
+        }));
+        assert_eq!(
+            s.playback_notice, None,
+            "something is playing now, so the notice is retired"
         );
     }
 
