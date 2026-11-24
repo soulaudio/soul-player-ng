@@ -1235,6 +1235,69 @@ def full_uninstall(installer: Path, work: Path, library: Path, version: str) -> 
     ok("music library untouched")
 
 
+def homebrew_cask(dmg: Path, work: Path, library: Path, version: str) -> None:
+    """`brew install --cask soul-player` and `brew uninstall --zap`, with the
+    cask the release publishes (`gen-cask.py`) pointed at the DMG under test.
+    Brew installs it to /Applications quarantined, the app runs, and zap leaves
+    nothing — the cask's zap list matches what the app actually writes."""
+    env = AppEnv(work, "brew")
+    # Brew runs with the app's (throwaway) HOME so zap's `~` is where the app wrote.
+    benv = dict(env.env, HOMEBREW_NO_AUTO_UPDATE="1", HOMEBREW_NO_INSTALL_FROM_API="1",
+                HOMEBREW_NO_ANALYTICS="1", HOMEBREW_NO_ENV_HINTS="1")
+    gen = Path(__file__).with_name("gen-cask.py")
+
+    def brew(*args: str, timeout: int = 600) -> str:
+        r = subprocess.run(["brew", *args], env=benv, capture_output=True, text=True, timeout=timeout)
+        check(r.returncode == 0, f"brew {' '.join(args)} failed:\n{r.stdout[-2000:]}\n{r.stderr[-2000:]}")
+        return r.stdout
+
+    tap = "soulaudio/e2e"
+    brew("tap-new", "--no-git", tap)
+    # Newer Homebrew refuses casks from a third-party tap until it is trusted,
+    # as a user of soulaudio/tap does once. Older Homebrew has no `trust`.
+    has_trust = subprocess.run(["brew", "trust", "--help"], env=benv, capture_output=True).returncode == 0
+    if has_trust:
+        brew("trust", tap)
+    try:
+        casks = Path(brew("--repository", tap).strip()) / "Casks"
+        casks.mkdir(parents=True, exist_ok=True)
+        # The cask as published (GitHub URL): lint it.
+        run([sys.executable, str(gen), "--version", version, "--dmg", str(dmg),
+             "--out", str(casks / "soul-player.rb")])
+        brew("style", "--cask", f"{tap}/soul-player")
+        brew("audit", "--cask", "--strict", f"{tap}/soul-player")
+        ok("published cask passes brew style + audit")
+        # The same cask pointed at the DMG under test.
+        url = "file://" + urllib.request.pathname2url(str(dmg.resolve()))
+        run([sys.executable, str(gen), "--version", version, "--dmg", str(dmg), "--url", url,
+             "--out", str(casks / "soul-player.rb")])
+        brew("install", "--cask", f"{tap}/soul-player")
+        app = Path("/Applications") / f"{APP_NAME}.app"
+        check(app.is_dir(), "brew didn't install /Applications/Soul Player.app")
+        inst = Install()
+        inst.app = app
+        inst.exe = app / "Contents" / "MacOS" / subprocess.check_output(
+            ["/usr/libexec/PlistBuddy", "-c", "Print :CFBundleExecutable", str(app / "Contents" / "Info.plist")],
+            text=True).strip()
+        inst.version = installed_version_at(app)
+        check(inst.version == version, f"brew installed {inst.version}")
+        attrs = subprocess.run(["xattr", str(app)], capture_output=True, text=True).stdout
+        ok(f"brew installed {version} to /Applications"
+           + (" (quarantined, as Gatekeeper expects)" if "quarantine" in attrs else ""))
+        # What "Open Anyway" does for an app that isn't notarized yet.
+        subprocess.run(["xattr", "-dr", "com.apple.quarantine", str(app)], check=False)
+        live_run(inst, env, version, library, secs=8)
+        wrote = [d for d in data_dirs(env) if d.exists()]
+        check(wrote, "the session wrote nothing for zap to remove")
+        brew("uninstall", "--cask", "--zap", f"{tap}/soul-player")
+        check(not app.exists(), "brew uninstall left the app")
+        left = [d for d in data_dirs(env) if d.exists()]
+        check(not left, f"brew --zap left behind: {left}")
+        ok(f"brew uninstall --zap removed the app and all {len(wrote)} data folders")
+    finally:
+        subprocess.run(["brew", "untap", tap], env=benv, capture_output=True)
+
+
 def bump_patch(v: str) -> str:
     a, b, c = (semver(v) + (0, 0, 0))[:3]
     return f"{a}.{b}.{c + 1}"
@@ -1362,6 +1425,11 @@ def main() -> int:
             section("universal DMG → runs natively → updates to this Mac's build")
             universal_dmg(a.universal_installer.resolve(), work, library, update, a.version, a.target_key)
             steps.append(("universal DMG: both architectures, native here, updates in-app", "pass"))
+            end_section()
+        if a.universal_installer and shutil.which("brew"):
+            section("Homebrew: brew install --cask → runs → brew uninstall --zap")
+            homebrew_cask(a.universal_installer.resolve(), work, library, a.version)
+            steps.append(("Homebrew cask: style + audit, install, run, uninstall --zap leaves nothing", "pass"))
             end_section()
         if a.rosetta_installer and update:
             section("Intel build on Apple silicon → switches itself to the Apple silicon build")
