@@ -283,6 +283,45 @@ fn the_nsis_hook_deletes_the_pre_rename_executable() {
     );
 }
 
+/// Software centres (GNOME Software, KDE Discover) render the AppStream
+/// `<releases>` list as the app's "What's new", and nothing regenerated it — so
+/// it advertised 0.4.0 while 0.4.5 was published, showing every Flatpak user
+/// release notes five versions old. Validation does not catch this: a metainfo
+/// with stale releases is perfectly valid AppStream.
+///
+/// Tied to the shipped version rather than to "some entry exists", because the
+/// failure mode is specifically *falling behind*. `packaging/flatpak/
+/// metainfo-release.py --version X --date Y --notes-from-tag vX` writes the
+/// entry, taking the text from the same generator that fills `latest.json`, so
+/// the updater and the software centres cannot disagree.
+#[test]
+fn the_metainfo_lists_the_version_being_shipped() {
+    let root = repo_root();
+    let cargo = read(&root.join("app/rune/Cargo.toml"));
+    let version = cargo
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("version = \""))
+        .and_then(|v| v.split('"').next())
+        .expect("app/rune/Cargo.toml has a version");
+
+    let metainfo = read(&root.join("packaging/flatpak/co.soulaudio.soulplayer.metainfo.xml"));
+    let needle = format!("<release version=\"{version}\"");
+
+    // What it currently claims is the newest, for a message that says what to fix.
+    let newest = metainfo
+        .split_once("<release version=\"")
+        .and_then(|(_, rest)| rest.split_once('"').map(|(v, _)| v.to_string()))
+        .unwrap_or_else(|| "none".to_string());
+
+    assert!(
+        metainfo.contains(&needle),
+        "the metainfo has no <release> entry for {version} (its newest is \
+         {newest}), so software centres would show {newest}'s notes for a \
+         {version} build. Add one with:\n  packaging/flatpak/metainfo-release.py \
+         --version {version} --date $(date -u +%Y-%m-%d) --notes-from-tag v{version}"
+    );
+}
+
 /// The .deb ships files that have to exist in the tree, and a missing one is a
 /// build failure deep inside cargo-packager rather than anything readable.
 #[test]

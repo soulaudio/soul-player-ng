@@ -552,6 +552,27 @@ jobs:
           cp packaging/flatpak/co.soulaudio.soulplayer.yml "$stage/"
           appstreamcli validate --no-net "$stage/co.soulaudio.soulplayer.metainfo.xml"
 
+          # Flathub's OWN linter, which `appstreamcli validate` does not replace:
+          # they run different checks. appstreamcli asks "is this valid
+          # AppStream"; flatpak-builder-lint asks "would Flathub accept this" —
+          # missing release information, absent OARS rating, no developer name,
+          # a manifest without `command` or `modules`, network access declared
+          # during build. Flathub runs the manifest and repo checks on their
+          # infrastructure, so anything failing here fails there too, and the
+          # cheapest place to learn that is before submitting.
+          #
+          # It is fatal on purpose. It is also useful before we ever submit: it
+          # is the only mechanical check that our packaging matches Flathub's
+          # requirements, and a warning nobody reads would not provide that.
+          flatpak install --user -y --noninteractive flathub org.flatpak.Builder
+          lint() { flatpak run --command=flatpak-builder-lint org.flatpak.Builder "$@"; }
+          echo "::group::flatpak-builder-lint appstream"
+          lint appstream "$stage/co.soulaudio.soulplayer.metainfo.xml"
+          echo "::endgroup::"
+          echo "::group::flatpak-builder-lint manifest"
+          lint manifest packaging/flatpak/co.soulaudio.soulplayer.yml
+          echo "::endgroup::"
+
           # `--state-dir` is explicit and next to the target: flatpak-builder
           # refuses to run when its state dir and target dir are on different
           # filesystems, and the state dir otherwise defaults to

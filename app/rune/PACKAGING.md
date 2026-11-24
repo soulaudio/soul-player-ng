@@ -143,6 +143,31 @@ podman run --rm -v "$PWD/app/rune/target/release:/w:z" ubuntu:24.04 \
 The release pipeline does this for real on every platform, and its Flatpak step
 starts the sandboxed app and fails unless it owns its MPRIS name.
 
+### Keeping the metainfo current (enforced)
+
+Software centres render the AppStream `<releases>` list as the app's "What's
+new". Nothing regenerated it, so it advertised 0.4.0 while 0.4.5 was published —
+valid AppStream the whole time, which is why `appstreamcli validate` never
+objected. Two things now stop that:
+
+```sh
+# writes/updates the entry, taking its text from the SAME generator that fills
+# latest.json, so the updater and the software centres cannot disagree
+packaging/flatpak/metainfo-release.py --version 0.4.6 \
+  --date $(date -u +%Y-%m-%d) --notes-from-tag v0.4.6
+```
+
+* `the_metainfo_lists_the_version_being_shipped` fails unless there is a
+  `<release>` entry for `app/rune/Cargo.toml`'s version, so a version bump that
+  forgets the notes does not reach main.
+* The release workflow runs **`flatpak-builder-lint`** (appstream + manifest)
+  fatally. That is Flathub's own linter and it is not the same as
+  `appstreamcli validate`: validation asks "is this valid AppStream", the linter
+  asks "would Flathub accept this" — missing release information, absent OARS
+  rating, no developer name, a manifest without `command` or `modules`, network
+  access during build. Flathub runs the manifest and repo checks on their own
+  infrastructure, so whatever fails here fails there.
+
 ### Flathub (not submitted, and not a one-step job)
 
 The `.flatpak` we ship is a self-hosted **bundle**: built in CI, installed with
@@ -156,20 +181,36 @@ rather than on paperwork:
    `path:`). Flathub builds from a manifest in *its* repository, where those
    files do not exist, so it needs either sources with a URL + `sha256` or a
    genuine from-source build.
-2. **A from-source build needs our pinned nightly, offline.** Flathub build
-   machines have no network, so every crate would have to be vendored into a
-   generated sources list — and the toolchain is the harder half: `app/rune`
-   pins `nightly-2026-11-10` because Rune uses unstable features. This is not
-   theoretical: building with stable 1.93.1 fails outright with
-   ``error[E0658]: use of unstable library feature `atomic_try_update` ``. A
-   *rolling* nightly would build until the day it doesn't, which is the reason
-   the pin exists.
+2. **A from-source build must vendor everything, offline.** Flathub build
+   machines have no network ("There is no network access during the build
+   process"), so every crate has to be a declared source. That part is solved:
+   `flatpak-cargo-generator` turns `app/rune/Cargo.lock` into ~1500 sources
+   (440 KB), and it resolves both of our git dependencies — `rune` and
+   `soul-audio-core` — to pinned commits.
 
-So the realistic options are a binary-download manifest (URL + `sha256` of a
-released artifact, keeping the exact bytes we test) or waiting until the Rune
-dependency builds on stable. Either way, `--device=all` is the thing a reviewer
-will ask about — the manifest explains why it is there and what breaks without
-it.
+   The pinned toolchain is **not** a blocker, contrary to an earlier reading of
+   this. `app/rune` pins `nightly-2026-11-10` (Rune uses unstable features;
+   stable 1.93.1 fails with ``use of unstable library feature
+   `atomic_try_update` ``), and the fix is to declare the toolchain as a source
+   like any other: the `static.rust-lang.org/dist/<date>/rust-nightly-<arch>-…`
+   archives are public, permanent and checksummed. Installing the tarball
+   directly also removes rustup from the picture, so `rust-toolchain.toml` stops
+   mattering — the build gets exactly the pinned nightly. Do NOT use the
+   `rust-nightly` SDK extension: it was archived in September 2026 and went
+   untouched between May 2024 and then.
+
+So the remaining work is a from-source module (plus an in-tree desktop entry,
+since cargo-packager will not run there — the icon is already in-tree at
+`app/rune/icons/128x128.png`), and the submission itself. Note `cargo` must run
+from the build root, not `app/rune`: the generated vendor path is relative.
+`--device=all` is the thing a reviewer will ask about — the manifest explains
+why it is there and what breaks without it.
+
+Where the time goes, since this is easy to get wrong: Flathub builds the app on
+**their** builders, so the long offline Rust compile costs us nothing. A release
+only needs to push an updated manifest. The expensive verification belongs where
+breakage originates — a PR touching `Cargo.lock`, the manifest or the toolchain
+pin — not on every release, where the code is the same code CI already passed.
 
 ## Auto-update (implemented, free)
 
