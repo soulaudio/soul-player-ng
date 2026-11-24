@@ -95,6 +95,103 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.5" date="2026-11-24">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Tell the user when a track can't play (unsupported-format banner)</li>
+          <li>Full uninstall from Settings → About (and --uninstall), checked by the release e2e before rollback</li>
+          <li>One universal DMG for every Mac; the Intel build on Apple silicon switches itself over</li>
+          <li>Download progress with speed and time left; retry a dropped download soon</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>Exclusive-mode pre-warm + Windows SMTC cover art (second-look follow-ups)</li>
+        </ul>
+        <p>Faster</p>
+        <ul>
+          <li>Resolve_locators streams the catalog (lean, O(locators) memory)</li>
+          <li>Memoize the list page's cover resolution</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.4.4" date="2026-11-24">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Name every package soul-player, not soul-player-rune</li>
+        </ul>
+        <p>Faster</p>
+        <ul>
+          <li>Virtualize the detail page + stream-resolve via core no_std</li>
+          <li>Memoize the Tracks search filter by (library fingerprint, query)</li>
+          <li>Make views_by cheap at scale (memoize decodes + intern as Arc&lt;str&gt;)</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.4.3" date="2026-11-24">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Offer to move the app into Applications when it runs from elsewhere</li>
+          <li>Add to Playlist a whole album/artist from the card menu</li>
+          <li>Search placeholders show the item count (Search N albums)</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>Install a ready update when the app is quit with ⌘Q on macOS</li>
+        </ul>
+        <p>Faster</p>
+        <ul>
+          <li>Virtualize the genre detail track list</li>
+          <li>Kill the remaining per-frame O(n)/O(n^2) hotspots</li>
+          <li>Virtualize the playlists grid too</li>
+          <li>Memoize grouping + virtualize the album/artist/genre grids</li>
+          <li>Cap the context band to a bounded row count (+N more)</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.4.2" date="2026-11-24">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Reverse the sidebar queue so it drains down into now playing</li>
+          <li>Filter chips fade+collapse (reuse reveal) + arch test</li>
+          <li>Right-click menu on album + artist grid cards</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>Real release notes, readable errors, and no false crash prompt from a second instance</li>
+          <li>Tell package-managed installs where their updates come from</li>
+        </ul>
+      </description>
+    </release>
+    <release version="0.4.1" date="2026-11-23">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Settings → Updates page, scheduled checks, opt-in install-on-quit (0.4.1)</li>
+          <li>Complete Linux packaging — deb, rpm, Flatpak, AppImage, on x86_64 and aarch64</li>
+          <li>New playlist is a proper modal dialogue (not an inline field)</li>
+          <li>Tracks search is the shared live search box, not a click-to-type button</li>
+          <li>Tracks Sort toggle + browse-page top breathing room</li>
+          <li>Ship .deb and .rpm alongside the AppImage, and fix the identity they need</li>
+          <li>Unified browse-page top bar + playlists as an albums-style grid</li>
+          <li>Pencil opens a manage dialogue (Change / Delete) before the crop</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>Genre tiles are fixed-width so the grid aligns evenly</li>
+          <li>Manage dialogue spacing, fixed width + even full-width buttons</li>
+          <li>Off-thread device enumeration + auto-refresh, optimize cpal in dev</li>
+        </ul>
+        <p>Faster</p>
+        <ul>
+          <li>Virtualize the track list for large libraries</li>
+          <li>Pre-warm the audio device at startup so the first play is instant</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.0" date="2026-11-23">
       <description>
         <p>
