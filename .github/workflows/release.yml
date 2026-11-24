@@ -476,6 +476,15 @@ jobs:
       # missing, media keys are silently dead and everything else looks fine.
       - name: Package + verify Flatpak (Linux)
         if: runner.os == 'Linux'
+        # This step normally takes under two minutes, and it starts sandboxed
+        # apps — which is the kind of thing that hangs rather than fails. The
+        # v0.4.2 release proved it: this step sat for 23 minutes on identical
+        # code (a stalled flathub fetch, nothing in the diff), and with only the
+        # job's 90-minute timeout to stop it, it held the `release` concurrency
+        # lock for three quarters of an hour before failing with no diagnosis.
+        # 20 minutes is ~10x the normal duration and still fails fast enough to
+        # re-run inside one sitting.
+        timeout-minutes: 20
         run: |
           sudo apt-get install -y -o Acquire::Retries=3 \
             flatpak flatpak-builder appstream xvfb dbus-x11
