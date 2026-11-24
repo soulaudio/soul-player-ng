@@ -207,15 +207,12 @@ offers to switch itself to the Apple silicon build, same version (#368). ✅ **F
 saved sign-ins; music kept. Release e2e runs it before the upgrade/rollback legs.
 
 TODO:
-- 🔨 **Homebrew cask** (`brew install --cask soulaudio/tap/soul-player`):
-  ✅ `.github/scripts/gen-cask.py` generates it from the release (universal DMG, `auto_updates
-  true`, `zap` = the in-app uninstall's paths); ✅ the release e2e on both Macs installs it from a
-  local tap with `brew`, checks style + audit, runs the app and `brew uninstall --zap`s it to
-  nothing; ✅ the `homebrew` release job pushes it to the tap after `verify`.
-  ⬜ Create `soulaudio/homebrew-tap` and the `HOMEBREW_TAP_TOKEN` secret (contents: write on
-  that repo) — until then the job says the cask was tested but not published.
-  Newer Homebrew refuses casks from a tap until `brew trust soulaudio/tap` (the e2e does it);
-  the tap's README must say so.
+- ✅ **Homebrew cask** — `brew tap soulaudio/tap && brew trust soulaudio/tap && brew install --cask
+  soul-player`. `gen-cask.py` generates it (universal DMG, `auto_updates true`, `zap` = the in-app
+  uninstall's paths); the release e2e installs, runs and zaps it on both Macs before publishing.
+  [soulaudio/homebrew-tap](https://github.com/soulaudio/homebrew-tap) follows releases itself:
+  an hourly workflow regenerates the cask from the new release, installs + launches + zaps it on
+  a Mac, then commits (pull-based: deploy keys are off org-wide and no token crosses repos).
   ⬜ homebrew/cask (the main repo) once notarized — it rejects casks that fail Gatekeeper.
 - ⬜ Saved sign-ins across updates: the Keychain ties an item to the app's code signature, and
   an ad-hoc signature changes every build, so a remote server's refresh token may prompt or be

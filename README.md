@@ -59,7 +59,7 @@ Bit-perfect exclusive output needs direct access to the sound card. Under
 Flatpak that is the `--device=all` permission; revoking it in Flatseal leaves
 shared playback working and only disables exclusive mode.
 
-**Windows** — the `-setup.exe` installer. **macOS** — `Soul-Player_<version>_universal.dmg`, one download that runs natively on every Mac (Apple silicon and Intel). Drag it to Applications; opened straight from the disk image it offers to move itself.
+**Windows** — the `-setup.exe` installer. **macOS** — with Homebrew: `brew tap soulaudio/tap && brew trust soulaudio/tap && brew install --cask soul-player`; or `Soul-Player_<version>_universal.dmg`, one download that runs natively on every Mac (Apple silicon and Intel). Drag it to Applications; opened straight from the disk image it offers to move itself.
 
 ## Layout
 
