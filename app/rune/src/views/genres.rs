@@ -8,10 +8,11 @@
 //! and `grid::responsive_grid` so the tile grid columns the same as Albums/Artists.
 #![forbid(unsafe_code)]
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use rune::{Cursor, Cx, El, ScrollSpec, col, row, text};
+use rune::{Cursor, Cx, El, GrowthSpec, ScrollSpec, col, row, text};
 use soul_player_host::TrackView;
 
 use crate::State;
@@ -142,6 +143,10 @@ fn genre_tile(p: &Palette, slot: usize, g: &Genre, card_w: f32) -> El {
 /// stride, since the tile has no cover.
 const GENRE_TILE_H: f32 = 64.0;
 
+/// A detail-page track row's estimated height, the stride the genre-detail track
+/// list's `virtual_rows` windows by until rows are measured.
+const DETAIL_ROW_EST_H: f32 = 40.0;
+
 pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     // A per-page search box above the grid, matching the old app's Genres page
     // (and the Albums/Artists grids). Reuses `genre_search` (which resets on
@@ -210,11 +215,11 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
 /// re-derived from the current library; if it has vanished we just offer the way
 /// back.
 pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
-    let genres = group_genres(&s.library);
+    let grouped = s.grouped_genres();
     let Some(genre) = s
         .open_genre
         .as_deref()
-        .and_then(|name| genres.into_iter().find(|g| g.name == name))
+        .and_then(|name| grouped.iter().find(|g| g.name == name))
     else {
         return col()
             .key("genre-detail")
@@ -226,7 +231,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
     let total: f64 = genre
         .ids
         .iter()
-        .filter_map(|id| s.library.iter().find(|t| t.id == *id))
+        .filter_map(|id| s.track(*id))
         .map(|t| t.duration_secs)
         .sum();
     let meta = format!(
@@ -273,52 +278,83 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         |st: &mut State| &mut st.genre_search,
     )
     .w_full();
-    let mut list = col().key("genre-tracks").role("list").gap(space::XXS);
-    if shown.is_empty() {
-        list = list.child(
-            text(t!("genre.noMatches").to_string())
-                .font(type_::ITEM)
-                .color(p.text_secondary)
-                .px(space::MD)
-                .py(space::SM),
-        );
-    } else {
-        for (i, &id) in shown.iter().enumerate() {
-            if let Some(t) = s.track(id) {
-                list = list.child(detail_track_row(
-                    s.now_playing_id,
-                    s.playing,
-                    p,
-                    &shown,
-                    i,
-                    t,
-                    true, // a genre spans many artists
-                    true, // and many albums
-                ));
-            }
-        }
-    }
-
-    let mut content = col()
-        .key("genre-detail-content")
+    // Fixed top: the hero + search + (when there are rows) the column header. These
+    // stay put while the track list scrolls below — which also lets the list be the
+    // DIRECT child of its scroll viewport, as `virtual_rows` requires.
+    let mut top = col()
+        .key("genre-detail-top")
         .padding(space::PANE)
         .child(hero)
         .child(search);
-    // A column header above the track list (the old app's TrackList header), but
-    // only when there are rows to label.
     if !shown.is_empty() {
-        content = content.child(detail_track_header(p, true, true));
+        top = top.child(detail_track_header(p, true, true));
     }
-    col().key("genre-detail").grow(1.0).min_h(0.0).child(
-        content
-            .child(list)
-            .scroll(ScrollSpec {
-                stick_bottom: false,
-            })
-            .scroll_edge_fade(24.0)
-            .grow(1.0)
-            .min_h(0.0),
-    )
+    // The scrolled, VIRTUALIZED track list: a huge genre lays out only the on-screen
+    // window of rows, not all of them. The row closures capture the memoized library
+    // `Rc` + the shown tracks' indices (O(1) lookups) so they clone no track data.
+    let body: El = if shown.is_empty() {
+        col()
+            .key("genre-tracks")
+            .px(space::PANE)
+            .py(space::SM)
+            .child(
+                text(t!("genre.noMatches").to_string())
+                    .font(type_::ITEM)
+                    .color(p.text_secondary),
+            )
+    } else {
+        let lib = s.library_rc();
+        let positions = s.track_positions();
+        let idxs: Vec<usize> = shown
+            .iter()
+            .filter_map(|id| positions.get(id).copied())
+            .collect();
+        let ids: Rc<[u32]> = shown.into();
+        let idxs: Rc<[usize]> = idxs.into();
+        let pal = *p;
+        let (now, playing) = (s.now_playing_id, s.playing);
+        let count = idxs.len();
+        let (build_lib, build_idxs, build_ids) = (lib.clone(), idxs.clone(), ids.clone());
+        col()
+            .key("genre-tracks")
+            .role("list")
+            .gap(space::XXS)
+            .growth(GrowthSpec::default())
+            .virtual_rows(
+                count,
+                DETAIL_ROW_EST_H,
+                move |_s: &State, i: usize| Cow::Owned(format!("album-track-{i}")),
+                move |_s: &State, i: usize| {
+                    detail_track_row(
+                        now,
+                        playing,
+                        &pal,
+                        &build_ids,
+                        i,
+                        &build_lib[build_idxs[i]],
+                        true, // a genre spans many artists
+                        true, // and many albums
+                    )
+                },
+            )
+    };
+    col()
+        .key("genre-detail")
+        .grow(1.0)
+        .min_h(0.0)
+        .child(top)
+        .child(
+            col()
+                .key("genre-tracks-scroll")
+                .scroll(ScrollSpec {
+                    stick_bottom: false,
+                })
+                .scroll_edge_fade(24.0)
+                .grow(1.0)
+                .min_h(0.0)
+                .px(space::PANE)
+                .child(body),
+        )
 }
 
 #[cfg(test)]
