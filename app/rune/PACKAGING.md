@@ -70,16 +70,23 @@ crate stays `soul-player-rune`: "rune" names this UI head, which means nothing
 to someone installing a music player, so it is kept to places only developers
 see (the crate, `cargo test -p`, the `nix develop .#rune` shell).
 
-Through 0.4.1 the packages carried the crate's name. The .deb therefore declares
+Through 0.4.1 the packages carried the crate's name, so the .deb has to declare
 
-```toml
-provides = ["soul-player-rune"]
-conflicts = ["soul-player-rune"]
-replaces = ["soul-player-rune"]
+```
+Provides: soul-player-rune
+Conflicts: soul-player-rune
+Replaces: soul-player-rune
 ```
 
 which is one idiom, not three independent fields (Debian policy §7.6): together
 they let dpkg *remove* the old package instead of refusing the file overlap.
+
+`build-linux.sh` patches these into the built package's control file, and fails
+if they do not read back. They are **not** in `Cargo.toml`: cargo-packager
+0.11.8's Debian config has no such fields (the provides/conflicts/replaces in
+its config module belong to the *pacman* backend), and declaring them under
+`[package.metadata.packager.deb]` fails the build with ``unknown field
+`conflicts` ``. Move them into Cargo.toml only once that backend supports them.
 Without them the upgrade leaves two packages, two binaries and two desktop
 entries — verified by building both and watching it happen. The release workflow
 installs the published 0.4.1 .deb and upgrades to the build under test, so the

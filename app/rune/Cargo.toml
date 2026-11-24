@@ -270,20 +270,18 @@ depends = [
     # want it.
     "libvulkan1",
 ]
-# The package was called `soul-player-rune` up to and including 0.4.1, because
-# its name came from the binary's. Renaming it is not enough on its own: to
-# dpkg, `soul-player` is simply a different package, so anyone who installed
-# 0.4.1 would end up with BOTH — two copies of the binary under different
-# names, two desktop entries, and whichever one the menu happened to index.
+# NOTE: the package's `Provides`/`Conflicts`/`Replaces` — which are what make
+# the 0.4.1 `soul-player-rune` package get REMOVED rather than installed
+# alongside this one — are NOT settable here. cargo-packager 0.11.8's
+# `DebianConfig` takes only depends/section/priority/files/package-name/
+# desktop-template; the provides/conflicts/replaces trio in its config module
+# belongs to `PacmanConfig`. Putting them here fails the build outright with
+# "unknown field `conflicts`", which is how this was found — and is now caught
+# by `the_deb_packager_config_uses_only_fields_cargo_packager_accepts`.
 #
-# The three fields are one idiom and need each other (Debian policy §7.6):
-# `Conflicts` + `Replaces` together are what let dpkg remove the old package
-# rather than refuse the file overlap, and `Provides` keeps anything that
-# depended on the old name satisfied. Dropping any one of them leaves a
-# half-working upgrade, which is why they are written together here.
-provides = ["soul-player-rune"]
-conflicts = ["soul-player-rune"]
-replaces = ["soul-player-rune"]
+# `packaging/build-linux.sh` therefore patches them into the built .deb's
+# control file. Keep them there, not here, until cargo-packager's Debian
+# backend grows them.
 
 # ── RPM (Fedora / openSUSE / RHEL) ──────────────────────────────────────────
 # cargo-packager has no RPM backend (it does deb, AppImage and pacman), so the

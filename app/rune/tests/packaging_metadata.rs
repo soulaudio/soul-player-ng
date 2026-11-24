@@ -130,6 +130,80 @@ fn the_appstream_metadata_has_no_illegal_double_hyphens() {
     );
 }
 
+/// Top-level keys of a `[section]` in a TOML file, skipping comments and
+/// anything nested inside an array or inline table (`depends = [ ... ]` spans
+/// many lines, and its entries are not keys).
+fn section_keys(src: &str, section: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut depth = 0i32;
+    let mut inside = false;
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with('[') && depth == 0 {
+            inside = t.starts_with(&format!("[{section}]"));
+            continue;
+        }
+        if !inside || t.starts_with('#') {
+            continue;
+        }
+        if depth == 0 {
+            if let Some((k, _)) = t.split_once('=') {
+                let k = k.trim();
+                if !k.is_empty() && !k.starts_with('"') {
+                    keys.push(k.to_string());
+                }
+            }
+        }
+        depth += (t.matches(['[', '{']).count() as i32) - (t.matches([']', '}']).count() as i32);
+    }
+    keys
+}
+
+/// cargo-packager deserializes `[package.metadata.packager]` with its OWN
+/// types, and `cargo metadata` / `cargo build` never look at it — so an
+/// unsupported key is not a manifest error, it is a packaging failure that only
+/// appears once CI has already spent minutes on a release build.
+///
+/// This caught nothing in review and everything in CI: `conflicts` was added
+/// here from the provides/conflicts/replaces trio in cargo-packager's config
+/// module, which turns out to belong to its PACMAN config — `DebianConfig` has
+/// no such fields, so the build died with ``unknown field `conflicts` `` after
+/// a 5-minute compile. (Those three now live in `packaging/build-linux.sh`,
+/// which patches them into the built package's control file.)
+#[test]
+fn the_deb_packager_config_uses_only_fields_cargo_packager_accepts() {
+    let cargo = read(&repo_root().join("app/rune/Cargo.toml"));
+
+    // `DebianConfig` in cargo-packager 0.11.8. Serde accepts three spellings of
+    // the multi-word ones, so all are listed. Update this when the dependency
+    // is bumped — the error message names the full set.
+    const ACCEPTED: &[&str] = &[
+        "depends",
+        "desktop-template",
+        "desktopTemplate",
+        "desktop_template",
+        "section",
+        "priority",
+        "files",
+        "package-name",
+        "packageName",
+        "package_name",
+    ];
+
+    let unsupported: Vec<_> = section_keys(&cargo, "package.metadata.packager.deb")
+        .into_iter()
+        .filter(|k| !ACCEPTED.contains(&k.as_str()))
+        .collect();
+
+    assert!(
+        unsupported.is_empty(),
+        "[package.metadata.packager.deb] has key(s) cargo-packager's DebianConfig \
+         does not accept: {unsupported:?}. It rejects the whole config at package \
+         time — AFTER the release build — so this never shows up in `cargo build`. \
+         Accepted: {ACCEPTED:?}"
+    );
+}
+
 /// The .deb ships files that have to exist in the tree, and a missing one is a
 /// build failure deep inside cargo-packager rather than anything readable.
 #[test]

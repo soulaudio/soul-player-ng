@@ -75,6 +75,55 @@ echo "==> .deb"
 deb=$(ls "$app"/target/release/*.deb | head -1)
 echo "    $deb"
 
+# Declare the transition off the old package name.
+#
+# Through 0.4.1 this package was `soul-player-rune` (its name came from the
+# binary's). To dpkg, `soul-player` is an unrelated package, so without these
+# three fields a 0.4.1 user ends up with BOTH installed: two binaries under
+# different names and two desktop entries, with no error anywhere. Verified by
+# building both packages — with the fields dpkg reports "Removing
+# soul-player-rune ... to allow configuration of soul-player"; without them
+# `dpkg -l` lists both.
+#
+# They are patched in here rather than declared in Cargo.toml because
+# cargo-packager 0.11.8's Debian backend has no field for them (its
+# provides/conflicts/replaces belong to the pacman config; writing them under
+# `[package.metadata.packager.deb]` fails the build with "unknown field
+# `conflicts`"). The three go together: Conflicts+Replaces are what let dpkg
+# remove the old package instead of refusing the file overlap, and Provides
+# keeps anything that depended on the old name satisfied (Debian policy §7.6).
+echo "==> .deb control: transition from soul-player-rune"
+command -v dpkg-deb >/dev/null 2>&1 || {
+  echo "dpkg-deb is required to declare the transition off the old package" >&2
+  echo "name. Without it the .deb would install ALONGSIDE a 0.4.1 install" >&2
+  echo "instead of replacing it, so this is a hard failure rather than a" >&2
+  echo "warning. Install dpkg (it is in the 'rune' nix dev shell)." >&2
+  exit 1
+}
+debwork=$(mktemp -d)
+trap 'rm -rf "$debwork"' EXIT
+dpkg-deb -R "$deb" "$debwork"
+for field in Provides Conflicts Replaces; do
+  # Appended to the control file's single paragraph. `Description` is a
+  # multi-line field that runs to the end, so new fields have to go BEFORE it
+  # or they would be swallowed as part of its continuation lines.
+  grep -q "^$field:" "$debwork/DEBIAN/control" && continue
+  sed -i "0,/^Description:/s//$field: soul-player-rune\nDescription:/" \
+    "$debwork/DEBIAN/control"
+done
+dpkg-deb -b "$debwork" "$deb" >/dev/null
+# Prove it landed: a silently-unpatched control file is the whole failure mode.
+for field in Provides Conflicts Replaces; do
+  dpkg-deb -f "$deb" "$field" | grep -q "soul-player-rune" || {
+    echo "$field was not written to the .deb's control file" >&2
+    dpkg-deb -f "$deb" >&2
+    exit 1
+  }
+done
+echo "    Provides/Conflicts/Replaces: soul-player-rune"
+rm -rf "$debwork"
+trap - EXIT
+
 echo "==> staging shared files (desktop entry + icon, from the .deb)"
 stage="$app/target/release/linux-stage"
 "$root/packaging/stage-linux.sh" "$deb" "$stage" >/dev/null
