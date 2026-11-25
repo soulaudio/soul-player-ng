@@ -119,7 +119,9 @@ elif command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
 		x86_64) asset="soul-player_${version}_amd64.deb" ;;
 		aarch64) asset="soul-player_${version}_arm64.deb" ;;
 	esac
-elif command -v rpm >/dev/null 2>&1 && command -v dnf >/dev/null 2>&1; then
+elif command -v rpm >/dev/null 2>&1 && { command -v dnf >/dev/null 2>&1 || command -v zypper >/dev/null 2>&1; }; then
+	# openSUSE ships rpm with zypper and no dnf. Without this it fell through
+	# to the AppImage, quietly contradicting the docs that promise an rpm.
 	kind=rpm
 	asset="soul-player-${version}-1.${arch}.rpm"
 else
@@ -142,7 +144,17 @@ say "Verifying checksum..."
 fetch "${BASE}/download/${tag}/SHA256SUMS" "${tmp}/SHA256SUMS" ||
 	err "could not fetch SHA256SUMS, refusing to install unverified"
 
-expected=$(awk -v f="$asset" '$2 == f || $2 == "*" f { print $1 }' "${tmp}/SHA256SUMS" | head -n1)
+# Parsed in the shell rather than with awk: a minimal openSUSE image has no
+# awk, and the failure looked like "not listed in SHA256SUMS", which reads as
+# a tampered download rather than a missing tool.
+expected=
+while read -r sum name; do
+	name=${name#\*} # some sha256sum output marks binary mode with a leading *
+	if [ "$name" = "$asset" ]; then
+		expected=$sum
+		break
+	fi
+done <"${tmp}/SHA256SUMS"
 [ -n "$expected" ] || err "${asset} is not listed in SHA256SUMS"
 
 if command -v sha256sum >/dev/null 2>&1; then
@@ -176,9 +188,15 @@ case "$kind" in
 		say "Done. Updates will arrive through apt."
 		;;
 	rpm)
-		say "Installing with dnf..."
-		sudo_if_needed dnf install -y "${tmp}/${asset}"
-		say "Done. Updates will arrive through dnf."
+		if command -v dnf >/dev/null 2>&1; then
+			say "Installing with dnf..."
+			sudo_if_needed dnf install -y "${tmp}/${asset}"
+			say "Done. Updates will arrive through dnf."
+		else
+			say "Installing with zypper..."
+			sudo_if_needed zypper --non-interactive install --allow-unsigned-rpm "${tmp}/${asset}"
+			say "Done. Updates will arrive through zypper."
+		fi
 		;;
 	appimage)
 		bindir="${HOME}/.local/bin"
