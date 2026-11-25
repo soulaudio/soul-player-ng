@@ -15,7 +15,7 @@ embedded-io = "0.6"
 embedded-io-adapters = "0.6"
 
 [workspace.lints.rust]
-# The headless service carries all the logic — keep it provably memory-safe so
+# The headless service carries all the logic, keep it provably memory-safe so
 # it can be trusted (and, long-term, reused on firmware). No `unsafe` escape.
 unsafe_code = "forbid"
 

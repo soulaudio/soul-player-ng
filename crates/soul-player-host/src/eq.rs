@@ -5,7 +5,7 @@
 //! crate designs the coefficients; this host module wraps the device sink in a
 //! [`DspSink`] that runs the units in order and feeds the spectrum analyzer.
 //!
-//! An empty / flat / off chain is a **bit-exact passthrough** — the frames go
+//! An empty / flat / off chain is a **bit-exact passthrough**, the frames go
 //! straight to the device, so a bypassed chain restores an untouched signal path.
 #![forbid(unsafe_code)]
 
@@ -99,8 +99,8 @@ impl<K: Sink> DspSink<K> {
 
     /// The shared chain cloned ONLY if its generation moved since the last applied one
     /// (else `None`), paired with whether the chain is currently active. The clone is
-    /// the costly part — a `Vec` of units, each a `Vec` of bands plus an
-    /// `Option<String>` name — so gating it on the generation keeps the per-block
+    /// the costly part, a `Vec` of units, each a `Vec` of bands plus an
+    /// `Option<String>` name, so gating it on the generation keeps the per-block
     /// [`sync`](Self::sync) path allocation-free in steady state; an edit (which bumps
     /// the generation) is rare. The lock is held only to read the generation + active
     /// flag (and to clone on the rare change), never across the filter-bank rebuild.
@@ -114,7 +114,7 @@ impl<K: Sink> DspSink<K> {
     /// Redesign from the shared chain if it changed since the last block; returns
     /// whether the chain is currently active (so `write` can fast-path passthrough).
     /// On the steady-state path (unchanged generation) this neither clones nor
-    /// reallocates — critical, since it runs on the audio feeder thread every block.
+    /// reallocates, critical, since it runs on the audio feeder thread every block.
     fn sync(&mut self) -> bool {
         let (changed, active) = self.chain_if_changed();
         let Some(chain) = changed else {
@@ -136,7 +136,7 @@ impl<K: Sink> DspSink<K> {
                         self.units[i].set_band(b, filter);
                     }
                     self.units[i].set_enabled(eq.enabled);
-                    // A disabled unit is a full passthrough — no preamp either.
+                    // A disabled unit is a full passthrough, no preamp either.
                     self.preamps[i] = if eq.enabled {
                         db_to_lin(eq.preamp_db)
                     } else {
@@ -154,7 +154,7 @@ impl<K: Sink> Sink for DspSink<K> {
         self.inner.stream_info()
     }
 
-    /// Forward the wrapped device's exclusive flag — the DSP chain doesn't change
+    /// Forward the wrapped device's exclusive flag, the DSP chain doesn't change
     /// how the device is driven, and the engine reads this to decide native-rate
     /// switching, so it must reflect the real (inner) sink, not the trait default.
     fn exclusive(&self) -> bool {
@@ -185,7 +185,7 @@ impl<K: Sink> Sink for DspSink<K> {
 
     fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
         // Feed the analyzer the pre-chain signal (the track's own content) whether
-        // or not the chain is engaged — the UI overlays the response to show it.
+        // or not the chain is engaged, the UI overlays the response to show it.
         self.analyzer.feed(frames, self.channels);
         // The same tap drives the live loudness meter: publish its momentary / short-term /
         // peak readings to the shared frame each block for the UI's real-time meter.
@@ -228,7 +228,7 @@ impl<K: Sink> Sink for DspSink<K> {
     }
 
     fn discard(&mut self) -> Result<(), SinkError> {
-        // A seek is a discontinuity — drop every unit's filter tail so it can't ring
+        // A seek is a discontinuity, drop every unit's filter tail so it can't ring
         // into the new position.
         for eq in &mut self.units {
             eq.reset();
@@ -348,7 +348,7 @@ mod tests {
     }
 
     /// The per-audio-block `sync` must clone the chain ONLY when the generation moved
-    /// (a UI edit), never on the steady-state path — otherwise it heap-allocates a Vec
+    /// (a UI edit), never on the steady-state path, otherwise it heap-allocates a Vec
     /// of units (each a Vec of bands + a name) on the audio feeder thread every block,
     /// under the UI-shared chain lock. `chain_if_changed` encodes that decision, so the
     /// unchanged path returns `None` (no clone).
@@ -405,7 +405,7 @@ mod tests {
     ///
     /// The real constraint is "allocation does not grow with the number of blocks", so
     /// it is measured as a SECOND batch allocating zero after a first batch has absorbed
-    /// any one-time setup (a lazy init — e.g. the analyzer's first FFT scratch — can land
+    /// any one-time setup (a lazy init, e.g. the analyzer's first FFT scratch, can land
     /// on a different block per platform; what must never happen is a per-block alloc).
     #[test]
     fn dsp_sink_write_does_not_allocate_per_steady_state_block() {
@@ -571,7 +571,7 @@ mod tests {
         // chain: a `DspUnit::Eq` built from the same `EqUnit` boosts its band by the
         // same gain. Guards the enum generalization against a regression.
         let n = 24_000; // 0.5 s
-        let amp = 3_000_000.0; // ~0.36 FS — headroom for a +6 dB boost
+        let amp = 3_000_000.0; // ~0.36 FS, headroom for a +6 dB boost
         let mut unit = EqUnit::default();
         unit.bands[3] = bell(1000.0, 6.0, 1.0);
         let shared = Arc::new(Mutex::new(DspChain {
@@ -600,7 +600,7 @@ mod tests {
     fn dsp_sink_reopen_redesigns_the_eq_for_the_new_rate() {
         // After a native-rate reopen, the EQ must be RE-designed for the device's NEW
         // rate. A bell at 1 kHz boosts a 1 kHz tone at 48k; after reopening at 96k, a
-        // 1 kHz tone (generated at 96k) must STILL be boosted — if the filter kept its
+        // 1 kHz tone (generated at 96k) must STILL be boosted, if the filter kept its
         // 48k coefficients, that tone would land at the wrong normalized frequency and
         // NOT be boosted (the staleness bug this guards against).
         let n = 24_000;
@@ -637,7 +637,7 @@ mod tests {
             "reopen forwards the new device rate"
         );
 
-        // At 96k: a 1 kHz tone (generated at 96k) is STILL boosted — EQ redesigned.
+        // At 96k: a 1 kHz tone (generated at 96k) is STILL boosted, EQ redesigned.
         let in96 = sine(1000.0, 96_000.0, n, amp);
         let in_peak96 = tail_peak(&in96);
         sink.write(&in96).unwrap();
@@ -678,7 +678,7 @@ mod tests {
     #[test]
     fn boosting_a_band_raises_its_center_frequency_by_that_gain() {
         let n = 24_000; // 0.5 s
-        let amp = 3_000_000.0; // ~0.36 FS — headroom for a +6 dB boost
+        let amp = 3_000_000.0; // ~0.36 FS, headroom for a +6 dB boost
         // +6 dB bell at 1 kHz on band index 3 (retune it to 1 kHz).
         let shared = chain_with(|c| {
             c.bands[3] = bell(1000.0, 6.0, 1.0);
@@ -789,7 +789,7 @@ mod tests {
     #[test]
     fn two_units_apply_in_series() {
         let n = 24_000;
-        let amp = 2_000_000.0; // ~0.24 FS — headroom for +6 dB total
+        let amp = 2_000_000.0; // ~0.24 FS, headroom for +6 dB total
         // Two units, each a +3 dB bell at 1 kHz → +6 dB overall (cascade adds in dB).
         let a = {
             let mut u = EqUnit::default();
@@ -868,7 +868,7 @@ mod tests {
 
     use soul_audio_core::{Deck, DecodeError, Decoder, Progress, Quality, SeekableDecoder};
 
-    /// A synthetic interleaved sine source at `rate` Hz, 24-bit — so a real `Deck` can
+    /// A synthetic interleaved sine source at `rate` Hz, 24-bit, so a real `Deck` can
     /// decode → resample → (EQ) exactly as it does for a 44.1 kHz file into a 48 kHz
     /// device.
     struct SineDecoder {
@@ -958,7 +958,7 @@ mod tests {
     /// THE regression for the resample→EQ seam: a 44.1 kHz tone into a 48 kHz device
     /// WITH an active EQ band must come out at the right SPEED (frame count scales by
     /// 48000/44100), the right PITCH (still 1 kHz, not shifted), and boosted at the
-    /// correct POST-resample frequency — never slower / distorted.
+    /// correct POST-resample frequency, never slower / distorted.
     #[test]
     fn eq_on_a_resampled_tone_keeps_speed_pitch_and_boosts_correctly() {
         let amp = CANONICAL_MAX * 0.45; // headroom for a +6 dB boost without clipping
@@ -977,7 +977,7 @@ mod tests {
 
         // SPEED: 44.1k → 48k stretches the frame count by 48000/44100. The slack
         // (±1024, as in the engine's single_track_plays_once_and_ends) absorbs the HQ
-        // resampler's latency tail + 256-frame block padding — a wrong SPEED (e.g. not
+        // resampler's latency tail + 256-frame block padding, a wrong SPEED (e.g. not
         // resampling at all → ~44100 frames, or ×2 → ~24000) is far outside it.
         let want_frames = 44_100f64 * 48_000.0 / 44_100.0;
         let got_frames = (flat_out.len() / 2) as f64;
@@ -1014,7 +1014,7 @@ mod tests {
     }
 
     /// Documents the ONE real distortion source in the EQ path: a boost beyond
-    /// headroom hard-clips at the 24-bit sink — independent of resampling. The user's
+    /// headroom hard-clips at the 24-bit sink, independent of resampling. The user's
     /// saved unit carried a +7.2 dB preamp (×2.29), which clips hot audio. (Not a
     /// pipeline bug; this pins the behavior that motivates clip-headroom UX.)
     #[test]
@@ -1049,7 +1049,7 @@ mod tests {
     /// the user's saved unit (a big +7.2 dB preamp + a modest band) clips a hot
     /// 44.1 kHz tone played into a 48 kHz device, while the SAME bands at 0 dB preamp
     /// stay within full scale. This pins "weird audio when EQ is applied" to the
-    /// configured gain (clipping), not the resample→EQ pipeline — and proves dropping
+    /// configured gain (clipping), not the resample→EQ pipeline, and proves dropping
     /// the preamp is the fix, without touching a live device.
     #[test]
     fn configured_gain_drives_clipping_through_the_resample_path() {

@@ -1,7 +1,7 @@
 //! The EQ **spectrum analyzer**: a real-time FFT of the audio the [`EqSink`] sees,
 //! published as log-frequency dB columns the UI draws behind the EQ curve (so you
-//! see the playing track's frequency content, and — with the EQ response laid over
-//! it — how the EQ reshapes it).
+//! see the playing track's frequency content, and, with the EQ response laid over
+//! it, how the EQ reshapes it).
 //!
 //! It runs on the pump thread (inside [`EqSink::write`](crate::eq::EqSink)), not
 //! the real-time device callback, so a windowed `realfft` per hop is safe. The
@@ -15,7 +15,7 @@ use realfft::num_complex::Complex;
 
 /// Log-frequency display columns the analyzer produces (20 Hz … 20 kHz).
 pub const SPECTRUM_COLS: usize = 96;
-/// FFT window size (≈85 ms at 48 kHz — the music sweet spot).
+/// FFT window size (≈85 ms at 48 kHz, the music sweet spot).
 const FFT_SIZE: usize = 4096;
 /// Hop between FFTs (75 % overlap).
 const HOP: usize = 1024;
@@ -41,7 +41,7 @@ const RELEASE: f32 = 0.12;
 pub struct SpectrumFrame {
     /// Per-column smoothed dBFS levels on a log-spaced `F_MIN`..`F_MAX` axis.
     pub cols: [f32; SPECTRUM_COLS],
-    /// Publish sequence counter — bumps every FFT so the UI can tell fresh from repeat.
+    /// Publish sequence counter: bumps every FFT so the UI can tell fresh from repeat.
     pub seq: u64,
 }
 
@@ -72,7 +72,7 @@ pub struct LiveLoudnessFrame {
     pub short_term_lufs: f32,
     /// Recent sample peak in dBFS; `NEG_INFINITY` at silence.
     pub peak_dbfs: f32,
-    /// Publish sequence counter — bumps each frame so the UI can tell fresh from repeat.
+    /// Publish sequence counter: bumps each frame so the UI can tell fresh from repeat.
     pub seq: u64,
 }
 

@@ -1,6 +1,6 @@
 # Flatpak manifest for Soul Player.
 #
-# The app id is the packager `identifier` from app/rune/Cargo.toml, and it is
+# The app id is the packager `identifier` from app/Cargo.toml, and it is
 # load-bearing in three places at once: Flatpak installs the desktop entry as
 # `$FLATPAK_ID.desktop`, its D-Bus policy auto-grants exactly one MPRIS name
 # (`org.mpris.MediaPlayer2.$FLATPAK_ID`), and the window's `app_id` has to equal
@@ -11,7 +11,7 @@
 # The binary is built OUTSIDE this manifest and installed as a prebuilt file.
 # Building Rust inside flatpak-builder would mean vendoring the whole crate
 # graph into a sources list, and would compile the app a second time in CI for
-# no benefit — the bytes we want to ship are the ones already built and tested.
+# no benefit, the bytes we want to ship are the ones already built and tested.
 app-id: co.soulaudio.soulplayer
 # 26.08 is the current Freedesktop runtime (a new major lands each August with a
 # two-year support window).
@@ -32,14 +32,14 @@ finish-args:
   # Sound. `--socket=pulseaudio` also covers PipeWire's Pulse server, which is
   # what a current desktop actually runs.
   - --socket=pulseaudio
-  # Remote sources (the soul-server client), and nothing else — the in-app
+  # Remote sources (the soul-server client), and nothing else, the in-app
   # updater is disabled under Flatpak, where `flatpak update` owns updates.
   - --share=network
   # The OS keychain, for remote-source OAuth refresh tokens. A `--talk-name` and
   # not a filesystem hole: the app asks the Secret Service for its own items.
   - --talk-name=org.freedesktop.secrets
   # The music library. Read-write rather than `:ro` because the managed-library
-  # organizer MOVES files into a path-template tree — a read-only grant would
+  # organizer MOVES files into a path-template tree, a read-only grant would
   # leave that feature visibly broken. Anything outside ~/Music is added by the
   # user through the portal or Flatseal.
   - --filesystem=xdg-music

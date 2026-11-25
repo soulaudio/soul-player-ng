@@ -3,7 +3,7 @@
 #
 # Note: the `soul-audio-core` crates AND the `rune` UI framework are consumed as
 # git dependencies pinned to a branch/rev, which Dependabot does not bump (it
-# tracks registry/path versions, not git) — those move when we refresh the
+# tracks registry/path versions, not git), those move when we refresh the
 # lockfiles deliberately.
 version: 2
 updates:
@@ -21,7 +21,7 @@ updates:
 
   # --- Rust: Rune UI head workspace (separate Cargo.lock) ---
   - package-ecosystem: cargo
-    directory: /app/rune
+    directory: /app
     schedule:
       interval: weekly
       day: monday

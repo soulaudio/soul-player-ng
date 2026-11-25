@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Regenerate cargo-sources.json from app/rune/Cargo.lock.
+# Regenerate cargo-sources.json from app/Cargo.lock.
 #
 # Flathub builders have no network, so every crate must be a declared source
-# with a checksum. flatpak-cargo-generator turns the lockfile into exactly that
-# — ~1500 entries, including both git dependencies resolved to the commits the
+# with a checksum. flatpak-cargo-generator turns the lockfile into exactly that,
+# ~1500 entries, including both git dependencies resolved to the commits the
 # lockfile pins.
 #
-# The output is NOT committed — it is derived entirely from the lockfile, and a
+# The output is NOT committed: it is derived entirely from the lockfile, and a
 # committed copy meant every dependency bump needed a regeneration commit or CI
 # failed. CI generates it fresh; run this before submitting to Flathub, whose
 # repository does need the file.
@@ -27,7 +27,7 @@ GENERATOR_URL="https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/$
 
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../.." && pwd)
-lock="$root/app/rune/Cargo.lock"
+lock="$root/app/Cargo.lock"
 out="$here/cargo-sources.json"
 
 check=0
@@ -40,7 +40,7 @@ trap 'rm -rf "$work"' EXIT
 
 # The generator needs aiohttp/tomlkit and a git binary (it resolves git
 # dependencies by cloning them). Doing that in a container keeps those off the
-# developer's machine and makes the result the same everywhere — including on a
+# developer's machine and makes the result the same everywhere, including on a
 # host with no Python at all, which is most of them.
 if ! command -v podman >/dev/null 2>&1 && ! command -v docker >/dev/null 2>&1; then
   echo "needs podman or docker: the generator runs in a container so its" >&2
@@ -52,7 +52,7 @@ runtime=$(command -v podman || command -v docker)
 cp "$lock" "$work/Cargo.lock"
 curl -sSfL "$GENERATOR_URL" -o "$work/flatpak-cargo-generator.py"
 
-echo "==> generating from app/rune/Cargo.lock ($(grep -c '^\[\[package\]\]' "$lock") packages)"
+echo "==> generating from app/Cargo.lock ($(grep -c '^\[\[package\]\]' "$lock") packages)"
 "$runtime" run --rm -v "$work:/w" docker.io/library/python:3-slim sh -c '
   apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq git >/dev/null 2>&1
   pip install -q aiohttp tomlkit
@@ -67,8 +67,8 @@ if [ "$check" = 1 ]; then
     exit 0
   fi
   echo "::error::packaging/flathub/cargo-sources.json is STALE." >&2
-  echo "app/rune/Cargo.lock has changed since it was generated, so a Flathub" >&2
-  echo "build would try to compile against the wrong crate set — offline, with" >&2
+  echo "app/Cargo.lock has changed since it was generated, so a Flathub" >&2
+  echo "build would try to compile against the wrong crate set, offline, with" >&2
   echo "no way to fetch the difference. Regenerate it:" >&2
   echo "  packaging/flathub/generate-sources.sh" >&2
   diff <(python3 -c "import json,sys;[print(s.get('url',s.get('dest-filename','?'))) for s in json.load(open('$out'))]" | sort) \

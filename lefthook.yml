@@ -10,8 +10,8 @@ commit-msg:
       run: sh scripts/commit-msg.sh {1}
 
 # Fast pre-commit: format-check + clippy the root service workspace. The Rune
-# head (app/rune) is its own nested workspace on a nightly toolchain and
-# compiles the whole GPU stack, so its fmt/clippy/tests run in CI, not here.
+# head (`app/`) is its own nested workspace on a nightly toolchain and compiles
+# the whole GPU stack, so its fmt/clippy/tests run in CI, not here.
 pre-commit:
   parallel: true
   commands:

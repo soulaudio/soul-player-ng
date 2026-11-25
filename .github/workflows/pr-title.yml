@@ -2,7 +2,7 @@ name: PR title
 
 # The repo squash-merges, so the PR title becomes the commit subject. Enforce
 # the same policy the local `commit-msg` hook does: Conventional Commits + a
-# clean history (no tool-attribution). Self-contained — no third-party action.
+# clean history (no tool-attribution). Self-contained: no third-party action.
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]

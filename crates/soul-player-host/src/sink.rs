@@ -1,7 +1,7 @@
 //! Audio sink selection for the desktop host: the real `CpalSink` (shared mode),
-//! an **exclusive** (bit-perfect) sink — WASAPI exclusive on Windows, CoreAudio hog
+//! an **exclusive** (bit-perfect) sink, WASAPI exclusive on Windows, CoreAudio hog
 //! mode with native-rate switching on macOS, the card claimed directly as `hw:CARD,DEV`
-//! on Linux — or a headless
+//! on Linux, or a headless
 //! `NullSink` for device-free runs and unit tests. Mirrors the sink choice that
 //! previously lived in the (now-removed) Tauri head's `actor.rs`/`offline.rs`.
 #![forbid(unsafe_code)]
@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use soul_audio_core::{SampleFormat, Sink, SinkError, StreamInfo};
 /// The platform's exclusive (bit-perfect) device sink. All three share one contract:
 /// `open(name, rate, channels)`, `exclusive() == true`, and an in-place `reopen(rate)`
-/// for per-track native-rate switching — so everything below is platform-neutral past
+/// for per-track native-rate switching, so everything below is platform-neutral past
 /// this alias, and which backend it is never escapes this module (the engine reads
 /// truth back through `Sink::exclusive`).
 #[cfg(target_os = "linux")]
@@ -34,7 +34,7 @@ use crate::eq::{DspShared, DspSink};
 pub enum SinkMode {
     /// The real audio device (`CpalSink`, or the exclusive sink when requested).
     Device,
-    /// A discard sink — no device, no backpressure. For `SOUL_PLAYER_OFFLINE`
+    /// A discard sink: no device, no backpressure. For `SOUL_PLAYER_OFFLINE`
     /// runs and tests.
     Offline,
 }
@@ -54,11 +54,11 @@ impl SinkMode {
 /// so the UI can tell the truth: active, fell back to shared (and why), unavailable
 /// under strict mode (and why), or shared by choice. The live rate / format comes
 /// from the signal path (which tracks per-track native-rate reopens); this says only
-/// *whether* exclusive took and *why not* when it didn't — so it never goes stale on
+/// *whether* exclusive took and *why not* when it didn't, so it never goes stale on
 /// a reopen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExclusiveStatus {
-    /// Exclusive was not requested — shared mode by choice.
+    /// Exclusive was not requested, shared mode by choice.
     Shared,
     /// Exclusive is active (the live format is on the signal path).
     Active,
@@ -70,13 +70,13 @@ pub enum ExclusiveStatus {
     Unavailable(String),
 }
 
-/// The chosen device sink: shared-mode cpal, or an exclusive-mode stream — WASAPI on
+/// The chosen device sink: shared-mode cpal, or an exclusive-mode stream, WASAPI on
 /// Windows, CoreAudio (hog mode) on macOS, ALSA `hw:` (claimed over the D-Bus
 /// device-reservation protocol) on Linux. `soul-audio-desktop`'s `wasapi-exclusive` /
 /// `coreaudio-exclusive` / `alsa-exclusive` feature is always enabled on that OS (see
 /// Cargo.toml), so the `cfg(any(..))` below gates the exclusive arm. One concrete
 /// type so the pump's
-/// `Fn` factory returns a single `Sink` impl whichever mode wins — the engine
+/// `Fn` factory returns a single `Sink` impl whichever mode wins, the engine
 /// never sees which it got (it reads truth back through [`Sink::exclusive`] /
 /// [`Sink::stream_info`]).
 enum DeviceSink {
@@ -84,7 +84,7 @@ enum DeviceSink {
     #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
     Exclusive(ExclusiveSink),
     /// A device-FREE placeholder: owns no hardware and discards writes. Used to PARK
-    /// the deck during a live output change — swapping this in drops the real sink,
+    /// the deck during a live output change, swapping this in drops the real sink,
     /// which releases its device, so the new sink can acquire it (exclusive WASAPI is
     /// one-client-per-device). The pump swaps it out in the same step, so it's never
     /// actually written to; it reports a sane rate/channels only so `Deck::swap_sink`
@@ -133,7 +133,7 @@ impl Sink for DeviceSink {
             DeviceSink::Shared(s) => s.write(frames),
             #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
             DeviceSink::Exclusive(s) => s.write(frames),
-            // Device-free placeholder: discard (never actually reached — the pump
+            // Device-free placeholder: discard (never actually reached, the pump
             // swaps it out before pumping).
             DeviceSink::Silent { .. } => Ok(()),
         }
@@ -168,7 +168,7 @@ impl Sink for DeviceSink {
 
     fn reopen(&mut self, rate: u32) -> Result<(), SinkError> {
         match self {
-            // A shared sink keeps its fixed rate (default no-op) — the deck resamples.
+            // A shared sink keeps its fixed rate (default no-op), the deck resamples.
             DeviceSink::Shared(s) => s.reopen(rate),
             // The exclusive sink releases + re-acquires the device at the new rate.
             #[cfg(any(windows, target_os = "macos", target_os = "linux"))]
@@ -192,7 +192,7 @@ impl Sink for DeviceSink {
 /// is recorded in `status`.
 ///
 /// `lib` is a trait object (not a concrete `Library`) so a remote-aware
-/// aggregate ([`crate::remote::RemoteLibrary`]) can be spawned with it too —
+/// aggregate ([`crate::remote::RemoteLibrary`]) can be spawned with it too,
 /// the same reason [`AudioPlayer::spawn`]'s own parameter is `Arc<dyn
 /// TrackSource>`.
 #[allow(clippy::too_many_arguments)] // cohesive actor wiring: sink mode + the shared handles it threads
@@ -227,7 +227,7 @@ pub(crate) fn build_actor(
 
 /// Build the pump-thread PARK closure: a device-FREE [`DeviceSink::Silent`] wrapped in
 /// a [`DspSink`] (same concrete `K` as [`device_sink_factory`] produces). The pump
-/// swaps this in to drop the real sink — releasing its device — before opening the new
+/// swaps this in to drop the real sink, releasing its device, before opening the new
 /// one on a live output change. It owns no hardware, so it never contends for the
 /// device. `dsp` / `spectrum` are cloned into it only to match the sink type; the
 /// placeholder is swapped out before any audio flows.
@@ -248,7 +248,7 @@ fn device_park_factory(
 
 /// Build the pump-thread make-sink closure for the real device: for the given
 /// [`OutputConfig`], try exclusive first when asked (bit-perfect, Windows only, at the
-/// device's native rate), else — or on an exclusive failure in non-strict mode — open
+/// device's native rate), else, or on an exclusive failure in non-strict mode, open
 /// the named shared device (falling back to the system default if it is gone), then
 /// wrap it in the [`DspSink`] so the DSP chain runs at the device rate. It's an `Fn`,
 /// not `FnOnce`: the pump calls it for the initial sink AND again on each live
@@ -263,7 +263,7 @@ fn device_sink_factory(
 ) -> impl Fn(&OutputConfig) -> anyhow::Result<DspSink<DeviceSink>> + Send + 'static {
     move |cfg: &OutputConfig| {
         let device = open_device_sink(cfg.device.clone(), cfg.exclusive, cfg.strict, &status)?;
-        // Event log (once per sink build): what the device sink ACTUALLY opened as — the
+        // Event log (once per sink build): what the device sink ACTUALLY opened as, the
         // requested vs resolved exclusive mode, rate, channels, format, and the exclusive
         // outcome. Makes the output pipeline visible in the logs without per-block noise.
         let si = device.stream_info();
@@ -288,12 +288,12 @@ fn device_sink_factory(
 
 /// Open the device sink, honoring `exclusive` when possible and recording the outcome
 /// in `status`. Exclusive is attempted on Windows (WASAPI) and macOS (CoreAudio hog
-/// mode), at the device's current rate — per-track native-rate switching then reopens
+/// mode), at the device's current rate, per-track native-rate switching then reopens
 /// it in place. On an exclusive failure:
 ///
-/// - non-`strict`: fall back to a shared `CpalSink` — never silent — and record
+/// - non-`strict`: fall back to a shared `CpalSink`, never silent, and record
 ///   [`ExclusiveStatus::FellBack`];
-/// - `strict` (exclusive-or-stop): do NOT fall back — record
+/// - `strict` (exclusive-or-stop): do NOT fall back, record
 ///   [`ExclusiveStatus::Unavailable`] and return `Err`, so the actor doesn't start
 ///   (no silent downgrade to the OS mixer).
 ///
@@ -303,12 +303,12 @@ fn device_sink_factory(
 ///
 /// A capability, not a preference: where this is false, asking for exclusive
 /// can only ever fall back to shared (or, under strict, refuse to play). A UI
-/// should say so up front rather than offer a switch that cannot do anything —
+/// should say so up front rather than offer a switch that cannot do anything,
 /// `strict` especially, where the honest outcome is silence.
 ///
 /// True on all three desktop platforms: WASAPI exclusive on Windows, CoreAudio
 /// hog mode on macOS, and direct `hw:CARD,DEV` on Linux. The Linux one is not
-/// just "open `hw:X,Y`" — a stock desktop has PipeWire/WirePlumber holding every
+/// just "open `hw:X,Y`", a stock desktop has PipeWire/WirePlumber holding every
 /// card, so the device is first claimed through the D-Bus device-reservation
 /// protocol (`org.freedesktop.ReserveDevice1`, device name `Audio<N>`, held by
 /// WirePlumber at priority −20) before ALSA will hand over the hardware. All
@@ -316,7 +316,7 @@ fn device_sink_factory(
 pub const EXCLUSIVE_SUPPORTED: bool =
     cfg!(windows) || cfg!(target_os = "linux") || cfg!(target_os = "macos");
 
-/// The reason reported on a platform with no bit-perfect backend compiled in —
+/// The reason reported on a platform with no bit-perfect backend compiled in,
 /// everything that is not Windows, macOS or Linux (a BSD, say). Asking for
 /// exclusive there can only fall back to shared, so the message names the
 /// platform rather than implying a device problem.
@@ -328,8 +328,8 @@ const NO_EXCLUSIVE_BACKEND: &str = "exclusive output is not available on this pl
 /// or `Err` under `strict` ("exclusive or stop", [`ExclusiveStatus::Unavailable`])
 /// so the actor never silently downgrades to the OS mixer.
 ///
-/// Split out of [`open_device_sink`] so this decision — the part with the
-/// user-visible consequence — is unit-testable WITHOUT opening an audio device.
+/// Split out of [`open_device_sink`] so this decision, the part with the
+/// user-visible consequence, is unit-testable WITHOUT opening an audio device.
 /// Testing it through `open_device_sink` instead would drag in a real device
 /// open on the non-strict path, which is slow, needs hardware CI runners don't
 /// have, and (as it turned out) stalls the rest of the suite.
@@ -356,7 +356,7 @@ fn open_device_sink(
     if exclusive {
         // The exclusive-open failure reason (set on whichever arm below compiles),
         // used to decide strict-stop vs shared-fallback once, after the attempt.
-        // Exactly one of the two arms exists in any build — `reason` is assigned
+        // Exactly one of the two arms exists in any build, `reason` is assigned
         // once, and the `cfg` sets are complements, so it is never left unset.
         let reason: String;
         // One body for all three backends; `try_open_exclusive` is what differs per
@@ -391,13 +391,13 @@ fn open_device_sink(
     Ok(DeviceSink::Shared(shared))
 }
 
-/// Open the platform exclusive sink at the device's native (shared mix-format) rate —
+/// Open the platform exclusive sink at the device's native (shared mix-format) rate,
 /// the rate a DAC also accepts exclusively. Per-track native-rate switching then
 /// reopens this same sink in place. Returns the failure reason as a string so the
 /// caller can record it and fall back to shared.
 ///
 /// One body for all three backends: the starting rate is discovered the same way
-/// (cpal's view of the device), and each sink's own `open` negotiates from there —
+/// (cpal's view of the device), and each sink's own `open` negotiates from there,
 /// WASAPI against the endpoint's exclusive formats, CoreAudio against the device's
 /// physical formats, ALSA against the card's `hw_params` after claiming it over
 /// D-Bus.
@@ -405,7 +405,7 @@ fn open_device_sink(
 fn try_open_exclusive(name: Option<String>) -> Result<ExclusiveSink, String> {
     // On macOS cpal can't read the config of a device ANOTHER process hogs, which would
     // surface as a vague "unavailable". Fall back to the HAL's own nominal rate (stereo)
-    // and let the sink's open — which checks hog ownership first — report the precise
+    // and let the sink's open, which checks hog ownership first, report the precise
     // reason (device in use / not found).
     #[cfg(target_os = "macos")]
     let config = default_output_config(name.as_deref())
@@ -419,7 +419,7 @@ fn try_open_exclusive(name: Option<String>) -> Result<ExclusiveSink, String> {
     ExclusiveSink::open(name, rate, channels).map_err(|e| e.to_string())
 }
 
-/// A [`Sink`] that discards output — no device, no backpressure.
+/// A [`Sink`] that discards output, no device, no backpressure.
 pub struct NullSink {
     rate: u32,
     channels: u16,
@@ -460,12 +460,12 @@ mod device_tests {
     fn exclusive_is_advertised_exactly_where_a_backend_exists() {
         // Compared against a locally computed expectation rather than asserted
         // directly: `assert!(CONST)` is a clippy error, and this reads as the
-        // contract anyway — these two lists must not drift apart.
+        // contract anyway, these two lists must not drift apart.
         let has_backend = cfg!(windows) || cfg!(target_os = "linux") || cfg!(target_os = "macos");
         assert_eq!(
             EXCLUSIVE_SUPPORTED, has_backend,
             "a platform with a backend (WASAPI / ALSA / CoreAudio) must advertise \n             exclusive, and \
-             one without must not — otherwise the UI offers a control that does \
+             one without must not, otherwise the UI offers a control that does \
              nothing, or hides one that works"
         );
     }
@@ -473,7 +473,7 @@ mod device_tests {
     /// REAL-DEVICE: asking for exclusive output on Linux must actually take the
     /// card bit-perfect, not fall back to the shared mixer.
     ///
-    /// The whole feature is only observable against hardware — a sink that opened
+    /// The whole feature is only observable against hardware, a sink that opened
     /// shared reports a perfectly healthy stream, so nothing short of asking it
     /// whether it is exclusive catches the regression. Ignored: it takes the sound
     /// card over for a moment.
@@ -486,7 +486,7 @@ mod device_tests {
         let sink = match open_device_sink(None, true, true, &status) {
             Ok(s) => s,
             Err(e) => {
-                println!("no usable output device ({e:#}) — skipping");
+                println!("no usable output device ({e:#}), skipping");
                 return;
             }
         };
@@ -497,7 +497,7 @@ mod device_tests {
         );
         assert!(
             sink.exclusive(),
-            "strict exclusive returned a sink that is NOT exclusive — it fell back \
+            "strict exclusive returned a sink that is NOT exclusive, it fell back \
              to the shared mixer while reporting success"
         );
         assert_eq!(
@@ -509,7 +509,7 @@ mod device_tests {
     }
 
     /// Exclusive output is a Windows (WASAPI) feature today. Everywhere else the
-    /// request must be REFUSED visibly rather than quietly pretended — the
+    /// request must be REFUSED visibly rather than quietly pretended, the
     /// [`ExclusiveStatus`] these set is the only thing the Settings card and the
     /// signal-path row read to tell the user whether the stream is bit-perfect.
     ///
@@ -546,7 +546,7 @@ mod device_tests {
     }
 
     /// On a platform with NO exclusive backend wired, a request resolves to the
-    /// platform reason — the string the Settings card surfaces. Pins the
+    /// platform reason, the string the Settings card surfaces. Pins the
     /// behaviour that such a build degrades honestly rather than reporting
     /// `Active` for what is really a shared stream.
     ///
@@ -570,11 +570,11 @@ mod device_tests {
     /// REAL-DEVICE guard for the shared-sink live switch: the create-then-drop order
     /// [`crate`]'s `maybe_apply_output_change` uses for a SHARED sink must not glitch the
     /// device. We open a second shared device sink WHILE the first is still alive (shared
-    /// mode allows multiple clients per device), then drop the first — the new sink must
+    /// mode allows multiple clients per device), then drop the first, the new sink must
     /// keep accepting audio. This is the exact sequence that failed with cpal
     /// "the requested device is no longer available" when the old release-first code
     /// dropped the shared stream before re-opening it on the same device. Writes SILENCE
-    /// only (inaudible). Ignored — needs a real output device:
+    /// only (inaudible). Ignored: needs a real output device:
     ///   `cargo test -p soul-player-host shared_device -- --ignored --nocapture`
     #[test]
     #[ignore = "needs a real output device; run with --ignored"]
@@ -583,7 +583,7 @@ mod device_tests {
         let mut old = match open_device_sink(None, false, false, &status) {
             Ok(s) => s,
             Err(e) => {
-                eprintln!("no usable output device ({e:#}) — skipping");
+                eprintln!("no usable output device ({e:#}), skipping");
                 return;
             }
         };
@@ -597,7 +597,7 @@ mod device_tests {
         new.write(&silence)
             .expect("new sink plays while the old is alive");
 
-        // Drop the old sink; the new one must keep working — no device-unavailable gap.
+        // Drop the old sink; the new one must keep working, no device-unavailable gap.
         drop(old);
         for i in 0..16 {
             new.write(&silence).unwrap_or_else(|e| {

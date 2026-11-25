@@ -5,7 +5,7 @@
   app's page in GNOME Software, KDE Discover and flathub.org.
 
   The `id` must equal the Flatpak app id and the desktop entry's basename, for
-  the same reason those two must match each other — see the manifest.
+  the same reason those two must match each other, see the manifest.
 -->
 <component type="desktop-application">
   <id>co.soulaudio.soulplayer</id>
@@ -23,7 +23,7 @@
   <description>
     <p>
       Soul Player is a native desktop music player for local and remote
-      libraries, with a GPU-rendered interface and an all-Rust audio engine —
+      libraries, with a GPU-rendered interface and an all-Rust audio engine:
       no web view, no browser runtime.
     </p>
     <p>Features:</p>
@@ -76,7 +76,7 @@
     centres long after the release it shipped with.
 
     NB: no double hyphens anywhere in these comments. XML forbids them inside a
-    comment, and `appstreamcli validate` rejects the whole file for it — which
+    comment, and `appstreamcli validate` rejects the whole file for it, which
     is how the flag name originally written here was caught.
   -->
   <screenshots>
@@ -198,7 +198,7 @@
         <p>New</p>
         <ul>
           <li>Settings → Updates page, scheduled checks, opt-in install-on-quit (0.4.1)</li>
-          <li>Complete Linux packaging — deb, rpm, Flatpak, AppImage, on x86_64 and aarch64</li>
+          <li>Complete Linux packaging, deb, rpm, Flatpak, AppImage, on x86_64 and aarch64</li>
           <li>New playlist is a proper modal dialogue (not an inline field)</li>
           <li>Tracks search is the shared live search box, not a click-to-type button</li>
           <li>Tracks Sort toggle + browse-page top breathing room</li>

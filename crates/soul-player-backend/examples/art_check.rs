@@ -2,7 +2,7 @@
 //!
 //! Run: cargo run -p soul-player-backend --example art_check -- <file-or-dir>
 //! Walks a directory (or checks one file) and reports, per track, whether cover
-//! art resolves and how big it is — so a fix can be re-run and confirmed without
+//! art resolves and how big it is, so a fix can be re-run and confirmed without
 //! launching the GUI.
 
 use std::path::Path;

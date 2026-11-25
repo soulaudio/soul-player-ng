@@ -8,7 +8,7 @@ and Flathub user read release notes five versions old. `--check` makes that a
 build failure instead of something nobody notices.
 
 The notes come from `.github/scripts/release-notes.py`, which is already the
-source for `latest.json`'s "What's new" — so the in-app updater, the release
+source for `latest.json`'s "What's new", so the in-app updater, the release
 body and the software centres cannot disagree about what changed.
 
 Edits the file as TEXT rather than through ElementTree on purpose: the metainfo
@@ -37,7 +37,7 @@ NOTES_SCRIPT = HERE / "../../.github/scripts/release-notes.py"
 
 # The updater's "What's new" is capped at 12 items and ends with "…and N more"
 # because that panel is small. A software centre shows the whole list, so ask
-# for enough that the cap never bites — and the synthetic tail line is dropped
+# for enough that the cap never bites, and the synthetic tail line is dropped
 # below in any case, since `appstreamcli` reads its leading ellipsis as an
 # uncapitalised first word (`description-first-word-not-capitalized`).
 NOTES_MAX = 40
@@ -57,7 +57,7 @@ def notes_for_tag(tag: str) -> str:
 def to_appstream(notes: str) -> str:
     """Turn the generator's "Heading / • item" text into AppStream description XML.
 
-    AppStream accepts only a small subset here — `<p>`, `<ul>`, `<li>` — and
+    AppStream accepts only a small subset here, `<p>`, `<ul>`, `<li>`, and
     `appstreamcli validate` rejects anything else, so headings become paragraphs
     and bullets become list items rather than being passed through verbatim.
     """

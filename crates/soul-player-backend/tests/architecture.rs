@@ -1,7 +1,7 @@
 //! Architecture boundary tests.
 //!
 //! The project rule (docs/ARCHITECTURE.md): **the UI is just visualization; all
-//! logic lives outside it.** `soul-player-backend` is the headless logic layer —
+//! logic lives outside it.** `soul-player-backend` is the headless logic layer,
 //! it must never pull in a GUI/windowing stack, directly or transitively, so it
 //! stays reusable off the desktop (and, long-term, on firmware).
 //!
@@ -11,7 +11,7 @@
 //!
 //! The test resolves the dependency graph with `cargo metadata`. If that can't
 //! run (offline with un-fetched git deps, missing `cargo`), it skips rather than
-//! failing spuriously — CI always has the graph available, so the gate still
+//! failing spuriously, CI always has the graph available, so the gate still
 //! holds there.
 
 use std::process::Command;
@@ -63,8 +63,8 @@ fn headless_service_has_no_gui_dependencies() {
     assert!(
         offenders.is_empty(),
         "ARCHITECTURE VIOLATION: the headless `soul-player-backend` workspace pulled in \
-         GUI/windowing crate(s) {offenders:?}. The UI head is just visualization — all \
+         GUI/windowing crate(s) {offenders:?}. The UI head is just visualization, all \
          logic must stay outside it (in this service or soul-audio-core). Move the \
-         offending code into the Rune app (`app/rune`) instead. See docs/ARCHITECTURE.md."
+         offending code into the Rune app (`app`) instead. See docs/ARCHITECTURE.md."
     );
 }

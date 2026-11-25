@@ -1,0 +1,458 @@
+//! Left sidebar: Library/Settings nav, the upcoming queue, and the now-playing
+//! panel pinned at the bottom. Resizable (drag the right-edge handle) and
+//! collapsible, mirroring the old app's `useResizableSidebar` /
+//! `useCollapsibleSidebar` (240–480 px, default 288, snap-collapse under 200).
+#![forbid(unsafe_code)]
+
+use rune::{Align, Cursor, Cx, Drag, El, Phase, col, el, icon, row, text};
+
+use crate::theme::Palette;
+use crate::ui::{fx, radius, space, type_};
+use crate::views::icons;
+use crate::views::player::player_panel;
+use crate::views::queue::queue_section;
+use crate::views::reveal;
+use crate::{Route, State, config};
+
+/// The old app's default sidebar width (`w-72`).
+pub const DEFAULT_WIDTH: f32 = 288.0;
+/// Smallest drag-resized width (`w-60`), as the old app's `useResizableSidebar`.
+pub const MIN_WIDTH: f32 = 240.0;
+/// Largest drag-resized width, as the old app's `useResizableSidebar`.
+pub const MAX_WIDTH: f32 = 480.0;
+/// Dragging the handle in past this snaps the sidebar collapsed (old app's
+/// `COLLAPSE_THRESHOLD`); dragging back out past it re-expands.
+pub const COLLAPSE_THRESHOLD: f32 = 200.0;
+/// Width of the collapsed rail (the old app's `CollapsedSidebarStrip`, `w-3`).
+pub const STRIP_WIDTH: f32 = 12.0;
+/// Below this logical window width the shell goes single-pane "mobile": the
+/// sidebar is the full-width menu and a nav tap flips to full-screen content.
+/// Matches the original's `MOBILE_BREAKPOINT` (Tailwind `sm`, 640 px).
+pub const MOBILE_BREAKPOINT: f32 = 640.0;
+/// Width of the invisible drag strip straddling the sidebar's right edge.
+const HANDLE_WIDTH: f32 = 6.0;
+
+/// The app version, shown muted in the footer beside the Settings gear.
+const VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
+
+/// A primary nav item: its config id (persisted hidden-set key), its element
+/// key, and the route it opens. The label comes from [`nav_label`].
+pub(crate) struct NavDef {
+    pub(crate) id: &'static str,
+    pub(crate) key: &'static str,
+    pub(crate) route: Route,
+}
+
+/// The primary nav, in the original's order (Home, Albums, Artists, Playlists,
+/// Genres, Tracks). Settings stays in the footer gear, not here. Each item is
+/// individually show/hide-able via Settings → Navigation (`State::nav_visible`).
+pub(crate) const NAV_DEFS: &[NavDef] = &[
+    NavDef {
+        id: "home",
+        key: "nav-home",
+        route: Route::Home,
+    },
+    NavDef {
+        id: "albums",
+        key: "nav-albums",
+        route: Route::Albums,
+    },
+    NavDef {
+        id: "artists",
+        key: "nav-artists",
+        route: Route::Artists,
+    },
+    NavDef {
+        id: "playlists",
+        key: "nav-playlists",
+        route: Route::Playlists,
+    },
+    NavDef {
+        id: "genres",
+        key: "nav-genres",
+        route: Route::Genres,
+    },
+    NavDef {
+        id: "tracks",
+        key: "nav-library",
+        route: Route::Library,
+    },
+];
+
+/// The localized label for nav item `id` (a dynamic `t!` key isn't allowed, so
+/// this maps each id to its literal key). Shared by the sidebar and the
+/// Settings → Navigation toggles.
+pub(crate) fn nav_label(id: &str) -> String {
+    match id {
+        "home" => t!("nav.home").to_string(),
+        "albums" => t!("nav.albums").to_string(),
+        "artists" => t!("nav.artists").to_string(),
+        "genres" => t!("nav.genres").to_string(),
+        "playlists" => t!("nav.playlists").to_string(),
+        _ => t!("nav.tracks").to_string(),
+    }
+}
+
+/// Whether `route` should light up nav item `def`, a detail sub-route (an
+/// album/artist page) lights its parent tab.
+fn nav_active(route: Route, def: &NavDef) -> bool {
+    match def.route {
+        Route::Albums => matches!(route, Route::Albums | Route::Album),
+        Route::Artists => matches!(route, Route::Artists | Route::Artist),
+        Route::Genres => matches!(route, Route::Genres | Route::Genre),
+        Route::Playlists => matches!(route, Route::Playlists | Route::Playlist),
+        other => route == other,
+    }
+}
+
+/// The nav item's natural height in points (20 pt NAV label + a status dot + the
+/// `XS` top/bottom padding). Used as the collapse target by the reveal animation.
+pub(crate) const NAV_ITEM_H: f32 = 33.0;
+
+/// A nav entry that switches `State::route`, drawn at a `0..1` reveal `progress`
+/// from [`crate::views::reveal`] (1 = fully shown, 0 = hidden). The row is ALWAYS
+/// in the tree, it is never added or removed as it toggles; instead the constant
+/// reveal wrapper owns its height and opacity, collapsing to 0×0 and transparent
+/// when hidden. That structural stability is deliberate: if the row were removed
+/// when hidden, Rune would run its automatic removal animation (a fold + fade that
+/// briefly re-inflates the just-collapsed row to full height and ghosts it back
+/// in). Keeping the node and driving it ourselves means there is nothing for Rune
+/// to animate on its own, the reveal performs the entire fade, then collapse.
+///
+/// While invisible (fully hidden, or mid-collapse with the label faded out) the row
+/// is inert: not focusable, no button role, no hit target, so the keyboard and
+/// pointer skip it exactly as if it were absent.
+fn nav_item(
+    key: &str,
+    label: String,
+    route: Route,
+    active: bool,
+    progress: f32,
+    p: &Palette,
+) -> El {
+    let dot = el()
+        .key(format!("{key}-dot"))
+        .w(8.0)
+        .h(8.0)
+        .radius(radius::XS);
+    let dot = if active {
+        dot.fill(p.primary)
+    } else {
+        dot.border_sides([1.0, 1.0, 1.0, 1.0], p.border)
+    };
+    let mut button = el()
+        .key(key.to_string())
+        .w_full()
+        .px(space::MD)
+        .py(space::XS)
+        .radius(radius::SM)
+        .child(
+            row()
+                .w_full()
+                .center_y()
+                .child(
+                    text(label.clone())
+                        .font(type_::NAV)
+                        .color(if active { p.primary } else { p.text_secondary })
+                        .grow(1.0),
+                )
+                .child(dot),
+        );
+    // Interactive only while at all visible. A hidden-at-rest row (opacity 0) and a
+    // collapsing row (invisible, mid-fold) carry no role/focus/handlers, so Tab and
+    // clicks pass them by; the moment the fade makes it visible it becomes a button.
+    if reveal::opacity(progress) > 0.0 {
+        button = button
+            .role("button")
+            .label(label)
+            .focusable(true)
+            .cursor(Cursor::Pointer)
+            .hover(p.fg.alpha(fx::HOVER))
+            .press(p.fg.alpha(fx::PRESS))
+            // Switch pages and, on mobile, flip to the content pane (the old app's
+            // NavBar: `navigate(path); if (isMobile) setMobileShowContent(true)`).
+            .on_press(move |s: &mut State| {
+                s.nav_history.clear();
+                s.genre_search = rune::TextEdit::new("");
+                s.album_search = rune::TextEdit::new("");
+                s.artist_search = rune::TextEdit::new("");
+                s.albums_filters_open = false;
+                s.album_genre_filter.clear();
+                s.playlist_new_buf = rune::TextEdit::new("");
+                s.route = route;
+                s.mobile_show_content = true;
+            });
+    }
+
+    el().key(format!("{key}-reveal"))
+        .w_full()
+        .h(NAV_ITEM_H * reveal::height_factor(progress))
+        .clip_rounded(radius::SM)
+        .opacity(reveal::opacity(progress))
+        .child(button)
+}
+
+/// The mobile content view's top bar: a back arrow that returns to the sidebar
+/// "menu" (the old app's title-bar back → `setMobileShowContent(false)`), next
+/// to the current page's title. Desktop never renders this.
+pub fn mobile_top_bar(title: String, p: &Palette) -> El {
+    row()
+        .key("mobile-top-bar")
+        .w_full()
+        .center_y()
+        .gap(space::XS)
+        .px(space::SM)
+        .py(space::SNUG)
+        .border_sides([0.0, 0.0, 1.0, 0.0], p.border)
+        .child(
+            el().key("mobile-back")
+                .role("button")
+                .label(t!("common.back").to_string())
+                .focusable(true)
+                .size(32.0, 32.0)
+                .center()
+                .radius(radius::MD)
+                .cursor(Cursor::Pointer)
+                .hover(p.fg.alpha(fx::HOVER))
+                .press(p.fg.alpha(fx::PRESS))
+                .child(text("←").font(type_::NAV).color(p.fg))
+                .on_press(|s: &mut State| s.mobile_show_content = false),
+        )
+        .child(text(title).font(type_::TITLE).color(p.fg))
+}
+
+/// The left sidebar. On desktop it is a fixed, resizable `s.sidebar_width`
+/// column with a right border; on mobile (`full_width`) it spans the whole
+/// window with no border, the old app's `w-full border-r-0` menu view.
+pub fn sidebar(
+    s: &State,
+    p: &Palette,
+    cx: &Cx<State>,
+    scale: f32,
+    full_width: bool,
+    top_inset: f32,
+) -> El {
+    // `top_inset` reserves the title-bar band at the very top on macOS, where the
+    // traffic lights sit over the sidebar's leading edge; it is 0 on Windows/Linux.
+    // The `p.card` fill still reaches the top, the padding only pushes content down.
+    let shell = col().key("sidebar").h_full().fill(p.card).pt(top_inset);
+    let shell = if full_width {
+        shell.w_full()
+    } else {
+        shell
+            .w(s.sidebar_width)
+            .border_sides([0.0, 1.0, 0.0, 0.0], p.border)
+    };
+    shell
+        // Nav (old app's `p-4 pt-6`): just the page link, Settings lives in the
+        // footer gear below, as the original.
+        .child({
+            // Render the primary nav from NAV_DEFS, skipping items the user has
+            // hidden (Settings → Navigation). Order mirrors the original. The top
+            // inset is `space::LG`, the same as every page's content pane and the
+            // Settings rail, so the first nav item's box lines up with the first
+            // row of whatever page is open (and the footer hugs the bottom with
+            // less padding below).
+            // Render each nav item at its reveal `progress` (advanced in the poll).
+            // Toggling one in Settings glides it open/shut, fade then collapse,
+            // instead of snapping; a fully-gone item (progress 0) isn't rendered.
+            // The reveal animates each item's height + opacity itself, per poll frame,
+            // so Rune must APPLY those values, not spring toward them: without this it
+            // adds its own ~0.15 s layout/opacity spring on top, lagging the collapse
+            // and leaving a half-height, half-faded tail after the reveal already
+            // reached 0. `instant_changes` lands layout + opacity at once (hover/press
+            // colours keep their springs), making our per-frame values authoritative.
+            let mut nav = col()
+                .key("nav")
+                .px(space::LG)
+                .pt(space::LG)
+                .pb(space::LG)
+                .instant_changes();
+            for def in NAV_DEFS {
+                nav = nav.child(nav_item(
+                    def.key,
+                    nav_label(def.id),
+                    def.route,
+                    nav_active(s.route, def),
+                    s.nav_reveal(def.id),
+                    p,
+                ));
+            }
+            nav
+        })
+        .child(queue_section(s, p, scale))
+        .child(player_panel(s, p, cx, scale))
+        .child(settings_footer(s, p))
+}
+
+/// The bottom footer (old app's `SettingsFooter`): a Settings gear on the left,
+/// the muted app version on the right, under a top border.
+fn settings_footer(s: &State, p: &Palette) -> El {
+    let active = s.route == Route::Settings;
+    row()
+        .key("settings-footer")
+        .w_full()
+        .border_sides([1.0, 0.0, 0.0, 0.0], p.border)
+        .px(space::MD)
+        // A compact status strip hugging the bottom edge, less bottom padding
+        // than the nav's top inset.
+        .py(space::SM)
+        .center_y()
+        .child({
+            let gear = el()
+                .key("nav-settings")
+                .role("button")
+                .label(t!("settings.title").to_string())
+                .focusable(true)
+                .padding(space::SNUG)
+                .radius(radius::MD)
+                .cursor(Cursor::Pointer)
+                .on_press(move |s: &mut State| {
+                    s.route = Route::Settings;
+                    s.mobile_show_content = true;
+                })
+                .child(icon(&icons::SETTINGS, 16.0).color(if active {
+                    p.primary
+                } else {
+                    p.text_secondary
+                }));
+            // 1:1 with the old app's SettingsFooter button: on /settings a primary
+            // icon on a subtle accent-20% pill (`text-primary bg-accent/20`),
+            // otherwise a faint foreground-10% hover (`hover:bg-foreground/10`).
+            if active {
+                gear.fill(p.accent.alpha(0.2))
+            } else {
+                gear.hover(p.fg.alpha(fx::HOVER))
+                    .press(p.fg.alpha(fx::PRESS))
+            }
+        })
+        .child(
+            text(VERSION)
+                .font(type_::LABEL.mono())
+                .color(p.text_secondary.alpha(0.6))
+                .grow(1.0)
+                .align(Align::End),
+        )
+}
+
+/// The geometry a resize drag resolves to, from the width at press and the
+/// pointer travel since. `Some(w)` is the new (clamped) expanded width; `None`
+/// means the drag crossed [`COLLAPSE_THRESHOLD`] inward and the sidebar should
+/// collapse, leaving the saved width alone so re-opening restores it. Pure, so
+/// the drag handler and its tests share exactly one rule.
+fn resize_to(width_at_press: f32, dx: f32) -> Option<f32> {
+    let target = width_at_press + dx;
+    (target >= COLLAPSE_THRESHOLD).then(|| target.clamp(MIN_WIDTH, MAX_WIDTH))
+}
+
+/// The sidebar's resize handle, keyed `"sidebar-resize"` in BOTH states so one
+/// continuous drag survives a collapse↔expand mid-gesture (the element keeps its
+/// identity, so the drag capture doesn't drop). `Drag::data` caches the width at
+/// press; `Drag::dx` is pointer travel since, so `data + dx` is the live target.
+///
+/// - **Expanded:** a thin invisible strip on the right edge, primary-tinted under
+///   the pointer (the old app's `group-hover:bg-primary/30` handle).
+/// - **Collapsed:** a `STRIP_WIDTH`-wide *invisible* drag column (full-height so
+///   it stays easy to grab) carrying a short **floating grabber pill** centred
+///   vertically, not a full-height card rail. Dragging it **live-resizes** (the
+///   sidebar follows the cursor, as the old app's "Drag right: live resize") and
+///   a click re-opens to the saved width. Because this element is the drag
+///   target, re-opening follows the pointer instead of waiting for release.
+pub fn resize_handle(collapsed: bool, p: &Palette) -> El {
+    let base = el()
+        .key("sidebar-resize")
+        .h_full()
+        .cursor(Cursor::ResizeColumn)
+        .on_drag(move |s: &mut State, d: &mut Drag, _tx| match d.phase {
+            Phase::Down => {
+                d.data = if s.sidebar_collapsed {
+                    STRIP_WIDTH
+                } else {
+                    s.sidebar_width
+                };
+            }
+            Phase::Move => match resize_to(d.data, d.dx) {
+                Some(w) => {
+                    s.sidebar_width = w;
+                    s.sidebar_collapsed = false;
+                }
+                // Dragged in past the threshold: collapse, leaving `sidebar_width`
+                // untouched so re-opening restores the saved width, not the rail's.
+                None => s.sidebar_collapsed = true,
+            },
+            Phase::Up => {
+                // A click (or sub-threshold drag) that STARTED collapsed re-opens
+                // to the saved width, the old app's click-to-expand. A real
+                // drag-out already expanded live above.
+                if s.sidebar_collapsed && d.data <= STRIP_WIDTH {
+                    s.sidebar_collapsed = false;
+                }
+                config::save_sidebar(s.sidebar_width, s.sidebar_collapsed);
+            }
+        });
+    if collapsed {
+        // A transparent full-height drag column with only a short pill showing,
+        // the collapsed sidebar reads as a floating handle, not a full-height bar.
+        base.w(STRIP_WIDTH)
+            // `center()` centres the pill on BOTH axes. The pill brightens on hover
+            // (old app's `group-hover:bg-foreground/35`).
+            .center()
+            .hover_group()
+            .child(
+                // The grabber pill: brighter at rest than the old full-card rail's
+                // (there's no card behind it now), lifting to full strength on
+                // hover via `group_opacity`.
+                el().key("grabber")
+                    .w(4.0)
+                    .h(56.0)
+                    .radius(radius::FULL)
+                    .fill(p.fg.alpha(0.5))
+                    .group_opacity(0.4, 1.0),
+            )
+    } else {
+        base.w(HANDLE_WIDTH).hover(p.primary.alpha(0.3))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The original app's sidebar orders Playlists before Genres (home, albums,
+    /// artists, playlists, genres, tracks): a prior -ng pass had them swapped.
+    #[test]
+    fn nav_defs_orders_playlists_before_genres() {
+        let ids: Vec<&str> = NAV_DEFS.iter().map(|d| d.id).collect();
+        let playlists_pos = ids.iter().position(|&id| id == "playlists").unwrap();
+        let genres_pos = ids.iter().position(|&id| id == "genres").unwrap();
+        assert!(
+            playlists_pos < genres_pos,
+            "playlists ({playlists_pos}) must come before genres ({genres_pos}): {ids:?}"
+        );
+        assert_eq!(
+            ids,
+            vec!["home", "albums", "artists", "playlists", "genres", "tracks"],
+            "full nav order matches the original app"
+        );
+    }
+
+    #[test]
+    fn resize_widens_and_clamps_to_range() {
+        // Dragging out from the default widens by the travel...
+        assert_eq!(resize_to(DEFAULT_WIDTH, 100.0), Some(388.0));
+        // ...but never past the max or below the min.
+        assert_eq!(resize_to(DEFAULT_WIDTH, 300.0), Some(MAX_WIDTH));
+        assert_eq!(resize_to(DEFAULT_WIDTH, -60.0), Some(MIN_WIDTH)); // 228 → 240
+        assert_eq!(resize_to(DEFAULT_WIDTH, -20.0), Some(268.0)); // still in range
+    }
+
+    #[test]
+    fn resize_collapses_under_threshold_and_reopens() {
+        // Dragging in past the threshold collapses (no width returned, so the
+        // saved width survives for re-opening).
+        assert_eq!(resize_to(DEFAULT_WIDTH, -100.0), None); // 188 < 200
+        // From the collapsed rail, dragging back out past the threshold re-opens.
+        assert_eq!(resize_to(STRIP_WIDTH, 50.0), None); // 62 < 200, still shut
+        assert_eq!(resize_to(STRIP_WIDTH, 250.0), Some(262.0)); // 262 ≥ 200, opens
+    }
+}

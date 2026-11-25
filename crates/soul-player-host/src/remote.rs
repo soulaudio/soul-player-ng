@@ -1,4 +1,4 @@
-//! `remote`: client side of the soul-server remote-source protocol —
+//! `remote`: client side of the soul-server remote-source protocol,
 //! authenticate against a server, fetch its catalog index, and download
 //! track originals into a local cache.
 //!
@@ -6,15 +6,15 @@
 //! its `/v0` wire protocol over plain `reqwest::blocking` HTTP without
 //! depending on that crate at runtime (`soul-server` is a dev-dependency
 //! here, only to drive this module's tests against a REAL in-process
-//! server) — the wire format is the contract, not the crate.
+//! server), the wire format is the contract, not the crate.
 //!
-//! Defines [`TrackLocation`] and [`MediaFetch`] — the seam the loader
+//! Defines [`TrackLocation`] and [`MediaFetch`], the seam the loader
 //! ([`RemoteLibrary`], consumed by `PlayerHandle::add_remote_source`)
 //! resolves a catalog track through to a local, playable path regardless of
 //! whether it lives on disk or on a remote source.
 //!
 //! `TrackLocation` itself stays unconsumed for now (`RemoteLibrary::path_of`
-//! goes straight from a compound id to a path without materializing one) —
+//! goes straight from a compound id to a path without materializing one),
 //! reserved for a future caller that wants to know *why* a path resolved the
 //! way it did (e.g. a "from <server>" badge); see the narrow `dead_code`
 //! allow on it below instead of the old blanket one.
@@ -22,7 +22,7 @@
 //! [`HttpRangeReader`] is the streaming alternative to [`MediaFetch`]'s
 //! download-then-play: a `Read + Seek` over `GET /v0/track/{id}` HTTP Range
 //! requests, opened directly into a decoder with no materialized file. It's
-//! wired up as [`RemoteLibrary`]'s [`TrackSource::open_decoder`] override —
+//! wired up as [`RemoteLibrary`]'s [`TrackSource::open_decoder`] override,
 //! the loader's entry point for actually playing a track: a remote id streams
 //! through this reader by default, falling back to [`MediaFetch`]'s
 //! download-then-play only if the stream can't be opened.
@@ -43,23 +43,23 @@ use crate::RemoteHealth;
 
 /// A soul-server the player has logged into via OAuth: its base URL (no
 /// trailing slash) and the short-lived JWT access token obtained via
-/// [`login`] (or [`exchange_code`]/[`refresh`]) and carried OPAQUELY — this
+/// [`login`] (or [`exchange_code`]/[`refresh`]) and carried OPAQUELY, this
 /// client never parses or validates it, it only ever forwards it as a
 /// bearer token.
 #[derive(Clone, Debug)]
 pub struct RemoteServer {
     /// The server's base URL (e.g. `https://listen.home.lan:8080`).
     pub url: String,
-    /// The OAuth bearer token, carried opaquely — this client never parses it.
+    /// The OAuth bearer token, carried opaquely, this client never parses it.
     pub access_token: String,
 }
 
 /// `url`'s host (and port, if non-default) for display, e.g. as a per-track
-/// "streams from" tooltip — a bare `https://` isn't informative, and the
+/// "streams from" tooltip, a bare `https://` isn't informative, and the
 /// whole URL carries path noise a label doesn't need. Falls back to the
 /// whole `url` if it carries no recognizable scheme.
 ///
-/// Mirrors `app/rune`'s `views::settings::display_host` (a remote-source row's
+/// Mirrors `app`'s `views::settings::display_host` (a remote-source row's
 /// title line uses the exact same rule), duplicated here rather than shared:
 /// the host crate and the Rune UI crate sit in separate cargo workspaces with
 /// no dependency edge between them, so this one small helper is cheaper to
@@ -133,7 +133,7 @@ pub enum TrackLocation {
     },
 }
 
-/// Resolves a remote track to a local, playable file path — downloading it
+/// Resolves a remote track to a local, playable file path, downloading it
 /// first if necessary. A trait so the loader can depend on the behavior
 /// (and swap in a test fake) without caring that [`DownloadCache`] is the
 /// only real implementation.
@@ -154,7 +154,7 @@ pub struct DownloadCache {
 impl DownloadCache {
     /// This server's own cache subdirectory, named by a stable hash of its URL.
     /// Track ids are per-server (compound catalog ids), so two different servers
-    /// routinely emit the same low id — keeping each server's downloads in its own
+    /// routinely emit the same low id, keeping each server's downloads in its own
     /// namespace prevents serving one server's bytes for another's track.
     fn server_dir(&self, server: &RemoteServer) -> PathBuf {
         use std::hash::{Hash, Hasher};
@@ -162,7 +162,7 @@ impl DownloadCache {
         server.url.hash(&mut hasher);
         self.dir.join(format!("{:016x}", hasher.finish()))
     }
-    /// The cache file path for `server`'s `track_id` — stable and extension-less,
+    /// The cache file path for `server`'s `track_id`, stable and extension-less,
     /// since the loader opens tracks by content/format sniffing rather than by
     /// file extension.
     fn cache_path(&self, server: &RemoteServer, track_id: u32) -> PathBuf {
@@ -218,8 +218,8 @@ enum SourceResolve {
     /// A local root: delegate straight to [`Library::path_of`].
     Local,
     /// One of `server`'s own catalog roots. `base` is the aggregate source
-    /// index of this server's FIRST source — shared by every source in its
-    /// block — needed to recover the server's own id (see
+    /// index of this server's FIRST source, shared by every source in its
+    /// block, needed to recover the server's own id (see
     /// [`RemoteLibrary::path_of`]).
     Remote {
         server: Arc<RemoteServer>,
@@ -237,15 +237,15 @@ enum SourceResolve {
 /// id as `(source, local)`: `source` is the position of that track's
 /// root/blob in the combined list passed to `from_source_bytes` (the high
 /// bits), `local` is the id within that one blob's own baked index (the low
-/// bits) — see [`pack`]/[`unpack`]. A remote server bakes its OWN roots into
+/// bits), see [`pack`]/[`unpack`]. A remote server bakes its OWN roots into
 /// a `Library` the exact same way (`soul-server`'s index just wraps
 /// `Library::scan_many_incremental`), so for the `j`-th root/blob of a server
 /// occupying this aggregate's sources `[base, base + k)`, the server's own id
 /// for a track is `pack(j, local)`, where `(source, local) = unpack(aggregate_id)`
 /// and `j = source - base`.
 ///
-/// Recovering `j` this way — through the packed `source` field, NOT a flat
-/// `aggregate_id - base` subtraction — is the part that must stay correct: a
+/// Recovering `j` this way, through the packed `source` field, NOT a flat
+/// `aggregate_id - base` subtraction, is the part that must stay correct: a
 /// bare subtraction would mix the high-bits source index into the arithmetic
 /// instead of isolating `local`, and silently fetch the wrong track (or
 /// underflow) the moment any source precedes the remote block.
@@ -257,7 +257,7 @@ pub struct RemoteLibrary {
 
 impl RemoteLibrary {
     /// Build the aggregate from `local` (root, baked-bytes) pairs followed by
-    /// each remote server's own (server, per-root blobs) in order — sources
+    /// each remote server's own (server, per-root blobs) in order, sources
     /// are laid out local-first, then one block per remote server, in the
     /// order given. Each remote blob gets a sentinel root path (never read as
     /// a real filesystem path; it only occupies `Library`'s per-source root
@@ -299,7 +299,7 @@ impl RemoteLibrary {
         }
     }
 
-    /// The aggregate library, for browsing/views — `path_of`
+    /// The aggregate library, for browsing/views, `path_of`
     /// ([`TrackSource`]) is what resolves a track to a playable file,
     /// downloading a remote one first.
     #[must_use]
@@ -326,13 +326,13 @@ impl TrackSource for RemoteLibrary {
     }
 
     /// A **local** id delegates straight to the local `Library`'s own
-    /// `open_decoder` (the trait default — `path_of` then `open_track`,
+    /// `open_decoder` (the trait default, `path_of` then `open_track`,
     /// unchanged). A **remote** one STREAMS the track over HTTP Range
     /// ([`HttpRangeReader`] opened straight into [`open_seekable_src`])
     /// instead of downloading it first, so playback can start on the first
     /// fetched window rather than waiting for (or requiring) the whole file
-    /// on disk. If the stream can't be opened — the server rejects Range, a
-    /// transient network error, the track is otherwise unreachable that way —
+    /// on disk. If the stream can't be opened, the server rejects Range, a
+    /// transient network error, the track is otherwise unreachable that way,
     /// this falls back to the same download-to-cache path
     /// [`path_of`](Self::path_of) has always used, so a track that can't
     /// stream still plays.
@@ -365,7 +365,7 @@ impl TrackSource for RemoteLibrary {
                 match streamed {
                     Ok(decoder) => Ok(decoder),
                     Err(_stream_err) => {
-                        // Streaming didn't work out — fall back to the
+                        // Streaming didn't work out, fall back to the
                         // download-to-cache path the loader used before Inc 4b
                         // (also what RG-tag reading still goes through via
                         // `path_of`, so this is a well-trodden path, not a new
@@ -382,7 +382,7 @@ impl TrackSource for RemoteLibrary {
 // ---------------------------------------------------------------------------
 // HTTP-Range-backed streaming reader (Inc 4b): a `Read + Seek` over
 // `GET /v0/track/{id}` for a decoder to open directly, as the streaming
-// alternative to `DownloadCache`'s download-then-play. Self-contained — a
+// alternative to `DownloadCache`'s download-then-play. Self-contained: a
 // SEPARATE later increment wires a decoder over this via core's
 // `open_seekable`.
 // ---------------------------------------------------------------------------
@@ -407,7 +407,7 @@ struct Window {
 /// that runs past it (or a [`Seek`] that lands outside it) triggers exactly
 /// one more Range request, fetched lazily on the next `read`.
 ///
-/// Built so a decoder can be opened directly over it on the loader thread —
+/// Built so a decoder can be opened directly over it on the loader thread,
 /// `Send` (every field is), no interior mutability shared with anything
 /// else, no `unsafe`.
 pub struct HttpRangeReader {
@@ -423,7 +423,7 @@ pub struct HttpRangeReader {
     /// [`Seek::seek`]'s current position.
     pos: u64,
     /// `None` right after a [`Seek`] that landed outside the current
-    /// window — cleared rather than refetched immediately, so a seek itself
+    /// window, cleared rather than refetched immediately, so a seek itself
     /// never touches the network; the next `read` refetches at `pos`.
     window: Option<Window>,
 }
@@ -453,7 +453,7 @@ impl HttpRangeReader {
     }
 
     /// The track's total byte length (learned at construction time).
-    // Not a collection — there's no meaningful `is_empty` beyond `len() ==
+    // Not a collection: there's no meaningful `is_empty` beyond `len() ==
     // 0`, which a caller can already spell directly.
     #[allow(clippy::len_without_is_empty)]
     #[must_use]
@@ -474,7 +474,7 @@ impl HttpRangeReader {
     ///
     /// The server clamps an over-long range to end-of-file (see
     /// `soul_server::proto::native::track`), so this never errors just
-    /// because `start + CHUNK_SIZE` runs past EOF — except when the WHOLE
+    /// because `start + CHUNK_SIZE` runs past EOF, except when the WHOLE
     /// track is empty, in which case the server answers `416 Range Not
     /// Satisfiable` for any range at all; that degenerate case is reported
     /// back as `(no bytes, length 0)` rather than an `Err`, so opening a
@@ -556,7 +556,7 @@ impl Read for HttpRangeReader {
 impl Seek for HttpRangeReader {
     /// Computes the new absolute position and, if it falls outside the
     /// current window, drops the window so the next [`Read::read`] refetches
-    /// at the new `pos` — this method itself never touches the network
+    /// at the new `pos`, this method itself never touches the network
     /// (`total_len` is already known from construction, so even
     /// `SeekFrom::End` is a pure offset computation).
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
@@ -586,7 +586,7 @@ impl Seek for HttpRangeReader {
 /// on [`KeyringStore`] (the OS keychain) while tests swap in [`MemStore`]
 /// without touching the real Credential Manager/Keychain/Secret Service.
 ///
-/// The OAuth **access** token is short-lived and never persisted here — only
+/// The OAuth **access** token is short-lived and never persisted here, only
 /// kept in memory on [`RemoteServer`]; only the long-lived refresh token
 /// needs durable, secret storage.
 pub trait TokenStore: Send + Sync {
@@ -634,7 +634,7 @@ impl TokenStore for KeyringStore {
         match entry.delete_credential() {
             Ok(()) => Ok(()),
             // Deleting an entry that was never saved (or already deleted)
-            // is not an error — the caller just wants it gone.
+            // is not an error, the caller just wants it gone.
             Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(e).with_context(|| format!("deleting refresh token for {server_url}")),
         }
@@ -705,7 +705,7 @@ pub fn fetch_index(server: &RemoteServer) -> anyhow::Result<Vec<IndexBlob>> {
 ///
 /// This mirrors the server's `soul_server::index::frame_index`/`deframe_index`
 /// byte-for-byte, reimplemented here rather than taken as a runtime
-/// dependency on that crate — the wire format is the contract.
+/// dependency on that crate, the wire format is the contract.
 fn deframe(bytes: &[u8]) -> anyhow::Result<Vec<IndexBlob>> {
     fn read_u32(bytes: &[u8], pos: &mut usize) -> anyhow::Result<u32> {
         let slice = bytes
@@ -745,7 +745,7 @@ fn deframe(bytes: &[u8]) -> anyhow::Result<Vec<IndexBlob>> {
 
 /// Probe `server`'s health with one unauthenticated `GET /v0/ping`, timing
 /// the round-trip. Offline is a VALUE, not an error: this never panics and
-/// never returns `Err` — any failure (connect refused, timeout, a non-2xx
+/// never returns `Err`, any failure (connect refused, timeout, a non-2xx
 /// status, an unparsable body) reports `online: false` with every other
 /// field `None` except `last_checked_unix` (always set, to `now_unix`), so a
 /// caller can always render a row instead of handling a `Result`. Bounded to
@@ -773,7 +773,7 @@ pub fn probe_health(server: &RemoteServer, now_unix: u64) -> RemoteHealth {
         Ok(r) => r,
         Err(_) => return offline(),
     };
-    // Measured right after the response headers arrive — the round-trip —
+    // Measured right after the response headers arrive, the round-trip,
     // not including the (negligible, local) JSON-parse below.
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -799,7 +799,7 @@ pub fn probe_health(server: &RemoteServer, now_unix: u64) -> RemoteHealth {
 
 /// A fresh bearer token pair minted by the server's `/token` endpoint:
 /// `access` is the short-lived JWT sent as `Authorization: Bearer` on every
-/// `/v0/*` call (held OPAQUELY — this client never parses or validates it,
+/// `/v0/*` call (held OPAQUELY, this client never parses or validates it,
 /// it only ever forwards it); `refresh` is the long-lived, rotating token
 /// [`TokenStore`] persists so a later session can skip the interactive
 /// browser login via [`refresh`].
@@ -838,13 +838,13 @@ fn discover(url: &str) -> anyhow::Result<(String, String)> {
     Ok((authorization_endpoint, token_endpoint))
 }
 
-/// `n` CSPRNG bytes via `getrandom` (the OS random source — no `rand` crate
+/// `n` CSPRNG bytes via `getrandom` (the OS random source, no `rand` crate
 /// needed for this).
 fn random_bytes(n: usize) -> anyhow::Result<Vec<u8>> {
     let mut buf = vec![0u8; n];
     // `getrandom::Error` doesn't implement `std::error::Error` under this
     // crate's default (no `std` feature) build, so `anyhow::Context` isn't
-    // available on it — fold it into an anyhow error via `Display` instead.
+    // available on it, fold it into an anyhow error via `Display` instead.
     getrandom::getrandom(&mut buf)
         .map_err(|e| anyhow::anyhow!("reading CSPRNG bytes for OAuth/PKCE: {e}"))?;
     Ok(buf)
@@ -852,7 +852,7 @@ fn random_bytes(n: usize) -> anyhow::Result<Vec<u8>> {
 
 /// A fresh PKCE verifier/challenge pair (RFC 7636 §4.1/§4.2): `verifier` is
 /// base64url-no-pad of 32 random bytes; `challenge` is
-/// base64url-no-pad(SHA256(verifier)) (the `S256` method — the only one this
+/// base64url-no-pad(SHA256(verifier)) (the `S256` method, the only one this
 /// server, or OAuth 2.1, supports).
 fn pkce_pair() -> anyhow::Result<(String, String)> {
     let verifier = URL_SAFE_NO_PAD.encode(random_bytes(32)?);
@@ -867,7 +867,7 @@ fn random_state() -> anyhow::Result<String> {
 
 /// Percent-encodes `s` for safe inclusion as a query-string value (RFC 3986
 /// unreserved set passes through unescaped; everything else becomes `%XX`).
-/// Mirrors the server's own `percent_encode` — written by hand here too
+/// Mirrors the server's own `percent_encode`, written by hand here too
 /// rather than pulling in a URL crate for the one value (`redirect_uri`)
 /// this client ever needs to escape.
 fn percent_encode(s: &str) -> String {
@@ -909,7 +909,7 @@ fn query_param(url_or_query: &str, key: &str) -> Option<String> {
 
 /// Decodes `%XX` escapes in a query-string value. Any malformed escape (a
 /// stray `%` not followed by two hex digits) is passed through unchanged
-/// rather than erroring — this only ever reads values this client or the
+/// rather than erroring, this only ever reads values this client or the
 /// trusted `soul-server` AS produced.
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
@@ -933,7 +933,7 @@ fn percent_decode(s: &str) -> String {
 }
 
 /// POST `token_endpoint` with `form` and parse a successful response into
-/// [`Tokens`]. Shared by [`exchange_code`] and [`refresh`] — the only
+/// [`Tokens`]. Shared by [`exchange_code`] and [`refresh`], the only
 /// difference between the two grants is which form fields they send.
 fn post_token(token_endpoint: &str, form: &[(&str, &str)]) -> anyhow::Result<Tokens> {
     let response = http_client(HTTP_REQUEST_TIMEOUT)
@@ -997,14 +997,14 @@ pub fn refresh(url: &str, refresh: &str) -> anyhow::Result<Tokens> {
 }
 
 /// Overall time this client waits for the user to finish the browser login
-/// before giving up — generous (a password manager, an SSO redirect, a
+/// before giving up, generous (a password manager, an SSO redirect, a
 /// distracted human) but finite, so [`login`] can never hang forever.
 const CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Accepts exactly one connection on `listener` (polling with a timeout
 /// rather than blocking forever, so a browser that never shows up can't hang
 /// the caller), reads its HTTP request line, and pulls `code`/`state` out of
-/// the `GET /callback?code=..&state=..` request — then writes back a
+/// the `GET /callback?code=..&state=..` request, then writes back a
 /// minimal `200 OK` so the browser tab shows a friendly confirmation instead
 /// of hanging or erroring.
 fn accept_callback(listener: &std::net::TcpListener) -> anyhow::Result<(String, String)> {
@@ -1017,7 +1017,7 @@ fn accept_callback(listener: &std::net::TcpListener) -> anyhow::Result<(String, 
 
     // Loop over EVERY connection until one actually carries the `code` query.
     // A real browser following the `302` to this loopback sends exactly the
-    // callback — but browsers also probe loopback redirect targets (a
+    // callback, but browsers also probe loopback redirect targets (a
     // speculative preconnect, a `/favicon.ico`, an `OPTIONS`), and if we
     // consumed the first such probe and returned, the ACTUAL callback would
     // then hit a closed listener and the user would see "can't connect". So we
@@ -1085,14 +1085,14 @@ fn write_callback_response(stream: &mut std::net::TcpStream, status: &str, body:
 }
 
 /// The full interactive login: discover the AS, bind a LOOPBACK-only
-/// listener (never `0.0.0.0` — RFC 8252's native-app redirect is only ever
+/// listener (never `0.0.0.0`, RFC 8252's native-app redirect is only ever
 /// safe to accept from the local machine), build the PKCE+state
 /// `/authorize` URL, open it in the system browser, accept the single
-/// resulting callback, verify `state` (a CSRF guard — see RFC 6749 §10.12),
+/// resulting callback, verify `state` (a CSRF guard, see RFC 6749 §10.12),
 /// and exchange the code for [`Tokens`].
 ///
 /// A thin wrapper over [`login_with_opener`] that opens the URL in the
-/// user's actual system browser — see that function for the real logic and
+/// user's actual system browser, see that function for the real logic and
 /// for how tests exercise it without a browser.
 pub fn login(url: &str) -> anyhow::Result<Tokens> {
     login_with_opener(url, |u| open::that(u).map_err(anyhow::Error::from))
@@ -1103,7 +1103,7 @@ pub fn login(url: &str) -> anyhow::Result<Tokens> {
 /// browser: a test's `open_fn` typically spawns a thread that plays browser
 /// (GET the login form, POST credentials, follow the redirect back to this
 /// function's OWN loopback listener) and returns immediately, exactly like
-/// [`open::that`] does — `login_with_opener` can't call `open_fn` and THEN
+/// [`open::that`] does, `login_with_opener` can't call `open_fn` and THEN
 /// `accept()`, waiting for a return that never comes, if `open_fn` blocked
 /// until the whole browser flow finished.
 pub(crate) fn login_with_opener(
@@ -1128,7 +1128,7 @@ pub(crate) fn login_with_opener(
 
     let (code, returned_state) = accept_callback(&listener)?;
     if returned_state != state {
-        bail!("OAuth callback state mismatch — possible CSRF, aborting login");
+        bail!("OAuth callback state mismatch, possible CSRF, aborting login");
     }
 
     exchange_code(url, &code, &verifier, &redirect_uri)
@@ -1231,7 +1231,7 @@ mod tests {
 
     impl TestServer {
         /// Mint a fresh, valid JWT access token for this server's seeded test
-        /// user directly off its `Signer` — the cheap stand-in for a full
+        /// user directly off its `Signer`, the cheap stand-in for a full
         /// browser/OAuth round-trip in tests that only need a VALID
         /// `access_token` on a [`RemoteServer`], not to exercise login itself
         /// (that's [`oauth_code_exchange_and_refresh`]'s job).
@@ -1256,14 +1256,14 @@ mod tests {
     }
 
     /// Like [`start_server`], but scanning `roots` instead of the whole
-    /// `testdata/` tree — so a test can stand up a server over a DIFFERENT
+    /// `testdata/` tree, so a test can stand up a server over a DIFFERENT
     /// subset of fixtures than whatever it scanned locally.
     ///
     /// Binds the ephemeral port SYNCHRONOUSLY, up front, rather than inside
     /// the spawned async task: the OAuth discovery document advertises
     /// `authorization_endpoint`/`token_endpoint` built from `issuer`, so
     /// `issuer` must be this server's actual bound `http://127.0.0.1:PORT`
-    /// base — not a fixed placeholder — or a client that resolves endpoints
+    /// base, not a fixed placeholder, or a client that resolves endpoints
     /// via discovery (as [`exchange_code`]/[`refresh`]/[`login`] do) would
     /// be handed URLs with no port, to a server that isn't there.
     fn start_server_over(roots: Vec<PathBuf>) -> TestServer {
@@ -1397,7 +1397,7 @@ mod tests {
     }
 
     /// Finds the first track id in `server`'s index whose original file is
-    /// at least `min_len` bytes — used by the [`HttpRangeReader`] tests
+    /// at least `min_len` bytes, used by the [`HttpRangeReader`] tests
     /// below to pick a track big enough to span more than one window, so
     /// reading it all the way through actually exercises the "window
     /// exhausted → refetch" path and not just the chunk primed at
@@ -1548,7 +1548,7 @@ mod tests {
         // which `fetch_chunk` surfaces as an `Err` rather than silently opening a reader
         // over empty/garbage audio. Track 0 IS valid here, so this isolates the AUTH
         // rejection (distinct from `..._for_an_unknown_track_errors`). Note there is no
-        // mid-stream token refresh — the reader holds the token captured at construction
+        // mid-stream token refresh, the reader holds the token captured at construction
         // (`access_token`), so an expired token is terminal for that reader.
         let server = start_server();
         let remote = RemoteServer {
@@ -1564,7 +1564,7 @@ mod tests {
     #[test]
     fn parse_content_range_total_reads_the_total_after_the_slash() {
         // The streamed track's length is learned by parsing the server's
-        // `Content-Range: bytes START-END/TOTAL` header — the denominator `len()` keys
+        // `Content-Range: bytes START-END/TOTAL` header, the denominator `len()` keys
         // off. Valid forms yield the total; a malformed / unknown (`*`) / absent total
         // yields None, so `fetch_chunk` errors rather than guessing a size.
         assert_eq!(parse_content_range_total("bytes 0-1023/4096"), Some(4096));
@@ -1644,7 +1644,7 @@ mod tests {
     }
 
     /// Bake `root` (a single-root scan) and hand back its one `.soulidx`
-    /// blob — reuses the server's own `CoreIndex`/framing so this is exactly
+    /// blob, reuses the server's own `CoreIndex`/framing so this is exactly
     /// the shape `RemoteLibrary::build`'s `local` and `fetch_index`'s remote
     /// blobs both take.
     fn scan_blob(root: &std::path::Path) -> IndexBlob {
@@ -1657,14 +1657,14 @@ mod tests {
 
     /// Extract the value of `key` from `location`'s query string (used here
     /// to pull `code`/`state` back out of the server's `302 Location`
-    /// header — the same parsing [`query_param`] does for the real loopback
+    /// header, the same parsing [`query_param`] does for the real loopback
     /// callback in [`login`]).
     fn location_param(location: &str, key: &str) -> Option<String> {
         query_param(location, key)
     }
 
     /// GETs `url` (the loopback callback) with a few short retries rather
-    /// than one shot — tolerating the brief window between
+    /// than one shot, tolerating the brief window between
     /// `login_with_opener` binding its `TcpListener` and actually reaching
     /// its `accept()` loop. In practice the listener is bound long before
     /// the browser-thread finishes the AS round-trip below, so this almost
@@ -1790,7 +1790,7 @@ mod tests {
     /// Drives the same OAuth2.1 Authorization-Code+PKCE dance as
     /// [`oauth_code_exchange_and_refresh`] (GET+POST `/authorize` standing in
     /// for the browser, then [`exchange_code`]) against `server`'s seeded
-    /// `"u"`/`"p"` user, returning the resulting [`Tokens`] — the "get Tokens
+    /// `"u"`/`"p"` user, returning the resulting [`Tokens`], the "get Tokens
     /// via the E2 flow" half of [`add_remote_source_with_tokens_lists_views`].
     fn login_as_test_user(server: &TestServer) -> Tokens {
         let redirect_uri = "http://127.0.0.1:1/callback".to_string();
@@ -1848,7 +1848,7 @@ mod tests {
 
     /// The E3 seam, end to end: a real OAuth login against an in-process AS
     /// hands back [`Tokens`] whose `access` [`PlayerHandle::add_remote_source_with_tokens`]
-    /// carries straight into `fetch_index` — no browser, no OS keychain —
+    /// carries straight into `fetch_index`, no browser, no OS keychain,
     /// and the synced catalog shows up in [`PlayerHandle::views`].
     #[test]
     fn add_remote_source_with_tokens_lists_views() {
@@ -1900,7 +1900,7 @@ mod tests {
     }
 
     /// [`probe_health`] against a URL nothing is listening on: offline, with
-    /// no latency or version — never an `Err`/panic, offline is a value.
+    /// no latency or version, never an `Err`/panic, offline is a value.
     #[test]
     fn probe_health_reports_offline_for_dead_url() {
         // Bind an ephemeral port, then drop the listener immediately: the
@@ -1917,7 +1917,7 @@ mod tests {
 
         let health = probe_health(&remote, now_unix());
 
-        assert!(!health.online, "nothing is listening — must report offline");
+        assert!(!health.online, "nothing is listening, must report offline");
         assert!(health.latency_ms.is_none(), "no latency without a response");
         assert!(
             health.server_version.is_none(),
@@ -1989,7 +1989,7 @@ mod tests {
     /// [`crate::TrackView::remote_source`] from the aggregate's compound id,
     /// using the SAME sentinel-root convention
     /// `sources_lists_remote_with_kind_and_health` already proved for
-    /// `track_count` — a remote server's tracks come back
+    /// `track_count`, a remote server's tracks come back
     /// `remote_source == Some(host)` (a non-empty host/label naming THAT
     /// server, not just a bare flag), the configured local folder's stay
     /// `remote_source == None`.
@@ -2031,11 +2031,11 @@ mod tests {
     /// valid refresh token (obtained via the same [`login_as_test_user`] flow
     /// [`add_remote_source_with_tokens_lists_views`] uses) lets
     /// [`crate::PlayerHandle::reconnect_remote_source`] silently re-authenticate
-    /// against a REAL in-process AS — no browser, no OS keychain — fetch the
+    /// against a REAL in-process AS, no browser, no OS keychain, fetch the
     /// catalog index, and fold it into the library, exactly like
     /// `add_remote_source_with_tokens` does. Also proves the server's refresh-
     /// token ROTATION is persisted back into the store, not just the access
-    /// token — a caller that kept the old refresh token would be unable to
+    /// token, a caller that kept the old refresh token would be unable to
     /// reconnect a second time.
     #[test]
     fn reconnect_remote_source_rotates_token_and_rebuilds_library() {
@@ -2061,12 +2061,12 @@ mod tests {
             .expect("the store should hold a refresh token after a successful reconnect");
         assert_ne!(
             rotated, tokens.refresh,
-            "the refresh token must have rotated — the seeded one is now spent"
+            "the refresh token must have rotated, the seeded one is now spent"
         );
     }
 
     /// A remote with no stored credential (never logged in, or the entry was
-    /// deleted) fails clearly rather than reaching the network at all — the
+    /// deleted) fails clearly rather than reaching the network at all, the
     /// "no stored credential" `anyhow::bail!` path, which lets a caller tell
     /// this apart from a transient network failure if it ever wants to.
     #[test]
@@ -2086,8 +2086,8 @@ mod tests {
     /// [`crate::PlayerHandle::remove_remote_source`]: a remote added via
     /// `add_remote_source_with_tokens` shows up in [`crate::PlayerHandle::sources`]
     /// with `kind == Remote { url }`; removing it drops that entry (and the
-    /// aggregate rebuilds without its tracks) while leaving everything else —
-    /// here, nothing else configured — unaffected.
+    /// aggregate rebuilds without its tracks) while leaving everything else,
+    /// here, nothing else configured, unaffected.
     #[test]
     fn remove_remote_source_drops_it_from_sources_and_rebuilds() {
         let server = start_server();
@@ -2124,7 +2124,7 @@ mod tests {
 
     /// Re-adding an already-configured remote (exactly what a Rescan / the
     /// periodic re-sync does) REPLACES its entry rather than appending a second
-    /// one — the guard for the user-facing "rescan duplicated the remote" bug.
+    /// one, the guard for the user-facing "rescan duplicated the remote" bug.
     /// After two adds of the same url the aggregate lists exactly ONE remote
     /// source, and its catalog is present once, not doubled.
     #[test]
@@ -2162,7 +2162,7 @@ mod tests {
 
     /// Disabling a connected remote keeps its row listed but drops its tracks
     /// from the aggregate (mirroring a disabled local folder); re-enabling
-    /// restores them from the already-fetched blobs with no network call — the
+    /// restores them from the already-fetched blobs with no network call, the
     /// remote enable/disable toggle the Sources panel exposes.
     #[test]
     fn disabling_a_remote_drops_its_tracks_but_keeps_the_row() {
@@ -2234,7 +2234,7 @@ mod tests {
         );
 
         // Disabled: the remote leaves the aggregate, so its locator resolves to
-        // None — the playlist renders it greyed/unavailable, NOT as a wrong id.
+        // None, the playlist renders it greyed/unavailable, NOT as a wrong id.
         handle
             .set_remote_enabled(&server.url, false)
             .expect("disable the remote");
@@ -2258,7 +2258,7 @@ mod tests {
     #[test]
     fn remote_library_resolves_local_and_remote_tracks_with_a_nonzero_base() {
         // A local source with exactly ONE track, so its single id is
-        // unambiguous, followed (in the aggregate) by a remote block — this
+        // unambiguous, followed (in the aggregate) by a remote block, this
         // gives the remote server's sources a nonzero `base`, which is
         // exactly what would expose a bare `id - base` subtraction instead
         // of the correct `(source, local)` unpack/repack.
@@ -2325,11 +2325,11 @@ mod tests {
         );
 
         // Remote ids live in source 1 (base = 1, the single local source
-        // before them) — a nonzero base. For each of the server's own track
+        // before them), a nonzero base. For each of the server's own track
         // ids, the aggregate id is `pack(1, server_id)`; resolving it must
         // download bytes identical to what the server itself would hand back
         // for that SAME server-side id, proving the (source, local) unpack
-        // and repack — not a flat subtraction — recovered it correctly.
+        // and repack, not a flat subtraction, recovered it correctly.
         for server_id in 0..remote_count as u32 {
             let expected_path = server
                 .services
@@ -2355,7 +2355,7 @@ mod tests {
     /// [`RemoteLibrary::open_decoder`], end to end against a REAL in-process
     /// server: a LOCAL id delegates to `Library::open_decoder` (`open_track`,
     /// unchanged) and a REMOTE id decodes via the STREAMING path
-    /// ([`HttpRangeReader`] + `open_seekable_src`) — proven by decoding a real
+    /// ([`HttpRangeReader`] + `open_seekable_src`), proven by decoding a real
     /// block from each AND by the download cache staying completely empty
     /// afterwards, since the happy streaming path never touches
     /// [`DownloadCache`] (the fallback it would otherwise fall back to).
@@ -2393,7 +2393,7 @@ mod tests {
             fetch,
         ));
 
-        // `OwnedDecoder` is large by value (the boxed `AnyDecoder`) — a
+        // `OwnedDecoder` is large by value (the boxed `AnyDecoder`), a
         // big-stack thread, the same precaution `open_track`'s own decode
         // tests (and `remote_e2e.rs`) take for debug-build move frames.
         std::thread::Builder::new()
@@ -2412,7 +2412,7 @@ mod tests {
                     .expect("decode the local track's first block");
                 assert!(n > 0, "expected a non-empty decoded block (local)");
 
-                // The remote block starts at source 1 (base 1 — the single
+                // The remote block starts at source 1 (base 1, the single
                 // local source before it) and STREAMS over HTTP Range.
                 let remote_id = pack(1, 0);
                 let mut remote_decoder = remote_lib
@@ -2430,7 +2430,7 @@ mod tests {
             .join()
             .expect("decode thread panicked");
 
-        // The happy streaming path never falls back to the download cache —
+        // The happy streaming path never falls back to the download cache,
         // no file should have landed there.
         let cache_is_empty = fs::read_dir(cache_dir.path())
             .map(|mut entries| entries.next().is_none())
@@ -2442,14 +2442,14 @@ mod tests {
     }
 
     /// Drives [`login_with_opener`] through its REAL bind→accept→parse→
-    /// state-verify→exchange path — the one `login` itself has but no
+    /// state-verify→exchange path, the one `login` itself has but no
     /// prior test exercised, since [`oauth_code_exchange_and_refresh`]
     /// calls [`exchange_code`] directly and never touches a loopback
     /// socket at all.
     ///
     /// The `open_fn` here stands in for `open::that`: it spawns a thread
     /// (so this call returns immediately, exactly like the real browser
-    /// launcher does) that plays the browser — GET the login form POSTed
+    /// launcher does) that plays the browser, GET the login form POSTed
     /// to by the AS, POST the seeded user's credentials plus the echoed
     /// PKCE/state params, follow the resulting `302` BY HAND to its
     /// `Location`, and `GET` that loopback URL. That last GET is the one
@@ -2463,7 +2463,7 @@ mod tests {
 
         // The opener must return immediately (like `open::that`), so the
         // thread it spawns is handed back to the test via this slot rather
-        // than joined inline — joined below, AFTER `login_with_opener`
+        // than joined inline, joined below, AFTER `login_with_opener`
         // returns, so a panic inside the browser-thread still fails the
         // test instead of vanishing silently.
         let handle_slot: Arc<Mutex<Option<std::thread::JoinHandle<()>>>> =
@@ -2530,7 +2530,7 @@ mod tests {
                     .to_string();
 
                 // THIS is the connection login_with_opener's own
-                // TcpListener accepts — the real loopback redirect catch.
+                // TcpListener accepts, the real loopback redirect catch.
                 browser_get_loopback(&browser, &location);
             });
             *slot.lock().expect("lock the browser-thread handle slot") = Some(handle);
@@ -2564,7 +2564,7 @@ mod tests {
     /// Regression for the "could not connect" loopback bug: a browser may probe
     /// the loopback redirect target (a speculative preconnect, a `/favicon.ico`
     /// fetch) BEFORE following the `302` to it. The callback catcher must
-    /// answer-and-ignore such a probe and keep waiting — if it treated the
+    /// answer-and-ignore such a probe and keep waiting, if it treated the
     /// probe as the callback and returned, the REAL redirect would land on a
     /// closed listener and the user would see "can't connect". Here the
     /// browser-thread fires a `/favicon.ico` probe first, then the real
@@ -2667,7 +2667,7 @@ mod tests {
     /// The CSRF guard, exercised through the same real loopback path as
     /// [`login_full_flow_catches_loopback_redirect`]: the browser-thread
     /// hits `login_with_opener`'s OWN loopback listener directly with a
-    /// `state` that does NOT match what `login_with_opener` generated —
+    /// `state` that does NOT match what `login_with_opener` generated,
     /// this must be rejected before ever reaching [`exchange_code`], so no
     /// AS round-trip (GET/POST `/authorize`) is needed here at all.
     #[test]
@@ -2713,7 +2713,7 @@ mod tests {
 
     /// Round-trips a refresh token through the REAL OS keychain backend
     /// (Windows Credential Manager, via the `windows-native` `keyring`
-    /// feature) — every other [`TokenStore`] test here uses [`MemStore`],
+    /// feature), every other [`TokenStore`] test here uses [`MemStore`],
     /// which never touches the OS at all. `#[ignore]`d because it mutates
     /// real machine state; run explicitly with `--ignored`.
     ///

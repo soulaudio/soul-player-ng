@@ -1,6 +1,6 @@
 //! Native `/v0` HTTP protocol: the server's first-class inbound adapter.
 //!
-//! An [`axum`] [`Router`] that wraps [`Services`] with wire framing only —
+//! An [`axum`] [`Router`] that wraps [`Services`] with wire framing only,
 //! ping, bearer auth, index sync (with `ETag`/`If-None-Match`), Range-capable
 //! track streaming, and a cover-art stub. No business logic lives here; every
 //! handler just translates an HTTP request into a `Services` call and a
@@ -28,13 +28,13 @@ use crate::index::CoreIndex;
 use crate::media::FsMedia;
 use crate::store::FileUsers;
 
-/// The concrete `Services` instantiation the native protocol serves —
+/// The concrete `Services` instantiation the native protocol serves,
 /// the real core/filesystem/flat-file adapters, not the domain layer's test
 /// fakes.
 pub type AppServices = Services<CoreIndex, FsMedia, FileUsers>;
 
 /// Router/extractor state: the shared `Services`, plus the pieces needed to
-/// mint and verify OIDC-standard tokens — the signing key, this server's
+/// mint and verify OIDC-standard tokens, the signing key, this server's
 /// `issuer` (its own base URL, used both to self-describe in discovery and
 /// to stamp/validate the `iss` claim), and the access-token lifetime later
 /// token-issuing handlers mint against.
@@ -110,7 +110,7 @@ pub async fn serve(bind: &str, state: AppState) -> anyhow::Result<()> {
 }
 
 /// Map a [`DomainError`] to its HTTP status. `v0` doesn't leak `Other`'s
-/// internals to clients — it's an opaque 500.
+/// internals to clients, it's an opaque 500.
 fn error_status(error: &DomainError) -> StatusCode {
     match error {
         DomainError::Unauthorized => StatusCode::UNAUTHORIZED,
@@ -158,7 +158,7 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
 }
 
 // ---------------------------------------------------------------------------
-// GET /v0/ping — no auth
+// GET /v0/ping: no auth
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -175,7 +175,7 @@ async fn ping(State(services): State<AppState>) -> impl IntoResponse {
 }
 
 // ---------------------------------------------------------------------------
-// GET /v0/index — auth required
+// GET /v0/index: auth required
 // ---------------------------------------------------------------------------
 
 async fn index(State(services): State<AppState>, _auth: Authed, headers: HeaderMap) -> Response {
@@ -206,12 +206,12 @@ async fn index(State(services): State<AppState>, _auth: Authed, headers: HeaderM
 }
 
 // ---------------------------------------------------------------------------
-// GET /v0/track/{id} — auth required, Range-capable
+// GET /v0/track/{id}: auth required, Range-capable
 // ---------------------------------------------------------------------------
 
 /// Parse a single-range `Range: bytes=START-END` header value. `END` is
 /// optional (an open range to end-of-file). Suffix ranges (`bytes=-500`) and
-/// multi-range requests aren't supported in v0 — both fail to parse and fall
+/// multi-range requests aren't supported in v0, both fail to parse and fall
 /// back to a full response, same as no `Range` header at all.
 fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
     let spec = value.strip_prefix("bytes=")?;
@@ -286,7 +286,7 @@ async fn track(
 }
 
 // ---------------------------------------------------------------------------
-// GET /v0/art/{album_id} — auth required, documented 404 stub
+// GET /v0/art/{album_id}: auth required, documented 404 stub
 // ---------------------------------------------------------------------------
 
 /// Cover-art serving is a documented follow-up (see the design spec's "Out"
@@ -297,12 +297,12 @@ async fn art(_auth: Authed, Path(_album_id): Path<u32>) -> StatusCode {
 }
 
 // ---------------------------------------------------------------------------
-// GET /.well-known/openid-configuration — no auth (it's the discovery doc)
+// GET /.well-known/openid-configuration: no auth (it's the discovery doc)
 // ---------------------------------------------------------------------------
 
 /// OIDC discovery document. Advertises this server's token/authorization
 /// endpoints and the subset of the spec it actually implements: an
-/// authorization-code flow with PKCS (`S256` only, no client secret — this
+/// authorization-code flow with PKCS (`S256` only, no client secret, this
 /// is a public-client, native-app deployment) and refresh tokens, signed
 /// with the single `EdDSA` key `/jwks` publishes.
 async fn openid_configuration(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -324,7 +324,7 @@ async fn openid_configuration(State(state): State<AppState>) -> Json<serde_json:
 }
 
 // ---------------------------------------------------------------------------
-// GET /jwks — no auth (it's how clients verify tokens)
+// GET /jwks: no auth (it's how clients verify tokens)
 // ---------------------------------------------------------------------------
 
 async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
@@ -332,13 +332,13 @@ async fn jwks(State(state): State<AppState>) -> Json<serde_json::Value> {
 }
 
 // ---------------------------------------------------------------------------
-// GET+POST /authorize, POST /token, POST /revoke — the OAuth2/PKCE
+// GET+POST /authorize, POST /token, POST /revoke, the OAuth2/PKCE
 // Authorization Server surface. No auth required (this *is* how you get
 // one); the security boundary is the validation inside each handler, not
 // the `Authed` extractor.
 // ---------------------------------------------------------------------------
 
-/// Current time as unix seconds — the real authorization server's clock, so
+/// Current time as unix seconds, the real authorization server's clock, so
 /// expiry checks are always against actual wall-clock time (not a
 /// test-injected value, unlike the pure [`CodeStore`]/`RefreshStore` logic
 /// those handlers call into).
@@ -351,11 +351,11 @@ fn now_unix() -> u64 {
 }
 
 /// Lifetime (seconds) of a freshly issued authorization code. Deliberately
-/// short — the code only has to survive the single redirect from this
+/// short: the code only has to survive the single redirect from this
 /// server's login form back to the client's loopback listener.
 const AUTH_CODE_TTL_SECS: u64 = 60;
 
-/// `Some(s)` form of `opt` with empty strings treated as absent — a client
+/// `Some(s)` form of `opt` with empty strings treated as absent, a client
 /// that sends `redirect_uri=` is, for validation purposes, the same as one
 /// that omits `redirect_uri` entirely.
 fn non_empty(opt: &Option<String>) -> Option<&str> {
@@ -365,7 +365,7 @@ fn non_empty(opt: &Option<String>) -> Option<&str> {
 /// Percent-encodes `s` for safe inclusion as a query-string value appended
 /// to a redirect URI (RFC 3986 unreserved set passes through unescaped;
 /// everything else becomes `%XX`). Written by hand instead of pulling in a
-/// URL-encoding crate — `code` and `state` are the only values this server
+/// URL-encoding crate, `code` and `state` are the only values this server
 /// ever appends this way.
 fn percent_encode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -380,7 +380,7 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-/// Escapes `s` for safe embedding as HTML text/attribute content — the
+/// Escapes `s` for safe embedding as HTML text/attribute content, the
 /// minimal set RFC-wise unsafe characters, since the login form is a plain
 /// `format!` string rather than a template engine that would do this for
 /// us automatically.
@@ -417,7 +417,7 @@ struct AuthorizeParams {
 }
 
 /// An `/authorize` request whose OAuth parameters have all passed
-/// validation — safe to render into a login form or exchange for a code.
+/// validation, safe to render into a login form or exchange for a code.
 struct ValidAuthorize {
     redirect_uri: String,
     code_challenge: String,
@@ -428,11 +428,11 @@ struct ValidAuthorize {
 /// Validates `/authorize` parameters in the exact order the spec requires.
 /// On ANY failure, returns the error message for a direct `400` (plain
 /// text) rather than ever bouncing back to the caller-supplied
-/// `redirect_uri` — an unvalidated redirect target is an open-redirect
+/// `redirect_uri`, an unvalidated redirect target is an open-redirect
 /// primitive, so `redirect_uri` itself is validated (step 3) before
 /// anything is rendered, and no failure path here ever produces a `3xx`
 /// response. (Returns the message, not a built [`Response`]: a `Response`
-/// `Err` variant is 100+ bytes, which clippy's `result_large_err` flags —
+/// `Err` variant is 100+ bytes, which clippy's `result_large_err` flags,
 /// the caller turns this into a `400` via [`bad_request`].)
 fn validate_authorize(params: &AuthorizeParams) -> Result<ValidAuthorize, &'static str> {
     if params.response_type.as_deref() != Some("code") {
@@ -465,7 +465,7 @@ fn validate_authorize(params: &AuthorizeParams) -> Result<ValidAuthorize, &'stat
     })
 }
 
-/// A direct, plain-text `400` — never a redirect.
+/// A direct, plain-text `400`, never a redirect.
 fn bad_request(message: &str) -> Response {
     (StatusCode::BAD_REQUEST, message.to_string()).into_response()
 }
@@ -685,7 +685,7 @@ struct RevokeParams {
     token_type_hint: Option<String>,
 }
 
-/// Always `200`, regardless of whether `token` matched anything — RFC 7009
+/// Always `200`, regardless of whether `token` matched anything, RFC 7009
 /// §2.2 requires the revocation endpoint not to leak whether a presented
 /// token was valid.
 async fn revoke(State(state): State<AppState>, Form(params): Form<RevokeParams>) -> StatusCode {

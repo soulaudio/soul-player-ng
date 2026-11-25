@@ -4,10 +4,10 @@
 #
 # Why go through the .deb rather than assembling each package from scratch:
 # cargo-packager generates the desktop entry and the icon set from
-# `[package.metadata.packager]` in app/rune/Cargo.toml. That metadata is the one
+# `[package.metadata.packager]` in app/Cargo.toml. That metadata is the one
 # place those values are written down, and it is already verified end to end
 # (the AppImage's entry is checked in CI). Re-deriving them per format would
-# give three chances to disagree about the app's name, category or icon — and a
+# give three chances to disagree about the app's name, category or icon, and a
 # desktop entry that disagrees with the window's `app_id` costs the icon
 # silently, which is exactly the class of bug this repo keeps finding.
 #
@@ -31,7 +31,7 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # `dpkg-deb` where it exists (Debian/Ubuntu), else unpack the ar archive by
-# hand — a .deb is just `ar` wrapping `data.tar.*`, and the RPM leg runs on a
+# hand, a .deb is just `ar` wrapping `data.tar.*`, and the RPM leg runs on a
 # Fedora container that has no dpkg.
 if command -v dpkg-deb >/dev/null 2>&1; then
   dpkg-deb -x "$deb" "$work"
@@ -49,7 +49,7 @@ install -Dm755 "$work/usr/bin/$bin_name" "$out/$bin_name"
 # which Flatpak requires to be the app id: it installs the entry as
 # `$FLATPAK_ID.desktop`, and the icon has to be findable under the same name.
 # Outside Flatpak the .deb/.rpm keep the binary-named entry, which is what their
-# `app_id` is (the app resolves this at runtime — see `desktop_id()`).
+# `app_id` is (the app resolves this at runtime, see `desktop_id()`).
 sed "s/^Icon=.*/Icon=$app_id/" "$src_desktop" > "$out/$app_id.desktop"
 cp "$src_desktop" "$out/$bin_name.desktop"
 

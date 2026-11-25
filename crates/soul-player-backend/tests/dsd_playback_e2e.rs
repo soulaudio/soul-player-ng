@@ -1,21 +1,21 @@
-//! END-TO-END **DSD playback** audit — the programmatic replacement for "trust
+//! END-TO-END **DSD playback** audit, the programmatic replacement for "trust
 //! the user's ears" on the recurring *"DSD plays at the wrong speed"* symptom.
 //!
 //! Drives a real [`ServicePlayer`] (the backend's own
-//! `apply_command`/`poll_open`/`provide`/`pump` loop — the FULL app path,
+//! `apply_command`/`poll_open`/`provide`/`pump` loop, the FULL app path,
 //! synchronously, no actor thread, no audio device) over the committed
 //! `testdata/tone.dsf` fixture (DSD64, A4 = 440 Hz on LEFT, E5 = 659.25 Hz on
 //! RIGHT, ~1.0 s) through the real desktop decoder ([`open_track`] →
 //! `OwnedDecoder::Dsf` → `PlaybackDecimateAdapter`) → [`Deck`] → a capturing sink.
 //!
 //! A wrong decimation ratio or a broken rate handshake would land the captured
-//! tones *off* 440/659.25 Hz — i.e. stretched/compressed playback. We prove, via
+//! tones *off* 440/659.25 Hz, i.e. stretched/compressed playback. We prove, via
 //! a Goertzel power at the expected tone vs. the "wrong-speed" candidates (half,
 //! double, and the 44.1↔48 kHz mismatch ratios), that each channel's energy sits
 //! exactly where it should. Run at:
-//!   * a **44.1 kHz** sink — the deck's no-resampler pass-through (DSD's native
+//!   * a **44.1 kHz** sink, the deck's no-resampler pass-through (DSD's native
 //!     output rate for every family), and
-//!   * a **48 kHz** sink — the deck resamples DSD's 44.1 kHz output, the real
+//!   * a **48 kHz** sink, the deck resamples DSD's 44.1 kHz output, the real
 //!     path for a 48 kHz device; pitch must survive the resample.
 //!
 //! Correctness only. Real-time *throughput* (the actual cause of the debug-build
@@ -162,7 +162,7 @@ macro_rules! require {
 /// Assert a channel's captured audio is dominated by `expected_hz`, and that none
 /// of the wrong-speed candidate frequencies carries comparable energy. The
 /// candidates cover a doubling/halving (gross ratio error) and the 44.1↔48 kHz
-/// mismatch (an 8.8 % pitch shift — the classic "sounds slightly off" bug).
+/// mismatch (an 8.8 % pitch shift, the classic "sounds slightly off" bug).
 fn assert_tone(samples: &[i32], rate: f64, expected_hz: f64, tag: &str) -> Result<(), String> {
     let p_exp = goertzel_power(samples, rate, expected_hz);
     let wrong = [
@@ -177,7 +177,7 @@ fn assert_tone(samples: &[i32], rate: f64, expected_hz: f64, tag: &str) -> Resul
         .fold(0.0f64, f64::max);
     require!(
         p_exp > p_wrong * 10.0,
-        "{tag}: tone not at {expected_hz:.2} Hz — power there {p_exp:.3e} not \
+        "{tag}: tone not at {expected_hz:.2} Hz, power there {p_exp:.3e} not \
          >10x the best wrong-speed candidate {p_wrong:.3e} (candidates {wrong:?}); \
          playback speed/decimation is off"
     );
@@ -248,7 +248,7 @@ fn audit_dsd_at(sink_rate: u32) -> Result<(), String> {
     let (peak, rms) = peak_and_rms(written);
     require!(
         (PLAYS_PEAK_FLOOR..=PLAYS_PEAK_CEIL).contains(&peak) && rms > PLAYS_RMS_FLOOR,
-        "DSD audio peak={peak} rms={rms:.0} outside sane 24-bit range — silent/clipped?"
+        "DSD audio peak={peak} rms={rms:.0} outside sane 24-bit range, silent/clipped?"
     );
 
     // Analyse a steady window well past the deck's 8 ms fade-in.
@@ -266,7 +266,7 @@ fn audit_dsd_at(sink_rate: u32) -> Result<(), String> {
     assert_tone(&l, rate_f, 440.0, &format!("sink@{sink_rate}Hz LEFT"))?;
     assert_tone(&r, rate_f, 659.25, &format!("sink@{sink_rate}Hz RIGHT"))?;
 
-    // Channel identity: LEFT is 440 (not 659), RIGHT is 659 (not 440) — no swap.
+    // Channel identity: LEFT is 440 (not 659), RIGHT is 659 (not 440), no swap.
     require!(
         goertzel_power(&l, rate_f, 440.0) > goertzel_power(&l, rate_f, 659.25) * 10.0
             && goertzel_power(&r, rate_f, 659.25) > goertzel_power(&r, rate_f, 440.0) * 10.0,
@@ -294,7 +294,7 @@ fn audit_dsd_at(sink_rate: u32) -> Result<(), String> {
     );
 
     println!(
-        "  sink@{sink_rate}Hz: peak={peak} rms={rms:.0} — DSD64→44.1k, resample={} — L=440Hz R=659.25Hz OK",
+        "  sink@{sink_rate}Hz: peak={peak} rms={rms:.0}, DSD64→44.1k, resample={}, L=440Hz R=659.25Hz OK",
         sp.resampling
     );
     Ok(())

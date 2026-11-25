@@ -1,6 +1,6 @@
 name: Flathub (from-source build)
 
-# Proves the Flathub manifest builds — offline, from source, the way Flathub's
+# Proves the Flathub manifest builds, offline, from source, the way Flathub's
 # builders will.
 #
 # NOT part of the release. Flathub builds the app on their own infrastructure
@@ -10,15 +10,15 @@ name: Flathub (from-source build)
 # actually introduced instead:
 #
 #   * a PR touching the lockfile, this manifest, or the toolchain pin
-#   * weekly, to catch upstream rot — a yanked crate, a vanished git rev, a
-#     toolchain archive that stops being served — before a release needs it
+#   * weekly, to catch upstream rot, a yanked crate, a vanished git rev, a
+#     toolchain archive that stops being served, before a release needs it
 #   * on demand
 on:
   workflow_dispatch:
   pull_request:
     paths:
-      - "app/rune/Cargo.lock"
-      - "app/rune/rust-toolchain.toml"
+      - "app/Cargo.lock"
+      - "app/rust-toolchain.toml"
       - "packaging/flathub/**"
       - ".github/workflows/flathub.yml"
   schedule:
@@ -50,9 +50,9 @@ jobs:
 
       - name: Generate the vendored crate sources
         # Generated here rather than committed. The file is a 440 KB artifact
-        # derived entirely from app/rune/Cargo.lock, so committing it meant
-        # every dependency bump needed a regeneration commit or CI failed —
-        # which, with Dependabot watching app/rune, is every Dependabot PR.
+        # derived entirely from app/Cargo.lock, so committing it meant
+        # every dependency bump needed a regeneration commit or CI failed,
+        # which, with Dependabot watching app, is every Dependabot PR.
         #
         # Nothing is lost by generating it: the output is deterministic from the
         # lockfile, confirmed when an independent regeneration here matched a
@@ -83,8 +83,8 @@ jobs:
       - name: Point the manifest at the commit under test
         # The committed manifest names a RELEASE tag, because that is what gets
         # submitted. Here we need the code in this checkout, so the git source
-        # is rewritten to this commit. Everything else — the vendored crates,
-        # the pinned toolchain, the offline build — is exercised unchanged.
+        # is rewritten to this commit. Everything else, the vendored crates,
+        # the pinned toolchain, the offline build, is exercised unchanged.
         run: |
           mkdir -p "$RUNNER_TEMP/fh"
           cp packaging/flathub/cargo-sources.json "$RUNNER_TEMP/fh/"
@@ -137,7 +137,7 @@ jobs:
       - name: It runs, and owns its MPRIS name
         run: |
           # Building is not evidence. The from-source build could differ from
-          # the prebuilt one in ways only running shows — a missing runtime
+          # the prebuilt one in ways only running shows, a missing runtime
           # library, a toolchain that produced a broken binary.
           mkdir -p "$HOME/Music" && cp testdata/meta.flac "$HOME/Music/"
           dbus-run-session -- bash -c '

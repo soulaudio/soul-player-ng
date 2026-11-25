@@ -14,10 +14,12 @@ acknowledge within a few days.
 
 - Rust dependencies are scanned by `cargo audit` (RustSec) and gated by
   `cargo deny` (licenses, bans, sources) in CI; see `.github/workflows/security.yml`.
-- Frontend dependencies are checked with `npm audit` and PR dependency review.
 - A CycloneDX SBOM is generated per CI run.
+- There are no JavaScript dependencies: the app is all-Rust, with no webview and
+  no bundled frontend.
 
 ## Update integrity
 
 Application auto-updates are signed with a minisign key and verified against the
-public key embedded in the app before installation (see `docs/RELEASE.md`).
+public key embedded in the app before installation (see
+[app/PACKAGING.md](app/PACKAGING.md)).

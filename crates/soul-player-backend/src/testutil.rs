@@ -5,7 +5,7 @@ use soul_audio_core::{
     DecodeError, Decoder, SampleFormat, SeekableDecoder, Sink, SinkError, StreamInfo,
 };
 
-/// A [`Sink`] that discards output — no device, no backpressure. The deck reads
+/// A [`Sink`] that discards output, no device, no backpressure. The deck reads
 /// its `stream_info` once to configure rate/channels.
 pub(crate) struct NullSink {
     pub rate: u32,
@@ -34,7 +34,7 @@ impl Sink for NullSink {
     }
 }
 
-/// A [`Sink`] that reports **exclusive** output at a configurable rate — for testing
+/// A [`Sink`] that reports **exclusive** output at a configurable rate, for testing
 /// native-rate switching, where the engine reopens an exclusive device **in place** at
 /// each track's rate. Discards output like [`NullSink`]. [`reopen`](Sink::reopen)
 /// models a real exclusive device: by default it adopts the requested rate (the device
@@ -101,7 +101,7 @@ impl Sink for ExclusiveSink {
 /// (`cur_gain += (target − cur_gain)·0.01` per interleaved sample, truncating
 /// cast) and counting `discard` (seek) requests. Lets unit tests observe the
 /// actual effect of volume / pause / stop / gapless on the output stream without
-/// a device — the headless, deterministic mirror of what a listener hears.
+/// a device, the headless, deterministic mirror of what a listener hears.
 pub(crate) struct CapturingSink {
     pub rate: u32,
     pub channels: u16,
@@ -164,7 +164,7 @@ impl Sink for CapturingSink {
 pub(crate) struct ConstDecoder {
     rate: u32,
     /// If set, `stream_info().sample_rate` flips to this once the first frame has been
-    /// decoded — mimicking implicit HE-AAC (SBR), which reports the AAC core rate at
+    /// decoded, mimicking implicit HE-AAC (SBR), which reports the AAC core rate at
     /// load and the 2× output rate only after decoding starts.
     sbr_rate: Option<u32>,
     confirmed: bool,
@@ -244,7 +244,7 @@ impl SeekableDecoder for ConstDecoder {
     }
 }
 
-/// A [`Sink`] that carries an output IDENTITY — the selected device + exclusive mode —
+/// A [`Sink`] that carries an output IDENTITY, the selected device + exclusive mode,
 /// and counts the frames written to it, for testing LIVE output-config changes (where
 /// changing the device or exclusive mode rebuilds the sink mid-playback via
 /// `swap_sink`). It discards the audio but records that writes keep flowing after a
@@ -256,7 +256,7 @@ pub(crate) struct ConfigSink {
     pub channels: u16,
     pub frames: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     /// When set, counts live "device holders": incremented on construction and
-    /// decremented on `Drop`. Lets a test prove release-then-acquire — the OLD sink
+    /// decremented on `Drop`. Lets a test prove release-then-acquire, the OLD sink
     /// must be dropped (its device freed) BEFORE the new one opens. `None` = a
     /// device-free placeholder (the parked sink), which never counts.
     device_live: Option<std::sync::Arc<std::sync::atomic::AtomicUsize>>,
@@ -301,7 +301,7 @@ impl ConfigSink {
     }
 
     /// Like [`ConfigSink::new`] but counts as a live device holder in `device_live`
-    /// (incremented now, decremented on `Drop`) — for release-then-acquire tests.
+    /// (incremented now, decremented on `Drop`), for release-then-acquire tests.
     pub(crate) fn new_counting(
         device: Option<String>,
         exclusive: bool,

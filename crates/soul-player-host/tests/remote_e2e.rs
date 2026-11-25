@@ -1,5 +1,5 @@
 //! Acceptance E2E: add a remote source, sync its `.soulidx`, browse the
-//! aggregated library, and play a real remote track end to end — against a
+//! aggregated library, and play a real remote track end to end, against a
 //! REAL in-process `soul-server`, not a faked HTTP boundary.
 //!
 //! This is the "add source and syncing .soulidx working, showing the albums
@@ -29,7 +29,7 @@ use support::{oauth_login, start_server};
 
 #[test]
 fn remote_add_sync_browse_play() {
-    // Three real, differently-containered fixtures with readable tags — the
+    // Three real, differently-containered fixtures with readable tags, the
     // server's whole "library".
     const FIXTURES: &[&str] = &["meta.aiff", "meta.caf", "meta.flac"];
     let server = start_server(FIXTURES);
@@ -37,7 +37,7 @@ fn remote_add_sync_browse_play() {
     // --- 1/2. Log in via the REAL browser-facing OAuth 2.1 flow, then add +
     //        sync through the public API a head actually calls once it
     //        holds a `Tokens` pair. (The interactive `add_remote_source`
-    //        itself — opening the system browser + the loopback catcher —
+    //        itself, opening the system browser + the loopback catcher,
     //        is E4's job to wire into a head and exercise interactively;
     //        this E2E test drives the standards login headlessly the same
     //        way `soul_player_host::remote`'s own
@@ -58,7 +58,7 @@ fn remote_add_sync_browse_play() {
         "expected one browsable view per fixture synced from the server, got {views:?}"
     );
     // Every fixture here is the same reference piece (Kimiko Ishizaka's "Aria"
-    // from the Open Goldberg Variations, muxed into several containers) — a
+    // from the Open Goldberg Variations, muxed into several containers), a
     // known, stable title every synced view should carry, proving the real
     // `.soulidx` tags round-tripped through the wire protocol, not just a
     // track count.
@@ -75,7 +75,7 @@ fn remote_add_sync_browse_play() {
 
     // --- 4. Play: resolve a remote track id through the SAME client-side
     //        resolution `add_remote_source_with_tokens` uses (fetch_index ->
-    //        RemoteLibrary), then decode real audio via `open_decoder` — the
+    //        RemoteLibrary), then decode real audio via `open_decoder`, the
     //        STREAMING path (HTTP Range + `open_seekable_src`), not a
     //        download-then-play. A separate `DownloadCache` (own temp dir) so
     //        this doesn't share the host's real on-disk cache; it's only
@@ -92,7 +92,7 @@ fn remote_add_sync_browse_play() {
     });
     // No local sources (the handle was never pointed at a local folder), so
     // this rebuilds the exact aggregate `add_remote_source` swapped in: one
-    // remote block at source 0 — the same ids `views()` above returned.
+    // remote block at source 0, the same ids `views()` above returned.
     let remote_lib = Arc::new(RemoteLibrary::build(
         Vec::new(),
         vec![(remote_server, blobs)],
@@ -102,7 +102,7 @@ fn remote_add_sync_browse_play() {
     let id = views[0].id;
 
     // `OwnedDecoder` is large by value (the boxed `AnyDecoder`/Vorbis
-    // variants) — a big-stack thread, same precaution
+    // variants), a big-stack thread, same precaution
     // `soul_audio_desktop::decoder`'s own `open_track` tests take.
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)
@@ -124,7 +124,7 @@ fn remote_add_sync_browse_play() {
         .expect("decode thread panicked");
 
     // The happy streaming path never falls back to downloading the whole
-    // file first — the cache directory should still be completely empty.
+    // file first, the cache directory should still be completely empty.
     let cache_is_empty = fs::read_dir(cache_dir.path())
         .map(|mut entries| entries.next().is_none())
         .unwrap_or(true);
@@ -207,10 +207,10 @@ fn remote_disable_drops_its_tracks_and_reenable_restores_them() {
 
 /// Robustness: a remote that was online when connected can go OFFLINE later
 /// (the server itself goes away) without being dropped from `sources()` or
-/// losing its already-synced track count — only the health probe's `online`
+/// losing its already-synced track count, only the health probe's `online`
 /// flag (and the `available` mirror) changes. Proven against a REAL server
 /// across two real `PlayerHandle::refresh_remote_health` probes, the second
-/// one taken after the server's listener has actually closed — the UI-facing
+/// one taken after the server's listener has actually closed, the UI-facing
 /// counterpart of the title-bar health indicator flipping from healthy to
 /// down as a remote drops out from under a live session, and the "never wipe
 /// the library over a transient outage" rule `SourceStatus`'s own docs state
@@ -277,7 +277,7 @@ fn remote_health_flips_offline_after_the_server_goes_away_but_track_count_surviv
 
 /// Dedup: calling `add_remote_source_with_tokens` twice for the SAME url
 /// (e.g. a reconnect, or the user re-running the connect flow) must REPLACE
-/// the existing `Inner::remotes` entry, never append a second one — pins the
+/// the existing `Inner::remotes` entry, never append a second one, pins the
 /// `retain` fix in `add_remote_source_with_tokens`. Proven with a fresh
 /// `Tokens` pair each time (a real second OAuth login), the way a real
 /// reconnect would present tokens.
@@ -318,7 +318,7 @@ fn remote_add_twice_same_url_replaces_not_duplicates() {
 }
 
 /// Normalization: a url re-added with a trailing slash (`"{url}/"`) must
-/// match the same server's already-retained entry (added without one) — the
+/// match the same server's already-retained entry (added without one), the
 /// `trim_end_matches('/')` normalization `add_remote_source_with_tokens` and
 /// `remove_remote_source`/`set_remote_enabled` share. Without it, the two
 /// forms would be treated as different urls and the server would show up
@@ -362,7 +362,7 @@ fn remote_add_with_trailing_slash_collapses_to_the_same_entry() {
 
 /// Regression (the "click Rescan and the remote shows 0 tracks" bug): the
 /// Sources "Rescan" button reconciles the LOCAL folder set only (the remote
-/// isn't a watched folder — `settings.rs`'s `rescan_button` filters to
+/// isn't a watched folder, `settings.rs`'s `rescan_button` filters to
 /// `SourceKind::Local` before calling `set_folders`), but the shared
 /// `rescan` tail it runs through swaps in a fresh local `Library` via
 /// `set_library`, whose own doc comment notes it clears
@@ -373,8 +373,8 @@ fn remote_add_with_trailing_slash_collapses_to_the_same_entry() {
 /// aggregate) reported the remote's `track_count` as 0, even though the
 /// remote was still fully connected and healthy.
 ///
-/// Pins the fix (`rescan_build` now calls `rebuild_remote_library` — the
-/// same tail `add_remote_source` uses — before computing `views`): a rescan
+/// Pins the fix (`rescan_build` now calls `rebuild_remote_library`, the
+/// same tail `add_remote_source` uses, before computing `views`): a rescan
 /// over a local root, with a remote already connected, must keep the
 /// remote's tracks in `views` (each still stamped with its
 /// `remote_source`), report the remote's REAL non-zero `track_count`, carry
@@ -395,13 +395,13 @@ fn rescan_keeps_a_connected_remotes_tracks_and_live_health() {
         "sanity: the remote's tracks are in the library before any rescan"
     );
 
-    // A local root, deliberately empty — the bug reproduces with or without
+    // A local root, deliberately empty, the bug reproduces with or without
     // local tracks of its own; this isolates the assertion to whether the
     // REMOTE survives the reconcile.
     let local_root = tempfile::tempdir().expect("create local root");
 
     // Mirrors the Rescan button: ONLY local roots are passed to
-    // `set_folders` (the remote's synthetic path is excluded — commit
+    // `set_folders` (the remote's synthetic path is excluded, commit
     // b2fa8da), so this is exactly the "click Rescan" path.
     let update = handle
         .set_folders(&[local_root.path().to_path_buf()])
@@ -429,7 +429,7 @@ fn rescan_keeps_a_connected_remotes_tracks_and_live_health() {
     );
 
     // The aggregated views must still carry the remote's tracks, each
-    // stamped with its remote_source — the "not local-only after a rescan"
+    // stamped with its remote_source, the "not local-only after a rescan"
     // half of the bug.
     let remote_views_in_update = update
         .views
@@ -444,7 +444,7 @@ fn rescan_keeps_a_connected_remotes_tracks_and_live_health() {
     );
 
     // The handle's own cached views (not just the just-returned WatchUpdate)
-    // must agree — the whole point of restoring the aggregate is that every
+    // must agree, the whole point of restoring the aggregate is that every
     // reader of the live library, not just this one return value, sees it.
     assert_eq!(
         handle.views().len(),
@@ -456,8 +456,8 @@ fn rescan_keeps_a_connected_remotes_tracks_and_live_health() {
 /// e2e: a remote track composes with the playlist durable-locator model and the
 /// per-track source badge, end to end through the FULL OAuth login + HTTP sync.
 /// Its locator (what a playlist entry stores) round-trips to the current id
-/// while online (so the entry survives a reconnect), and resolves to None — the
-/// playlist UI's greyed "unavailable" row — when the remote is disabled,
+/// while online (so the entry survives a reconnect), and resolves to None, the
+/// playlist UI's greyed "unavailable" row, when the remote is disabled,
 /// returning on re-enable. The integration-level counterpart to the host-unit
 /// locator tests and the app-level greying e2e: the same universal
 /// disabled-state, for a remote source, over the wire.

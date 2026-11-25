@@ -1,4 +1,4 @@
-//! **Core-capability coverage ledger** — a deliberate reminder, not a gate.
+//! **Core-capability coverage ledger**: a deliberate reminder, not a gate.
 //!
 //! The desktop deliberately surfaces only a subset of `soul-audio-core`'s shared
 //! data layer. As core grows, it's easy to forget that a capability exists but
@@ -10,11 +10,11 @@
 //! - When you wire a capability into the app, flip its row to `Wired`.
 //! - When core gains a NEW capability, add a row here.
 //! - This test only *warns* (it asserts the known-wired baseline, nothing more),
-//!   so it never blocks CI — it's a checklist, not a blocker.
+//!   so it never blocks CI, it's a checklist, not a blocker.
 //!
 //! The `BrowseAxis` guard below is **exhaustive on purpose**: if core adds a
 //! browse axis, `axis_is_recorded` stops compiling until its desktop status is
-//! written down here — a compile-time "don't forget".
+//! written down here, a compile-time "don't forget".
 
 use soul_audio_catalog::BrowseAxis;
 
@@ -140,7 +140,7 @@ fn desktop_core_capability_coverage() {
     for (cap, _, note) in &pending {
         eprintln!("    [ ] NOT YET IN -ng: {cap}  ({note})");
     }
-    eprintln!("    (reminder ledger — warnings only, never fails; keep it current)\n");
+    eprintln!("    (reminder ledger: warnings only, never fails; keep it current)\n");
 
     // The only hard assertion: the known-wired baseline must stay recorded, so a
     // regression that drops the ledger is caught. Pending items never fail.

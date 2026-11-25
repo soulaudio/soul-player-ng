@@ -8,11 +8,11 @@ pub mod signer;
 /// Claims embedded in a minted EdDSA access token.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct AccessClaims {
-    /// Issuer — this server's own base URL.
+    /// Issuer: this server's own base URL.
     pub iss: String,
-    /// Subject — the authenticated user id (as a string).
+    /// Subject: the authenticated user id (as a string).
     pub sub: String,
-    /// Audience — the intended recipient of the token.
+    /// Audience: the intended recipient of the token.
     pub aud: String,
     /// Expiry time, unix seconds.
     pub exp: usize,

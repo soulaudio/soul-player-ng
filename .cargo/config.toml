@@ -1,5 +1,5 @@
 # Applies to the repo's workspaces (the service crate here, the host, and the
-# Rune UI head under app/rune) — cargo discovers config by directory ancestry,
+# Rune UI head under app): cargo discovers config by directory ancestry,
 # so this root file governs nested workspaces too.
 
 [env]
@@ -11,6 +11,7 @@
 RUST_MIN_STACK = "16777216"
 
 [net]
-# The audio engine is a private git dependency (soul-audio-core). Use the git
-# CLI so an ambient credential helper / CI token authenticates the fetch.
+# The audio engine (soul-audio-core) is a git dependency. Fetch it with the git
+# CLI so it honours the ambient git config: proxies, mirrors, and SSH rewrites
+# that cargo's built-in fetcher doesn't see.
 git-fetch-with-cli = true

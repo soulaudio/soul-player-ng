@@ -2,8 +2,8 @@
 # Build every Linux package from one already-built release binary: .deb, .rpm
 # and the staged tree the Flatpak is assembled from.
 #
-# One script rather than three CI steps because the formats are not independent
-# — the RPM and the Flatpak both take their desktop entry and icon out of the
+# One script rather than three CI steps because the formats are not independent,
+# the RPM and the Flatpak both take their desktop entry and icon out of the
 # .deb (see stage-linux.sh for why), so the order matters and getting it wrong
 # produces packages that disagree about the app's identity.
 #
@@ -12,7 +12,7 @@
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-app="$root/app/rune"
+app="$root/app"
 bin="$app/target/release/soul-player"
 version=$(grep -m1 '^version = ' "$app/Cargo.toml" | cut -d'"' -f2)
 
@@ -25,7 +25,7 @@ fi
 # Strip before packaging, not via `[profile.release]`, so this stays a LINUX
 # packaging decision: macOS needs its symbols for the signed bundle's crash
 # reports, and Windows keeps its own. A full strip (symbols as well as debug
-# info) takes ~23% off the binary and ~30% off the .deb — worth it for
+# info) takes ~23% off the binary and ~30% off the .deb, worth it for
 # something every user downloads, and backtraces are off by default anyway
 # (`panic.backtrace=disabled`). It also clears lintian's
 # `unstripped-binary-or-object`, which `--strip-debug` alone does not: that
@@ -40,7 +40,7 @@ echo "    $(numfmt --to=iec "$before") -> $(numfmt --to=iec "$(stat -c%s "$bin")
 # the version actually being built, and `-n` keeps gzip from embedding a
 # timestamp so the package stays reproducible.
 # The .deb declares `libc6 (>= X)`. That number is a promise about which
-# releases the binary loads on, and it is only true by inspection — so check it
+# releases the binary loads on, and it is only true by inspection, so check it
 # against the binary rather than trusting whoever edited Cargo.toml last.
 #
 # The floor is the highest NON-WEAK glibc version referenced: weak versioned
@@ -55,7 +55,7 @@ declared=$(grep -oE '"libc6 \(>= [0-9.]+\)"' "$app/Cargo.toml" | grep -oE '[0-9]
 echo "    binary needs glibc $need; .deb declares $declared"
 [ "$need" = "$declared" ] || {
   echo "mismatch: the .deb promises libc6 >= $declared but the binary needs $need." >&2
-  echo "Update [package.metadata.packager.deb] depends in app/rune/Cargo.toml." >&2
+  echo "Update [package.metadata.packager.deb] depends in app/Cargo.toml." >&2
   exit 1
 }
 
@@ -81,7 +81,7 @@ echo "    $deb"
 # FILENAME, which cargo-packager builds from the main binary's name, but NOT the
 # package's identity: `Package:` is the kebab-cased `product-name` ("Soul
 # Player" -> soul-player), so it has read `soul-player` since long before the
-# rename — the published 0.4.2 package proves it, filename
+# rename, the published 0.4.2 package proves it, filename
 # soul-player-rune_0.4.2_amd64.deb with `Package: soul-player` inside.
 #
 # So an upgrade is an ordinary same-package upgrade in which one file moved,

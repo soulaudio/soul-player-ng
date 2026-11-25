@@ -4,7 +4,7 @@
 #
 # Launches the release app on a folder of SILENT tagged tracks (with a folder cover),
 # autoplaying via the e2e-only SOUL_PLAYER_AUTOPLAY hook, then uses `media-control`
-# (ungive/mediaremote-adapter — works on macOS 15.4+, where direct MediaRemote reads are
+# (ungive/mediaremote-adapter, works on macOS 15.4+, where direct MediaRemote reads are
 # entitlement-gated) to assert what macOS sees and to send remote commands exactly as a
 # media key / AirPods tap would.
 #
@@ -49,7 +49,7 @@ def wav(name, secs, rate, title):
 wav('01 - First.wav', 60, 44100, 'Soul NP First')
 wav('02 - Second.wav', 60, 96000, 'Soul NP Second')
 EOF
-cp "$root/app/rune/icons/128x128.png" "$music/cover.png"
+cp "$root/app/icons/128x128.png" "$music/cover.png"
 
 home="$work/home"
 mkdir -p "$home/Library/Application Support/soul-player"
@@ -57,10 +57,10 @@ if [ "${EXCLUSIVE:-0}" = "1" ]; then
   printf 1 > "$home/Library/Application Support/soul-player/output_exclusive.txt"
 fi
 
-( cd "$root/app/rune" && cargo build --release ${CARGO_EXTRA_ARGS:-} )
+( cd "$root/app" && cargo build --release ${CARGO_EXTRA_ARGS:-} )
 HOME="$home" SOUL_PLAYER_FOLDER="$music" SOUL_PLAYER_AUTOPLAY=1 \
   RUST_LOG="${RUST_LOG:-info,soul_player_rune=debug}" \
-  "$root/app/rune/target/release/soul-player" >"$work/app.log" 2>&1 &
+  "$root/app/target/release/soul-player" >"$work/app.log" 2>&1 &
 app_pid=$!
 
 # ---- helpers ------------------------------------------------------------------------

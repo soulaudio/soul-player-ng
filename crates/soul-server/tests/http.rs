@@ -64,7 +64,7 @@ fn test_router() -> (Router, tempfile::TempDir, Arc<AppServices>, Arc<Signer>) {
     (router, dir, services, signer)
 }
 
-/// `base64url_no_pad(sha256(verifier))` — the PKCE `S256` code-challenge
+/// `base64url_no_pad(sha256(verifier))`: the PKCE `S256` code-challenge
 /// derivation (RFC 7636 §4.2), computed inline for tests rather than
 /// depending on a `pub` helper in `soul_server::auth::oauth` (that module
 /// only exports the verifier side, `verify_pkce_s256`).
@@ -89,7 +89,7 @@ fn post_form(uri: &str, body: String) -> Request<Body> {
 }
 
 /// Pulls `key`'s value out of a `?a=1&b=2`-style query string (as found in
-/// a `Location` header), unescaped. Panics if absent — every call site
+/// a `Location` header), unescaped. Panics if absent: every call site
 /// asserts presence anyway.
 fn query_param<'a>(url: &'a str, key: &str) -> &'a str {
     let query = url.split_once('?').expect("url has a query string").1;
@@ -137,8 +137,8 @@ async fn ping_reports_version_and_index_version() {
 /// requires for `/v0` access: `POST /authorize` with the seeded test user's
 /// credentials (`"u"`/`"p"`), follow the `302` to pull the authorization
 /// `code` out of the `Location` header, then `POST /token` to redeem it for
-/// a JWT access token. This replaces the old `/v0/auth` opaque-token helper
-/// — `/v0` now only accepts a JWT minted by this server's own `Signer`.
+/// a JWT access token. This replaces the old `/v0/auth` opaque-token helper,
+/// `/v0` now only accepts a JWT minted by this server's own `Signer`.
 async fn login(router: &Router) -> String {
     let verifier = "fixed-test-code-verifier-0123456789abcdefghijk";
     let challenge = pkce_challenge(verifier);
@@ -500,7 +500,7 @@ async fn oauth_authorization_code_and_refresh_flow_end_to_end() {
     let rotated_access = body["access_token"].as_str().unwrap().to_string();
     let rotated_refresh = body["refresh_token"].as_str().unwrap().to_string();
     // Note: the access token itself isn't asserted distinct from the one in
-    // step 3 — `Signer::mint` is deterministic on (user, ttl, iat, exp), so
+    // step 3, `Signer::mint` is deterministic on (user, ttl, iat, exp), so
     // two mints within the same wall-clock second are legitimately
     // byte-identical. Rotation's real guarantee is the refresh token below.
     assert_ne!(rotated_refresh, refresh_token);

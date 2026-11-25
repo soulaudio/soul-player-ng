@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Regenerate the committed `meta.*` **real-music** fixtures — the Aria corpus
+# Regenerate the committed `meta.*` **real-music** fixtures, the Aria corpus
 # that `crates/soul-player-host/tests/format_matrix_e2e.rs` drives through both
 # a local folder source and a real `soul-server` remote source.
 #
@@ -9,13 +9,13 @@
 # carry real musical structure AND real tags, which is what a library scan and
 # the `.soulidx` wire protocol are actually judged on.
 #
-# THE MASTER is `meta.wav` — a 1.5 s, 44.1 kHz/16-bit stereo excerpt of the
+# THE MASTER is `meta.wav`, a 1.5 s, 44.1 kHz/16-bit stereo excerpt of the
 # **Open Goldberg Variations**: Kimiko Ishizaka playing the Aria from J.S. Bach's
 # Goldberg Variations BWV 988, released **CC0 / public domain** by the Open
 # Goldberg project (opengoldbergvariations.org; source: archive.org
 # `OpenGoldbergVariations`). CC0 is why it is committable. Same provenance as
 # soul-audio-core's `realmusic.*` fixtures. Every format below is derived from
-# that one master, so all of them decode to the same music — which is what lets
+# that one master, so all of them decode to the same music, which is what lets
 # the matrix test assert a local decode and a remote decode agree sample for
 # sample.
 #
@@ -51,7 +51,7 @@ id3v2_len() {
 
 # Prepend $1's ID3v2 tag to the raw stream $2, in place.
 # ID3v2 is a *prefix* tag that MPEG-audio parsers are required to skip, so
-# concatenation is the whole mechanism — which is how the committed
+# concatenation is the whole mechanism, which is how the committed
 # `tagged.mp1`/`tagged.mp2` fixtures carry tags too.
 graft_id3v2() {
   local donor=$1 target=$2 len
@@ -64,19 +64,19 @@ graft_id3v2() {
 }
 
 if [ ! -f meta.wav ]; then
-  echo "meta.wav (the Aria master) is missing — it is committed, not generated." >&2
+  echo "meta.wav (the Aria master) is missing, it is committed, not generated." >&2
   exit 1
 fi
 
 # --- Lossless -------------------------------------------------------------
-# meta.wav itself is never rewritten — it is the committed master (already
+# meta.wav itself is never rewritten, it is the committed master (already
 # tagged), and re-encoding it would make every other fixture's provenance
 # depend on a file this script had just churned.
 ff -i meta.wav "${TAGS[@]}" -c:a flac                             meta.flac
 ff -i meta.wav "${TAGS[@]}" -c:a wavpack                          meta.wv
 ff -i meta.wav "${TAGS[@]}" -c:a alac -movflags +faststart        meta-alac.m4a
 ff -i meta.wav "${TAGS[@]}" -c:a alac                             meta.caf
-# FLAC inside an Ogg container (.oga) — a different demux path from native .flac.
+# FLAC inside an Ogg container (.oga), a different demux path from native .flac.
 ff -i meta.wav "${TAGS[@]}" -c:a flac -f oga                      meta-oggflac.oga
 # AIFF, under both committed extensions. ffmpeg's AIFF muxer writes tags as an
 # ID3 chunk; `-write_id3v2 1` is what makes artist/album land, not just title.
@@ -85,7 +85,7 @@ cp meta.aiff meta.aif
 
 # --- Lossy ----------------------------------------------------------------
 ff -i meta.wav "${TAGS[@]}" -c:a libmp3lame -b:a 192k             meta.mp3
-# MPEG-1 Layer II. Its only tag carrier is ID3v2 — but ffmpeg's `mp2` muxer
+# MPEG-1 Layer II. Its only tag carrier is ID3v2, but ffmpeg's `mp2` muxer
 # exposes no options at all (no `-write_id3v2`), and the `mp3` muxer refuses a
 # Layer II stream ("Exactly one MP3 audio stream is required"). So encode raw,
 # then graft on the ID3v2 header ffmpeg just wrote into `meta.mp3`, which
@@ -93,12 +93,12 @@ ff -i meta.wav "${TAGS[@]}" -c:a libmp3lame -b:a 192k             meta.mp3
 ff -i meta.wav "${TAGS[@]}" -c:a mp2 -b:a 192k                    meta.mp2
 graft_id3v2 meta.mp3 meta.mp2
 ff -i meta.wav "${TAGS[@]}" -c:a libvorbis -q:a 5                 meta.ogg
-# Opus is always 48 kHz internally — ffmpeg resamples the 44.1 kHz master.
+# Opus is always 48 kHz internally, ffmpeg resamples the 44.1 kHz master.
 ff -i meta.wav "${TAGS[@]}" -c:a libopus -b:a 96k                 meta.opus
 ff -i meta.wav "${TAGS[@]}" -c:a libopus -b:a 96k                 meta.mka
 ff -i meta.wav "${TAGS[@]}" -c:a libopus -b:a 96k                 meta.webm
 # AAC-LC in two framings: MP4 (.m4a) and raw ADTS (.aac). ADTS has no metadata
-# of its own, so tags ride in a prepended ID3v2 header — the `-write_id3v2 1`
+# of its own, so tags ride in a prepended ID3v2 header, the `-write_id3v2 1`
 # is the whole reason `meta.aac` has readable tags at all.
 ff -i meta.wav "${TAGS[@]}" -c:a aac -b:a 192k -movflags +faststart meta-aac.m4a
 ff -i meta.wav "${TAGS[@]}" -c:a aac -b:a 192k -f adts -write_id3v2 1 meta.aac
@@ -107,12 +107,12 @@ ff -i meta.wav "${TAGS[@]}" -c:a aac -b:a 192k -f adts -write_id3v2 1 meta.aac
 cp meta.aac meta-id3.aac
 
 # --- Deliberately NOT regenerated ----------------------------------------
-# meta.dsf / meta.dff — DSD. ffmpeg has no DSD *encoder*, so these cannot be
+# meta.dsf / meta.dff, DSD. ffmpeg has no DSD *encoder*, so these cannot be
 #   derived from the PCM master; they are generated by soul-audio-core's
 #   `testdata/generate_dsd.py` and committed as-is. (DSDIFF also has no tag
 #   chunk anyone writes, which is why the matrix test treats `.dff` as a
 #   filename-fallback case rather than a tagged one.)
-# meta.mp1 — MPEG-1 Layer I. ffmpeg ships NO Layer I encoder (see `generate.sh`,
+# meta.mp1, MPEG-1 Layer I. ffmpeg ships NO Layer I encoder (see `generate.sh`,
 #   which builds `tone.mp1` by concatenating a committed conformance vector), so
 #   there is no way to encode the Aria as Layer I here. Layer I therefore has
 #   signal + tag coverage via `tone.mp1` / `tagged.mp1`, but no real-music

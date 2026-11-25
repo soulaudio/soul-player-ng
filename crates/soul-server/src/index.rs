@@ -1,8 +1,8 @@
 //! `CoreIndex`: the [`IndexPort`] adapter over the backend [`Library`] scanner.
 //!
-//! Reuses `soul-player-backend::Library` — which itself reuses the shared
+//! Reuses `soul-player-backend::Library`, which itself reuses the shared
 //! `soul-audio-import`/`soul-audio-index` scan + bake pipeline, the SAME code
-//! the desktop app's library scan runs — instead of reimplementing any file
+//! the desktop app's library scan runs, instead of reimplementing any file
 //! walking or tag reading here. This module only adds: capturing the per-root
 //! baked `.soulidx` bytes so they can be shipped to a remote client, and a
 //! trivial framing format to bundle several of them into one blob.
@@ -23,7 +23,7 @@ use crate::domain::ports::IndexPort;
 /// a version counter bumped on rescan.
 pub struct CoreIndex {
     library: Library,
-    /// Baked `.soulidx` bytes, one per root, parallel to `roots` — the
+    /// Baked `.soulidx` bytes, one per root, parallel to `roots`, the
     /// payload framed by [`index_bytes`](IndexPort::index_bytes). Each is a
     /// shared [`IndexBlob`] carried straight out of the scan, never deep-copied.
     source_bytes: Vec<IndexBlob>,
@@ -40,7 +40,7 @@ impl CoreIndex {
     /// rather than [`Library::scan_many`]: functionally both perform a full
     /// scan, but only the incremental entry point hands back the baked bytes
     /// per root (`scan_many` keeps only a reader built from them, discarding
-    /// the bytes) — exactly the payload `index_bytes` needs to serve a
+    /// the bytes), exactly the payload `index_bytes` needs to serve a
     /// client. Version starts at 1.
     pub fn scan(roots: Vec<PathBuf>) -> anyhow::Result<Self> {
         let priors = vec![ScanCache::default(); roots.len()];
@@ -83,7 +83,7 @@ impl IndexPort for CoreIndex {
 }
 
 /// Frame baked `.soulidx` blobs into one bundle: `[u32 LE n][per blob: u32 LE
-/// length, that many bytes]` — a trivial concat a client can re-split without
+/// length, that many bytes]`, a trivial concat a client can re-split without
 /// depending on this crate (see [`deframe_index`], the reference
 /// implementation of the same six lines).
 #[must_use]

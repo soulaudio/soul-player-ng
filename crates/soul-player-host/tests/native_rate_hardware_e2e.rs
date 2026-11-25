@@ -4,7 +4,7 @@
 //! rate, and confirm the engine reopens the device at the track's 44.1 kHz so the
 //! signal path reports a **bit-perfect** (no-resample) exclusive stream.
 //!
-//! `#[ignore]`d — it touches the real default output device and makes (silent)
+//! `#[ignore]`d: it touches the real default output device and makes (silent)
 //! sound, so CI (headless) never runs it. Runs wherever an exclusive backend
 //! exists: Windows (WASAPI), macOS (CoreAudio) and Linux (ALSA). Run manually:
 //!
@@ -18,8 +18,8 @@
 //! The rate is discovered rather than assumed. Plenty of cards run exactly one rate
 //! (this was written against an Intel SOF HDA that is 48 kHz only), and on those a
 //! hardcoded 44.1 kHz expectation fails for a reason that is not a bug. So the test
-//! asks for 44.1 kHz first — the interesting case, where the device default differs
-//! and the engine must switch — and if the card refuses, retries at the rate the card
+//! asks for 44.1 kHz first, the interesting case, where the device default differs
+//! and the engine must switch, and if the card refuses, retries at the rate the card
 //! actually chose and still demands a bit-perfect, non-resampling exclusive stream
 //! there. Either way the claim is the same: exclusive engaged, at the track's native
 //! rate, with nothing resampling.
@@ -59,7 +59,7 @@ fn silent_wav(rate: u32, frames: u32) -> Vec<u8> {
 fn native_rate_switch_engages_on_real_hardware() {
     let h = PlayerHandle::new(); // Device mode (SOUL_PLAYER_OFFLINE unset)
     if h.default_output_device().is_none() {
-        eprintln!("no default output device on this host — skipping hardware e2e");
+        eprintln!("no default output device on this host, skipping hardware e2e");
         return;
     }
     h.set_exclusive(true);
@@ -73,7 +73,7 @@ fn native_rate_switch_engages_on_real_hardware() {
     });
 
     // Phase 1: a 44.1 kHz track. On a device whose default is 48 kHz this is the
-    // native-rate SWITCH — the case worth proving.
+    // native-rate SWITCH, the case worth proving.
     let (matched, observed) = play_and_watch(&h, 44_100, &rx);
     if matched {
         println!("native-rate switch engaged: exclusive @ 44.1 kHz, no resampling");
@@ -82,11 +82,11 @@ fn native_rate_switch_engages_on_real_hardware() {
     }
 
     // Phase 2: the card would not run 44.1 kHz. That is a real hardware limit, not a
-    // code bug — but exclusive must still have engaged at whatever rate it chose, and
+    // code bug, but exclusive must still have engaged at whatever rate it chose, and
     // a track AT that rate must then pass through without resampling.
     let device_rate = observed.map(|sp| sp.device_rate).unwrap_or_else(|| {
         panic!(
-            "no exclusive signal path at all — exclusive never engaged on this \
+            "no exclusive signal path at all, exclusive never engaged on this \
              hardware; status {:?}",
             h.exclusive_status()
         )
