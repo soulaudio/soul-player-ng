@@ -1,0 +1,17 @@
+{
+  "name": "soul-player-website",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "player.soulaudio.co: the download page for Soul Player.",
+  "scripts": {
+    "stage": "node scripts/fetch-release.mjs && node scripts/copy-assets.mjs",
+    "dev": "npm run stage && astro dev",
+    "prebuild": "npm run stage",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "devDependencies": {
+    "astro": "^5.0.0"
+  }
+}

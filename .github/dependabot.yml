@@ -31,6 +31,18 @@ updates:
       cargo-minor-patch:
         update-types: ["minor", "patch"]
 
+  # --- npm: the download page (website/), build-time only, never shipped ---
+  - package-ecosystem: npm
+    directory: /website
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "website"]
+    groups:
+      npm-minor-patch:
+        update-types: ["minor", "patch"]
+
   # --- GitHub Actions (keep pinned SHAs fresh) ---
   - package-ecosystem: github-actions
     directory: /

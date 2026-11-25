@@ -15,8 +15,9 @@ acknowledge within a few days.
 - Rust dependencies are scanned by `cargo audit` (RustSec) and gated by
   `cargo deny` (licenses, bans, sources) in CI; see `.github/workflows/security.yml`.
 - A CycloneDX SBOM is generated per CI run.
-- There are no JavaScript dependencies: the app is all-Rust, with no webview and
-  no bundled frontend.
+- The app itself has no JavaScript dependencies: it is all-Rust, with no webview
+  and no bundled frontend. The npm dependencies in `website/` build the download
+  page and never ship inside the player.
 
 ## Update integrity
 
