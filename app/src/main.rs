@@ -1120,7 +1120,7 @@ impl State {
     /// (which refills the library with same-id, same-order tracks that now carry
     /// DR) moves the sampled loudness, so the DR-bearing caches (album badges, the
     /// Tracks DR/LUFS cells) refresh instead of serving the pre-analysis blanks.
-    fn library_fingerprint(&self) -> u64 {
+    pub(crate) fn library_fingerprint(&self) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         let lib = &self.library;
@@ -5459,9 +5459,14 @@ mod tests {
             rt.frame(1000.0); // COLD: builds this page's memoized grouping / filter
             let cold = t.elapsed();
             let avg = warm_avg(&mut rt, 60); // WARM steady-state
+            // A COMMITTING frame: `invalidate` re-runs the view, which is what a playback
+            // tick does ~8x/sec. This is the per-frame cost that matters DURING use; a
+            // non-committing frame hides it. With `virtual_rows_version` in place this is
+            // O(window), not the O(count) per-row re-keying it was.
+            rt.invalidate();
             let (_, p) = alloc_probe::measure(|| rt.frame(9999.0));
             eprintln!(
-                "{label:<18} cold {cold:>11.2?}   warm {avg:>9.2?}/frame   allocs/warm-frame {}",
+                "{label:<18} cold {cold:>11.2?}   warm {avg:>9.2?}/frame   allocs/committing-frame {}",
                 p.allocs
             );
         }
@@ -5478,6 +5483,121 @@ mod tests {
         eprintln!(
             "search 'track 5'   cold-filter {search_cold:>11.2?}   warm {search_warm:>9.2?}/frame\n"
         );
+    }
+
+    /// Diagnostic: breaks the 1M cold-open cost down by memoized method, to pinpoint
+    /// what a page's first frame actually spends its time on. `#[ignore]`; run with
+    /// `cargo test -p soul-player-rune --release bench_cold_open -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_cold_open_breakdown_1m() {
+        use std::sync::Arc;
+        use std::time::Instant;
+        const N: u32 = 1_000_000;
+        let lib: Vec<TrackView> = (0..N)
+            .map(|i| {
+                let album = i / 12;
+                let artist = album / 8;
+                TrackView {
+                    id: i,
+                    title: Some(format!("Track {i}")),
+                    artist: Some(Arc::from(format!("Artist {artist}"))),
+                    album: Some(Arc::from(format!("Album {album}"))),
+                    genre: Some(Arc::from(format!("Genre {}", artist % 10))),
+                    duration_secs: 180.0,
+                    remote_source: None,
+                    original_date: 0,
+                    release_date: 0,
+                    loudness: None,
+                    format: None,
+                }
+            })
+            .collect();
+        let mut s = State::new(PlayerHandle::offline());
+        s.library = lib;
+        macro_rules! timed {
+            ($label:expr, $e:expr) => {{
+                let t = Instant::now();
+                let v = $e;
+                eprintln!("  {:<28} {:>10.2?}", $label, t.elapsed());
+                v
+            }};
+        }
+        eprintln!("\nCOLD (first call after a library load):");
+        let _ = timed!("library_fingerprint", s.library_fingerprint());
+        let _ = timed!("library_rc (deep clone?)", s.library_rc());
+        let _ = timed!("track_positions (hashmap)", s.track_positions());
+        let _ = timed!("visible_tracks(\"\")", s.visible_tracks(""));
+        let _ = timed!("grouped_albums", s.grouped_albums());
+        let _ = timed!("grouped_artists", s.grouped_artists());
+        let _ = timed!("grouped_genres", s.grouped_genres());
+        eprintln!("WARM (cache hit):");
+        let _ = timed!("library_rc", s.library_rc());
+        let _ = timed!("track_positions", s.track_positions());
+        let _ = timed!("grouped_albums", s.grouped_albums());
+
+        // Isolate the FRAME cost from the data-prep: s's caches are now all warm, so
+        // the first frame below pays only view() + layout, not the memoized rebuilds.
+        eprintln!("FRAME (data-prep already warm):");
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1280.0, 900.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.update(|s: &mut State, _tx: &mut Tx| s.route = Route::Library);
+        let (first_frame, ff_probe) = {
+            let t = Instant::now();
+            let (_, p) = alloc_probe::measure(|| rt.frame(1.0));
+            (t.elapsed(), p)
+        };
+        eprintln!(
+            "  {:<28} {:>10.2?}  ({} allocs)",
+            "first frame @1M (warm prep)", first_frame, ff_probe.allocs
+        );
+        let _ = timed!("second frame @1M (all warm)", rt.frame(2.0));
+        // A COMMITTING frame: `invalidate` forces the view to re-run, which is what a
+        // playback Tick does ~8x/sec. WITHOUT virtual_rows_version the tracks list
+        // re-keys all 1M rows (a format! per row) on every such commit.
+        rt.invalidate();
+        let (_, commit_probe) = alloc_probe::measure(|| rt.frame(10.0));
+        rt.invalidate();
+        let _ = timed!("committing frame @1M", rt.frame(11.0));
+        eprintln!("    (committing frame allocs: {})", commit_probe.allocs);
+
+        // Same first frame at a TINY library, to see whether the frame cost scales
+        // with N (a layout/virtual_rows O(library) cost) or is fixed framework warmup.
+        let mut s2 = State::new(PlayerHandle::offline());
+        s2.library = (0..1000u32)
+            .map(|i| TrackView {
+                id: i,
+                title: Some(format!("Track {i}")),
+                artist: Some(Arc::from("A")),
+                album: Some(Arc::from("Al")),
+                genre: Some(Arc::from("G")),
+                duration_secs: 1.0,
+                remote_source: None,
+                original_date: 0,
+                release_date: 0,
+                loudness: None,
+                format: None,
+            })
+            .collect();
+        let mut rt2 = Runtime::new(
+            s2,
+            view,
+            (1280.0, 900.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt2.update(|s: &mut State, _tx: &mut Tx| s.route = Route::Library);
+        let _ = timed!("first frame @1k library", rt2.frame(1.0));
+        eprintln!();
     }
 
     #[test]

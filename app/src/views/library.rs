@@ -675,7 +675,14 @@ pub fn track_list(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                         scale,
                     )
                 },
-            );
+            )
+            // The row keys are positional (`track-{id}` for the i-th visible track), so
+            // they only change when the visible set does, i.e. when (library fingerprint,
+            // query) changes, EXACTLY `visible_tracks`' own cache key. Telling the virtual
+            // list that lets a re-commit (a playback tick re-running the view) skip the
+            // per-row key call, so the list commits in time independent of its length
+            // instead of re-running `format!("track-{id}")` for all million rows.
+            .virtual_rows_version((s.library_fingerprint(), q.as_str()));
         scrollbar::attach(
             col()
                 .key("tracks")

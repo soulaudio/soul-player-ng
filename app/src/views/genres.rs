@@ -323,6 +323,11 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
                     )
                 },
             )
+            // Positional keys change only when the visible genre tracks do, i.e. on
+            // (library fingerprint, genre, query), `visible_genre_tracks`' own cache key.
+            // Lets a re-commit skip re-keying every row of a huge genre ("Rock" can be
+            // most of the library).
+            .virtual_rows_version((s.library_fingerprint(), genre.name.as_str(), q.as_str()))
     };
     col()
         .key("genre-detail")

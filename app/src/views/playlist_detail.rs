@@ -631,6 +631,10 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
                     )
                 },
             )
+            // Positional keys (`playlist-entry-{i}`), no per-row memo, content rebuilt
+            // each commit: a constant version lets a re-commit skip the per-row key
+            // call, O(window) instead of O(playlist length).
+            .virtual_rows_version(0u8)
     };
 
     col()
