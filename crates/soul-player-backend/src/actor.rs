@@ -618,7 +618,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
             let mut sp = project_signal_path(&player);
             if let Some(sp) = sp.as_mut()
                 && let Some(id) = cur_id
-                && let Some(path) = library.lock().expect("library mutex").path_of(id)
+                && let Some(path) = resolve_source_path(&library, id)
             {
                 sp.loudness = loudness.metrics(&path);
             }
@@ -679,7 +679,7 @@ fn resolve_rg_info(
         return tags;
     }
     // Untagged under Track/Album: resolve the path and consult the loudness cache.
-    let path = library.lock().expect("library mutex").path_of(id)?;
+    let path = resolve_source_path(library, id)?;
     if let Some(gain) = loudness.lookup(&path) {
         Some(RgInfo {
             track_gain_db: Some(gain),
@@ -693,6 +693,18 @@ fn resolve_rg_info(
     }
 }
 
+/// Resolve track `id` to a playable path WITHOUT holding the library mutex across the
+/// resolution: snapshot the current [`TrackSource`] (a cheap `Arc` clone) and release
+/// the lock, THEN call `path_of`. For a remote source `path_of` does blocking I/O (a
+/// cache stat, or a whole-file download on a miss); holding the lock across it would
+/// stall the loader thread's gapless preload (it needs the same lock) and, on a cold
+/// miss, freeze this pump thread WITH the lock held. Mirrors the loader thread's own
+/// clone-and-release.
+fn resolve_source_path(library: &Arc<Mutex<Arc<dyn TrackSource>>>, id: u32) -> Option<PathBuf> {
+    let source = library.lock().expect("library mutex").clone();
+    source.path_of(id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,6 +712,41 @@ mod tests {
     use crate::testutil::NullSink;
     use std::path::PathBuf;
     use std::sync::mpsc::RecvTimeoutError;
+
+    /// `resolve_source_path` must RELEASE the library mutex before calling `path_of`:
+    /// a remote `path_of` does blocking I/O (a cache stat, or a whole-file download on
+    /// a miss), so holding the lock across it stalls the loader's gapless preload and,
+    /// on a cold miss, freezes the pump. A `TrackSource` whose `path_of` asserts the
+    /// mutex that owns it is currently free proves the lock was dropped first; built
+    /// with `Arc::new_cyclic` so the source holds a `Weak` back to its own `Arc<Mutex>`.
+    #[test]
+    fn resolve_source_path_releases_the_library_lock_before_path_of() {
+        struct LockProbe {
+            outer: std::sync::Weak<Mutex<Arc<dyn TrackSource>>>,
+        }
+        impl TrackSource for LockProbe {
+            fn path_of(&self, _id: u32) -> Option<PathBuf> {
+                let outer = self
+                    .outer
+                    .upgrade()
+                    .expect("outer Arc alive during path_of");
+                assert!(
+                    outer.try_lock().is_ok(),
+                    "the library mutex must be released before path_of runs"
+                );
+                Some(PathBuf::from("resolved"))
+            }
+        }
+        let lib: Arc<Mutex<Arc<dyn TrackSource>>> = Arc::new_cyclic(|weak| {
+            Mutex::new(Arc::new(LockProbe {
+                outer: weak.clone(),
+            }) as Arc<dyn TrackSource>)
+        });
+        assert_eq!(
+            resolve_source_path(&lib, 0),
+            Some(PathBuf::from("resolved"))
+        );
+    }
 
     #[test]
     fn only_track_start_commands_count_as_playback_for_the_failure_notice() {
