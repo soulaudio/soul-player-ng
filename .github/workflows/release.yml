@@ -196,7 +196,16 @@ jobs:
         run: rustup show
 
       - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+        # PINNED, deliberately. `--locked` only respects cargo-packager's own
+        # lockfile; it does NOT fix the version, so without `--version` every
+        # release silently installs whatever is newest. This tool decides the
+        # .deb's filename and `Package:` field, the NSIS template (including the
+        # preinstall hook that removes the pre-rename executable) and which
+        # config keys are accepted — all of which our tests assert against a
+        # specific version's behaviour. Bump it deliberately:
+        # `the_pinned_packager_version_matches_what_the_tests_assume` fails until
+        # the test's expectations are revisited too.
+        run: cargo install cargo-packager --version 0.11.8 --locked
 
       # `pkg-config` + `libssl-dev` are BUILD deps (reqwest -> native-tls ->
       # openssl-sys), not packaging ones; they happen to be preinstalled on
@@ -291,7 +300,9 @@ jobs:
       - name: Package .deb + .rpm (Linux)
         if: runner.os == 'Linux'
         run: |
-          cargo install cargo-generate-rpm --locked
+          # Pinned for the same reason as cargo-packager above: it owns the
+          # .rpm's name, its SONAME requires and the file list.
+          cargo install cargo-generate-rpm --version 0.21.1 --locked
           # The updater key is UNSET for this step, not blanked. cargo-packager
           # signs every package it builds, and a second `.sig` under
           # target/release breaks the staging step, which requires exactly one
@@ -761,7 +772,16 @@ jobs:
         run: rustup show
 
       - name: Install cargo-packager
-        run: cargo install cargo-packager --locked
+        # PINNED, deliberately. `--locked` only respects cargo-packager's own
+        # lockfile; it does NOT fix the version, so without `--version` every
+        # release silently installs whatever is newest. This tool decides the
+        # .deb's filename and `Package:` field, the NSIS template (including the
+        # preinstall hook that removes the pre-rename executable) and which
+        # config keys are accepted — all of which our tests assert against a
+        # specific version's behaviour. Bump it deliberately:
+        # `the_pinned_packager_version_matches_what_the_tests_assume` fails until
+        # the test's expectations are revisited too.
+        run: cargo install cargo-packager --version 0.11.8 --locked
 
       - uses: actions/download-artifact@v4.3.0
         with:

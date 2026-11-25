@@ -16,6 +16,16 @@
 
 use std::path::{Path, PathBuf};
 
+/// The cargo-packager version every assertion in this file describes.
+///
+/// This tool decides the `.deb`'s filename and `Package:` field, which config
+/// keys are accepted, and the NSIS template that carries our preinstall hook.
+/// All of that was read out of one specific version's source, so a release that
+/// installs a different one is building with behaviour nothing here has checked.
+/// `the_pinned_packager_version_matches_what_the_tests_assume` ties the two
+/// together; bump both at once, deliberately.
+const PACKAGER_VERSION: &str = "0.11.8";
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
@@ -281,6 +291,86 @@ fn the_nsis_hook_deletes_the_pre_rename_executable() {
         hook.contains("$INSTDIR"),
         "the Delete must be anchored to $INSTDIR, not a bare filename: {hook:?}"
     );
+}
+
+/// `cargo install` without `--version` installs whatever is newest, and
+/// `--locked` does not change that — it only respects the installed crate's own
+/// lockfile. So the release workflow floated across cargo-packager versions
+/// while this file asserted one version's behaviour, which is how a surprise
+/// gets to be a surprise: the `Package:` field derivation, the accepted config
+/// keys and the NSIS template are all version-dependent.
+#[test]
+fn the_pinned_packager_version_matches_what_the_tests_assume() {
+    let src = read(&repo_root().join(".github/workflows/release.yml"));
+
+    let pins: Vec<&str> = src
+        .lines()
+        .filter(|l| l.contains("cargo install cargo-packager"))
+        .collect();
+    assert!(
+        !pins.is_empty(),
+        "release.yml no longer installs cargo-packager — has packaging moved?"
+    );
+
+    for line in &pins {
+        assert!(
+            line.contains(&format!("--version {PACKAGER_VERSION}")),
+            "release.yml installs cargo-packager without pinning {PACKAGER_VERSION}: \
+             `{}`. Unpinned, a release builds with whatever version is newest, \
+             while this file's assertions describe {PACKAGER_VERSION} — the .deb \
+             filename and Package: derivation, the accepted config keys, and the \
+             NSIS template our preinstall hook relies on. If you are bumping it \
+             on purpose, update PACKAGER_VERSION and re-check those assumptions \
+             against the new source.",
+            line.trim()
+        );
+    }
+}
+
+/// The Flathub build installs the Rust toolchain from a dated archive, and
+/// `app/rune/rust-toolchain.toml` pins the nightly everything else uses. Those
+/// are two separate strings naming the same compiler, and nothing connected
+/// them: bumping the toolchain would leave the Flathub build quietly compiling
+/// with the old one — a different compiler than every other package gets, which
+/// either fails strangely or, worse, succeeds.
+#[test]
+fn the_flathub_toolchain_matches_the_pinned_nightly() {
+    let root = repo_root();
+    let toolchain = read(&root.join("app/rune/rust-toolchain.toml"));
+    let manifest = read(&root.join("packaging/flathub/co.soulaudio.soulplayer.yml"));
+
+    let channel = toolchain
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("channel ="))
+        .map(|v| v.trim().trim_matches('"').to_string())
+        .expect("rust-toolchain.toml sets a channel");
+    let date = channel
+        .strip_prefix("nightly-")
+        .unwrap_or_else(|| panic!("expected a dated nightly, got `{channel}`"));
+
+    // Every toolchain URL in the manifest, one per architecture.
+    let urls: Vec<&str> = manifest
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.contains("static.rust-lang.org/dist/"))
+        .filter(|l| l.starts_with("url:"))
+        .collect();
+    assert_eq!(
+        urls.len(),
+        2,
+        "expected one toolchain archive per architecture, found {urls:?}"
+    );
+
+    for url in &urls {
+        assert!(
+            url.contains(&format!("/dist/{date}/")),
+            "the Flathub manifest fetches a toolchain for a different date than \
+             rust-toolchain.toml pins ({channel}): `{url}`. The Flathub build \
+             would compile with a compiler no other package uses. Update the URL \
+             AND its sha256 — the checksums are published alongside each archive \
+             as `<url>.sha256`."
+        );
+    }
 }
 
 /// Software centres (GNOME Software, KDE Discover) render the AppStream
