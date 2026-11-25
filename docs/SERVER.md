@@ -170,6 +170,10 @@ Useful if you want to write another client. `/v0/*` requires
 | `POST /token` | Code → tokens, and refresh-token rotation. |
 | `POST /revoke` | Revoke a refresh token. |
 
+The index is the same `.soulidx` the desktop bakes, so a server and its clients must run the
+same index format version. Since the multi-disc release the format is **v8**; a v7 client reading
+a v8 server (or the reverse) sees an empty remote library until both are updated.
+
 Access tokens are EdDSA (Ed25519) JWTs, audience `soul-player`, scope `library`, valid
 one hour. Refresh tokens rotate on every use: redeeming one invalidates it, so a leaked
 token is good for at most a single use before the legitimate client's next refresh kills

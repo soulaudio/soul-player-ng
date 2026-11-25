@@ -63,16 +63,12 @@ fn is_supported(path: &Path) -> bool {
         .is_some_and(|e| SUPPORTED_EXTS.contains(&e.as_str()))
 }
 
-/// The path-template string for a managed-library preset id, from
-/// [`organize::presets`]. Falls back to the first preset when `id` is unknown
-/// (e.g. a persisted id from a build that has since renamed its presets).
+/// The path-template string for a managed-library preset id (including the
+/// `+disc-folders` variants), via [`organize::preset`]. Falls back to the first
+/// preset when `id` is unknown (e.g. a persisted id from a build that has since
+/// renamed its presets).
 pub(crate) fn template_for(id: &str) -> &'static str {
-    let presets = organize::presets();
-    presets
-        .iter()
-        .find(|(pid, _)| *pid == id)
-        .map(|(_, tmpl)| *tmpl)
-        .unwrap_or(presets[0].1)
+    organize::preset(id).unwrap_or(organize::presets()[0].1)
 }
 
 #[cfg(test)]
@@ -138,9 +134,15 @@ mod tests {
     #[test]
     fn template_for_resolves_known_and_falls_back() {
         assert_eq!(template_for("flat"), "{Artist} - {Title}");
+        // Core made every album preset disc-safe: `{DiscPrefix}` is "" on a
+        // single-disc album, so single-disc output is byte-identical to before.
         assert_eq!(
             template_for("artist-album"),
-            "{AlbumArtist}/{Album}/{TrackNo} - {Title}"
+            "{AlbumArtist}/{Album}/{DiscPrefix}{TrackNo} - {Title}"
+        );
+        assert_eq!(
+            template_for("artist-album+disc-folders"),
+            "{AlbumArtist}/{Album}/{DiscDir}/{TrackNo} - {Title}"
         );
         assert_eq!(
             template_for("not-a-real-preset"),

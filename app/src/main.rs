@@ -4751,18 +4751,22 @@ fn scene_organize_confirm(s: &mut State) {
                 src: PathBuf::from("Daft Punk - One More Time.flac"),
                 dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
                 action: organize::Action::Copy,
+                kind: organize::EntryKind::Audio,
             },
             organize::PlanEntry {
                 src: PathBuf::from("Daft Punk - Aerodynamic.flac"),
                 dst: dest.join("Daft Punk/Discovery/02 - Aerodynamic.flac"),
                 action: organize::Action::Copy,
+                kind: organize::EntryKind::Audio,
             },
             organize::PlanEntry {
                 src: PathBuf::from("already-there.flac"),
                 dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
                 action: organize::Action::SkipDuplicate,
+                kind: organize::EntryKind::Audio,
             },
         ],
+        ..Default::default()
     }));
 }
 
@@ -11340,13 +11344,16 @@ mod tests {
                     src: PathBuf::from("a.flac"),
                     dst: testdata_dir().join("A/a.flac"),
                     action: organize::Action::Copy,
+                    kind: organize::EntryKind::Audio,
                 },
                 organize::PlanEntry {
                     src: PathBuf::from("b.flac"),
                     dst: testdata_dir().join("B/b.flac"),
                     action: organize::Action::SkipDuplicate,
+                    kind: organize::EntryKind::Audio,
                 },
             ],
+            ..Default::default()
         }
     }
 

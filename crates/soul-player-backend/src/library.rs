@@ -715,6 +715,8 @@ mod tests {
                 original_date: PackedDate::UNKNOWN,
                 release_date: PackedDate::UNKNOWN,
                 folder: a,
+                disc_count: 1,
+                mb_album_id: String::new(),
             })
             .collect();
         let tracks: Vec<TrackInput> = (0..n)
@@ -730,6 +732,7 @@ mod tests {
                     folder: album,
                     track_no: (i % 12 + 1) as u16,
                     disc_no: 1,
+                    disc_subtitle: String::new(),
                     duration_ms: 180_000,
                     sample_rate: 44_100,
                     channels: 2,
