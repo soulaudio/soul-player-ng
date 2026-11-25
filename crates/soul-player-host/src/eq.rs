@@ -385,6 +385,54 @@ mod tests {
         );
     }
 
+    /// Sanity: the `alloc-probe` counting allocator really IS installed for this test
+    /// build, so a zero count in the constraint test below means "no allocation", not
+    /// "the probe isn't wired up" (a false green).
+    #[test]
+    fn alloc_probe_is_installed_for_the_host_test_build() {
+        let (_, probe) = alloc_probe::measure(|| Vec::<u8>::with_capacity(4096));
+        assert!(
+            probe.allocs >= 1 && probe.bytes >= 4096,
+            "the counting allocator must be installed (measured {probe:?})"
+        );
+    }
+
+    /// Memory constraint (constraint-driven, via the `alloc-probe` counting allocator):
+    /// once warm, each steady-state `DspSink::write` must perform ZERO heap allocations
+    /// on the audio feeder thread. This is the teeth behind `chain_if_changed` and the
+    /// reused scratch buffers: it fails loudly if a future change reintroduces a
+    /// per-block clone/alloc on the real-time path (which risks an underrun).
+    #[test]
+    fn dsp_sink_write_makes_zero_allocations_per_steady_state_block() {
+        let shared = chain_with(|eq| {
+            eq.enabled = true;
+            eq.bands = vec![bell(1_000.0, 6.0, 1.0)];
+        });
+        let mut sink = DspSink::new(
+            Discard {
+                info: info(48_000, 2),
+            },
+            shared,
+            Arc::new(Mutex::new(SpectrumFrame::default())),
+            Arc::new(Mutex::new(LiveLoudnessFrame::default())),
+        );
+        let frames = sine(1_000.0, FS, 512, 0.3 * 8_388_607.0);
+        // Warm: build the filter bank, grow the scratch buffers, prime any lazy state.
+        for _ in 0..8 {
+            sink.write(&frames).unwrap();
+        }
+        let (_, probe) = alloc_probe::measure(|| {
+            for _ in 0..256 {
+                sink.write(&frames).unwrap();
+            }
+        });
+        assert_eq!(
+            probe.allocs, 0,
+            "256 steady-state audio blocks must not allocate (made {} allocations)",
+            probe.allocs
+        );
+    }
+
     /// Microbenchmark (ignored): the steady-state per-block `write` cost with an active
     /// one-unit EQ chain, over a discarding sink. Run with
     /// `cargo test -p soul-player-host bench_dsp_sink_write -- --ignored --nocapture`.

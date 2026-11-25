@@ -124,6 +124,10 @@ features = ["coreaudio-exclusive"]
 
 [dev-dependencies]
 tempfile = "3"
+# Test-only counting global allocator for constraint-driven memory tests (assert a
+# hot path allocates nothing). Kept in its own crate so this one stays
+# `#![forbid(unsafe_code)]` while still installing the allocator in the test build.
+alloc-probe = { path = "../alloc-probe" }
 # The `remote` module's tests drive a REAL in-process soul-server rather than
 # faking the HTTP boundary — a dev-only dependency; the shipped player never
 # links soul-server (the client speaks its wire protocol over plain HTTP).

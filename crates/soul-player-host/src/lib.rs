@@ -2357,6 +2357,14 @@ impl PlayerHandle {
     }
 }
 
+/// Install the counting allocator for the test build so memory-constraint tests (e.g.
+/// `eq`'s "a steady-state audio block allocates nothing") can assert allocation counts.
+/// Declaring the static is safe code; the `unsafe` `GlobalAlloc` impl lives in the
+/// `alloc-probe` dev-dependency, so this crate stays `#![forbid(unsafe_code)]`.
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOC_PROBE: alloc_probe::Counting = alloc_probe::Counting;
+
 #[cfg(test)]
 mod tests {
     use super::*;
