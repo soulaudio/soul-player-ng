@@ -1513,6 +1513,10 @@ impl State {
 /// what's watched is separate from what's playing (the host's own contract).
 pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     s.library = up.views;
+    // `up.views` is the host's default (Artist-Album-Track) order; re-apply the
+    // user's active sort so a rescan / Sources edit doesn't silently revert the
+    // Tracks list while the sort pill stays highlighted.
+    reapply_sort(s);
     s.sources = up.sources;
     // Clear any stale deletion warning; this scan's own `TracksRemoved` event (if
     // any) is applied right after and re-sets it, so the notice always reflects the
@@ -1867,6 +1871,7 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
                     seed_synced_baseline(s, &sources);
                     s.library = library;
                     s.sources = sources;
+                    reapply_sort(s);
                 });
             });
         }
@@ -1882,6 +1887,7 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
             seed_synced_baseline(s, &sources);
             s.sources = sources;
             s.library = s.host.views();
+            reapply_sort(s);
         }
     }
 }
@@ -1984,6 +1990,7 @@ fn apply_remote_connect(s: &mut State, url: &str, result: anyhow::Result<()>) {
         Ok(()) => {
             s.library = s.host.views();
             s.sources = s.host.sources();
+            reapply_sort(s);
             if !s.remote_urls.iter().any(|u| u == url) {
                 s.remote_urls.push(url.to_string());
             }
@@ -2035,6 +2042,7 @@ pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
                 handle.update(move |s: &mut State, _tx: &mut Tx| {
                     s.sources = sources;
                     s.library = library;
+                    reapply_sort(s);
                 });
             });
         }
@@ -2046,6 +2054,7 @@ pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
             }
             s.sources = s.host.sources();
             s.library = s.host.views();
+            reapply_sort(s);
         }
     }
 }
@@ -2069,6 +2078,7 @@ pub(crate) fn toggle_remote_enabled(s: &mut State, url: String, enabled: bool) {
     config::set_remote_enabled(&url, enabled);
     s.sources = s.host.sources();
     s.library = s.host.views();
+    reapply_sort(s);
 }
 
 /// Manually reconnect (or re-sync) one remote source, an offline row's
@@ -2112,6 +2122,7 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
                     }
                     s.sources = sources;
                     s.library = library;
+                    reapply_sort(s);
                 });
             });
         }
@@ -2123,6 +2134,7 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
             let ok = result.is_ok();
             let sources = s.host.sources();
             s.library = s.host.views();
+            reapply_sort(s);
             s.remote_reconnecting.retain(|u| u != &url);
             if ok {
                 record_synced_index(s, &url, &sources);
@@ -3196,6 +3208,24 @@ pub(crate) fn set_loudness_sort(s: &mut State, key: LoudnessKey) {
     s.loudness_sort = Some(key);
     s.library = s.host.views_by(s.sort_axis);
     sort_by_loudness(&mut s.library, key);
+}
+
+/// Re-apply the user's active sort (`sort_axis` + any `loudness_sort`) over a
+/// just-refreshed `s.library`, which arrives in the default baked (Artist-Album-Track)
+/// order. Keeps the Tracks order matching the highlighted sort pill after a refresh
+/// that did NOT come through [`set_sort`] / [`set_loudness_sort`]: the filesystem
+/// watcher and Sources edits (via [`apply_watch`]) and the remote connect / disconnect
+/// / reconnect / enable paths, which all re-fetch the host's default-order views. A
+/// no-op (no host round-trip) in the default-axis, no-loudness-sort case, the common
+/// one, so an ordinary rescan stays cheap. Precondition: `s.library` is in default
+/// order on entry (as every one of those refreshes leaves it).
+pub(crate) fn reapply_sort(s: &mut State) {
+    if s.sort_axis != BrowseAxis::ArtistAlbumTrack {
+        s.library = s.host.views_by(s.sort_axis);
+    }
+    if let Some(key) = s.loudness_sort {
+        sort_by_loudness(&mut s.library, key);
+    }
 }
 
 /// Set the output volume (0..1): clamp, update `State::volume` optimistically so
@@ -15181,6 +15211,74 @@ mod tests {
             "an axis sort clears the loudness sort"
         );
         assert_eq!(s.sort_axis, BrowseAxis::Title);
+    }
+
+    /// A library refresh that does NOT go through the sort setters (the filesystem
+    /// watcher / Sources edits via `apply_watch`, and the remote connect/disconnect
+    /// paths) must still honor the user's ACTIVE sort. Otherwise the Tracks list
+    /// silently reverts to default (Artist-Album-Track) order while the sort pill
+    /// stays lit. Here a DR loudness sort is active and a rescan delivers views in
+    /// default order; the folded-in library must come back DR-sorted.
+    #[test]
+    fn a_refresh_keeps_the_active_loudness_sort() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        set_loudness_sort(&mut s, LoudnessKey::Dr);
+
+        // A rescan (watcher / Sources edit) hands back fresh views in DEFAULT order,
+        // with mixed DR values and one un-analyzed track.
+        apply_watch(
+            &mut s,
+            WatchUpdate {
+                views: vec![
+                    tv_loud(1, Some((5.0, -10.0))),
+                    tv_loud(2, Some((12.0, -9.0))),
+                    tv_loud(3, None),
+                    tv_loud(4, Some((9.0, -14.0))),
+                ],
+                sources: Vec::new(),
+            },
+        );
+
+        let ids: Vec<u32> = s.library.iter().map(|t| t.id).collect();
+        assert_eq!(
+            ids,
+            vec![2, 4, 1, 3],
+            "DR-descending (un-analyzed last) kept after the refresh, not reverted to default"
+        );
+    }
+
+    /// Same invariant for a baked-axis sort: after a refresh the library is re-fetched
+    /// in the active axis, not left in the default order the refresh arrived in.
+    #[test]
+    fn a_refresh_keeps_the_active_axis_sort() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        set_sort(&mut s, BrowseAxis::Title);
+        let want: Vec<u32> = s
+            .host
+            .views_by(BrowseAxis::Title)
+            .iter()
+            .map(|t| t.id)
+            .collect();
+
+        // A rescan hands back default-order views (synthetic ids, discarded by the
+        // axis re-fetch the refresh must perform).
+        apply_watch(
+            &mut s,
+            WatchUpdate {
+                views: vec![tv_loud(1, None), tv_loud(2, None)],
+                sources: Vec::new(),
+            },
+        );
+
+        let got: Vec<u32> = s.library.iter().map(|t| t.id).collect();
+        assert_eq!(
+            got, want,
+            "re-fetched in Title order, not left in the default-order WatchUpdate"
+        );
     }
 
     /// A populated library shows the search bar, and a matching query keeps the
