@@ -35,6 +35,13 @@ chmod +x soul-player_*.AppImage && ./soul-player_*.AppImage
 flatpak install --bundle ./Soul-Player_*.flatpak        # any distro with Flatpak
 ```
 
+On macOS, Homebrew works too:
+
+```sh
+brew tap soulaudio/tap && brew trust soulaudio/tap
+brew install --cask soul-player
+```
+
 Details, including which formats update themselves, are in
 [docs/INSTALL.md](docs/INSTALL.md).
 

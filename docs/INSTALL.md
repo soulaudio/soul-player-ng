@@ -15,6 +15,18 @@ flatpak install --bundle ./Soul-Player_*.flatpak        # any distro with Flatpa
 every Mac (Apple silicon and Intel). Drag it to Applications; opened straight from the
 disk image it offers to move itself.
 
+Or with Homebrew, from the [soulaudio/tap](https://github.com/soulaudio/homebrew-tap):
+
+```sh
+brew tap soulaudio/tap && brew trust soulaudio/tap
+brew install --cask soul-player
+brew uninstall --zap --cask soul-player   # removes the app and its settings, library index, logs
+```
+
+The cask is published by the release itself, through a PR the tap's CI has to pass
+(install, launch, uninstall on a fresh Mac). The app updates itself in place, and
+`brew upgrade` picks up new versions as well.
+
 ## Linux package formats
 
 Four formats, for x86_64 and aarch64:
