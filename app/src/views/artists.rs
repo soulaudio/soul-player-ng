@@ -18,7 +18,7 @@ use soul_player_host::{Command, TrackView};
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
-use crate::views::albums::{Album, detail_track_row, discography_of};
+use crate::views::albums::{Album, detail_track_row};
 use crate::views::detail_page::{ArtworkTarget, HeroArt, detail_actions, detail_hero};
 use crate::views::grid;
 use crate::views::icons;
@@ -275,14 +275,11 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             .padding(space::PANE);
     };
 
-    // The artist's own tracks, resolved via the O(1) id->track map and folded into
-    // the Discography, O(artist), not the old O(library) re-scan-and-clone per frame.
-    let subset: Vec<TrackView> = artist
-        .ids
-        .iter()
-        .filter_map(|id| s.track(*id).cloned())
-        .collect();
-    let discography = discography_of(&subset, s.album_year);
+    // The artist's discography (its tracks grouped into albums, chronologically
+    // sorted), MEMOIZED by (library fingerprint, artist, year source) so it is not
+    // re-cloned and re-grouped every frame (see `State::artist_discography`); the
+    // sections below index the cached `Rc`.
+    let discography = s.artist_discography(&artist.name, &artist.ids, s.album_year);
     let meta = format!(
         "{} · {}",
         crate::views::library::albums_label(discography.len()),
@@ -594,7 +591,7 @@ mod tests {
     /// same albums, chronological order, and per-album track ids, for every artist.
     #[test]
     fn artist_detail_discography_from_ids_matches_name_filter() {
-        use crate::views::albums::albums_of_artist;
+        use crate::views::albums::{albums_of_artist, discography_of};
         let _locale = crate::config::use_test_locale("en");
         let lib = vec![
             tv_album(1, "Bach", "Cello Suites"),
@@ -863,5 +860,43 @@ mod tests {
             .save(&path)
             .unwrap();
         path
+    }
+
+    /// The artist detail's discography is MEMOIZED by (library fingerprint, artist,
+    /// album-year source): a repeat call at the same inputs returns the SAME
+    /// allocation (a cache hit, so the artist's tracks are not re-cloned and
+    /// re-grouped every frame), and a changed year source rebuilds it. Guards the
+    /// per-frame clone-and-regroup fix for the artist detail page.
+    #[test]
+    fn artist_discography_is_memoized() {
+        use crate::config::AlbumYearSource;
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![
+            tv_album(1, "Bach", "Cello Suites"),
+            tv_album(2, "Bach", "Goldberg"),
+            tv_album(3, "Satie", "Gymnopedies"),
+        ];
+        let ids = group_artists(&s.library)
+            .into_iter()
+            .find(|a| a.name == "Bach")
+            .expect("a Bach artist")
+            .ids;
+
+        // Same (artist, source) twice: the SAME allocation, so the clone + regroup
+        // ran once, not once per call (per frame).
+        let a = s.artist_discography("Bach", &ids, AlbumYearSource::Original);
+        let b = s.artist_discography("Bach", &ids, AlbumYearSource::Original);
+        assert!(
+            Rc::ptr_eq(&a, &b),
+            "a repeat call at the same inputs must be a cache hit, not a rebuild"
+        );
+        assert_eq!(a.len(), 2, "Bach has two albums (Cello Suites, Goldberg)");
+
+        // A changed year source invalidates the cache (it reorders/redates albums).
+        let c = s.artist_discography("Bach", &ids, AlbumYearSource::Release);
+        assert!(
+            !Rc::ptr_eq(&a, &c),
+            "a changed year source must invalidate the cache"
+        );
     }
 }
