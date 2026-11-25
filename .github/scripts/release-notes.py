@@ -54,6 +54,11 @@ def notes(subs: list[str], limit: int = 12) -> str:
             continue
         desc = PR_SUFFIX.sub("", m["desc"]).strip()
         desc = desc[:1].upper() + desc[1:]
+        # House style has no em dashes, but these subjects come from commits,
+        # including ones written before that rule and now immutable. Without
+        # this, generating notes reintroduces one into the metainfo and the
+        # prose gate fails the release.
+        desc = desc.replace(" — ", ", ").replace("—", ", ")
         if desc not in grouped[m["type"]]:
             grouped[m["type"]].append(desc)
     lines: list[str] = []

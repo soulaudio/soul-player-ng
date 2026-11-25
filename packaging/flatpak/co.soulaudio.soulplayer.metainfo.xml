@@ -95,6 +95,53 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.8" date="2026-11-25">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Test install, update, uninstall and purge before and after publishing</li>
+          <li>Manage the Bunny CDN in terraform under website/infrastructure</li>
+          <li>Set the page in Fraunces and Work Sans, and fix it on phones</li>
+          <li>Drop the motto, set the page in IBM Plex</li>
+          <li>Platform icons, a segmented switcher, and a light default</li>
+          <li>Add the player.soulaudio.co download page and an install script</li>
+          <li>Let soul-server advertise a public URL, and document hosting</li>
+          <li>Add the from-source Flathub manifest and prove it builds</li>
+          <li>Cap configured sources at 16 with a message, not a panic</li>
+          <li>Tell the user when a track can't play (unsupported-format banner)</li>
+          <li>Full uninstall from Settings → About (and --uninstall), checked by the release e2e before rollback</li>
+          <li>One universal DMG for every Mac; the Intel build on Apple silicon switches itself over</li>
+          <li>Download progress with speed and time left; retry a dropped download soon</li>
+          <li>Name every package soul-player, not soul-player-rune</li>
+          <li>Offer to move the app into Applications when it runs from elsewhere</li>
+          <li>Add to Playlist a whole album/artist from the card menu</li>
+          <li>Search placeholders show the item count (Search N albums)</li>
+          <li>Reverse the sidebar queue so it drains down into now playing</li>
+          <li>Filter chips fade+collapse (reuse reveal) + arch test</li>
+          <li>Right-click menu on album + artist grid cards</li>
+          <li>Settings → Updates page, scheduled checks, opt-in install-on-quit (0.4.1)</li>
+          <li>Complete Linux packaging, deb, rpm, Flatpak, AppImage, on x86_64 and aarch64</li>
+          <li>New playlist is a proper modal dialogue (not an inline field)</li>
+          <li>Tracks search is the shared live search box, not a click-to-type button</li>
+          <li>Tracks Sort toggle + browse-page top breathing room</li>
+          <li>Ship .deb and .rpm alongside the AppImage, and fix the identity they need</li>
+          <li>Unified browse-page top bar + playlists as an albums-style grid</li>
+          <li>Pencil opens a manage dialogue (Change / Delete) before the crop</li>
+          <li>Edit Artwork on hover, pencil icon, zoom slider, in-dialogue remove</li>
+          <li>Artwork polish, custom covers drop the silhouette + Edit Artwork on hover</li>
+          <li>Report the files a scan skipped, with the format and the reason</li>
+          <li>Window controls, desktop identity, and an MPRIS stop that is not a pause</li>
+          <li>Bit-perfect exclusive output over ALSA, and tell the truth where there is none</li>
+          <li>Album-card DR badge follows the loudness-columns toggle</li>
+          <li>Edit Artwork crop dialogue (pan/zoom) for artists + albums</li>
+          <li>Restart after installing and e2e the auto-update on every OS</li>
+          <li>Custom artwork upload for artists and albums</li>
+          <li>Keyboard shortcuts Settings tab + Ctrl+ playback shortcuts</li>
+          <li>Rebuild the add-to-playlist dialogue as the old app's modal</li>
+          <li>Blur the artist avatar art behind the person glyph</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.7" date="2026-11-25">
       <description>
         <p>New</p>
