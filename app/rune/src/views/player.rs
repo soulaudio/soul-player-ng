@@ -5,8 +5,10 @@
 //! it at.
 #![forbid(unsafe_code)]
 
+use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 
 use rune::tok::motion;
@@ -134,6 +136,72 @@ const ROW_GAP: f32 = space::SM;
 const BTN_SIZE: f32 = 32.0;
 const PLAY_SIZE: f32 = 40.0;
 
+/// Max decoded covers kept in each image cache. A decoded cover is tens to hundreds
+/// of KB (RGBA at `DECODE_PX`), so without a bound a long browse session over a large
+/// library grows the caches monotonically toward an out-of-memory. 512 covers is a
+/// generous working set (roughly 50-150 MB) that comfortably covers a scroll window.
+const COVER_CACHE_CAP: usize = 512;
+/// `has_art` holds only a cheap `bool` per id, so it can keep a much larger working
+/// set before its bound matters.
+const HAS_ART_CACHE_CAP: usize = 16_384;
+
+/// A size-bounded insertion-ordered (FIFO) cache: at most `cap` live entries; inserting
+/// a NEW key past the cap evicts the oldest-inserted one. Used for the decoded-cover
+/// caches so browsing a large library can't grow them without bound. FIFO (not strict
+/// LRU) keeps reads borrow-free (`get` is `&self`), and under a forward scroll the
+/// oldest-inserted cover is also the least likely to be revisited.
+struct BoundedCache<K, V> {
+    map: HashMap<K, V>,
+    /// Keys in insertion order; the front is the next eviction victim.
+    order: VecDeque<K>,
+    cap: usize,
+}
+
+impl<K: Eq + Hash + Clone, V> BoundedCache<K, V> {
+    fn new(cap: usize) -> Self {
+        Self {
+            map: HashMap::new(),
+            order: VecDeque::new(),
+            cap: cap.max(1),
+        }
+    }
+
+    fn get<Q>(&self, k: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        self.map.get(k)
+    }
+
+    fn insert(&mut self, k: K, v: V) {
+        if !self.map.contains_key(&k) {
+            self.order.push_back(k.clone());
+            while self.order.len() > self.cap {
+                if let Some(evict) = self.order.pop_front() {
+                    self.map.remove(&evict);
+                }
+            }
+        }
+        self.map.insert(k, v);
+    }
+
+    fn remove<Q>(&mut self, k: &Q)
+    where
+        K: Borrow<Q>,
+        Q: Hash + Eq + ?Sized,
+    {
+        if self.map.remove(k).is_some() {
+            self.order.retain(|x| x.borrow() != k);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// Cover-art decode cache (cheat-sheet §6a). Rune's pre-release has no
 /// "load this track's art" helper, so this wraps `rune::ImageCache` +
 /// `PlayerHandle::art` with a per-id memo — each cover decodes once, not
@@ -143,27 +211,27 @@ const PLAY_SIZE: f32 = 40.0;
 /// themed placeholder box (`cover_el` below) rather than blocking the panel.
 pub struct ArtCache {
     cache: Option<ImageCache>,
-    images: RefCell<HashMap<u32, Image>>,
+    images: RefCell<BoundedCache<u32, Image>>,
     /// Memoized decodes keyed by an absolute file path rather than a track
     /// id, for covers that live on disk independent of any track (a
     /// playlist's custom cover image). Kept separate from `images` since the
     /// two never collide and never need to invalidate each other.
-    path_images: RefCell<HashMap<PathBuf, Image>>,
+    path_images: RefCell<BoundedCache<PathBuf, Image>>,
     /// Generated covers (`soul_player_host::generated_cover`) for albums / artists with no
     /// art, keyed by their seed — every track of an art-less album shares one decode.
-    generated: RefCell<HashMap<u64, Image>>,
+    generated: RefCell<BoundedCache<u64, Image>>,
     /// Whether a track has real art (artist avatars ask before choosing art vs generated).
-    has_art: RefCell<HashMap<u32, bool>>,
+    has_art: RefCell<BoundedCache<u32, bool>>,
 }
 
 impl ArtCache {
     pub fn new() -> Self {
         Self {
             cache: None,
-            images: RefCell::new(HashMap::new()),
-            path_images: RefCell::new(HashMap::new()),
-            generated: RefCell::new(HashMap::new()),
-            has_art: RefCell::new(HashMap::new()),
+            images: RefCell::new(BoundedCache::new(COVER_CACHE_CAP)),
+            path_images: RefCell::new(BoundedCache::new(COVER_CACHE_CAP)),
+            generated: RefCell::new(BoundedCache::new(COVER_CACHE_CAP)),
+            has_art: RefCell::new(BoundedCache::new(HAS_ART_CACHE_CAP)),
         }
     }
 
@@ -909,10 +977,56 @@ mod tests {
     use soul_player_host::PlayerHandle;
 
     use super::{
-        ArtCache, generated_seed_for_track, group_remote_source, player_panel, wheel_volume_delta,
+        ArtCache, BoundedCache, generated_seed_for_track, group_remote_source, player_panel,
+        wheel_volume_delta,
     };
     use crate::State;
     use crate::config;
+
+    /// The cover caches must stay BOUNDED: browsing a large library decodes one cover
+    /// per distinct track id scrolled past, each tens to hundreds of KB, so an
+    /// unbounded cache grows monotonically toward an OOM over a session. A new key past
+    /// the cap evicts the oldest-inserted entry; the cache never exceeds `cap`.
+    #[test]
+    fn bounded_cache_evicts_the_oldest_past_the_cap() {
+        let mut c: BoundedCache<u32, u32> = BoundedCache::new(3);
+        c.insert(1, 10);
+        c.insert(2, 20);
+        c.insert(3, 30);
+        assert_eq!(c.len(), 3);
+
+        // A fourth distinct key evicts the oldest (1), staying at the cap.
+        c.insert(4, 40);
+        assert_eq!(c.len(), 3, "the cache never grows past its cap");
+        assert!(c.get(&1).is_none(), "the oldest-inserted entry was evicted");
+        assert_eq!(c.get(&4), Some(&40), "the newest entry is kept");
+        assert_eq!(c.get(&2), Some(&20), "a mid entry still present");
+
+        // Re-inserting an existing key updates its value without growing or evicting.
+        c.insert(2, 22);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c.get(&2), Some(&22), "an existing key is updated in place");
+        assert_eq!(c.get(&3), Some(&30), "re-insert evicts nothing");
+
+        // After a removal the slot is freed, so a new key does not evict.
+        c.remove(&3);
+        assert_eq!(c.len(), 2);
+        c.insert(5, 50);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c.get(&4), Some(&40), "no eviction while under the cap");
+    }
+
+    /// A tiny cap is clamped to at least 1 so `insert` can never divide the working set
+    /// to nothing (or loop forever evicting).
+    #[test]
+    fn bounded_cache_cap_is_at_least_one() {
+        let mut c: BoundedCache<u32, u32> = BoundedCache::new(0);
+        c.insert(1, 10);
+        c.insert(2, 20);
+        assert_eq!(c.len(), 1, "cap 0 is clamped to 1");
+        assert_eq!(c.get(&2), Some(&20));
+        assert!(c.get(&1).is_none());
+    }
 
     /// A notched mouse wheel steps the researched 5% per notch, up on scroll-up
     /// (dy < 0) and down on scroll-down, regardless of the notch's magnitude.
