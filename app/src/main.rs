@@ -4571,6 +4571,8 @@ fn seed_demo_library(s: &mut State) {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: a + 1,
+                ..Default::default()
             });
             id += 1;
         }
@@ -5453,6 +5455,8 @@ mod tests {
                     release_date: 0,
                     loudness: None,
                     format: None,
+                    album_key: album,
+                    ..Default::default()
                 }
             })
             .collect()
@@ -5529,6 +5533,8 @@ mod tests {
                     release_date: 0,
                     loudness: None,
                     format: None,
+                    album_key: album,
+                    ..Default::default()
                 }
             })
             .collect();
@@ -5634,6 +5640,8 @@ mod tests {
                     release_date: 0,
                     loudness: None,
                     format: None,
+                    album_key: album,
+                    ..Default::default()
                 }
             })
             .collect();
@@ -5708,6 +5716,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Al")),
+                ..Default::default()
             })
             .collect();
         let mut rt2 = Runtime::new(
@@ -13182,6 +13192,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -13198,6 +13210,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -13214,6 +13228,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -13332,6 +13348,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -13345,6 +13363,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
         ];
         s.route = Route::Artist;
@@ -13706,6 +13726,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some(album)),
+            ..Default::default()
         }
     }
 
@@ -13827,6 +13849,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -13840,6 +13864,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
         ];
         s.route = Route::Genre;
@@ -14216,6 +14242,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -14229,6 +14257,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
         ];
         s.route = Route::Album;
@@ -14464,6 +14494,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: 0,
+            ..Default::default()
         }];
         s.now_playing_id = Some(1);
         let env = Env {
@@ -15158,6 +15190,8 @@ mod tests {
                 dr,
             }),
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -15407,6 +15441,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -15420,6 +15456,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
         ];
         let env = Env {
@@ -15923,6 +15961,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some(&format!("Album {a:02}"))),
+                ..Default::default()
             })
             .collect();
         let env = Env {
@@ -16005,6 +16045,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some(&format!("Album {a:02}"))),
+                ..Default::default()
             })
             .collect();
         let env = Env {
@@ -16115,6 +16157,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some(&format!("Album {id:02}"))),
+                ..Default::default()
             }
         }
         let mut s = State::new(PlayerHandle::offline());
@@ -16170,6 +16214,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some(&format!("Album {id:02}"))),
+            ..Default::default()
         }
     }
 
@@ -16390,6 +16436,8 @@ mod tests {
             release_date: 2015u32 << 9,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Dark Side")),
+            ..Default::default()
         }];
         let env = Env {
             system_dark: true,

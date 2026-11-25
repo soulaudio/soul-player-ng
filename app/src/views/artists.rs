@@ -563,6 +563,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -581,6 +583,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some(album)),
+            ..Default::default()
         }
     }
 

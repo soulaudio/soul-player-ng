@@ -405,7 +405,8 @@ impl Library {
         let mut artists: HashMap<u32, Option<Arc<str>>> = HashMap::new();
         let mut albums: HashMap<u32, Option<Arc<str>>> = HashMap::new();
         let mut genres: HashMap<u32, Option<Arc<str>>> = HashMap::new();
-        let mut dates: HashMap<u32, (u32, u32)> = HashMap::new();
+        let mut metas: HashMap<u32, AlbumMeta> = HashMap::new();
+        let mut subtitles: HashMap<u32, Option<Arc<str>>> = HashMap::new();
         // The handful of distinct FORMAT labels ("FLAC", "MP3", …), interned so a
         // million tracks share ~10 `Arc<str>` instead of allocating a label each.
         let mut formats: HashMap<Box<str>, Arc<str>> = HashMap::new();
@@ -416,9 +417,28 @@ impl Library {
         for i in 0..n {
             let Ok(id) = cat.order(axis, i) else { continue };
             let Ok(t) = cat.track(id) else { continue };
-            let (original_date, release_date) = *dates
-                .entry(t.album)
-                .or_insert_with(|| album_dates(&cat, t.album));
+            let meta = match metas.get(&t.album) {
+                Some(m) => m.clone(),
+                None => {
+                    let m = album_meta(&cat, t.album, &mut artists);
+                    metas.insert(t.album, m.clone());
+                    m
+                }
+            };
+            // Disc subtitles are interned in the index heap (one string per disc), so
+            // the packed offset is a stable intern key.
+            let disc_subtitle = if t.disc_subtitle.len == 0 {
+                None
+            } else {
+                subtitles
+                    .entry(t.disc_subtitle.off)
+                    .or_insert_with(|| {
+                        resolve(&cat, t.disc_subtitle)
+                            .filter(|s| !s.is_empty())
+                            .map(Arc::from)
+                    })
+                    .clone()
+            };
             let artist = artists
                 .entry(t.artist)
                 .or_insert_with(|| real_name(artist_name(&cat, t.artist)).map(Arc::from))
@@ -446,12 +466,18 @@ impl Library {
                 // The backend/local catalog is always local, the host aggregate sets
                 // `Some(host)` for a remote source's tracks.
                 remote_source: None,
-                original_date,
-                release_date,
+                original_date: meta.original_date,
+                release_date: meta.release_date,
                 // The baked loudness (present once a scan has stamped it); the host
                 // overrides with fresher live analysis via `mark_loudness`.
                 loudness: t.loudness.map(Into::into),
                 format,
+                album_key: t.album,
+                album_artist: meta.album_artist,
+                track_no: t.track_no,
+                disc_no: t.disc_no.max(1),
+                disc_count: meta.disc_count,
+                disc_subtitle,
             });
         }
         out
@@ -540,12 +566,38 @@ fn album_title(cat: &MultiCatalog, id: u32) -> Option<String> {
     resolve(cat, album.title)
 }
 
-/// The album's two packed dates (`soul_audio_catalog::PackedDate` as raw `u32`):
-/// `(original_date, release_date)`, `0` when the album id is out of range.
-fn album_dates(cat: &MultiCatalog, album: u32) -> (u32, u32) {
-    cat.album(album)
-        .map(|a| (a.original_date.0, a.release_date.0))
-        .unwrap_or((0, 0))
+/// Album-level fields every member track's view shares, resolved once per album.
+#[derive(Clone, Default)]
+struct AlbumMeta {
+    original_date: u32,
+    release_date: u32,
+    disc_count: u16,
+    album_artist: Option<Arc<str>>,
+}
+
+/// Resolve `album`'s shared fields, interning the album artist through the same
+/// `artists` map the track artists use (one `Arc<str>` per distinct name).
+fn album_meta(
+    cat: &MultiCatalog,
+    album: u32,
+    artists: &mut std::collections::HashMap<u32, Option<Arc<str>>>,
+) -> AlbumMeta {
+    let Ok(a) = cat.album(album) else {
+        return AlbumMeta {
+            disc_count: 1,
+            ..AlbumMeta::default()
+        };
+    };
+    let album_artist = artists
+        .entry(a.album_artist)
+        .or_insert_with(|| real_name(artist_name(cat, a.album_artist)).map(Arc::from))
+        .clone();
+    AlbumMeta {
+        original_date: a.original_date.0,
+        release_date: a.release_date.0,
+        disc_count: a.disc_count.max(1),
+        album_artist,
+    }
 }
 
 /// An uppercased codec/container label for the Tracks table's FORMAT badge,
@@ -646,6 +698,8 @@ mod tests {
                         release_date: 0,
                         loudness: None,
                         format: None,
+                        album_key: album,
+                        ..Default::default()
                     }
                 })
                 .collect();
@@ -1416,6 +1470,155 @@ mod tests {
         assert_eq!(flac_view.format.as_deref(), Some("FLAC"));
     }
 
+    /// `views_by` projects the album's identity (the compound album id), the
+    /// album artist, track/disc numbers, the album's disc count and the disc
+    /// subtitle, scanned end to end. CD1/CD2 sub-folders fold into ONE album
+    /// (core's album-root rule); the same title in two other folders stays TWO.
+    #[test]
+    fn views_by_carries_album_identity_and_disc_fields() {
+        let root = tmpdir("multidisc");
+        let put = |rel: &str, c: &[&str]| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, flac_with_comments(c)).unwrap();
+        };
+        put(
+            "Box/CD1/01.flac",
+            &[
+                "TITLE=Intro",
+                "ALBUM=Box",
+                "ARTIST=Guest",
+                "ALBUMARTIST=HOYO-MiX",
+                "TRACKNUMBER=1",
+                "DISCNUMBER=1/2",
+                "DISCSUBTITLE=Mondstadt",
+            ],
+        );
+        put(
+            "Box/CD2/01.flac",
+            &[
+                "TITLE=Reprise",
+                "ALBUM=Box",
+                "ARTIST=HOYO-MiX",
+                "ALBUMARTIST=HOYO-MiX",
+                "TRACKNUMBER=1",
+                "DISCNUMBER=2/2",
+                "DISCSUBTITLE=Liyue",
+            ],
+        );
+        put(
+            "Hits A/01.flac",
+            &[
+                "TITLE=A",
+                "ALBUM=Greatest Hits",
+                "ARTIST=X",
+                "TRACKNUMBER=3",
+            ],
+        );
+        put(
+            "Hits B/01.flac",
+            &[
+                "TITLE=B",
+                "ALBUM=Greatest Hits",
+                "ARTIST=Y",
+                "TRACKNUMBER=3",
+            ],
+        );
+
+        let lib = Library::scan(&root).unwrap();
+        let v = lib.views_by(BrowseAxis::ArtistAlbumTrack);
+        let by = |title: &str| {
+            v.iter()
+                .find(|t| t.title.as_deref() == Some(title))
+                .unwrap()
+        };
+        let (intro, reprise) = (by("Intro"), by("Reprise"));
+        assert_eq!(
+            intro.album_key, reprise.album_key,
+            "CD1/CD2 fold into one album"
+        );
+        assert_eq!((intro.disc_no, intro.track_no, intro.disc_count), (1, 1, 2));
+        assert_eq!(
+            (reprise.disc_no, reprise.track_no, reprise.disc_count),
+            (2, 1, 2)
+        );
+        assert_eq!(intro.disc_subtitle.as_deref(), Some("Mondstadt"));
+        assert_eq!(reprise.disc_subtitle.as_deref(), Some("Liyue"));
+        assert_eq!(
+            intro.album_artist.as_deref(),
+            Some("HOYO-MiX"),
+            "album-level artist"
+        );
+        assert_eq!(
+            intro.artist.as_deref(),
+            Some("Guest"),
+            "track artist unchanged"
+        );
+
+        let (a, b) = (by("A"), by("B"));
+        assert_ne!(
+            a.album_key, b.album_key,
+            "same title in two folders = two albums"
+        );
+        assert_eq!((a.disc_no, a.disc_count, a.track_no), (1, 1, 3));
+        assert_eq!(a.disc_subtitle, None);
+        // Untagged ALBUMARTIST falls back to the track artist (importer rule).
+        assert_eq!(a.album_artist.as_deref(), Some("X"));
+        // The key is the compound (source, local) packing; one source here.
+        assert!(v.iter().all(|t| unpack(t.album_key).0 == 0));
+    }
+
+    /// Two sources whose albums both have LOCAL album id 0 still get distinct
+    /// album keys: the source bits of `pack(source, local)` keep them apart.
+    #[test]
+    fn album_keys_never_collide_across_sources() {
+        let (a, b) = (tmpdir("akey_a"), tmpdir("akey_b"));
+        std::fs::write(
+            a.join("x.flac"),
+            flac_with_comments(&["TITLE=X", "ALBUM=Same"]),
+        )
+        .unwrap();
+        std::fs::write(
+            b.join("y.flac"),
+            flac_with_comments(&["TITLE=Y", "ALBUM=Same"]),
+        )
+        .unwrap();
+        let lib = Library::scan_many(&[a, b]).unwrap();
+        let v = lib.views();
+        assert_eq!(v.len(), 2);
+        assert_ne!(v[0].album_key, v[1].album_key);
+        let local = |k: u32| unpack(k).1;
+        assert_eq!(
+            local(v[0].album_key),
+            local(v[1].album_key),
+            "both are local album 0"
+        );
+    }
+
+    /// A playlist snapshot taken from a view carries its tagged track/disc
+    /// numbers; an untagged (0) number stays `None`.
+    #[test]
+    fn snapshot_carries_tagged_track_and_disc_numbers() {
+        let t = TrackView {
+            title: Some("T".into()),
+            artist: Some("A".into()),
+            album: Some("Al".into()),
+            duration_secs: 61.6,
+            track_no: 5,
+            disc_no: 2,
+            ..Default::default()
+        };
+        let s = t.snapshot();
+        assert_eq!(
+            (s.title.as_str(), s.artist.as_str(), s.album.as_str()),
+            ("T", "A", "Al")
+        );
+        assert_eq!(s.duration_secs, 62);
+        assert_eq!((s.track_no, s.disc_no), (Some(5), Some(2)));
+        let u = TrackView::default().snapshot();
+        assert_eq!((u.track_no, u.disc_no), (None, None));
+    }
+
     /// `views_by` projects the owning album's packed original/release dates onto
     /// each `TrackView`, the audiophile original-release year plus the tagged
     /// edition's release year, both year-only (month/day unknown).
@@ -1448,7 +1651,7 @@ mod tests {
     /// End-to-end: a realistic reissue-shaped library (one artist, several albums
     /// with a mix of date tags) scanned through the WHOLE chain -- file tags ->
     /// `soul-audio-import` parse -> `.soulidx` v5 bake -> `IndexReader` -> the
-    /// `album_dates` projection -> `TrackView`. Proves per-album dates survive at
+    /// `album_meta` projection -> `TrackView`. Proves per-album dates survive at
     /// full precision AND that the artist's albums come out ordered chronologically
     /// by the ORIGINAL date (core's `year_at` default), with undated albums last.
     #[test]

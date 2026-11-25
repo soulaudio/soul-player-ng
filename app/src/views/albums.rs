@@ -134,6 +134,19 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     albums
 }
 
+/// Test-only: a stable album key derived from an album NAME (FNV-1a; `0` for
+/// `None`), so hand-built `TrackView` fixtures that share a title share one album,
+/// the grouping those fixtures were written for. Real views carry the catalog's
+/// compound album id instead.
+#[cfg(test)]
+pub(crate) fn test_album_key(album: Option<&str>) -> u32 {
+    album.map_or(0, |a| {
+        a.bytes().fold(0x811c_9dc5u32, |h, b| {
+            (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+        })
+    })
+}
+
 /// Narrow `albums` to those whose name or artist contains `query`, a
 /// case-insensitive substring match; `query` must already be lowercased (the
 /// caller lowercases the search box's text once rather than per-album). An
@@ -853,6 +866,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some(album)),
+            ..Default::default()
         }
     }
 
