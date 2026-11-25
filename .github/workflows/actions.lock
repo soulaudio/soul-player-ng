@@ -16,6 +16,7 @@ workflows:
         - 'hashicorp/setup-terraform@v3.1.2'
     '.github/workflows/installer.yml':
         - 'actions/checkout@v7.0.1'
+        - 'actions/download-artifact@v4.3.0'
     '.github/workflows/pr-title.yml': []
     '.github/workflows/release.yml':
         - 'actions/attest-build-provenance@v4.2.2'
