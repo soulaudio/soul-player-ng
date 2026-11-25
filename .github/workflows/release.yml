@@ -1129,38 +1129,16 @@ jobs:
   # user actually does: by piping the installer that player.soulaudio.co is
   # serving into a shell, letting it resolve the latest release by itself.
   #
-  # That covers the chain the artifact test cannot see: the site deployed, the
-  # installer served, latest.json current, every asset downloadable, the
-  # checksums matching, and the package manager accepting the package. 0.4.6
-  # shipped with one rpm asset returning 500 from GitHub while every other
-  # asset was fine, which nothing in CI would have caught.
-  #
-  # Runs after `site`, so it tests this release rather than the previous one.
+  # Same workflow that can be dispatched by hand against any published
+  # release, so the wiring here is exercised outside a release rather than
+  # being first run when it matters. Runs after `site`, so it tests this
+  # release and not the previous one.
   install-script:
-    name: installer (${{ matrix.name }})
     needs: [guard, site]
     if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: "Ubuntu 24.04 (deb)", image: "ubuntu:24.04", mode: deb, prep: "apt-get update -qq && apt-get install -y -qq curl ca-certificates sudo" }
-          - { name: "Debian 12 (deb)", image: "debian:12", mode: deb, prep: "apt-get update -qq && apt-get install -y -qq curl ca-certificates sudo" }
-          - { name: "Fedora 42 (rpm)", image: "fedora:42", mode: rpm, prep: "dnf install -y -q curl sudo" }
-          - { name: "openSUSE (zypper rpm)", image: "opensuse/tumbleweed", mode: rpm, prep: "zypper --non-interactive --quiet install curl" }
-          - { name: "Arch (AppImage fallback)", image: "archlinux:latest", mode: appimage, prep: "pacman -Sy --noconfirm --quiet curl" }
-          - { name: "AlmaLinux 8 (must refuse)", image: "almalinux:8", mode: refuse, prep: "dnf install -y -q curl" }
-    steps:
-      - uses: actions/checkout@v7.0.1
-
-      - name: Install through the published script
-        run: |
-          docker run --rm \
-            -v "$PWD/packaging/test-install.sh:/test-install.sh:ro" \
-            "${{ matrix.image }}" \
-            sh -c '${{ matrix.prep }} >/dev/null 2>&1 || true; sh /test-install.sh ${{ matrix.mode }} ${{ needs.guard.outputs.version }}'
+    uses: ./.github/workflows/installer.yml
+    with:
+      version: ${{ needs.guard.outputs.version }}
 
   install-script-macos:
     name: installer (macOS dmg)

@@ -40,6 +40,10 @@ ok() { printf 'ok: %s\n' "$*"; }
 # through to the event loop and panicked on any headless machine. Testing
 # 0.4.6 or older will fail here, correctly.
 check_runs() {
+	if [ -n "${SOUL_PLAYER_SKIP_RUN_CHECK:-}" ]; then
+		ok "skipping the run check (asked for)"
+		return 0
+	fi
 	reported=$(soul-player --version 2>/dev/null) || fail "--version exited non-zero"
 	case "$reported" in
 		"soul-player "*) ok "it runs: $reported" ;;
