@@ -58,29 +58,38 @@ static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// test's duration (`let _locale = config::use_test_locale("en");`) so no
 /// concurrent locale-sensitive test can observe or clobber the locale while it
 /// renders and asserts. A sweeper may set further locales while holding the
-/// guard. Poisoning is ignored (one failing test must not cascade). Acquire
-/// this BEFORE [`use_test_config_dir`] when a test needs both, so the two locks
-/// are always taken in the same order (no deadlock).
+/// guard. Dropping the guard (also while unwinding from a panic) resets the
+/// locale to `en` before releasing the lock, so no test leaks its language.
+/// Poisoning is ignored (one failing test must not cascade). Acquire this BEFORE
+/// [`use_test_config_dir`] when a test needs both, so the two locks are always
+/// taken in the same order (no deadlock).
 #[cfg(test)]
-pub(crate) fn use_test_locale(locale: &str) -> std::sync::MutexGuard<'static, ()> {
-    let guard = LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    HOLDS_TEST_LOCALE.with(|h| h.set(true));
+pub(crate) fn use_test_locale(locale: &str) -> TestLocale {
+    let lock = locale_test_lock();
     rust_i18n::set_locale(locale);
-    guard
+    TestLocale { _lock: lock }
+}
+
+/// The guard [`use_test_locale`] returns: holds [`LOCALE_TEST_LOCK`] and resets
+/// the global locale to `en` on drop.
+#[cfg(test)]
+pub(crate) struct TestLocale {
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
 
 #[cfg(test)]
-thread_local! {
-    /// Whether this test thread ever took [`use_test_locale`] (each test runs on its own thread).
-    static HOLDS_TEST_LOCALE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+impl Drop for TestLocale {
+    fn drop(&mut self) {
+        // Runs before the `_lock` field drops, so the reset happens under the lock.
+        rust_i18n::set_locale("en");
+    }
 }
 
-/// Whether this test thread uses [`use_test_locale`]. A test that does not must
-/// not reset the global locale to `en` (`apply_locale("en")` housekeeping), or it
-/// clobbers a concurrent test that holds the lock in another locale.
+/// Acquire [`LOCALE_TEST_LOCK`] without touching the locale (poisoning ignored),
+/// for a test that only reads the global locale.
 #[cfg(test)]
-pub(crate) fn holds_test_locale() -> bool {
-    HOLDS_TEST_LOCALE.with(|h| h.get())
+pub(crate) fn locale_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A test thread's own config dir: created lazily on the first

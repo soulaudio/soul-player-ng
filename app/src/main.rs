@@ -81,7 +81,7 @@ fn resolve_locale(pref: &str) -> &'static str {
     if let Some(&code) = LOCALES.iter().find(|&&c| c == pref) {
         return code;
     }
-    let sys = sys_locale::get_locale().unwrap_or_default();
+    let sys = system_locale();
     let lang = sys.split(['-', '_']).next().unwrap_or("en").to_lowercase();
     LOCALES
         .iter()
@@ -90,17 +90,23 @@ fn resolve_locale(pref: &str) -> &'static str {
         .unwrap_or("en")
 }
 
+/// The OS locale tag (`en-US`, `cs-CZ`, ...), empty when unknown.
+#[cfg(not(test))]
+fn system_locale() -> String {
+    sys_locale::get_locale().unwrap_or_default()
+}
+
+/// Test builds read the "system" language as English, so a test never renders
+/// in the language of the machine it runs on.
+#[cfg(test)]
+fn system_locale() -> String {
+    "en".to_string()
+}
+
 /// Point the global `rust_i18n` locale at `pref`'s resolved code, so the next
 /// render's `t!` calls translate against it.
 fn apply_locale(pref: &str) {
-    let code = resolve_locale(pref);
-    // Tests: an unguarded test's `apply_locale("en")` reset must not flip the
-    // locale under a concurrent test that holds `config::use_test_locale`.
-    #[cfg(test)]
-    if code == "en" && !config::holds_test_locale() {
-        return;
-    }
-    rust_i18n::set_locale(code);
+    rust_i18n::set_locale(resolve_locale(pref));
 }
 
 /// Switch the UI language (Settings → Language): remember the pref, apply it, and
@@ -992,8 +998,9 @@ impl State {
         // Band tables default open within an expanded card.
         let eq_bands_expanded: Vec<bool> = vec![true; dsp_units.len()];
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
+        // Applied by the app's `init` (not here), so building a `State` never
+        // flips the process-global locale.
         let locale_pref = config::load_locale();
-        apply_locale(&locale_pref);
         // Restore the managed-library choice (defaults: unset dest, "artist-album"
         // template, Copy); the stored strategy id maps to the organizer enum.
         let (managed_dest, managed_template, managed_strategy_id) = config::load_managed_library();
@@ -5509,6 +5516,7 @@ fn main() -> anyhow::Result<()> {
         })
         .init(move || {
             let mut s = State::new(init_host.clone());
+            apply_locale(&s.locale_pref);
             s.crashed_last_session = crashed_last_session;
             s.move_offer = move_offer.clone();
             // Only where the switch can actually happen: updates on, and not
@@ -6815,7 +6823,6 @@ mod tests {
                 for (tab_name, tab) in tabs {
                     let mut s = settings_state(std::slice::from_ref(&folder), &[]);
                     s.settings_tab = tab;
-                    // AFTER State::new, which re-applies the persisted locale over ours.
                     apply_locale(loc);
                     let mut rt = Runtime::new(s, view, viewport, env);
                     rt.frame(0.0);
@@ -7058,7 +7065,6 @@ mod tests {
                 for (scene_name, scene) in scenes {
                     let mut s = populated_state();
                     scene(&mut s);
-                    // AFTER State::new, which re-applies the persisted locale.
                     apply_locale(loc);
                     let mut rt = Runtime::new(s, view, viewport, env);
                     rt.frame(0.0);
@@ -8669,11 +8675,8 @@ mod tests {
     /// count + folder name), and is absent when there were no deletions.
     #[test]
     fn removal_notice_renders_in_the_sources_page() {
-        // This asserts English UI text. `populated_state()` → `State::new` LOADS the
-        // persisted locale and applies it to the shared `rust_i18n` global, and the
-        // language-picker test persists "de", so set the locale AFTER building the
-        // state (and hold the config lock to serialize against that test).
-        let _guard = config::use_test_config_dir();
+        // This asserts English UI text, so it holds the locale lock.
+        let _locale = config::use_test_locale("en");
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -8682,7 +8685,6 @@ mod tests {
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
         s.removal_notice = Some((PathBuf::from("/music/Concerts"), 2));
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         // The settings page carries a scrollbar whose live-bound layout needs a waker
         // to settle before the scrolled content is laid out for `find`.
@@ -8818,7 +8820,6 @@ mod tests {
                 count: 5,
             }],
         ));
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.set_live_waker(std::sync::Arc::new(|| {}));
         rt.frame(0.0);
@@ -8860,7 +8861,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
 
         // A clean start shows no dialog.
         let mut clean = populated_state();
@@ -9053,7 +9053,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
@@ -9098,7 +9097,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
@@ -9148,7 +9146,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
@@ -9194,7 +9191,6 @@ mod tests {
             exclusive: false,
             loudness: None,
         });
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
@@ -9246,7 +9242,6 @@ mod tests {
             exclusive: false,
             loudness: None,
         });
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         // Settings → Audio is laid out AS the pipeline: one card per stage.
@@ -9274,7 +9269,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
 
         // Exclusive OFF → the Exclusive card renders but no strict sub-toggle.
         let mut s = populated_state();
@@ -9320,7 +9314,6 @@ mod tests {
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         // Card 0 open so its body (graph + bands) lays out.
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         // Tall window so every band row lays out within the scroll content.
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
@@ -9354,7 +9347,6 @@ mod tests {
         // Start from a known-off state (the shared test config dir may carry an
         // `enabled` flag from another test's persisted EQ).
         active_eq_mut(&mut s).enabled = false;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         assert!(
@@ -9382,7 +9374,6 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         active_eq_mut(&mut s).enabled = true;
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         let (x, y) = rt.find("eq-graph-0").expect("the EQ graph renders");
@@ -9426,7 +9417,6 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         active_eq_mut(&mut s).enabled = true;
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         let (x, y) = rt.find("eq-graph-0").expect("the EQ graph renders");
@@ -9464,7 +9454,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let n0 = active_eq(&rt.state).bands.len();
@@ -9573,7 +9562,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
@@ -9609,7 +9597,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
@@ -9653,7 +9640,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
@@ -9720,7 +9706,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
@@ -9796,7 +9781,6 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         s.dsp_units = vec![DspUnit::Eq(EqUnit::default())];
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt.find("dsp-name-0").expect("the unit title renders");
@@ -9848,7 +9832,6 @@ mod tests {
             })];
             // Collapse the card so the whole stage lays out within the window.
             s.dsp_expanded = vec![false];
-            apply_locale("en");
             let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
             rt.frame(0.0);
             rt.elements()
@@ -9885,7 +9868,6 @@ mod tests {
             DspUnit::Eq(EqUnit::default()),
         ];
         s.dsp_expanded = vec![true, false, false];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1300.0, 640.0), env);
         rt.frame(0.0);
         // Scroll down until the Add control is in view.
@@ -9928,7 +9910,6 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         s.dsp_units = vec![DspUnit::Eq(EqUnit::default())];
         s.dsp_expanded = vec![false];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 2200.0), env);
         rt.frame(0.0);
         // Open the dropdown, settle its enter animation.
@@ -9974,7 +9955,6 @@ mod tests {
             ];
             s.dsp_expanded = vec![false, false, false];
             s.dsp_drag = Some(drag);
-            apply_locale("en");
             let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
             rt.frame(0.0);
             let (_, drop) = rt.find("dsp-drop").expect("the drop line renders");
@@ -10019,7 +9999,6 @@ mod tests {
         set_dsp_unit_enabled(&mut s, 2, true);
         // Distinct expand flags so the reorder's flag-tracking is observable.
         s.dsp_expanded = vec![true, false, false];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
         rt.frame(0.0);
         // Enable chip toggles ONLY unit 1.
@@ -10348,7 +10327,6 @@ mod tests {
         s.dsp_units = s.profile_set.active_chain().unwrap().units.clone();
         s.dsp_expanded = vec![false];
         s.eq_bands_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1300.0, 900.0), env);
         rt.frame(0.0);
 
@@ -10424,7 +10402,6 @@ mod tests {
         set_eq_preamp(&mut s, 0, -6.0);
         set_eq_preamp(&mut s, 1, 0.0);
         set_eq_preamp(&mut s, 2, 6.0);
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
         rt.frame(0.0);
         // Drag unit 0's grip DEEP into unit 1's expanded body (far past one row height).
@@ -10471,7 +10448,6 @@ mod tests {
         })];
         s.dsp_expanded = vec![true];
         s.eq_bands_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1200.0, 2600.0), env);
         rt.frame(0.0);
         assert!(
@@ -10518,7 +10494,6 @@ mod tests {
             eq.bands = soul_player_host::default_bands().to_vec();
         }
         s.dsp_expanded = vec![true, true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 4200.0), env);
         rt.frame(0.0);
         // Both graphs render their own nodes, namespaced by unit.
@@ -10604,7 +10579,6 @@ mod tests {
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         // Press Import → an open-file dialog is pending.
@@ -10639,7 +10613,6 @@ mod tests {
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         active_eq_mut(&mut s).bands[4].gain_db = 5.0; // the 2 kHz bell
         active_eq_mut(&mut s).preamp_db = -1.0;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         click_key(&mut rt, "eq-export-0");
@@ -10683,7 +10656,6 @@ mod tests {
             exclusive: false,
             loudness: None,
         });
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
         // Live-bound thumb rects need a waker to land; the engine's own scrollbar
         // test does the same before framing.
@@ -10745,7 +10717,6 @@ mod tests {
         };
         let mut s = populated_state();
         s.route = Route::Library;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
         // Live-bound thumb rects need a waker to land (same as the settings test).
         rt.set_live_waker(std::sync::Arc::new(|| {}));
@@ -10777,7 +10748,6 @@ mod tests {
             scale: 2.0,
         };
         let s = populated_state();
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         let (bar, _) = rt
@@ -10810,7 +10780,6 @@ mod tests {
             scale: 2.0,
         };
         let s = populated_state();
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         let mut insets = rune::ChromeInsets::default();
         insets.trailing = 138.0; // Windows caption buttons
@@ -10933,7 +10902,6 @@ mod tests {
             scale: 2.0,
         };
         let s = populated_state();
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         let (root, _) = rt.presented("app-root").expect("app-root renders");
@@ -11100,7 +11068,6 @@ mod tests {
         scene_queue(&mut s);
         // Many context rows so the queue list overflows a short sidebar for sure.
         s.context_ids = s.library.iter().map(|t| t.id).collect();
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
         rt.set_live_waker(std::sync::Arc::new(|| {}));
         rt.frame(0.0);
@@ -11200,7 +11167,6 @@ mod tests {
             }),
         });
         s.replaygain_mode = ReplayGainMode::Off;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
@@ -11353,11 +11319,6 @@ mod tests {
         click_key(&mut rt, "lang-picker-opt-de");
         assert_eq!(rt.state.locale_pref, "de", "picking commits the locale");
         assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
-
-        // Reset the PERSISTED locale and the shared rust_i18n global, sibling tests'
-        // `populated_state()` loads the persisted locale, so "de" must not leak.
-        config::save_locale("en");
-        apply_locale("en");
     }
 
     /// A dropdown is light-dismiss, NOT a scroll-locking modal: an outside scroll or
@@ -11380,7 +11341,6 @@ mod tests {
         {
             let mut s = settings_state(&[], &[]);
             s.settings_tab = SettingsTab::Appearance;
-            apply_locale("en");
             let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
             rt.frame(0.0);
             open(&mut rt);
@@ -11395,7 +11355,6 @@ mod tests {
         {
             let mut s = settings_state(&[], &[]);
             s.settings_tab = SettingsTab::Appearance;
-            apply_locale("en");
             let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
             rt.on_key = Some(handle_key);
             rt.frame(0.0);
@@ -11859,7 +11818,6 @@ mod tests {
         };
         let mut s = settings_state(&[], &[]);
         s.settings_tab = SettingsTab::MusicData;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         // Open the template dropdown, then settle its enter transition (it fades in
@@ -11880,10 +11838,6 @@ mod tests {
             "genre-artist-album",
             "and persists the preset id to config"
         );
-        // Reset the PERSISTED locale and the shared rust_i18n global, sibling tests'
-        // `populated_state()` loads the persisted locale, so "de" must not leak.
-        config::save_locale("en");
-        apply_locale("en");
     }
 
     /// Layout lists only the base presets; the Multi-disc picker composes the
@@ -11897,7 +11851,6 @@ mod tests {
         };
         let mut s = settings_state(&[], &[]);
         s.settings_tab = SettingsTab::MusicData;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         click_key(&mut rt, "managed-template");
@@ -12003,7 +11956,6 @@ mod tests {
         let mut s = settings_state(&[], &[]);
         s.settings_tab = SettingsTab::MusicData;
         s.managed_dest = dest;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         click_key(&mut rt, "add-source");
@@ -12037,23 +11989,23 @@ mod tests {
     /// Build a frame with the organize modal in a given phase, settled so its
     /// controls are present + hit-testable.
     fn organize_frame(phase: OrganizePhase) -> Runtime<State> {
-        organize_frame_in(phase, "en")
-    }
-
-    /// [`organize_frame`] in `locale` (the caller holds `config::use_test_locale`).
-    fn organize_frame_in(phase: OrganizePhase, locale: &str) -> Runtime<State> {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
         let mut s = State::new(PlayerHandle::offline());
         s.organize = Some(phase);
-        apply_locale(locale);
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         rt.settle_all();
         rt.frame(0.0);
         rt
+    }
+
+    /// [`organize_frame`] in `locale` (the caller holds `config::use_test_locale`).
+    fn organize_frame_in(phase: OrganizePhase, locale: &str) -> Runtime<State> {
+        apply_locale(locale);
+        organize_frame(phase)
     }
 
     /// Without a managed destination, the "Add music…" entry is present but a
@@ -12069,7 +12021,6 @@ mod tests {
             !el_info(&rt, "add-source-opt-organize").focusable,
             "without a destination it is a disabled hint (not focusable)"
         );
-        apply_locale("en");
     }
 
     /// With a managed destination set, the "Add music…" entry becomes a focusable
@@ -12081,7 +12032,6 @@ mod tests {
             el_info(&rt, "add-source-opt-organize").focusable,
             "a configured destination makes Add music… focusable"
         );
-        apply_locale("en");
     }
 
     /// The organize modal renders the right keyed controls for each phase.
@@ -18369,5 +18319,30 @@ mod tests {
             }
         }
         assert!(!rt.state.playing, "Space should have paused playback");
+    }
+
+    /// The locale guard hands the global locale back as English when it drops,
+    /// even when the test holding it panicked, so a failing locale test never
+    /// leaks its language into the rest of the suite.
+    #[test]
+    fn the_test_locale_guard_resets_to_english_even_after_a_panic() {
+        let failed = std::thread::spawn(|| {
+            let _locale = config::use_test_locale("cs");
+            panic!("a failing Czech test");
+        })
+        .join();
+        assert!(failed.is_err());
+        let _lock = config::locale_test_lock();
+        assert_eq!(&*rust_i18n::locale(), "en");
+    }
+
+    /// Building the app state never touches the global locale, so a test that
+    /// builds a `State` cannot flip the language under a concurrent locale test.
+    #[test]
+    fn building_the_state_leaves_the_global_locale_alone() {
+        let _locale = config::use_test_locale("cs");
+        config::save_locale("de");
+        let _s = State::new(PlayerHandle::offline());
+        assert_eq!(&*rust_i18n::locale(), "cs");
     }
 }
