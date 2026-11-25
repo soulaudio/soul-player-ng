@@ -1,0 +1,115 @@
+# Flathub manifest — builds Soul Player FROM SOURCE, offline.
+#
+# This is a second manifest on purpose, and `packaging/flatpak/` is not it.
+# That one installs the already-built, already-tested binary and produces the
+# `.flatpak` bundle attached to each GitHub release. Flathub forbids that
+# shape for us: "All source available submissions must be built entirely from
+# source code", with prebuilt `extra-data` reserved for non-redistributable
+# content, and we are Apache-2.0. So the two manifests differ in exactly one
+# respect — where the binary comes from — and must agree on everything else.
+# `the_two_flatpak_manifests_agree` enforces that.
+#
+# "There is no network access during the build process", so everything the
+# compiler needs is a declared source with a checksum:
+#
+#   * cargo-sources.json — every crate, generated from app/rune/Cargo.lock by
+#     flatpak-cargo-generator (~1500 sources). Both git dependencies, `rune` and
+#     `soul-audio-core`, are resolved to the commits the lockfile pins.
+#   * the Rust toolchain — the dated nightly tarball from static.rust-lang.org,
+#     per architecture, by sha256. `app/rune/rust-toolchain.toml` pins
+#     nightly-2026-11-10 because Rune uses unstable features (stable 1.93.1
+#     fails outright on `atomic_try_update`), and the `rust-nightly` SDK
+#     extension is not an option: it was archived in September 2026 after
+#     going untouched since May 2024.
+#
+# Installing the tarball directly rather than through rustup is what makes this
+# reproducible: with no rustup shim, `rust-toolchain.toml` is simply inert and
+# the build gets exactly the pinned nightly, verified by checksum.
+#
+# Regenerate the crate sources with packaging/flathub/generate-sources.sh
+# whenever app/rune/Cargo.lock changes; CI fails if they disagree.
+app-id: co.soulaudio.soulplayer
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+command: soul-player
+
+finish-args:
+  # Kept identical to packaging/flatpak/co.soulaudio.soulplayer.yml — see there
+  # for why each one is needed. A test fails if the two lists diverge.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --socket=pulseaudio
+  - --share=network
+  - --talk-name=org.freedesktop.secrets
+  - --filesystem=xdg-music
+  # The permission a reviewer will ask about. Bit-perfect exclusive output opens
+  # the sound card directly as `hw:CARD,DEV`, which needs /dev/snd;
+  # `--socket=pulseaudio` can only reach the shared mixer. Exclusive output is
+  # the point of this player, so shipping it disabled would be the worse answer.
+  # Shared playback works without this, so revoking it in Flatseal costs
+  # exclusive mode and nothing else.
+  - --device=all
+
+modules:
+  - name: soul-player
+    buildsystem: simple
+    build-options:
+      # The toolchain is installed into the build dir, not /app: it is a build
+      # dependency and must not end up in the finished runtime.
+      append-path: /run/build/soul-player/toolchain/bin
+      env:
+        # Must be `<build dir>/cargo`, because that is where
+        # cargo-sources.json writes the vendor config it generates.
+        CARGO_HOME: /run/build/soul-player/cargo
+        CARGO_NET_OFFLINE: 'true'
+        # Rune's build pulls in no proc-macro cross-compilation tricks, but the
+        # release profile is heavy; keep debuginfo out of the Flathub build.
+        CARGO_PROFILE_RELEASE_DEBUG: 'false'
+    build-commands:
+      # `--without=rust-docs` drops ~200 MB of HTML nobody unpacks here, and
+      # `--disable-ldconfig` is required: the installer cannot run ldconfig
+      # inside the build sandbox.
+      - ./toolchain/install.sh --prefix=/run/build/soul-player/toolchain
+        --without=rust-docs --disable-ldconfig
+      # Run from the BUILD ROOT, not app/rune: the generated vendor config says
+      # `directory = "cargo/vendor"`, a path relative to the working directory.
+      # `cd app/rune && cargo build` would resolve it to app/rune/cargo/vendor
+      # and fail to find a single crate.
+      - cargo build --release --offline --manifest-path app/rune/Cargo.toml
+      - install -Dm755 app/rune/target/release/soul-player /app/bin/soul-player
+      - install -Dm644 packaging/flathub/co.soulaudio.soulplayer.desktop
+        /app/share/applications/co.soulaudio.soulplayer.desktop
+      # The 512x512 icon: Flathub requires SVG or at least 256x256, and this is
+      # the same artwork cargo-packager uses for every other package.
+      - install -Dm644 app/rune/icons/icon.png
+        /app/share/icons/hicolor/512x512/apps/co.soulaudio.soulplayer.png
+      - install -Dm644 app/rune/icons/128x128.png
+        /app/share/icons/hicolor/128x128/apps/co.soulaudio.soulplayer.png
+      # Installed from the repo rather than copied in here, so the store listing
+      # and the bundle cannot describe different releases.
+      - install -Dm644 packaging/flatpak/co.soulaudio.soulplayer.metainfo.xml
+        /app/share/metainfo/co.soulaudio.soulplayer.metainfo.xml
+    sources:
+      - type: git
+        url: https://github.com/soulaudio/soul-player-ng.git
+        tag: v0.4.6
+        commit: 0000000000000000000000000000000000000000
+
+      # The pinned nightly, one per architecture. `only-arches` keeps the other
+      # one from being fetched at all, which matters on Flathub's builders.
+      - type: archive
+        url: https://static.rust-lang.org/dist/2026-11-10/rust-nightly-x86_64-unknown-linux-gnu.tar.xz
+        sha256: ce515c16d6565c500e01ecf57c93d92e37fed260fc0e41f92cb4acad8feb3466
+        dest: toolchain
+        only-arches:
+          - x86_64
+      - type: archive
+        url: https://static.rust-lang.org/dist/2026-11-10/rust-nightly-aarch64-unknown-linux-gnu.tar.xz
+        sha256: 1e44ac4427195b3a69fe7d80d0602f02ba6bbf5735392b087978f3254bdc5cf0
+        dest: toolchain
+        only-arches:
+          - aarch64
+
+      - cargo-sources.json
