@@ -95,6 +95,33 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.6" date="2026-11-25">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Add the from-source Flathub manifest and prove it builds</li>
+          <li>Cap configured sources at 16 with a message, not a panic</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>Pin the packaging tools and guard every version coupling</li>
+          <li>Prune expired authorization codes so the code store stays bounded</li>
+          <li>Keep the AppStream releases current, and enforce it</li>
+          <li>Add connect + request timeouts to every remote HTTP client</li>
+          <li>Don't panic on a reused root whose cache raced away mid-rescan</li>
+          <li>Isolate event-subscriber panics so one can't brick the event stream</li>
+          <li>Probe remote health without holding the remote_health lock</li>
+          <li>Reject a hostile blob count in deframe before reserving (OOM/abort)</li>
+        </ul>
+        <p>Faster</p>
+        <ul>
+          <li>Skip the per-block output-config clone in the steady state</li>
+          <li>Bound the cover-decode caches so a long browse can't run out of memory</li>
+          <li>Stop cloning the DSP chain on every audio block</li>
+          <li>Memoize home/album/artist detail pages + loudness-aware fingerprint</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.5" date="2026-11-24">
       <description>
         <p>New</p>
