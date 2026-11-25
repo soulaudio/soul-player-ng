@@ -2281,8 +2281,8 @@ fn exclusive_status(display: &ExclusiveDisplay) -> (String, StatusKind) {
             t!("settings.exclusivePending").to_string(),
             StatusKind::Attention,
         ),
-        // Neutral, not Attention: nothing is wrong and there is nothing to fix
-        //, this platform simply has no bit-perfect path yet.
+        // Neutral, not Attention: nothing is wrong and there is nothing to fix,
+        // this platform simply has no bit-perfect path yet.
         ExclusiveDisplay::Unsupported => (
             format!("{} · {}", output_api(), t!("settings.exclusiveUnsupported")),
             StatusKind::Neutral,
@@ -3039,8 +3039,8 @@ fn dsp_type_options() -> Vec<(String, String)> {
 }
 
 /// The "+ Add DSP" control: opens the shared [`dropdown`] of DSP types
-/// ([`add_dsp_menu`], mounted at the window root). (The dropdown is now light-dismiss
-///, an outside press / scroll / Escape closes it, so it behaves even anchored deep
+/// ([`add_dsp_menu`], mounted at the window root). (The dropdown is now light-dismiss,
+/// an outside press / scroll / Escape closes it, so it behaves even anchored deep
 /// in the settings scroll.)
 fn add_dsp_control(p: &Palette) -> El {
     // A touch taller than a row chip (py SM vs XXS) so the add action reads as the

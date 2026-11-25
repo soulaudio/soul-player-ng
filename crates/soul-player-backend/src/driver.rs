@@ -110,11 +110,11 @@ pub fn apply_command<K: Sink, D: SeekableDecoder>(
         Command::Goto(i) => player.goto(i as usize),
         // ReplayGain is applied by the pump directly against the deck (it needs
         // the per-track RG tags the loader read, which `apply_command` has no
-        // access to) — there is no `Player` transport call for it, so here it is
+        // access to), there is no `Player` transport call for it, so here it is
         // a no-op. See [`apply_replay_gain`].
         Command::SetReplayGain { .. } => Ok(()),
         // Seeding the loudness cache is pump state (the cache lives there), not a
-        // transport action — the pump intercepts it before this call. No-op here.
+        // transport action, the pump intercepts it before this call. No-op here.
         Command::SeedLoudness(_) => Ok(()),
         // The background loudness sweep enqueues on the pump's cache; intercepted there.
         Command::AnalyzeTracks(_) => Ok(()),
@@ -139,7 +139,7 @@ pub struct RgInfo {
 }
 
 /// The dB to apply for one track under `mode` + `preamp_db`, given its RG tags
-/// (`None` = untagged). Pure — the single source of truth for the normalization
+/// (`None` = untagged). Pure: the single source of truth for the normalization
 /// policy, unit-tested directly:
 /// - `Off` → `0.0` (unity; the preamp is intentionally ignored so "off" is a
 ///   bit-identical passthrough).
@@ -204,7 +204,7 @@ pub fn project_tick<K: Sink, D: SeekableDecoder>(
     }
 }
 
-/// The session's volume + mute — the source of truth for the gain the deck runs
+/// The session's volume + mute, the source of truth for the gain the deck runs
 /// at, and for `Tick.{volume, muted}`. The core player has no mute, so muting is
 /// modelled here and applied as a 0 effective [`gain`](VolumeState::gain). Kept
 /// a small, pure value type so the mute rules are unit-tested without a deck.
@@ -215,7 +215,7 @@ pub struct VolumeState {
 }
 
 impl VolumeState {
-    /// Full volume, un-muted — the session default.
+    /// Full volume, un-muted: the session default.
     pub fn new() -> Self {
         Self {
             volume: 1.0,
@@ -225,7 +225,7 @@ impl VolumeState {
 
     /// Set the user volume (clamped to 0.0..=1.0). A positive volume clears mute,
     /// so dragging the slider un-mutes (the old app's VolumeControl). Setting it
-    /// to exactly 0 is *not* a mute — it leaves the mute flag untouched.
+    /// to exactly 0 is *not* a mute, it leaves the mute flag untouched.
     pub fn set_volume(&mut self, v: f32) {
         self.volume = v.clamp(0.0, 1.0);
         if self.volume > 0.0 {
@@ -261,21 +261,21 @@ impl Default for VolumeState {
 }
 
 /// How many upcoming CONTEXT tracks (the album/playlist remainder after the
-/// manual queue) to project for the "Next from" band. Bounded so a huge library —
-/// or `Repeat::All`'s infinite stream — can't grow the snapshot unboundedly; the
+/// manual queue) to project for the "Next from" band. Bounded so a huge library,
+/// or `Repeat::All`'s infinite stream, can't grow the snapshot unboundedly; the
 /// sidebar only ever shows a scrollable handful.
 const UPCOMING_CONTEXT_CAP: usize = 64;
 
 /// Project the Up-Next snapshot: the manual queue (`up_next_ids`) and the real
 /// upcoming CONTEXT tracks (`context_ids`) the player will actually play after it,
-/// honouring shuffle — so the UI renders FROM the player instead of guessing from
+/// honouring shuffle, so the UI renders FROM the player instead of guessing from
 /// library order (which is wrong once shuffle is on).
 pub fn project_queue<K: Sink, D: SeekableDecoder>(player: &ServicePlayer<K, D>) -> QueueState {
     let q = player.sequencer();
     let manual = q.upnext_len();
     // `upcoming_iter` is INFINITE under Repeat::All (it loops the context) and
     // Repeat::One (it freezes on the current). Taken naively that fills the
-    // "Next from…" band with the same tracks over and over — the "shows tracks
+    // "Next from…" band with the same tracks over and over, the "shows tracks
     // twice" bug. Bound it to ONE pass over the other source tracks (`source_len-1`,
     // the whole context minus the current), still capped for a huge library; under
     // Repeat::One the source is frozen, so there is no upcoming context at all.
@@ -292,8 +292,8 @@ pub fn project_queue<K: Sink, D: SeekableDecoder>(player: &ServicePlayer<K, D>) 
     }
 }
 
-/// Project the current track's **signal path** — source → decode → ReplayGain →
-/// resample → output — straight from the deck's real decode chain, so the display
+/// Project the current track's **signal path**, source → decode → ReplayGain →
+/// resample → output, straight from the deck's real decode chain, so the display
 /// matches what the engine actually does (DSD reads as DSD; a rate match reads as
 /// no-resample / sample-rate-exact). `None` when nothing is loaded.
 #[must_use]
@@ -318,7 +318,7 @@ pub fn project_signal_path<K: Sink, D: SeekableDecoder>(
         device_rate: di.device_rate,
         resampling: di.resampling,
         // The device's real output depth (shared mixer format, or the negotiated
-        // bit-perfect depth in exclusive mode), sourced from the sink — not a
+        // bit-perfect depth in exclusive mode), sourced from the sink, not a
         // hardcoded canonical 24.
         output_bits: di.output_format.bits_per_sample(),
         exclusive: di.exclusive,
@@ -352,11 +352,11 @@ pub fn native_rate_target(
 /// rate, reopen the device **in place** at the track's rate ([`Deck::reopen_sink_at`])
 /// so the track plays with no resampling. In-place is essential: WASAPI exclusive is
 /// one-client-per-device, so opening a *second* exclusive stream to swap in would fail
-/// with device-in-use — the one sink must release + re-acquire.
+/// with device-in-use, the one sink must release + re-acquire.
 ///
 /// `tried` is the caller's anti-thrash latch (threaded through the pump loop): it is
-/// latched whenever the reopen does NOT land on `want` — an error, or the sink falling
-/// back to its old rate because the device refused the new one — so the same rate isn't
+/// latched whenever the reopen does NOT land on `want`, an error, or the sink falling
+/// back to its old rate because the device refused the new one, so the same rate isn't
 /// retried every pump (which would thrash the device). Only landing on `want` clears it.
 /// A shared sink (`exclusive() == false`) never reopens.
 pub fn maybe_switch_native_rate<K: Sink, D: SeekableDecoder>(
@@ -393,7 +393,7 @@ pub fn maybe_switch_native_rate<K: Sink, D: SeekableDecoder>(
     }
 }
 
-/// The desired output configuration — which device, whether to drive it exclusively
+/// The desired output configuration, which device, whether to drive it exclusively
 /// (bit-perfect), and (exclusive only) whether to STOP rather than fall back to shared.
 /// The host updates this live; the pump applies it to the current track via
 /// [`maybe_apply_output_change`].
@@ -410,7 +410,7 @@ pub struct OutputConfig {
 /// Whether a desired output change needs the sink **rebuilt**. A **device** or
 /// **exclusive-mode** change alters the hardware stream, so the sink must be swapped;
 /// a **strict-only** change does not (it only affects how a FUTURE exclusive-open
-/// handles a device refusal), so it's just recorded. Pure — the decision is unit-tested
+/// handles a device refusal), so it's just recorded. Pure: the decision is unit-tested
 /// without a device.
 #[must_use]
 pub fn output_change_needs_rebuild(current: &OutputConfig, desired: &OutputConfig) -> bool {
@@ -424,7 +424,7 @@ pub enum OutputSwap {
     /// Now driving the desired device (`applied` was updated).
     Applied,
     /// The build failed but the deck was restored to a WORKING sink (the previous device,
-    /// or the shared stream was never dropped) — audio continues.
+    /// or the shared stream was never dropped), audio continues.
     KeptCurrent(anyhow::Error),
     /// The build failed and the deck is on the SILENT park placeholder (strict stop, or
     /// even the restore couldn't open). The caller should treat the output as parked and
@@ -454,7 +454,7 @@ pub enum OutputSwap {
 /// rebuild and is just recorded ([`OutputSwap::Applied`]).
 ///
 /// On a `build` failure the return says where the deck ended: [`OutputSwap::KeptCurrent`]
-/// (restored to a working sink, audio continues) or [`OutputSwap::Parked`] (silent — a
+/// (restored to a working sink, audio continues) or [`OutputSwap::Parked`] (silent, a
 /// strict stop, or the restore itself failed). `applied` is left unchanged on failure;
 /// the caller latches `desired` so it does not thrash the device every pump block.
 pub fn maybe_apply_output_change<K, D, FBuild, FPark>(
@@ -477,15 +477,15 @@ where
     tracing::info!(from = ?applied, to = ?desired, "applying live output change");
     // Release-then-acquire is only REQUIRED for a SAME-DEVICE exclusive transition. Exclusive
     // output is one-client-per-device: you cannot open a second stream on the SAME endpoint
-    // while the old one still holds it (AUDCLNT_E_DEVICE_IN_USE — the flaky shared->exclusive
+    // while the old one still holds it (AUDCLNT_E_DEVICE_IN_USE, the flaky shared->exclusive
     // toggle), and a same-device exclusive->shared release has the same constraint (the old
     // exclusive stream must let go first). So for that case we park (go silent) first, drop the
     // old sink to free the endpoint, then open the new one.
     //
     // A DIFFERENT device has no such contention (a different endpoint is a different stream),
     // so it takes the gapless OPEN-NEW-BEFORE-CLOSE path below, exactly like a shared change:
-    // the old device keeps playing out its ring buffer while the new one opens — which is slow
-    // (hundreds of ms for a WASAPI/CoreAudio/ALSA exclusive open) — and audio only crosses over
+    // the old device keeps playing out its ring buffer while the new one opens, which is slow
+    // (hundreds of ms for a WASAPI/CoreAudio/ALSA exclusive open), and audio only crosses over
     // at the instant of the swap. THIS is the fix for "switching the output device halts the
     // track": previously ANY exclusive involvement parked first, so even picking a different DAC
     // went silent for the whole device-open. Now only a same-device exclusive switch does.
@@ -495,7 +495,7 @@ where
         // Park on the device-free placeholder first (drops the old sink, frees the
         // device), then build the new sink on the freed device and swap it in.
         if let Err(e) = player.deck_mut().swap_sink(park()) {
-            // Parking itself failed (the current track can't map onto the placeholder) —
+            // Parking itself failed (the current track can't map onto the placeholder),
             // the deck is untouched, still on its working sink.
             return OutputSwap::KeptCurrent(anyhow::anyhow!("park sink for output change: {e:?}"));
         }
@@ -565,11 +565,11 @@ where
 }
 
 /// Rebuild the output sink from scratch for `desired` and swap it onto the deck,
-/// **unconditionally** — used to recover from a parked (silent) sink after an earlier
+/// **unconditionally**, used to recover from a parked (silent) sink after an earlier
 /// build failed (e.g. a strict exclusive open that couldn't acquire the device, or no
 /// device at all at startup). Unlike [`maybe_apply_output_change`] it does not compare
 /// against `applied` (the live sink is the device-free placeholder, which holds no
-/// device — so a plain build-then-swap is safe, nothing to release first) and it does
+/// device, so a plain build-then-swap is safe, nothing to release first) and it does
 /// not restore an old device on failure (there is none; the deck stays on the silent
 /// placeholder for the caller to retry).
 ///
@@ -607,7 +607,7 @@ pub enum PumpFailure {
 }
 
 /// Classify a pump error. Only [`SinkError::Closed`](soul_audio_core::SinkError::Closed)
-/// means the device itself is gone — a sink reports it when its device stopped being
+/// means the device itself is gone, a sink reports it when its device stopped being
 /// alive, instead of blocking forever on a buffer nobody drains.
 pub fn classify_pump_error(e: &DeckError) -> PumpFailure {
     match e {
@@ -616,7 +616,7 @@ pub fn classify_pump_error(e: &DeckError) -> PumpFailure {
     }
 }
 
-/// React to a lost output device: **pause** (Apple Music behaviour on unplug — never
+/// React to a lost output device: **pause** (Apple Music behaviour on unplug, never
 /// auto-resume onto another device, e.g. laptop speakers at headphone volume) and park
 /// the deck on the device-free placeholder, which drops the dead sink. The position is
 /// held, so Play resumes where it stopped once an output is back.
@@ -655,7 +655,7 @@ mod tests {
 
     /// A player over NullSink/ConstDecoder with a custom prev threshold, so a
     /// short ConstDecoder track can deterministically outrun (or stay under)
-    /// it — the 1 s default is unreachable on a 4000-frame track.
+    /// it, the 1 s default is unreachable on a 4000-frame track.
     fn player_with_threshold(prev_restart_frames: u64) -> ServicePlayer<NullSink, ConstDecoder> {
         let deck = Deck::new(NullSink::new(RATE, 2), Quality::Hq);
         let engine = Engine::new(deck, queue_for(Vec::new()));
@@ -664,7 +664,7 @@ mod tests {
 
     /// Run the open/pump loop `cycles` times, feeding a ConstDecoder for each
     /// track the player asks to open (id used as the constant sample so tracks
-    /// are distinguishable). Deterministic — no threads, no device.
+    /// are distinguishable). Deterministic: no threads, no device.
     fn drive(p: &mut ServicePlayer<NullSink, ConstDecoder>, cycles: usize) {
         for _ in 0..cycles {
             while let Some(id) = p.poll_open() {
@@ -781,7 +781,7 @@ mod tests {
     #[test]
     fn context_band_repeat_off_is_the_remainder() {
         // Baseline: Repeat::Off already terminates at the source end, so the band is
-        // just the tracks after the current — no bounding needed, and the fix must
+        // just the tracks after the current, no bounding needed, and the fix must
         // not disturb it.
         let mut p = band_player();
         apply_command(&mut p, Command::SetRepeat(RepeatMode::Off), 0).unwrap();
@@ -791,7 +791,7 @@ mod tests {
     #[test]
     fn context_band_repeat_all_is_one_pass_not_repeated_cycles() {
         // THE bug: upcoming_iter loops forever under Repeat::All, so the band must be
-        // bounded to one pass over the OTHER source tracks — the current must not
+        // bounded to one pass over the OTHER source tracks, the current must not
         // re-appear, and no track may repeat.
         let mut p = band_player();
         apply_command(&mut p, Command::SetRepeat(RepeatMode::All), 0).unwrap();
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn context_band_repeat_one_is_empty() {
         // Repeat::One freezes the source on the current track (upcoming_iter yields
-        // the current forever) — so there is NO upcoming context to list.
+        // the current forever), so there is NO upcoming context to list.
         let mut p = band_player();
         apply_command(&mut p, Command::SetRepeat(RepeatMode::One), 0).unwrap();
         assert!(
@@ -942,12 +942,12 @@ mod tests {
         // Exclusive + the track's rate differs from the device → reopen at the track's
         // rate (bit-perfect).
         assert_eq!(native_rate_target(true, 44_100, 48_000, None), Some(44_100));
-        // Shared sink (not exclusive) never reopens — it stays at the device rate and
+        // Shared sink (not exclusive) never reopens, it stays at the device rate and
         // resamples, so a shared user never thrashes the device.
         assert_eq!(native_rate_target(false, 44_100, 48_000, None), None);
         // Already rate-matched → nothing to do.
         assert_eq!(native_rate_target(true, 48_000, 48_000, None), None);
-        // A rate the device just refused (recorded in `tried`) isn't retried — the
+        // A rate the device just refused (recorded in `tried`) isn't retried, the
         // anti-loop / anti-thrash guard.
         assert_eq!(native_rate_target(true, 44_100, 48_000, Some(44_100)), None);
         // But a DIFFERENT rate than the one that failed is tried again.
@@ -961,7 +961,7 @@ mod tests {
     fn native_rate_switch_reopens_exclusive_at_the_tracks_rate() {
         // ExclusiveSink @ 48k; a 44.1k track is exclusive but RESAMPLED. The switch
         // reopens the SAME device IN PLACE at the track's 44.1k → bit-perfect (no
-        // resample), still exclusive — the whole point of the feature, end to end.
+        // resample), still exclusive, the whole point of the feature, end to end.
         let mut p = exclusive_player(48_000);
         load_one(&mut p, 44_100);
         let before = project_signal_path(&p).expect("loaded");
@@ -980,7 +980,7 @@ mod tests {
         );
         assert!(
             !after.resampling,
-            "bit-perfect — no resample after the reopen"
+            "bit-perfect: no resample after the reopen"
         );
         assert!(after.exclusive, "still exclusive after the reopen");
         assert_eq!(tried, None, "a successful switch clears the retry latch");
@@ -989,7 +989,7 @@ mod tests {
     /// Regression for "some tracks play ~2× slow / distorted on bit-perfect output":
     /// an implicit HE-AAC (SBR) track reports its AAC core rate (24k) at load, then
     /// flips to the 2× SBR rate (48k) after the first frame. On an exclusive device the
-    /// native-rate switch reopens to the live 48k — and the deck must rebuild its
+    /// native-rate switch reopens to the live 48k, and the deck must rebuild its
     /// resampler at the live rate too, else the stale 24k→48k resampler upsamples
     /// already-48k content 2× (half speed). After the switch the path must be
     /// bit-perfect (no resampling) at the live rate. With the stale-rate bug
@@ -1021,14 +1021,14 @@ mod tests {
         assert_eq!(sp.device_rate, 48_000, "reopened to the live rate");
         assert!(
             !sp.resampling,
-            "bit-perfect after the SBR flip — no stale resampler desyncing speed, got {sp:?}"
+            "bit-perfect after the SBR flip, no stale resampler desyncing speed, got {sp:?}"
         );
         assert_eq!(tried, None, "a successful switch clears the retry latch");
     }
 
     /// Changing the output config (device or exclusive mode) must apply to the
-    /// CURRENTLY playing track — rebuild the sink in place (`swap_sink`, which keeps
-    /// playback position + ReplayGain) and keep playing — not wait for the next track.
+    /// CURRENTLY playing track, rebuild the sink in place (`swap_sink`, which keeps
+    /// playback position + ReplayGain) and keep playing, not wait for the next track.
     /// Best practice (foobar/Roon): apply live, accept the brief hardware reopen; only
     /// "applies next session" when nothing is playing.
     #[test]
@@ -1142,7 +1142,7 @@ mod tests {
 
     /// GAPLESS DIFFERENT-DEVICE EXCLUSIVE SWITCH (open-new-before-close): switching the
     /// exclusive output to a DIFFERENT device must open the new device WHILE the old one is
-    /// still playing, then swap — so the slow exclusive open never silences the track. A
+    /// still playing, then swap, so the slow exclusive open never silences the track. A
     /// different endpoint is a different stream, so there is no one-client-per-device
     /// contention forcing a release-first gap (that constraint binds only the SAME device,
     /// covered by `a_shared_to_exclusive_change_releases_the_shared_device_before_opening_exclusive`).
@@ -1181,7 +1181,7 @@ mod tests {
             move || ConfigSink::new(None, false, 48_000, 2, Arc::clone(&frames))
         };
 
-        // Current sink is EXCLUSIVE — the case that needs release-then-acquire.
+        // Current sink is EXCLUSIVE, the case that needs release-then-acquire.
         let mut applied = OutputConfig {
             device: None,
             exclusive: true,
@@ -1212,7 +1212,7 @@ mod tests {
             "one device open while playing"
         );
 
-        // Switch the exclusive output to a DIFFERENT device — gapless open-new-before-close.
+        // Switch the exclusive output to a DIFFERENT device, gapless open-new-before-close.
         live_at_build.store(usize::MAX, Ordering::Relaxed); // reset the probe
         let desired = OutputConfig {
             device: Some("DAC".into()),
@@ -1227,7 +1227,7 @@ mod tests {
         assert_eq!(
             live_at_build.load(Ordering::Relaxed),
             1,
-            "the OLD exclusive device must still be live (playing) while the NEW one opens — a \
+            "the OLD exclusive device must still be live (playing) while the NEW one opens, a \
              different device has no one-client-per-device contention, so there is no silent gap"
         );
         assert_eq!(
@@ -1247,7 +1247,7 @@ mod tests {
     /// whose DESIRED mode is exclusive must ALSO release-then-acquire (drop the current
     /// shared sink BEFORE building the exclusive one), even though the current sink isn't
     /// exclusive. We assert ZERO live device holders at the instant the exclusive sink is
-    /// built — the old build-first path left the shared sink live (count 1) and raced.
+    /// built, the old build-first path left the shared sink live (count 1) and raced.
     #[test]
     fn a_shared_to_exclusive_change_releases_the_shared_device_before_opening_exclusive() {
         use crate::testutil::ConfigSink;
@@ -1340,7 +1340,7 @@ mod tests {
 
     /// GAPLESS SHARED -> EXCLUSIVE on a DIFFERENT device: enabling exclusive while also picking
     /// a different device (the common "switch to my DAC, bit-perfect" move) must open the new
-    /// exclusive stream WHILE the old shared stream keeps playing, then swap — not go silent for
+    /// exclusive stream WHILE the old shared stream keeps playing, then swap, not go silent for
     /// the whole exclusive open. One-client-per-device is per endpoint, and the old shared stream
     /// is on a DIFFERENT device, so there is no contention to force a release-first gap.
     #[test]
@@ -1400,7 +1400,7 @@ mod tests {
             p.pump().unwrap();
         }
 
-        // Switch to EXCLUSIVE on a DIFFERENT device — gapless open-new-before-close.
+        // Switch to EXCLUSIVE on a DIFFERENT device, gapless open-new-before-close.
         live_at_build.store(usize::MAX, Ordering::Relaxed);
         let desired = OutputConfig {
             device: Some("DAC".into()),
@@ -1415,7 +1415,7 @@ mod tests {
         assert_eq!(
             live_at_build.load(Ordering::Relaxed),
             1,
-            "the old SHARED device must still be playing while the new EXCLUSIVE device opens — a \
+            "the old SHARED device must still be playing while the new EXCLUSIVE device opens, a \
              different endpoint has no one-client-per-device contention, so there is no silent gap"
         );
         assert_eq!(
@@ -1435,7 +1435,7 @@ mod tests {
     }
 
     /// NO-GAP for SHARED (the "device no longer available" regression): when the current
-    /// sink is SHARED, a change must NOT drop the old stream before opening the new one —
+    /// sink is SHARED, a change must NOT drop the old stream before opening the new one,
     /// some devices reject an immediate same-device re-open. The new sink opens WHILE the
     /// old is still alive, so at build time the old device is still a live holder.
     #[test]
@@ -1511,12 +1511,12 @@ mod tests {
         assert_eq!(
             live_at_build.load(Ordering::Relaxed),
             1,
-            "the new shared sink opens while the OLD is still alive — no device-release gap"
+            "the new shared sink opens while the OLD is still alive, no device-release gap"
         );
         assert_eq!(
             device_live.load(Ordering::Relaxed),
             1,
-            "old dropped after the swap — exactly one live device"
+            "old dropped after the swap, exactly one live device"
         );
         assert_eq!(
             p.deck().sink().device,
@@ -1525,8 +1525,8 @@ mod tests {
         );
     }
 
-    /// A FAILED output change must keep playback alive on the ORIGINAL device — not die
-    /// on the silent placeholder — and report the error so the pump can latch it (no
+    /// A FAILED output change must keep playback alive on the ORIGINAL device, not die
+    /// on the silent placeholder, and report the error so the pump can latch it (no
     /// retry thrash).
     #[test]
     fn a_failed_output_change_restores_the_old_device_and_keeps_playing() {
@@ -1584,7 +1584,7 @@ mod tests {
         }
         let written_before = frames.load(Ordering::Relaxed);
 
-        // Try to flip to exclusive — which can't open.
+        // Try to flip to exclusive, which can't open.
         let desired = OutputConfig {
             device: None,
             exclusive: true,
@@ -1615,7 +1615,7 @@ mod tests {
     }
 
     /// STRICT (exclusive-or-stop): when a live change to strict exclusive can't open the
-    /// device, it must NOT keep the OS-mixer (shared) stream playing — it goes SILENT
+    /// device, it must NOT keep the OS-mixer (shared) stream playing, it goes SILENT
     /// (parks on the device-free placeholder) so the stop is real and the Settings card's
     /// "Stopped" status is truthful. The non-strict case is the opposite (keeps playing),
     /// covered by `a_failed_output_change_restores_the_old_device_and_keeps_playing`.
@@ -1681,7 +1681,7 @@ mod tests {
             p.pump().unwrap();
         }
 
-        // Flip to STRICT exclusive — which can't open.
+        // Flip to STRICT exclusive, which can't open.
         let desired = OutputConfig {
             device: None,
             exclusive: true,
@@ -1785,7 +1785,7 @@ mod tests {
     }
 
     /// Recovery: a deck parked on the silent placeholder (a build failed) rebuilds to a
-    /// real device sink via `rebuild_output_sink` and keeps the playback position —
+    /// real device sink via `rebuild_output_sink` and keeps the playback position,
     /// unlike `maybe_apply_output_change`, it force-builds even when `applied == desired`
     /// (the live sink is the placeholder, not `applied`'s device).
     #[test]
@@ -1866,7 +1866,7 @@ mod tests {
         );
     }
 
-    /// `rebuild_output_sink` stays parked (and errors) until the build can succeed — the
+    /// `rebuild_output_sink` stays parked (and errors) until the build can succeed, the
     /// transient-failure retry contract the pump leans on (device momentarily in use).
     #[test]
     fn rebuild_output_sink_stays_parked_until_the_build_succeeds() {
@@ -1936,7 +1936,7 @@ mod tests {
 
     #[test]
     fn native_rate_switch_leaves_a_shared_sink_untouched() {
-        // A shared sink (NullSink, exclusive() == false) must NEVER reopen — shared
+        // A shared sink (NullSink, exclusive() == false) must NEVER reopen, shared
         // users stay at the device rate and resample, with no device thrash.
         let mut p = player(); // NullSink @ 48k (shared)
         load_one(&mut p, 44_100);
@@ -1975,7 +1975,7 @@ mod tests {
         // The device REFUSES exclusive at the track's rate, so the in-place reopen
         // falls back to the current rate (the real sink does this). The first call
         // attempts ONCE and keeps the current exclusive sink (resampling); the latch
-        // then suppresses retrying every pump — the anti-thrash guard.
+        // then suppresses retrying every pump, the anti-thrash guard.
         let sink = ExclusiveSink::refusing(48_000, 2);
         let reopens = std::sync::Arc::clone(&sink.reopens);
         let mut p = exclusive_player_with(sink);
@@ -1995,7 +1995,7 @@ mod tests {
             "a refused reopen keeps the current exclusive sink (resampling), not shared"
         );
 
-        // A later pump at the same rate must NOT re-attempt — no device thrash.
+        // A later pump at the same rate must NOT re-attempt, no device thrash.
         maybe_switch_native_rate(&mut p, &mut tried);
         assert_eq!(
             reopens.load(std::sync::atomic::Ordering::Relaxed),
@@ -2120,7 +2120,7 @@ mod tests {
 
     // --- output-stage effects (via a CapturingSink) ------------------------
     // The tests above assert projected STATE; these assert the actual effect a
-    // command has on the audio the deck writes — the deterministic, device-free
+    // command has on the audio the deck writes, the deterministic, device-free
     // mirror of what a listener hears (no cpal, so the architecture gate holds).
 
     fn cap_player() -> ServicePlayer<CapturingSink, ConstDecoder> {
@@ -2290,7 +2290,7 @@ mod tests {
             "volume 0 is a level, distinct from the mute flag"
         );
         assert_eq!(v.gain(), 0.0);
-        // Mute then un-mute from a 0 level still yields 0 — no spurious restore.
+        // Mute then un-mute from a 0 level still yields 0, no spurious restore.
         v.toggle_mute();
         assert_eq!(v.gain(), 0.0);
         v.toggle_mute();
@@ -2397,7 +2397,7 @@ mod tests {
 
         let ch0 = p.deck().sink().channel(0);
         assert!(ch0.len() > 700, "played through track 0 into track 1");
-        // A natural (non-seek) track change never fades — only an explicit seek
+        // A natural (non-seek) track change never fades, only an explicit seek
         // calls discard.
         assert_eq!(
             p.deck().sink().discards,
@@ -2405,7 +2405,7 @@ mod tests {
             "a gapless advance must not seek/fade the splice"
         );
 
-        // Track 0 fills frames 0..600, track 1 fills 600.. — one clean transition,
+        // Track 0 fills frames 0..600, track 1 fills 600..: one clean transition,
         // both sides non-silent, no gap. (Relative, so independent of the deck's
         // normalization scale.)
         let a = ch0[599];
@@ -2421,7 +2421,7 @@ mod tests {
         );
         assert!(
             ch0[601..651].iter().all(|&s| s == b),
-            "track 1 plays steady from its start — contiguous, no gap"
+            "track 1 plays steady from its start, contiguous, no gap"
         );
     }
 

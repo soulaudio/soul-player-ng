@@ -276,8 +276,8 @@ impl ArtCache {
     ///
     /// `pub(crate)` so the artwork-crop dialogue
     /// (`views::artwork_crop`) can draw the source image at an arbitrary
-    /// displayed size + offset (a custom `pixels_fit`), which `cover_from_path`
-    ///, fixed to a square `Fit` box, can't express.
+    /// displayed size + offset (a custom `pixels_fit`), which `cover_from_path`,
+    /// fixed to a square `Fit` box, can't express.
     pub(crate) fn image_for_path(&self, path: &Path, scale: f32) -> Option<Image> {
         if let Some(image) = self.path_images.borrow().get(path) {
             return Some(image.clone());

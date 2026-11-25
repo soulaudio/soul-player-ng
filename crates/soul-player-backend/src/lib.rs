@@ -1,7 +1,7 @@
 //! Headless desktop-player backend service: the command/event/DTO types, a
 //! `soul-audio-tags` library scan, the app-command → `soul_audio_control::Player`
 //! translation + state projection, and a threaded `AudioPlayer` actor. Owns all
-//! backend logic; the UI head (soul-player-host + app/rune) is thin plumbing
+//! backend logic; the UI head (soul-player-host + app) is thin plumbing
 //! over this crate.
 //!
 //! Sink-generic: the actor builds the sink on the pump thread, so a `!Send`

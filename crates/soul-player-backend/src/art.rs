@@ -1,7 +1,7 @@
 //! Cover-art resolution for a track: embedded first, then an external image
 //! file next to the track (or in a `Scans/`-style sibling folder).
 //!
-//! Many rips — DSD/SACD in particular — carry only text tags and keep the
+//! Many rips, DSD/SACD in particular, carry only text tags and keep the
 //! artwork as separate JPEGs (e.g. `Scans/Front-0.jpg`), so a player that only
 //! reads embedded `APIC`/PICTURE blocks shows nothing. This module adds the
 //! conventional external-file fallback.
@@ -29,7 +29,7 @@ const ART_SUBDIRS: &[&str] = &["scans", "scan", "artwork", "art", "covers", "cov
 pub const MAX_ART_BYTES: u64 = 40 * 1024 * 1024;
 
 /// Resolve a track's cover: embedded art if present, else an external file.
-/// `None` when neither exists (or a read fails — art is best-effort).
+/// `None` when neither exists (or a read fails, art is best-effort).
 #[must_use]
 pub fn cover_bytes(track_path: &Path) -> Option<Cover> {
     embedded_cover(track_path).or_else(|| external_cover(track_path).and_then(read_external))
@@ -80,7 +80,7 @@ pub fn external_cover(track_path: &Path) -> Option<PathBuf> {
         }
     }
 
-    // (priority, size, path) — lower priority wins, then smaller size.
+    // (priority, size, path): lower priority wins, then smaller size.
     let mut best: Option<(u32, u64, PathBuf)> = None;
     for d in &search_dirs {
         let Ok(rd) = std::fs::read_dir(d) else {

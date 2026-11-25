@@ -2,8 +2,8 @@
 # Build every Linux package from one already-built release binary: .deb, .rpm
 # and the staged tree the Flatpak is assembled from.
 #
-# One script rather than three CI steps because the formats are not independent
-#, the RPM and the Flatpak both take their desktop entry and icon out of the
+# One script rather than three CI steps because the formats are not independent,
+# the RPM and the Flatpak both take their desktop entry and icon out of the
 # .deb (see stage-linux.sh for why), so the order matters and getting it wrong
 # produces packages that disagree about the app's identity.
 #

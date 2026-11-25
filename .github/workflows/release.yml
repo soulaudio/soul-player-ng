@@ -201,7 +201,7 @@ jobs:
         # release silently installs whatever is newest. This tool decides the
         # .deb's filename and `Package:` field, the NSIS template (including the
         # preinstall hook that removes the pre-rename executable) and which
-        # config keys are accepted — all of which our tests assert against a
+        # config keys are accepted, all of which our tests assert against a
         # specific version's behaviour. Bump it deliberately:
         # `the_pinned_packager_version_matches_what_the_tests_assume` fails until
         # the test's expectations are revisited too.
@@ -777,7 +777,7 @@ jobs:
         # release silently installs whatever is newest. This tool decides the
         # .deb's filename and `Package:` field, the NSIS template (including the
         # preinstall hook that removes the pre-rename executable) and which
-        # config keys are accepted — all of which our tests assert against a
+        # config keys are accepted, all of which our tests assert against a
         # specific version's behaviour. Bump it deliberately:
         # `the_pinned_packager_version_matches_what_the_tests_assume` fails until
         # the test's expectations are revisited too.

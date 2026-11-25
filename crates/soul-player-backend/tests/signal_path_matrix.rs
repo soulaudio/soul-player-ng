@@ -5,7 +5,7 @@
 //! it proves the signal path is right across PCM (WAV/FLAC/ALAC/AIFF/MP3/
 //! MP2/Opus/MP1) and every DSD family (DSD64/128/256/512), at both a 44.1 kHz
 //! device (so same-rate fixtures are sample-rate-exact) and a 48 kHz device (so
-//! 44.1/32 kHz fixtures — and all DSD, which decodes to 44.1 kHz — resample).
+//! 44.1/32 kHz fixtures, and all DSD, which decodes to 44.1 kHz, resample).
 //!
 //! Invariants per case: source KIND (PCM vs the exact native DSD rate), the
 //! decoded PCM rate, channel count, and `resampling == (decoded_rate != device)`.

@@ -5,12 +5,12 @@
 //! Both `remote_e2e.rs` (the add-source/sync/browse/play flow) and
 //! `format_matrix_e2e.rs` (every supported container, local *and* remote) stand
 //! up the same thing, so it lives here once instead of being copy-pasted per
-//! test binary. Nothing here fakes the HTTP boundary — the server is the real
+//! test binary. Nothing here fakes the HTTP boundary, the server is the real
 //! `axum` router on a real loopback socket, and the login is the real
 //! standards-based flow driven through a non-redirecting `reqwest` client.
 //!
 //! Each integration-test file is its own crate, so this module is compiled
-//! separately into every test binary that declares it — and any helper that
+//! separately into every test binary that declares it, and any helper that
 //! binary doesn't happen to call reads as dead code there. Allow it module-wide
 //! rather than making each test use every constructor just to stay quiet
 //! (CI runs `clippy -D warnings`).
@@ -54,8 +54,8 @@ pub struct TestServer {
 /// (`(source_fixture, name_in_the_library)`).
 ///
 /// The rename matters for the format matrix: a fixture committed as
-/// `meta-alac.m4a` has to be served as `aria.m4a` for the server's scan — and
-/// then the client's — to exercise the `.m4a` extension path.
+/// `meta-alac.m4a` has to be served as `aria.m4a` for the server's scan, and
+/// then the client's, to exercise the `.m4a` extension path.
 pub fn start_server_with_names(fixtures: &[(&str, &str)]) -> TestServer {
     let dir = tempfile::tempdir().expect("create server temp dir");
     let library_root = dir.path().join("library");
@@ -74,7 +74,7 @@ pub fn start_server(fixtures: &[&str]) -> TestServer {
     start_server_with_names(&pairs)
 }
 
-/// Serve an ALREADY-POPULATED directory — used when a test needs the server and
+/// Serve an ALREADY-POPULATED directory, used when a test needs the server and
 /// a local source to read the very same bytes under the very same names.
 pub fn start_server_serving(dir: &Path) -> TestServer {
     let holder = tempfile::tempdir().expect("create server temp dir");
@@ -95,7 +95,7 @@ fn start_server_over_root(dir: tempfile::TempDir, library_root: PathBuf) -> Test
         users,
     });
 
-    // Bind the ephemeral port SYNCHRONOUSLY, up front — the OAuth discovery
+    // Bind the ephemeral port SYNCHRONOUSLY, up front, the OAuth discovery
     // document advertises `authorization_endpoint`/`token_endpoint` built
     // from `issuer`, so `issuer` must be this server's REAL bound
     // `http://127.0.0.1:PORT` base (not a portless placeholder), or

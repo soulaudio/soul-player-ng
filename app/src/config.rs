@@ -2198,8 +2198,8 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.wav"), tiny_wav()).unwrap();
 
-        // Produce a *populated* cache via a real host scan, then persist + reload it
-        //, proving a non-empty ScanCache survives the on-disk binary format
+        // Produce a *populated* cache via a real host scan, then persist + reload it,
+        // proving a non-empty ScanCache survives the on-disk binary format
         // (entry fidelity, not just the map shell).
         let h = PlayerHandle::offline();
         h.set_sources(&[(dir.clone(), true)]).unwrap();

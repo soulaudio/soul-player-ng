@@ -1,6 +1,6 @@
 //! How each output device is connected (built-in, USB, HDMI, Bluetooth, AirPlay …), so the
-//! output picker can say up front which devices can never be bit-perfect — AirPlay
-//! re-encodes to ALAC at 44.1 kHz on the receiver's clock, Bluetooth is a lossy codec —
+//! output picker can say up front which devices can never be bit-perfect, AirPlay
+//! re-encodes to ALAC at 44.1 kHz on the receiver's clock, Bluetooth is a lossy codec,
 //! instead of the user finding out from an exclusive-mode fall-back after pressing play.
 //!
 //! macOS reads `system_profiler SPAudioDataType -json` (≈0.2 s; run it off the UI thread):
@@ -23,9 +23,9 @@ pub enum Transport {
     DisplayPort,
     /// A Thunderbolt-attached audio device.
     Thunderbolt,
-    /// A Bluetooth device — always a lossy codec, never bit-perfect.
+    /// A Bluetooth device: always a lossy codec, never bit-perfect.
     Bluetooth,
-    /// An AirPlay receiver — re-encodes to ALAC at 44.1 kHz, never bit-perfect.
+    /// An AirPlay receiver: re-encodes to ALAC at 44.1 kHz, never bit-perfect.
     AirPlay,
     /// A virtual / loopback device (e.g. BlackHole, Soundflower).
     Virtual,
@@ -60,7 +60,7 @@ impl Transport {
 
 /// Output device name → transport, parsed from `system_profiler SPAudioDataType -json`.
 /// Input-only devices (no `coreaudio_device_output`) are skipped. Malformed input yields an
-/// empty map — the picker just shows plain names.
+/// empty map, the picker just shows plain names.
 pub fn parse_system_profiler(json: &str) -> HashMap<String, Transport> {
     let mut out = HashMap::new();
     let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
@@ -94,7 +94,7 @@ pub fn parse_system_profiler(json: &str) -> HashMap<String, Transport> {
     out
 }
 
-/// Query the current output devices' transports. Blocking (spawns `system_profiler`) —
+/// Query the current output devices' transports. Blocking (spawns `system_profiler`):
 /// call it from a background thread.
 pub fn query() -> HashMap<String, Transport> {
     #[cfg(target_os = "macos")]

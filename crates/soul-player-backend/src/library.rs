@@ -3,12 +3,12 @@
 //! The recursive folder scan + tag reading lives in [`soul_audio_import`] (shared
 //! 1:1 with the e-ink DAP). This desktop wrapper now **dogfoods the whole shared
 //! pipeline**: each watched folder is scanned + baked to a `.soulidx` and read
-//! back through the no-alloc [`IndexReader`] (over an *owning* in-memory source —
+//! back through the no-alloc [`IndexReader`] (over an *owning* in-memory source,
 //! no leak, no on-disk cache), and the folders are aggregated into one browse by
 //! [`MultiCatalog`]. The surface the actor + UI consume
 //! ([`scan`](Library::scan) / [`path_of`](Library::path_of) /
 //! [`duration_of`](Library::duration_of) / [`views`](Library::views)) is
-//! unchanged — only the backing store moved from an in-memory `CatalogInput` to
+//! unchanged, only the backing store moved from an in-memory `CatalogInput` to
 //! the baked index the DAP also reads.
 
 use std::borrow::Cow;
@@ -35,7 +35,7 @@ use crate::types::{TrackLocator, TrackLoudness, TrackView};
 pub struct IncrementalBuild {
     /// The baked, aggregated library (identical to a full [`scan_many`](Library::scan_many)).
     pub library: Library,
-    /// The updated [`ScanCache`] per root, **parallel to the `roots`** passed in —
+    /// The updated [`ScanCache`] per root, **parallel to the `roots`** passed in,
     /// persist it (keyed by root path) to make the next startup a warm diff.
     pub caches: Vec<ScanCache>,
     /// Deletions detected since the prior cache, as `(root, removed file paths)`,
@@ -43,28 +43,28 @@ pub struct IncrementalBuild {
     /// only scans *available* roots, so an offline drive never lands here).
     pub removed: Vec<(PathBuf, Vec<PathBuf>)>,
     /// Audio files the scan walked past without importing, as `(root, groups)`
-    /// for each root that skipped any — counts per extension, with the reason.
+    /// for each root that skipped any, counts per extension, with the reason.
     ///
     /// Carried out of the scan rather than dropped because a silent skip is
     /// indistinguishable from a broken scan: a user whose `.aac` rips never
     /// appear has no way to learn that this build's decoder is gated off. Shaped
-    /// like [`removed`](Self::removed) — per affected root, empty otherwise — so
+    /// like [`removed`](Self::removed), per affected root, empty otherwise, so
     /// the host can surface it the same way it surfaces deletions.
     pub skipped: Vec<(PathBuf, Vec<SkippedGroup>)>,
     /// The baked `.soulidx` bytes per root, **parallel to the `roots`** passed in.
     /// Each root bakes independently, so these can be cached and later fed back to
     /// [`Library::from_source_bytes`] to rebuild an unaffected root without
-    /// re-scanning it — the basis for the watcher's scoped rescan.
+    /// re-scanning it, the basis for the watcher's scoped rescan.
     pub bytes: Vec<Vec<u8>>,
 }
 
 /// The result of [`Library::locate`]: which source a track belongs to and its
-/// path relative to that source's root — e.g. for a remote source, whose
+/// path relative to that source's root, e.g. for a remote source, whose
 /// "root" isn't a real local directory, the relative path (not an absolute
 /// local one) is what a caller needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Located {
-    /// Index into [`Library::source_counts`]'s order — the compound id's
+    /// Index into [`Library::source_counts`]'s order, the compound id's
     /// source bits.
     pub source: usize,
     /// The file's path relative to that source's root, native components.
@@ -95,14 +95,14 @@ pub struct Library {
 }
 
 impl Library {
-    /// Scan + bake a single watched folder, read back through the shared index —
+    /// Scan + bake a single watched folder, read back through the shared index,
     /// the `N = 1` case of [`scan_many`](Library::scan_many).
     pub fn scan(root: &Path) -> anyhow::Result<Library> {
         Self::scan_many(&[root.to_owned()])
     }
 
     /// Scan + bake each watched folder (folder-isolation, tag reading, every
-    /// supported format — all the importer's, shared with the DAP), reading each
+    /// supported format, all the importer's, shared with the DAP), reading each
     /// back through an owning [`IndexReader`] and aggregating them into one
     /// browse. Robustness (unreadable tags degrade, unreadable subdirs skip,
     /// symlink cycles terminate, only an unreadable root errors) is the
@@ -127,16 +127,16 @@ impl Library {
     /// reused from `priors[i]` (the cache returned by a previous build for
     /// `roots[i]`), only new/changed files are re-read, and extraction fans out the
     /// I/O across up to `max_threads` workers while honouring a **live** `target`
-    /// (shared across all roots) — the host moves `target` as CPU load changes, so a
+    /// (shared across all roots), the host moves `target` as CPU load changes, so a
     /// scan already in flight throttles when the machine is busy and opens back up
     /// when it frees. Produces a library byte-identical to [`scan_many`] for the same
-    /// tree — it only changes *how much work* is done — plus the updated
+    /// tree, it only changes *how much work* is done, plus the updated
     /// per-root [`ScanCache`] (persist it for a warm next startup) and the
     /// deletions detected per root (for a removal warning). A missing or short
     /// `priors` entry (`priors.get(i)` is `None`) is treated as an empty cache (a
     /// cold scan of that root). Errors if any root fails to scan.
     ///
-    /// `progress` is forwarded per root to the underlying scan — each root reports a
+    /// `progress` is forwarded per root to the underlying scan, each root reports a
     /// monotonic `done/total` within its own [`ScanPhase`], so with multiple roots
     /// the count restarts at each one (fine for the single-root common case; a
     /// coarse "root i of n" is a future refinement).
@@ -209,7 +209,7 @@ impl Library {
     }
 
     /// Rebuild a library from per-root baked `.soulidx` bytes (parallel to `roots`),
-    /// **without scanning** — the companion to the `bytes` returned by
+    /// **without scanning**, the companion to the `bytes` returned by
     /// [`scan_many_incremental`](Self::scan_many_incremental). Because each root bakes
     /// independently, feeding an unaffected root's cached bytes here produces exactly
     /// what re-scanning it would, so the watcher can re-scan only the roots that
@@ -270,7 +270,7 @@ impl Library {
     }
 
     /// The source index + root-relative path for track `id`, without joining
-    /// it to that source's physical root — the piece [`path_of`](Self::path_of)
+    /// it to that source's physical root, the piece [`path_of`](Self::path_of)
     /// needs before it resolves to an absolute local path, and what a remote
     /// source (whose "root" isn't a real local directory) needs instead. The
     /// compound id's source bits select the source; the `/`-separated
@@ -280,7 +280,7 @@ impl Library {
     pub fn locate(&self, id: u32) -> Option<Located> {
         let (source, _) = unpack(id);
         let source = source as usize;
-        // Bounds-check the source even though nothing here indexes `roots` —
+        // Bounds-check the source even though nothing here indexes `roots`,
         // `path_of` relies on this to reject an out-of-range id the same way
         // it always has.
         if source >= self.roots.len() {
@@ -368,7 +368,7 @@ impl Library {
     }
 
     /// The UI-facing view of every track, in **Album-Artist → Album → disc/track**
-    /// order (the baked `ArtistAlbumTrack` axis — the audiophile/player default;
+    /// order (the baked `ArtistAlbumTrack` axis, the audiophile/player default;
     /// leading articles are folded by the shared collation). The importer applies
     /// the file-name fallback for a missing title, so `title` is present.
     #[must_use]
@@ -376,7 +376,7 @@ impl Library {
         self.views_by(BrowseAxis::ArtistAlbumTrack)
     }
 
-    /// Track views in a chosen browse order — the baked axis tables
+    /// Track views in a chosen browse order, the baked axis tables
     /// (`Title`, `ArtistAlbumTrack`, `Album`, `Folder`), computed once by the
     /// baker so no re-sort happens here.
     #[must_use]
@@ -388,7 +388,7 @@ impl Library {
         // library, as shared `Arc<str>`: a million tracks share a few thousand
         // artists/albums (and a handful of genres/formats), so each distinct value
         // is decoded AND allocated ONCE here, then cloned per track as a cheap Arc
-        // refcount bump — not one fresh `String` per track. On a big library's load
+        // refcount bump, not one fresh `String` per track. On a big library's load
         // that's millions of fewer catalog decodes AND heap allocations, and the
         // resident `Vec<TrackView>` shares those strings instead of duplicating them.
         let mut artists: HashMap<u32, Option<Arc<str>>> = HashMap::new();
@@ -416,7 +416,7 @@ impl Library {
                 .entry(t.album)
                 .or_insert_with(|| real_name(album_title(&cat, t.album)).map(Arc::from))
                 .clone();
-            // Genre keeps its raw value — "Unknown Genre" is a real bucket, NOT
+            // Genre keeps its raw value, "Unknown Genre" is a real bucket, NOT
             // filtered through `real_name` like artist/album sentinels.
             let genre = genres
                 .entry(t.genre)
@@ -432,7 +432,7 @@ impl Library {
                 album,
                 genre,
                 duration_secs: f64::from(t.duration_ms) / 1000.0,
-                // The backend/local catalog is always local — the host aggregate sets
+                // The backend/local catalog is always local, the host aggregate sets
                 // `Some(host)` for a remote source's tracks.
                 remote_source: None,
                 original_date,
@@ -461,12 +461,12 @@ pub trait TrackSource: Send + Sync {
         None
     }
 
-    /// Open the decoder for track `id` — what the loader thread calls to build
+    /// Open the decoder for track `id`, what the loader thread calls to build
     /// the `OwnedDecoder` it hands to the pump. The default resolves
     /// [`path_of`](Self::path_of) and opens the local file with
-    /// [`open_track`] — all `Library` needs. A source that can decode bytes it
+    /// [`open_track`], all `Library` needs. A source that can decode bytes it
     /// doesn't have sitting on local disk (a remote server, streamed over HTTP
-    /// Range) overrides this instead of materializing a path first — see
+    /// Range) overrides this instead of materializing a path first, see
     /// `soul_player_host::remote::RemoteLibrary::open_decoder`.
     fn open_decoder(&self, id: u32) -> anyhow::Result<OwnedDecoder> {
         let path = self
@@ -496,7 +496,7 @@ fn resolve(cat: &MultiCatalog, s: StrRef) -> Option<String> {
 }
 
 /// Like [`resolve`], but decodes into a caller-owned REUSED buffer and hands back a
-/// `&str` view — so a caller that only reads the string (the FORMAT label) does not
+/// `&str` view, so a caller that only reads the string (the FORMAT label) does not
 /// heap-allocate an owned `String` per call. `buf` is grown as needed and reused
 /// across calls.
 fn decode_into<'b>(cat: &MultiCatalog, s: StrRef, buf: &'b mut Vec<u8>) -> Option<&'b str> {
@@ -514,7 +514,7 @@ fn artist_name(cat: &MultiCatalog, id: u32) -> Option<String> {
 }
 
 /// Resolve a genre's display name (length not known up front) into an owned
-/// `String`, mirroring [`artist_name`]. The raw value is kept by the caller —
+/// `String`, mirroring [`artist_name`]. The raw value is kept by the caller,
 /// the importer's `"Unknown Genre"` is a real browse bucket, so (unlike
 /// artist/album) it is NOT routed through [`real_name`].
 fn genre_name(cat: &MultiCatalog, id: u32) -> Option<String> {
@@ -549,7 +549,7 @@ fn format_label(file_name: &str) -> Option<Cow<'static, str>> {
     let ext = Path::new(file_name).extension()?.to_str()?;
     // Known extensions map to a `&'static str` with NO per-track allocation (the
     // case-insensitive compare avoids even the `to_lowercase` temporary). Only an
-    // unrecognized extension allocates, and that's rare — the importer only hands
+    // unrecognized extension allocates, and that's rare, the importer only hands
     // this already-supported audio names.
     let known = |label: &'static str| Some(Cow::Borrowed(label));
     if ext.eq_ignore_ascii_case("flac") {
@@ -610,7 +610,7 @@ mod tests {
     use super::*;
 
     /// Quantifies the memory the `Arc<str>` interning of `TrackView`'s
-    /// artist/album/genre saves over owned `String`s at scale — the delivered win,
+    /// artist/album/genre saves over owned `String`s at scale, the delivered win,
     /// not a what-if. `#[ignore]`d; run with
     /// `cargo test -p soul-player-backend bench_string_memory -- --ignored --nocapture`.
     #[test]
@@ -618,7 +618,7 @@ mod tests {
     fn bench_string_memory_at_scale() {
         use std::collections::HashSet;
         for &n in &[100_000u32, 1_000_000] {
-            // ~12 tracks/album, ~8 albums/artist, 10 genres — a believable fan-out.
+            // ~12 tracks/album, ~8 albums/artist, 10 genres, a believable fan-out.
             let views: Vec<TrackView> = (0..n)
                 .map(|i| {
                     let album = i / 12;
@@ -720,7 +720,7 @@ mod tests {
         std::fs::write(root.join("notes.txt"), b"not audio").unwrap();
 
         let lib = Library::scan(&root).unwrap();
-        // Sorted walk: a.wav, b.wav, sub/c.wav — .txt skipped.
+        // Sorted walk: a.wav, b.wav, sub/c.wav, .txt skipped.
         assert_eq!(lib.len(), 3);
         let v = lib.views();
         assert_eq!(v[0].id, 0);
@@ -936,7 +936,7 @@ mod tests {
         assert_eq!(v[0].title.as_deref(), Some("Soul Test Track"));
     }
 
-    /// Every representative format fixture scans into exactly one listed track —
+    /// Every representative format fixture scans into exactly one listed track,
     /// the 1:1 guard that the desktop lists every format the decoder supports.
     /// (The `SUPPORTED` extension set itself now lives in `soul-audio-import`.)
     #[test]
@@ -977,7 +977,7 @@ mod tests {
     /// behind an opt-in feature (patent) this product does not enable, and the
     /// importer refuses to list a file whose decoder was not compiled in.
     ///
-    /// Asserted rather than merely omitted — a format that silently started
+    /// Asserted rather than merely omitted, a format that silently started
     /// scanning again would put tracks in the user's library that fail the
     /// moment they press play.
     #[test]
@@ -996,7 +996,7 @@ mod tests {
     /// it, and why. A user whose AAC rips simply never appear cannot tell a
     /// deliberate limitation from a broken scan, which is the actual complaint.
     ///
-    /// Asserts the reason reaches the caller too, not just a count — "12 files
+    /// Asserts the reason reaches the caller too, not just a count, "12 files
     /// skipped" with no cause is barely better than silence, and the two reasons
     /// mean different things to a user: `DecoderDisabled` says a different build
     /// of this app would play them, `UnsupportedFormat` says none would.
@@ -1004,12 +1004,12 @@ mod tests {
     fn an_incremental_scan_reports_what_it_skipped_and_why() {
         let root = tmpdir("skips_reported");
         // One importable track, so this is a normal library that happens to hold
-        // files we pass over — not a degenerate all-skipped case.
+        // files we pass over, not a degenerate all-skipped case.
         std::fs::copy(fixture("tone.wav"), root.join("good.wav")).expect("copy tone.wav");
-        // Gated decoder (AAC is behind an opt-in feature — patent).
+        // Gated decoder (AAC is behind an opt-in feature, patent).
         std::fs::copy(fixture("tone.aac"), root.join("a.aac")).expect("copy tone.aac");
         std::fs::copy(fixture("tone.aac"), root.join("b.aac")).expect("copy tone.aac");
-        // A format nothing here decodes. Contents are irrelevant — the scan
+        // A format nothing here decodes. Contents are irrelevant: the scan
         // classifies by extension before it ever opens the file.
         std::fs::write(root.join("old.wma"), b"not really wma").expect("write wma");
         // Not audio at all: must never be mentioned, or every library with a
@@ -1055,7 +1055,7 @@ mod tests {
     }
 
     /// A minimal FLAC container with a VORBIS_COMMENT (title/artist/album) and a
-    /// PICTURE block (front cover, 1x1 jpeg stub) — self-contained so the cover
+    /// PICTURE block (front cover, 1x1 jpeg stub), self-contained so the cover
     /// path is exercised without depending on a binary fixture carrying art.
     fn flac_with_art(title: &str, artist: &str, album: &str) -> Vec<u8> {
         let mut v = Vec::new();
@@ -1110,7 +1110,7 @@ mod tests {
     }
 
     /// A minimal FLAC carrying a VORBIS_COMMENT with the given `comments`
-    /// (`"KEY=value"`) and no audio frames — enough for the scan/bake tag path
+    /// (`"KEY=value"`) and no audio frames, enough for the scan/bake tag path
     /// (title/genre/…). Reuses the STREAMINFO shape of [`flac_with_art`] but makes
     /// VORBIS_COMMENT the last metadata block and omits the PICTURE.
     fn flac_with_comments(comments: &[&str]) -> Vec<u8> {
@@ -1172,7 +1172,7 @@ mod tests {
         let lib = Library::scan(&root).unwrap();
         let v = lib.views_by(BrowseAxis::Genre);
         assert_eq!(v.len(), 4);
-        // Every track carries a genre bucket — none are `None`.
+        // Every track carries a genre bucket, none are `None`.
         assert!(
             v.iter().all(|t| t.genre.is_some()),
             "every track carries a genre bucket"
@@ -1244,7 +1244,7 @@ mod tests {
     }
 
     /// `views_by` projects the owning album's packed original/release dates onto
-    /// each `TrackView` — the audiophile original-release year plus the tagged
+    /// each `TrackView`, the audiophile original-release year plus the tagged
     /// edition's release year, both year-only (month/day unknown).
     #[test]
     fn track_view_carries_album_original_and_release_dates() {
@@ -1521,7 +1521,7 @@ mod tests {
         assert_eq!(build2.library.len(), 3, "added file appears");
         assert!(build2.removed.is_empty());
 
-        // Deletions are reported per root (an available root — genuine removals).
+        // Deletions are reported per root (an available root, genuine removals).
         std::fs::remove_file(root.join("a.wav")).unwrap();
         std::fs::remove_file(root.join("b.wav")).unwrap();
         let build3 = Library::scan_many_incremental(
@@ -1543,7 +1543,7 @@ mod tests {
     fn from_source_bytes_rebuilds_and_scoped_reuse_matches_a_full_rescan() {
         // The smart-watcher primitive: because each root bakes INDEPENDENTLY into its
         // own reader (no cross-root interning), an unaffected root's baked bytes can be
-        // reused verbatim instead of re-scanned — the result is byte-identical to a
+        // reused verbatim instead of re-scanned, the result is byte-identical to a
         // full rescan.
         let a = tmpdir("scoped_a");
         std::fs::write(a.join("a1.wav"), wav(48_000, 48_000)).unwrap();
@@ -1614,7 +1614,7 @@ mod tests {
     #[test]
     fn scan_many_incremental_reports_determinate_progress() {
         // A cold scan of three files emits Extracting progress whose `done` climbs
-        // monotonically to `total` == the file count — the determinate signal the
+        // monotonically to `total` == the file count, the determinate signal the
         // titlebar pill renders.
         let root = tmpdir("progress");
         std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap();
@@ -1682,7 +1682,7 @@ mod tests {
         std::fs::write(root.join("a.wav"), wav(48_000, 48_000)).unwrap(); // 1.0 s
         let lib = Library::scan(&root).unwrap();
 
-        // `OwnedDecoder` is large by value (the boxed `AnyDecoder`) — a
+        // `OwnedDecoder` is large by value (the boxed `AnyDecoder`), a
         // big-stack thread, the same precaution the actor's loader thread and
         // other open_track-decoding tests take for debug-build move frames.
         std::thread::Builder::new()

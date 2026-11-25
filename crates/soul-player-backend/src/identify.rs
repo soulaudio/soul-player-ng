@@ -2,25 +2,25 @@
 //! cache the result, so the client holds a ready-to-submit identity for each file
 //! without ever blocking playback or re-decoding a track twice.
 //!
-//! This is the client half of the cloud `/v1/identify` flow (see
-//! `docs/superpowers/specs/*-cloud-enrichment`). It computes and *persists* each
-//! track's [`AcousticId`] — the compressed Chromaprint fingerprint plus its decoded
-//! duration — which, paired with the tags-MBID the catalog already carries, is the
-//! track's identity. The identity is submitted to the enrichment cloud only when
+//! This is the client half of the cloud `/v1/identify` flow (the enrichment
+//! service itself is separate; see [`crate::fingerprint`]). It computes and
+//! *persists* each track's [`AcousticId`], the compressed Chromaprint fingerprint
+//! plus its decoded duration, which, paired with the tags-MBID the catalog already
+//! carries, is the track's identity. The identity is submitted to the cloud only when
 //! the user opts in; the audio itself never leaves the machine. Even before any
 //! cloud exists the cache is useful precompute (and the basis for local duplicate
 //! detection).
 //!
-//! Shape — a deliberate mirror of [`crate::loudness`]: a single background **worker
+//! Shape, a deliberate mirror of [`crate::loudness`]: a single background **worker
 //! thread** on a 64 MiB stack (because [`soul_audio_desktop::open_track`]'s
 //! `OwnedDecoder` is large by value and overflows the default stack) drains a job
-//! queue one track at a time — bounding CPU and disk — and writes a shared,
+//! queue one track at a time, bounding CPU and disk, and writes a shared,
 //! single-flight cache. The caller enqueues the library's tracks; each finished
 //! identity is posted back on a channel for the app to persist, and seeded back
 //! next launch so an already-identified track is never re-fingerprinted.
 //!
 //! Backend purity: this module holds only the in-memory cache + the worker. It does
-//! no config-path I/O — the app persists the identities (keyed by path + validated
+//! no config-path I/O, the app persists the identities (keyed by path + validated
 //! against mtime/size) and seeds them back.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,13 +37,13 @@ use crate::fingerprint::fingerprint_file;
 /// time, not stored here.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AcousticId {
-    /// Chromaprint-compressed fingerprint, URL-safe base64 — the exact wire form.
+    /// Chromaprint-compressed fingerprint, URL-safe base64, the exact wire form.
     pub fingerprint: String,
     /// Decoded audio duration in seconds.
     pub duration_secs: f64,
 }
 
-/// One identify job: the track id that triggered it (informational — the cache is
+/// One identify job: the track id that triggered it (informational, the cache is
 /// keyed by path) and the path to decode + fingerprint.
 type Job = (u32, PathBuf);
 
@@ -55,7 +55,7 @@ struct CacheInner {
     /// `Some(id)` is a usable identity; `None` is the sentinel for a track we tried
     /// but got no fingerprint from (decode failed or too short) so we don't retry it.
     done: BTreeMap<PathBuf, Option<AcousticId>>,
-    /// Paths currently queued or being fingerprinted — the single-flight guard.
+    /// Paths currently queued or being fingerprinted, the single-flight guard.
     inflight: BTreeSet<PathBuf>,
 }
 
@@ -70,7 +70,7 @@ impl IdentifyCache {
     /// Build the cache and spawn the 64 MiB fingerprint worker. Every successfully
     /// identified `(path, AcousticId)` is posted on `results` for the app to persist;
     /// a failure is recorded as the `None` sentinel and posts nothing. Returns the
-    /// worker's [`JoinHandle`] — drop the `IdentifyCache` (closing the job channel)
+    /// worker's [`JoinHandle`], drop the `IdentifyCache` (closing the job channel)
     /// then join it to shut the worker down cleanly.
     pub fn spawn(results: Sender<(PathBuf, AcousticId)>) -> (IdentifyCache, JoinHandle<()>) {
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
@@ -171,7 +171,7 @@ fn identify_worker(
 /// Fingerprint `path` and fold it into an [`AcousticId`], or `None` when there is no
 /// usable identity: an unopenable / mid-stream-erroring file, or one too short to
 /// yield a Chromaprint sub-fingerprint. Must run on a large-stack thread (see the
-/// module docs) — the worker does.
+/// module docs), the worker does.
 fn identify_track(path: &Path) -> Option<AcousticId> {
     let fp = fingerprint_file(path).ok()?;
     if fp.is_empty() {
@@ -283,8 +283,8 @@ mod tests {
     }
 
     /// A 16-bit PCM stereo WAV of a `secs`-long `freq` Hz tone at 44100 Hz. The
-    /// committed fixtures are all ~2 s (sized for fast decode tests) — below
-    /// Chromaprint's minimum — so the end-to-end test synthesizes its own long tone,
+    /// committed fixtures are all ~2 s (sized for fast decode tests), below
+    /// Chromaprint's minimum, so the end-to-end test synthesizes its own long tone,
     /// exactly as `fingerprint.rs` does.
     fn tone_wav(freq: f64, secs: f64) -> Vec<u8> {
         let rate = 44_100u32;
