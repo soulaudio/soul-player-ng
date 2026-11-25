@@ -103,10 +103,19 @@ jobs:
           # HERE rather than on their builders.
           # `dbus-run-session` for the same reason: flatpak-builder's own
           # install step talks to the session bus, and there is none otherwise.
+          # `--compose-url-policy=full` is required WITH
+          # `--mirror-screenshots-url`, not instead of it: AppStream only
+          # mirrors the metainfo's screenshots and remote icons into the build
+          # when both are given. With just the URL, the first attempt produced
+          #   errors: appstream-remote-icon-not-mirrored,
+          #           appstream-external-screenshot-url
+          # because the images were still pointing at github.com. The URL has no
+          # trailing slash, matching what Flathub's own invocation uses.
           dbus-run-session -- flatpak run org.flatpak.Builder \
             --force-clean --sandbox --user --install \
             --disable-rofiles-fuse \
-            --mirror-screenshots-url=https://dl.flathub.org/media/ \
+            --compose-url-policy=full \
+            --mirror-screenshots-url=https://dl.flathub.org/media \
             --repo=repo builddir co.soulaudio.soulplayer.yml
 
       - name: flatpak-builder-lint (builddir + repo)
