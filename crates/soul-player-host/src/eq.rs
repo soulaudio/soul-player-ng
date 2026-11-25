@@ -385,6 +385,67 @@ mod tests {
         );
     }
 
+    /// Sanity: the `alloc-probe` counting allocator really IS installed for this test
+    /// build, so a zero count in the constraint test below means "no allocation", not
+    /// "the probe isn't wired up" (a false green).
+    #[test]
+    fn alloc_probe_is_installed_for_the_host_test_build() {
+        let (_, probe) = alloc_probe::measure(|| Vec::<u8>::with_capacity(4096));
+        assert!(
+            probe.allocs >= 1 && probe.bytes >= 4096,
+            "the counting allocator must be installed (measured {probe:?})"
+        );
+    }
+
+    /// Memory constraint (constraint-driven, via the `alloc-probe` counting allocator):
+    /// steady-state `DspSink::write` must not allocate PER BLOCK on the audio feeder
+    /// thread. This is the teeth behind `chain_if_changed` and the reused scratch
+    /// buffers: it fails loudly if a future change reintroduces a per-block clone/alloc
+    /// on the real-time path (which risks an underrun).
+    ///
+    /// The real constraint is "allocation does not grow with the number of blocks", so
+    /// it is measured as a SECOND batch allocating zero after a first batch has absorbed
+    /// any one-time setup (a lazy init — e.g. the analyzer's first FFT scratch — can land
+    /// on a different block per platform; what must never happen is a per-block alloc).
+    #[test]
+    fn dsp_sink_write_does_not_allocate_per_steady_state_block() {
+        let shared = chain_with(|eq| {
+            eq.enabled = true;
+            eq.bands = vec![bell(1_000.0, 6.0, 1.0)];
+        });
+        let mut sink = DspSink::new(
+            Discard {
+                info: info(48_000, 2),
+            },
+            shared,
+            Arc::new(Mutex::new(SpectrumFrame::default())),
+            Arc::new(Mutex::new(LiveLoudnessFrame::default())),
+        );
+        let frames = sine(1_000.0, FS, 512, 0.3 * 8_388_607.0);
+        // Warm: build the filter bank + scratch buffers and trigger the first FFT hops.
+        for _ in 0..16 {
+            sink.write(&frames).unwrap();
+        }
+        let batch = |sink: &mut DspSink<Discard>| {
+            alloc_probe::measure(|| {
+                for _ in 0..256 {
+                    sink.write(&frames).unwrap();
+                }
+            })
+            .1
+        };
+        // First batch absorbs any lingering one-time setup; the second is pure steady
+        // state and must allocate nothing (allocation did not grow with block count).
+        let first = batch(&mut sink);
+        let second = batch(&mut sink);
+        assert_eq!(
+            second.allocs, 0,
+            "steady-state audio blocks must not allocate per block \
+             (first batch {} allocations, second batch {})",
+            first.allocs, second.allocs
+        );
+    }
+
     /// Microbenchmark (ignored): the steady-state per-block `write` cost with an active
     /// one-unit EQ chain, over a discarding sink. Run with
     /// `cargo test -p soul-player-host bench_dsp_sink_write -- --ignored --nocapture`.

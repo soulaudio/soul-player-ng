@@ -1,0 +1,19 @@
+[package]
+name = "alloc-probe"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+description = "Test-only heap-allocation probe: a counting pass-through global allocator for constraint-driven memory tests (assert a hot path's allocation count/bytes)."
+
+# Standalone workspace: this is a leaf dev-only crate consumed via a path
+# dev-dependency by the player crates (which are their own workspaces), so it must
+# not be swept into any of theirs.
+[workspace]
+
+# Deliberately NOT `unsafe_code = "forbid"`: a GlobalAlloc impl requires `unsafe`.
+# Confining it here lets the consumer crates stay `#![forbid(unsafe_code)]` and still
+# install this allocator via a *safe* `#[global_allocator]` static in their test build.
+[lints.clippy]
+all = { level = "deny", priority = -1 }
