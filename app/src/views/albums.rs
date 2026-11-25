@@ -329,6 +329,9 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
     // handler stays `Fn`, like the track row's menu above).
     let menu_ids = a.ids.clone();
     let menu_identity = a.identity.clone();
+    // A title-only identity is shared by every same-title album: no artwork
+    // editor for it, so an edit can't land on all of them.
+    let can_edit_artwork = a.identity.is_located();
     // What the body click opens: the album's identity, not just its title.
     let open = a.open_ref();
     media_card(
@@ -367,17 +370,20 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
     .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
         let play_ids = menu_ids.clone();
         let art_identity = menu_identity.clone();
+        let mut menu = PopupMenu::new()
+            .item(PopupItem::new("play", t!("player.play").to_string()))
+            .item(PopupItem::new(
+                "add-to-playlist",
+                t!("playlists.addTo").to_string(),
+            ));
+        if can_edit_artwork {
+            menu = menu.item(PopupItem::new(
+                "edit-artwork",
+                t!("artwork.edit").to_string(),
+            ));
+        }
         tx.popup_menu(
-            PopupMenu::new()
-                .item(PopupItem::new("play", t!("player.play").to_string()))
-                .item(PopupItem::new(
-                    "add-to-playlist",
-                    t!("playlists.addTo").to_string(),
-                ))
-                .item(PopupItem::new(
-                    "edit-artwork",
-                    t!("artwork.edit").to_string(),
-                )),
+            menu,
             press,
             move |st: &mut State, picked, _tx: &mut Tx| match picked {
                 Some("play") => st.host.send(Command::PlayContext {
@@ -385,7 +391,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                     start: 0,
                 }),
                 Some("add-to-playlist") => crate::open_add_to_playlist_many(st, play_ids.clone()),
-                Some("edit-artwork") => {
+                Some("edit-artwork") if art_identity.is_located() => {
                     st.artwork_edit = Some(ArtworkTarget::Album(art_identity.clone()));
                 }
                 _ => {}
@@ -896,7 +902,11 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         meta,
         Some(&crate::views::icons::CLOCK),
         detail_actions("album-play-all", page.play_ids.to_vec(), p),
-        Some(ArtworkTarget::Album(album.identity.clone())),
+        // No editor for a title-only identity (see `AlbumIdentity::is_located`).
+        album
+            .identity
+            .is_located()
+            .then(|| ArtworkTarget::Album(album.identity.clone())),
     );
 
     let show_disc_headers = album.disc_count > 1 && page.discs.len() > 1;

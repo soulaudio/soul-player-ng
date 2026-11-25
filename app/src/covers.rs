@@ -39,6 +39,16 @@ const COVER_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// A sub-folder, so [`CoverStore::load`]'s flat scan never re-reads them.
 const LEGACY_BACKUP_DIR: &str = "legacy-title-keyed";
 
+/// The adoption ledger inside [`LEGACY_BACKUP_DIR`]: one `legacy-stem<TAB>albumid-stem`
+/// line per cover adopted from a legacy file, so a cover the user cleared is not
+/// copied back while that legacy file still waits to be retired.
+const ADOPTION_LEDGER: &str = "adopted.tsv";
+
+/// The extension of an in-flight copy. A copy is written as `<name>.partial` and
+/// renamed into place only when complete, so a crash never leaves a truncated
+/// file under a cover stem; [`CoverStore::load`] discards leftovers.
+const PARTIAL_EXT: &str = "partial";
+
 /// An album's durable identity for its custom cover:
 /// [`soul_player_host::album_identity_key`] of a member track's locator and the
 /// album title. Stable across rescans (track and album ids are not) and
@@ -52,6 +62,12 @@ impl AlbumIdentity {
     }
     pub(crate) fn as_str(&self) -> &str {
         &self.0
+    }
+    /// Whether this identity names an album root (or server). A title-only
+    /// fallback ([`soul_player_host::unlocated_album_identity_key`]) is shared by
+    /// every same-title album, so no cover is ever stored under one.
+    pub(crate) fn is_located(&self) -> bool {
+        !soul_player_host::is_unlocated_album_identity_key(&self.0)
     }
 }
 
@@ -134,6 +150,66 @@ fn album_stem(name: &str) -> String {
     format!("album-{}", slug(name))
 }
 
+/// Copy `src` to `dst` crash-safely: into `<dst>.partial` first, then renamed
+/// over `dst`, so `dst` only ever exists complete. The partial file is removed
+/// on failure.
+fn copy_into_place(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let mut partial = dst.as_os_str().to_owned();
+    partial.push(".");
+    partial.push(PARTIAL_EXT);
+    let partial = PathBuf::from(partial);
+    let res = fs::copy(src, &partial).and_then(|_| fs::rename(&partial, dst));
+    if res.is_err() {
+        let _ = fs::remove_file(&partial);
+    }
+    res
+}
+
+/// A free path for `name` in `dir`: `name` itself, else `stem (2).ext`,
+/// `stem (3).ext`, ..., so an earlier backup is never overwritten.
+fn free_backup_path(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let p = Path::new(name);
+    let stem = p.file_stem().unwrap_or(name).to_string_lossy();
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    (2u32..)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|c| !c.exists())
+        .expect("an unused backup name")
+}
+
+/// The `(legacy stem, identity stem)` pairs already adopted (see
+/// [`ADOPTION_LEDGER`]). Empty when the ledger is missing or unreadable.
+fn read_ledger(dir: &Path) -> HashSet<(String, String)> {
+    fs::read_to_string(dir.join(LEGACY_BACKUP_DIR).join(ADOPTION_LEDGER))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect()
+}
+
+/// Append adopted `(legacy stem, identity stem)` pairs to the ledger.
+fn append_ledger(dir: &Path, pairs: &[(String, String)]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let backup = dir.join(LEGACY_BACKUP_DIR);
+    fs::create_dir_all(&backup)?;
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(backup.join(ADOPTION_LEDGER))?;
+    for (legacy, adopted) in pairs {
+        writeln!(f, "{legacy}\t{adopted}")?;
+    }
+    Ok(())
+}
+
 /// The path of the file in `dir` whose stem is exactly `stem`, if one exists
 /// on disk right now (any accepted extension). `None` if the file is gone.
 fn find_by_stem(dir: &Path, stem: &str) -> Option<PathBuf> {
@@ -163,9 +239,9 @@ fn remove_by_stem(dir: &Path, stem: &str) {
 
 impl CoverStore {
     /// Load the store: ensure `<config>/covers` exists, then scan it and record
-    /// every file's stem. Best-effort: a missing/unreadable directory just
-    /// yields an empty `known` set (nothing has a custom cover yet). Never
-    /// panics.
+    /// every file's stem, discarding any `.partial` copy a crash left behind.
+    /// Best-effort: a missing/unreadable directory just yields an empty `known`
+    /// set (nothing has a custom cover yet). Never panics.
     pub(crate) fn load() -> Self {
         let dir = covers_dir();
         let _ = fs::create_dir_all(&dir);
@@ -173,9 +249,12 @@ impl CoverStore {
         if let Ok(read) = fs::read_dir(&dir) {
             for entry in read.flatten() {
                 let path = entry.path();
-                if path.is_file()
-                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
-                {
+                if !path.is_file() {
+                    continue;
+                }
+                if path.extension().is_some_and(|e| e == PARTIAL_EXT) {
+                    let _ = fs::remove_file(&path);
+                } else if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                     known.insert(stem.to_string());
                 }
             }
@@ -210,7 +289,7 @@ impl CoverStore {
             return false;
         }
         remove_by_stem(&self.dir, &stem);
-        if fs::copy(src, self.dir.join(format!("{stem}.{ext}"))).is_err() {
+        if copy_into_place(src, &self.dir.join(format!("{stem}.{ext}"))).is_err() {
             return false;
         }
         self.known.insert(stem);
@@ -222,9 +301,10 @@ impl CoverStore {
         self.set_cover(artist_stem(name), src)
     }
 
-    /// Set the album's custom cover from the image file `src`.
+    /// Set the album's custom cover from the image file `src`. Refused (`false`)
+    /// for a title-only identity (see [`AlbumIdentity::is_located`]).
     pub(crate) fn set_album_cover(&mut self, id: &AlbumIdentity, src: &Path) -> bool {
-        self.set_cover(album_identity_stem(id), src)
+        id.is_located() && self.set_cover(album_identity_stem(id), src)
     }
 
     /// The absolute path to the stored cover for `stem`, if one was recorded
@@ -274,12 +354,17 @@ impl CoverStore {
     /// identity), preserving what each album showed before identity keys: a
     /// legacy `album-<slug>` cover is copied to EVERY listed album whose title
     /// slugifies to that stem, unless that album already has an identity cover
-    /// (never overwritten). Only when every copy for a stem succeeded is the
-    /// legacy file moved to [`LEGACY_BACKUP_DIR`] (kept, not deleted). A legacy
+    /// (never overwritten) or adopted this file before (the [`ADOPTION_LEDGER`],
+    /// so a cleared cover stays cleared). An album with only a title-only
+    /// identity counts as a failed copy. Only when every copy for a stem
+    /// succeeded AND `may_retire` (every configured source has landed, so no
+    /// album that showed it can still appear) is the legacy file moved to
+    /// [`LEGACY_BACKUP_DIR`] (kept, never overwriting an earlier backup). A legacy
     /// file matching no listed album stays for a later library. Idempotent.
     pub(crate) fn adopt_legacy_album_covers<'a>(
         &mut self,
         albums: impl IntoIterator<Item = (&'a str, &'a AlbumIdentity)>,
+        may_retire: bool,
     ) -> LegacyCoverAdoption {
         let mut out = LegacyCoverAdoption::default();
         let legacy: Vec<String> = self
@@ -299,6 +384,7 @@ impl CoverStore {
                 ids.push(id);
             }
         }
+        let ledger = read_ledger(&self.dir);
         for stem in legacy {
             let Some(src) = find_by_stem(&self.dir, &stem) else {
                 self.known.remove(&stem); // vanished out-of-band
@@ -313,14 +399,22 @@ impl CoverStore {
                 .and_then(|e| e.to_str())
                 .map_or_else(|| "png".to_string(), str::to_lowercase);
             let mut all_ok = true;
+            let mut adopted = Vec::new();
             for id in ids {
-                let dst_stem = album_identity_stem(id);
-                if self.known.contains(&dst_stem) {
+                if !id.is_located() {
+                    all_ok = false;
                     continue;
                 }
-                match fs::copy(&src, self.dir.join(format!("{dst_stem}.{ext}"))) {
-                    Ok(_) => {
-                        self.known.insert(dst_stem);
+                let dst_stem = album_identity_stem(id);
+                if self.known.contains(&dst_stem)
+                    || ledger.contains(&(stem.clone(), dst_stem.clone()))
+                {
+                    continue;
+                }
+                match copy_into_place(&src, &self.dir.join(format!("{dst_stem}.{ext}"))) {
+                    Ok(()) => {
+                        self.known.insert(dst_stem.clone());
+                        adopted.push((stem.clone(), dst_stem));
                         out.adopted += 1;
                     }
                     Err(err) => {
@@ -329,12 +423,18 @@ impl CoverStore {
                     }
                 }
             }
+            if !adopted.is_empty()
+                && let Err(err) = append_ledger(&self.dir, &adopted)
+            {
+                tracing::warn!(%stem, error = %err, "could not record adopted album covers");
+            }
             let backup = self.dir.join(LEGACY_BACKUP_DIR);
             let retired = all_ok
+                && may_retire
                 && fs::create_dir_all(&backup).is_ok()
                 && src
                     .file_name()
-                    .is_some_and(|name| fs::rename(&src, backup.join(name)).is_ok());
+                    .is_some_and(|name| fs::rename(&src, free_backup_path(&backup, name)).is_ok());
             if retired {
                 self.known.remove(&stem);
                 out.retired += 1;
@@ -544,11 +644,14 @@ mod tests {
         let mut s = CoverStore::load();
         assert!(s.has_legacy_album_covers());
         let (a, b, other) = (id("a"), id("b"), id("c"));
-        let out = s.adopt_legacy_album_covers([
-            ("Footprints of the Traveler", &a),
-            ("Footprints of the Traveler", &b),
-            ("Other", &other),
-        ]);
+        let out = s.adopt_legacy_album_covers(
+            [
+                ("Footprints of the Traveler", &a),
+                ("Footprints of the Traveler", &b),
+                ("Other", &other),
+            ],
+            true,
+        );
         assert_eq!(
             out,
             LegacyCoverAdoption {
@@ -571,7 +674,7 @@ mod tests {
         assert!(!s.has_legacy_album_covers());
         // Idempotent: a second pass and a reload change nothing.
         assert_eq!(
-            s.adopt_legacy_album_covers([("Footprints of the Traveler", &a)]),
+            s.adopt_legacy_album_covers([("Footprints of the Traveler", &a)], true),
             LegacyCoverAdoption::default()
         );
         let reloaded = CoverStore::load();
@@ -584,7 +687,7 @@ mod tests {
         let _iso = config::use_isolated_test_config_dir();
         let legacy = legacy_cover("Not Yet Scanned");
         let mut s = CoverStore::load();
-        let out = s.adopt_legacy_album_covers([("Something Else", &id("x"))]);
+        let out = s.adopt_legacy_album_covers([("Something Else", &id("x"))], true);
         assert_eq!(
             out,
             LegacyCoverAdoption {
@@ -606,7 +709,7 @@ mod tests {
         let blocker = covers_dir().join(format!("{}.png", album_identity_stem(&b)));
         fs::create_dir_all(&blocker).unwrap();
         let mut s = CoverStore::load();
-        let out = s.adopt_legacy_album_covers([("Box", &a), ("Box", &b)]);
+        let out = s.adopt_legacy_album_covers([("Box", &a), ("Box", &b)], true);
         assert_eq!(
             out,
             LegacyCoverAdoption {
@@ -617,7 +720,7 @@ mod tests {
         );
         assert!(legacy.exists(), "not retired while an adoption failed");
         fs::remove_dir(&blocker).unwrap();
-        let out = s.adopt_legacy_album_covers([("Box", &a), ("Box", &b)]);
+        let out = s.adopt_legacy_album_covers([("Box", &a), ("Box", &b)], true);
         assert_eq!(
             out,
             LegacyCoverAdoption {
@@ -639,7 +742,7 @@ mod tests {
         assert!(s.set_album_cover(&a, &write_temp_file("mine.jpg", b"\xff\xd8\xff\xe0jpg")));
         legacy_cover("Box");
         let mut s = CoverStore::load();
-        let out = s.adopt_legacy_album_covers([("Box", &a)]);
+        let out = s.adopt_legacy_album_covers([("Box", &a)], true);
         assert_eq!(
             out,
             LegacyCoverAdoption {
@@ -649,5 +752,176 @@ mod tests {
             }
         );
         assert_eq!(s.album_cover_path(&a).unwrap().extension().unwrap(), "jpg");
+    }
+
+    /// The stems of every file directly in the covers dir.
+    fn stems_on_disk() -> Vec<String> {
+        fs::read_dir(covers_dir())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_file())
+            .filter_map(|e| {
+                e.path()
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+            })
+            .collect()
+    }
+
+    /// A title-only (fallback) identity cannot tell same-title albums apart, so
+    /// adopting into it would leak the cover to every edition: it counts as a
+    /// failed copy, writes nothing for it, and keeps the legacy file.
+    #[test]
+    fn a_fallback_identity_never_adopts_and_keeps_the_legacy_file() {
+        let _iso = config::use_isolated_test_config_dir();
+        let legacy = legacy_cover("Box");
+        let located = id("\u{1f}d:/m/box\u{1f}Box");
+        let fallback = id(&soul_player_host::unlocated_album_identity_key("Box"));
+        assert!(!fallback.is_located() && located.is_located());
+        let mut s = CoverStore::load();
+        let out = s.adopt_legacy_album_covers([("Box", &located), ("Box", &fallback)], true);
+        assert_eq!(
+            out,
+            LegacyCoverAdoption {
+                adopted: 1,
+                retired: 0,
+                kept: 1
+            }
+        );
+        assert!(legacy.exists(), "kept for a later, fully located library");
+        assert!(s.album_cover_path(&fallback).is_none());
+        assert!(
+            !stems_on_disk().contains(&album_identity_stem(&fallback)),
+            "no file is written under the fallback identity"
+        );
+    }
+
+    /// Nothing can be saved under a title-only identity either.
+    #[test]
+    fn a_cover_cannot_be_set_for_a_fallback_identity() {
+        let _iso = config::use_isolated_test_config_dir();
+        let fallback = id(&soul_player_host::unlocated_album_identity_key("Box"));
+        let mut s = CoverStore::load();
+        assert!(!s.set_album_cover(&fallback, &write_temp_png()));
+        assert!(s.album_cover_path(&fallback).is_none());
+    }
+
+    /// While a source is still missing (offline, disabled, reconnecting), the
+    /// copies happen but the legacy file stays: an album that only that source
+    /// carries must still be able to adopt it once it lands.
+    #[test]
+    fn retirement_waits_until_the_source_set_is_complete() {
+        let _iso = config::use_isolated_test_config_dir();
+        let legacy = legacy_cover("Box");
+        let (local, remote) = (id("local"), id("remote"));
+        let mut s = CoverStore::load();
+        let out = s.adopt_legacy_album_covers([("Box", &local)], false);
+        assert_eq!(
+            out,
+            LegacyCoverAdoption {
+                adopted: 1,
+                retired: 0,
+                kept: 1
+            }
+        );
+        assert!(legacy.exists());
+        assert!(s.album_cover_path(&local).is_some());
+        let out = s.adopt_legacy_album_covers([("Box", &local), ("Box", &remote)], true);
+        assert_eq!(
+            out,
+            LegacyCoverAdoption {
+                adopted: 1,
+                retired: 1,
+                kept: 0
+            }
+        );
+        assert!(s.album_cover_path(&remote).is_some());
+        assert!(!legacy.exists());
+    }
+
+    /// Clearing an adopted cover sticks: while the legacy file is still pending
+    /// retirement, later passes (and a restart) do not copy it back.
+    #[test]
+    fn a_cleared_adopted_cover_is_not_readopted_while_the_legacy_file_is_pending() {
+        let _iso = config::use_isolated_test_config_dir();
+        legacy_cover("Box");
+        let a = id("a");
+        let mut s = CoverStore::load();
+        assert_eq!(s.adopt_legacy_album_covers([("Box", &a)], false).adopted, 1);
+        s.clear_album_cover(&a);
+        assert_eq!(s.adopt_legacy_album_covers([("Box", &a)], false).adopted, 0);
+        let mut reloaded = CoverStore::load();
+        assert_eq!(
+            reloaded.adopt_legacy_album_covers([("Box", &a)], true),
+            LegacyCoverAdoption {
+                adopted: 0,
+                retired: 1,
+                kept: 0
+            }
+        );
+        assert!(reloaded.album_cover_path(&a).is_none());
+    }
+
+    /// Two titles that slugify to one legacy stem both showed that cover, so
+    /// both adopt it.
+    #[test]
+    fn two_titles_with_one_slug_both_adopt() {
+        let _iso = config::use_isolated_test_config_dir();
+        legacy_cover("AC/DC");
+        let (a, b) = (id("a"), id("b"));
+        let mut s = CoverStore::load();
+        let out = s.adopt_legacy_album_covers([("AC/DC", &a), ("AC DC", &b)], true);
+        assert_eq!(
+            out,
+            LegacyCoverAdoption {
+                adopted: 2,
+                retired: 1,
+                kept: 0
+            }
+        );
+        assert!(s.album_cover_path(&a).is_some() && s.album_cover_path(&b).is_some());
+    }
+
+    /// Retiring never overwrites an earlier backup of the same name.
+    #[test]
+    fn retiring_never_clobbers_an_earlier_backup() {
+        let _iso = config::use_isolated_test_config_dir();
+        let legacy = legacy_cover("Box");
+        let backup = covers_dir().join(LEGACY_BACKUP_DIR);
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join("album-box.png"), b"older").unwrap();
+        let mut s = CoverStore::load();
+        let out = s.adopt_legacy_album_covers([("Box", &id("a"))], true);
+        assert_eq!(out.retired, 1);
+        assert!(!legacy.exists());
+        assert_eq!(fs::read(backup.join("album-box.png")).unwrap(), b"older");
+        assert_eq!(fs::read(backup.join("album-box (2).png")).unwrap(), PNG_SIG);
+    }
+
+    /// Copies go through a `.partial` temp file renamed into place, so a crash
+    /// mid-copy never leaves a truncated file under a cover stem; a leftover
+    /// partial is discarded on load and is never a cover.
+    #[test]
+    fn a_leftover_partial_copy_is_discarded_and_never_a_cover() {
+        let _iso = config::use_isolated_test_config_dir();
+        let a = id("a");
+        let dir = covers_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let partial = dir.join(format!("{}.png.partial", album_identity_stem(&a)));
+        fs::write(&partial, &PNG_SIG[..3]).unwrap();
+        let s = CoverStore::load();
+        assert!(s.album_cover_path(&a).is_none());
+        assert!(!partial.exists(), "the crash leftover is cleaned up");
+        legacy_cover("Box");
+        let mut s = CoverStore::load();
+        s.adopt_legacy_album_covers([("Box", &a)], true);
+        assert!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .flatten()
+                .all(|e| e.path().extension().is_none_or(|x| x != "partial")),
+            "no temp file is left behind"
+        );
     }
 }

@@ -72,13 +72,14 @@ pub fn album_tracklist(tracks: &[&TrackView]) -> Vec<DiscSection> {
 /// A durable album identity for a playlist entry: the importer's album-root rule
 /// (the file's folder, or its parent when the folder is a `CD1`/`Disc 02 - x`
 /// disc folder) plus the album title, prefixed by the remote server for a remote
-/// locator. Case and separator normalized like [`TrackLocator::key`]. Two editions
-/// with one title in two folders differ; `CD1`/`CD2` of one album agree.
+/// locator (its scheme and host lowercased, so URL casing never splits one
+/// server in two). Case and separator normalized like [`TrackLocator::key`]. Two
+/// editions with one title in two folders differ; `CD1`/`CD2` of one album agree.
 #[must_use]
 pub fn album_identity_key(locator: &TrackLocator, album: &str) -> String {
     let (server, path) = match locator {
-        TrackLocator::Local { path } => ("", path.as_str()),
-        TrackLocator::Remote { server, rel } => (server.as_str(), rel.as_str()),
+        TrackLocator::Local { path } => (String::new(), path.as_str()),
+        TrackLocator::Remote { server, rel } => (normalize_server(server), rel.as_str()),
     };
     let norm = path.replace('\\', "/").to_lowercase();
     let mut parts: Vec<&str> = norm.split('/').collect();
@@ -92,6 +93,18 @@ pub fn album_identity_key(locator: &TrackLocator, album: &str) -> String {
     format!("{server}\u{1f}{}\u{1f}{album}", parts.join("/"))
 }
 
+/// `server` with its scheme and host (`scheme://host:port`) lowercased; any path
+/// after the host is kept as given.
+fn normalize_server(server: &str) -> String {
+    let host_start = server.find("://").map_or(0, |i| i + 3);
+    let host_end = server[host_start..]
+        .find('/')
+        .map_or(server.len(), |i| host_start + i);
+    let mut out = server[..host_end].to_ascii_lowercase();
+    out.push_str(&server[host_end..]);
+    out
+}
+
 /// The identity for an album title with no known track locator (no library
 /// open, or a stale id): the title alone, so two same-title albums share it.
 /// Callers use it only as a fallback when [`album_identity_key`] has no locator.
@@ -103,6 +116,13 @@ pub fn unlocated_album_identity_key(album: &str) -> String {
         },
         album,
     )
+}
+
+/// Whether `key` is a title-only identity ([`unlocated_album_identity_key`]):
+/// no server and no album folder, so it cannot tell two same-title albums apart.
+#[must_use]
+pub fn is_unlocated_album_identity_key(key: &str) -> bool {
+    key.starts_with("\u{1f}\u{1f}")
 }
 
 #[cfg(test)]
@@ -121,6 +141,43 @@ mod tests {
             )
         );
         assert_eq!(unlocated_album_identity_key("Box"), "\u{1f}\u{1f}Box");
+    }
+
+    #[test]
+    fn only_a_title_only_key_reads_as_unlocated() {
+        assert!(is_unlocated_album_identity_key(
+            &unlocated_album_identity_key("Box")
+        ));
+        let located = album_identity_key(
+            &TrackLocator::Local {
+                path: "d:/m/Box/01.flac".into(),
+            },
+            "Box",
+        );
+        assert!(!is_unlocated_album_identity_key(&located));
+    }
+
+    /// The server URL's scheme and host are case-insensitive, so a remote added
+    /// as `HTTP://Music.Example` keeps the covers it had as `http://music.example`.
+    #[test]
+    fn a_remote_identity_ignores_the_server_url_case() {
+        let at = |server: &str| {
+            album_identity_key(
+                &TrackLocator::Remote {
+                    server: server.into(),
+                    rel: "Box/CD1/01.flac".into(),
+                },
+                "Box",
+            )
+        };
+        assert_eq!(
+            at("HTTP://Music.Example:8080"),
+            at("http://music.example:8080")
+        );
+        assert_eq!(
+            at("HTTP://Music.Example:8080"),
+            "http://music.example:8080\u{1f}box\u{1f}Box"
+        );
     }
 
     fn tv(id: u32, disc: u16, track: u16, sub: Option<&str>, secs: f64) -> TrackView {

@@ -1233,18 +1233,18 @@ impl State {
     /// derives from its cover track's locator (one host call, one lock). Runs
     /// only on a cache fill, i.e. once per library change.
     fn stamp_album_identities(&self, albums: &mut [views::albums::Album]) {
-        let titles: Vec<(u32, String)> = albums
+        let reps: Vec<(u32, &str)> = albums
             .iter()
             .map(|a| {
                 let title = self
                     .track(a.cover_id)
                     .and_then(|t| t.album.as_deref())
                     .unwrap_or("");
-                (a.cover_id, title.to_string())
+                (a.cover_id, title)
             })
             .collect();
-        let reps: Vec<(u32, &str)> = titles.iter().map(|(id, t)| (*id, t.as_str())).collect();
-        for (album, key) in albums.iter_mut().zip(self.host.album_identities(&reps)) {
+        let keys = self.host.album_identities(&reps);
+        for (album, key) in albums.iter_mut().zip(keys) {
             album.identity = covers::AlbumIdentity::new(key);
         }
     }
@@ -1651,6 +1651,22 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     adopt_legacy_album_covers(s);
 }
 
+/// Whether every configured source has landed: no remote connect or reconnect
+/// in flight, every listed source enabled and reachable, and every configured
+/// remote listed. Until then an album that showed a legacy title-keyed cover
+/// may still be missing, so the legacy file is not retired yet.
+pub(crate) fn source_set_complete(s: &State) -> bool {
+    let listed = |url: &str| {
+        s.sources.iter().any(|x| {
+            matches!(&x.kind, soul_player_host::SourceKind::Remote { url: u } if u.eq_ignore_ascii_case(url))
+        })
+    };
+    !s.remote_connecting
+        && s.remote_reconnecting.is_empty()
+        && s.sources.iter().all(|x| x.enabled && x.available)
+        && s.remote_urls.iter().all(|u| listed(u))
+}
+
 /// Adopt any legacy title-keyed album covers for the albums now in the library
 /// (see `CoverStore::adopt_legacy_album_covers`). A cheap no-op once none remain
 /// or while the library is empty, so every library replacement calls it.
@@ -1658,10 +1674,12 @@ pub(crate) fn adopt_legacy_album_covers(s: &mut State) {
     if s.library.is_empty() || !s.covers.has_legacy_album_covers() {
         return;
     }
+    let may_retire = source_set_complete(s);
     let albums = s.grouped_albums();
-    let out = s
-        .covers
-        .adopt_legacy_album_covers(albums.iter().map(|a| (a.name.as_str(), &a.identity)));
+    let out = s.covers.adopt_legacy_album_covers(
+        albums.iter().map(|a| (a.name.as_str(), &a.identity)),
+        may_retire,
+    );
     if out != covers::LegacyCoverAdoption::default() {
         tracing::info!(
             adopted = out.adopted,
@@ -7930,6 +7948,124 @@ mod tests {
                 .join("album-footprints-of-the-traveler.png")
                 .exists(),
             "kept as a backup"
+        );
+    }
+
+    /// A legacy cover's retirement waits for the full source set: a local library
+    /// landing while a remote is still reconnecting adopts what it can but keeps
+    /// the legacy file; once the rest lands (a third edition here, standing in for
+    /// the remote's album) that album adopts it too and only then is it retired.
+    #[test]
+    fn a_title_keyed_cover_is_retired_only_once_every_source_has_landed() {
+        let _iso = config::use_isolated_test_config_dir();
+        let root = same_title_editions_library("legacy_cover_deferred");
+        let later = std::env::temp_dir().join(format!(
+            "soul_rune_legacy_cover_deferred_later_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&later);
+        test_fixtures::put(
+            &later,
+            "Footprints JP/01.flac",
+            &test_fixtures::flac_with_comments(&[
+                "ALBUM=Footprints of the Traveler",
+                "ARTIST=HOYO-MiX",
+                "TRACKNUMBER=1",
+                "TITLE=Ichi",
+            ]),
+        );
+        let covers_dir = config::soul_player_dir().unwrap().join("covers");
+        std::fs::create_dir_all(&covers_dir).unwrap();
+        let legacy = covers_dir.join("album-footprints-of-the-traveler.png");
+        std::fs::copy(write_temp_real_png(), &legacy).unwrap();
+
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_reconnecting = vec!["http://later.test".to_string()];
+        let up = s.host.add_folder(&root).expect("scan");
+        apply_watch(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 2);
+        assert!(eds.iter().all(|id| s.covers.album_cover_path(id).is_some()));
+        assert!(
+            legacy.exists(),
+            "not retired while a source is still reconnecting"
+        );
+
+        s.remote_reconnecting.clear();
+        let up = s.host.add_folder(&later).expect("scan the late source");
+        apply_watch(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 3);
+        assert!(
+            eds.iter().all(|id| s.covers.album_cover_path(id).is_some()),
+            "the late album adopted the cover too"
+        );
+        assert!(!legacy.exists(), "retired once the source set is complete");
+    }
+
+    /// The source set is complete only when nothing is connecting or
+    /// reconnecting, every listed source is enabled and reachable, and every
+    /// configured remote is listed.
+    #[test]
+    fn source_set_completeness_tracks_offline_disabled_and_pending_sources() {
+        let mut s = State::new(PlayerHandle::offline());
+        assert!(source_set_complete(&s));
+        s.sources = vec![online_remote_status("http://a.test")];
+        s.remote_urls = vec!["http://a.test".to_string()];
+        assert!(source_set_complete(&s));
+        s.remote_urls.push("http://b.test".to_string());
+        assert!(
+            !source_set_complete(&s),
+            "a configured remote not listed yet"
+        );
+        s.remote_urls.pop();
+        s.sources[0].enabled = false;
+        assert!(!source_set_complete(&s), "a disabled source");
+        s.sources = vec![offline_remote_status("http://a.test")];
+        assert!(!source_set_complete(&s), "an offline source");
+        s.sources = vec![online_remote_status("http://a.test")];
+        s.remote_reconnecting = vec!["http://a.test".to_string()];
+        assert!(!source_set_complete(&s), "a reconnect in flight");
+        s.remote_reconnecting.clear();
+        s.remote_connecting = true;
+        assert!(!source_set_complete(&s), "a connect in flight");
+    }
+
+    /// While an album's identity is only its title (its track did not resolve in
+    /// the host), its artwork editor is not offered, so an edit can never land
+    /// under a key every same-title album shares.
+    #[test]
+    fn the_album_artwork_editor_is_not_offered_for_an_unlocated_album() {
+        let _iso = config::use_isolated_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline()); // no host library: unlocated
+        s.library = vec![TrackView {
+            id: 1,
+            title: Some("One".to_string()),
+            album: Some(std::sync::Arc::from("Box")),
+            album_key: crate::views::albums::test_album_key(Some("Box")),
+            ..Default::default()
+        }];
+        let album = s.grouped_albums()[0].clone();
+        assert!(!album.identity.is_located());
+        assert!(
+            !views::detail_page::ArtworkTarget::Album(album.identity.clone())
+                .set_cover(&mut s, &write_temp_real_png()),
+            "saving under the title-only key is refused"
+        );
+        s.route = Route::Album;
+        s.open_album = Some(album.open_ref());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find("album-tracks").is_some(), "the album page rendered");
+        assert!(
+            rt.find("album-edit-artwork").is_none(),
+            "no Edit Artwork for an unlocated album"
         );
     }
 

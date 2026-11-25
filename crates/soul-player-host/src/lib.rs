@@ -78,7 +78,8 @@ pub use soul_player_backend::{
     BrowseAxis, Command, Cover, DiscSection, Event, LoudnessAnalysisMode, PlayState, QueueState,
     RepeatMode, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath,
     SkipReason, SkippedGroup, SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
-    album_identity_key, album_tracklist, disc_track_key, unlocated_album_identity_key,
+    album_identity_key, album_tracklist, disc_track_key, is_unlocated_album_identity_key,
+    unlocated_album_identity_key,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -1922,17 +1923,24 @@ impl PlayerHandle {
     /// Durable album identities ([`album_identity_key`]) for `(representative
     /// track id, album title)` pairs, one per pair and in order, resolved against
     /// the open library (local or remote aggregate) under one lock. A pair whose
-    /// id has no locator (no library open, or a stale id) gets
-    /// [`unlocated_album_identity_key`] for its title.
+    /// id has no locator (no library open, or a stale id), or whose track in the
+    /// open library carries another album title (the caller's id came from a
+    /// library snapshot the host has since replaced), gets
+    /// [`unlocated_album_identity_key`] for its title, never another album's
+    /// identity.
     pub fn album_identities(&self, reps: &[(u32, &str)]) -> Vec<String> {
         let lib = self.inner.library.lock().expect("library mutex").clone();
         reps.iter()
-            .map(
-                |&(id, title)| match lib.as_ref().and_then(|l| l.locator_of(id)) {
+            .map(|&(id, title)| {
+                let loc = lib.as_ref().and_then(|l| {
+                    let same_album = l.album_of(id).as_deref().unwrap_or("") == title;
+                    same_album.then(|| l.locator_of(id)).flatten()
+                });
+                match loc {
                     Some(loc) => album_identity_key(&loc, title),
                     None => unlocated_album_identity_key(title),
-                },
-            )
+                }
+            })
             .collect()
     }
 
@@ -3076,7 +3084,8 @@ mod tests {
     }
 
     /// Same-title albums in two folders get two identities; CD1/CD2 of one album
-    /// get one; an unresolvable id falls back to the title-only identity.
+    /// get one; an unresolvable id falls back to the title-only identity. (The
+    /// fixtures are untagged, so every track's album title is the empty one.)
     #[test]
     fn album_identities_tell_same_title_editions_apart_and_join_disc_folders() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -3103,18 +3112,32 @@ mod tests {
         };
         let (a, b) = (id_of("Hits A/01.wav"), id_of("Hits B/01.wav"));
         let (c1, c2) = (id_of("Box/CD1/01.wav"), id_of("Box/CD2/01.wav"));
-        let keys = h.album_identities(&[
-            (a, "Greatest Hits"),
-            (b, "Greatest Hits"),
-            (c1, "Box"),
-            (c2, "Box"),
-        ]);
+        let keys = h.album_identities(&[(a, ""), (b, ""), (c1, ""), (c2, "")]);
         assert_ne!(keys[0], keys[1], "two editions, two identities");
         assert_eq!(keys[2], keys[3], "CD1 and CD2 are one album");
+        assert!(keys.iter().all(|k| !is_unlocated_album_identity_key(k)));
         assert_eq!(
             PlayerHandle::offline().album_identities(&[(a, "Greatest Hits")]),
             vec![unlocated_album_identity_key("Greatest Hits")],
             "no library: the title-only fallback"
+        );
+    }
+
+    /// An id whose track carries another album title (the caller's id is from a
+    /// library snapshot the host has since replaced) must not be attributed to
+    /// that title: it falls back to the title-only identity instead.
+    #[test]
+    fn album_identities_fall_back_when_the_id_names_another_album() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("Hits A/01.wav");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, wav(48_000, 96_000)).unwrap();
+        let h = PlayerHandle::offline();
+        h.open_folder(dir.path()).expect("open_folder");
+        let id = h.views()[0].id;
+        assert_eq!(
+            h.album_identities(&[(id, "Greatest Hits")]),
+            vec![unlocated_album_identity_key("Greatest Hits")]
         );
     }
 

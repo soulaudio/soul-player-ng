@@ -335,6 +335,16 @@ impl Library {
         })
     }
 
+    /// Track `id`'s album title exactly as [`views`](Self::views) reports it:
+    /// `None` for an untitled album (or the "Unknown Album" sentinel) and for an
+    /// id that doesn't resolve.
+    #[must_use]
+    pub fn album_of(&self, id: u32) -> Option<String> {
+        let cat = self.cat();
+        let t = cat.track(id).ok()?;
+        real_name(album_title(&cat, t.album))
+    }
+
     /// Resolve durable locators back to **current** track ids, surviving a
     /// rescan that renumbered them. Phase 1: exact-locator (Local path) match
     /// only; `None` for anything that doesn't match (a missing file, a moved
