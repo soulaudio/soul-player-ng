@@ -1,0 +1,262 @@
+---
+import release from '../data/release.json';
+import { apple, github, linux, windows } from '../icons';
+
+const { version, downloads, releaseUrl, checksums } = release;
+
+const find = (id: string) => downloads.find((d) => d.id === id);
+const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+const INSTALL = 'curl -fsSL https://player.soulaudio.co/install.sh | sh';
+const REPO = 'https://github.com/soulaudio/soul-player-ng';
+
+const exe = find('windows-x86_64');
+const dmg = find('macos-universal');
+
+// Joined into one string rather than mapped into elements: multi-line JSX puts
+// a newline between each link, which the browser renders as " , " before the
+// comma and the full stop.
+const linuxLinks = [
+  find('linux-deb-x86_64'),
+  find('linux-rpm-x86_64'),
+  find('linux-appimage-x86_64'),
+  find('linux-flatpak-x86_64'),
+]
+  .filter(Boolean)
+  .map((d) => `<a href="${d.url}">${d.label}</a>`)
+  .join(', ');
+
+const TABS = [
+  { os: 'linux', name: 'Linux', icon: linux },
+  { os: 'macos', name: 'macOS', icon: apple },
+  { os: 'windows', name: 'Windows', icon: windows },
+];
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Soul Player</title>
+    <meta
+      name="description"
+      content="A desktop music player for people who still keep their own files. Gapless, bit-perfect, no account, no cloud."
+    />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <script src="/switch.js" defer is:inline></script>
+    <link rel="canonical" href="https://player.soulaudio.co/" />
+    <meta property="og:title" content="Soul Player" />
+    <meta property="og:description" content="Your music. Your way. Your privacy." />
+    <meta property="og:image" content="https://player.soulaudio.co/screenshot.png" />
+    <meta property="og:url" content="https://player.soulaudio.co/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <style>
+      /* Light first. Dark is offered to people whose system asks for it, but it
+         is not what the page defaults to. */
+      :root {
+        color-scheme: light dark;
+        --bg: #ffffff;
+        --raised: #f6f6f9;
+        --fg: #16161d;
+        --muted: #5e5e6b;
+        --line: #e4e4ea;
+        --accent: #6845c9;
+        --accent-fg: #ffffff;
+        --lifted: #ffffff;
+        --shadow: 0 1px 2px rgb(16 16 29 / 6%), 0 12px 32px rgb(16 16 29 / 8%);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0d0d12;
+          --raised: #16161d;
+          --fg: #f2f2f5;
+          --muted: #a2a2ae;
+          --line: #27272f;
+          --accent: #b9a3f2;
+          --accent-fg: #15101f;
+          --lifted: #272730;
+          --shadow: 0 1px 2px rgb(0 0 0 / 40%), 0 16px 40px rgb(0 0 0 / 45%);
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main { max-width: 54rem; margin: 0 auto; padding: 5rem 1.25rem 3rem; }
+      h1 {
+        font-size: clamp(2.5rem, 7vw, 3.75rem);
+        line-height: 1.05; margin: 0 0 .5rem; letter-spacing: -.03em;
+      }
+      .motto { font-size: 1.1875rem; color: var(--accent); margin: 0 0 3rem; font-weight: 600; }
+      img.shot {
+        width: 100%; height: auto; display: block;
+        border-radius: 14px; border: 1px solid var(--line); box-shadow: var(--shadow);
+      }
+
+      .install { margin-top: 4rem; }
+      .install-head {
+        display: flex; flex-wrap: wrap; align-items: center;
+        justify-content: space-between; gap: 1rem; margin-bottom: 1rem;
+      }
+      h2 { font-size: 1.1875rem; margin: 0; letter-spacing: -.01em; }
+
+      /* Segmented control rather than a <select>: three options, all worth
+         showing at once, each with its platform mark. */
+      .tabs { display: flex; gap: .25rem; padding: .25rem; background: var(--raised);
+              border: 1px solid var(--line); border-radius: 10px; }
+      .tabs button {
+        display: inline-flex; align-items: center; gap: .45rem;
+        font: inherit; font-size: .9375rem; font-weight: 500;
+        color: var(--muted); background: none; border: 0; cursor: pointer;
+        border-radius: 7px; padding: .4rem .75rem; line-height: 1;
+      }
+      .tabs button:hover { color: var(--fg); }
+      .tabs button[aria-selected="true"] {
+        background: var(--lifted); color: var(--fg);
+        box-shadow: 0 1px 2px rgb(16 16 29 / 12%);
+      }
+      .tabs svg { opacity: .85; }
+      :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+      .cmd { position: relative; }
+      pre {
+        background: var(--raised); border: 1px solid var(--line); border-radius: 10px;
+        padding: 1rem 5rem 1rem 1.125rem; overflow-x: auto; margin: 0;
+        font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .copy {
+        position: absolute; top: .5rem; right: .5rem;
+        font: inherit; font-size: .8125rem; font-weight: 500;
+        color: var(--muted); background: var(--lifted);
+        border: 1px solid var(--line); border-radius: 7px;
+        padding: .3rem .6rem; cursor: pointer;
+      }
+      .copy:hover { color: var(--fg); }
+      .note { color: var(--muted); font-size: .9375rem; margin: .875rem 0 0; }
+      .btn {
+        display: inline-flex; align-items: center; gap: .5rem;
+        font-weight: 600; text-decoration: none;
+        background: var(--accent); color: var(--accent-fg);
+        border-radius: 10px; padding: .7rem 1.2rem;
+      }
+      .btn:hover { filter: brightness(1.07); }
+      a { color: inherit; text-underline-offset: 3px; }
+
+      /* Every panel is rendered. The switcher reveals one; with JavaScript off
+         all three stay visible under their own headings, which is a worse page
+         but not a broken one. */
+      .panel + .panel { margin-top: 2rem; }
+      .panel h3 { font-size: .9375rem; color: var(--muted); margin: 0 0 .625rem; font-weight: 600; }
+      .js .panel { display: none; }
+      .js .panel[data-active] { display: block; }
+      .js .panel h3 { display: none; }
+      .js-only { display: none; }
+      .js .js-only { display: flex; }
+
+      footer {
+        border-top: 1px solid var(--line); margin-top: 4.5rem; padding-top: 1.75rem;
+        color: var(--muted); font-size: .9375rem;
+        display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1.25rem;
+      }
+      footer a { color: var(--muted); display: inline-flex; align-items: center; gap: .4rem; }
+      footer a:hover { color: var(--fg); }
+      footer .spacer { margin-left: auto; }
+      @media (max-width: 34rem) {
+        footer .spacer { margin-left: 0; flex-basis: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Soul Player</h1>
+      <p class="motto">Your music. Your way. Your privacy.</p>
+
+      <img
+        class="shot"
+        src="/screenshot.png"
+        width="2880"
+        height="1800"
+        alt="The Soul Player Albums view: a grid of album covers, a queue in the sidebar, and a track playing."
+      />
+
+      <section class="install">
+        <div class="install-head">
+          <h2>Install</h2>
+          <div class="tabs js-only" role="tablist" aria-label="Platform">
+            {TABS.map((tab) => (
+              <button type="button" role="tab" data-tab={tab.os} aria-selected={tab.os === 'linux'}>
+                <Fragment set:html={tab.icon} />{tab.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div class="panel" data-os="linux" data-active>
+          <h3>Linux</h3>
+          <div class="cmd">
+            <pre><code id="cmd-linux">{INSTALL}</code></pre>
+            <button class="copy" type="button" data-copy="cmd-linux">Copy</button>
+          </div>
+          <p class="note">
+            Picks the right package for your system, verifies it against the release
+            checksums, and installs it. Read it first if you prefer:
+            <a href="/install.sh">install.sh</a>. Needs glibc 2.35 or newer.
+          </p>
+          <p class="note">
+            Or take the package yourself: <Fragment set:html={linuxLinks} />. Other
+            architectures are on the <a href={releaseUrl}>release page</a>.
+          </p>
+        </div>
+
+        <div class="panel" data-os="macos">
+          <h3>macOS</h3>
+          <div class="cmd">
+            <pre><code id="cmd-macos">{INSTALL}</code></pre>
+            <button class="copy" type="button" data-copy="cmd-macos">Copy</button>
+          </div>
+          <p class="note">
+            Downloads the universal build, verifies it, and moves it to Applications.
+            Read it first if you prefer: <a href="/install.sh">install.sh</a>.
+          </p>
+          {dmg && (
+            <p class="note">
+              Or download <a href={dmg.url}>{dmg.name}</a> ({mb(dmg.size)}) and drag it
+              to Applications. One download runs natively on Apple silicon and Intel.
+            </p>
+          )}
+        </div>
+
+        <div class="panel" data-os="windows">
+          <h3>Windows</h3>
+          {exe && (
+            <p>
+              <a class="btn" href={exe.url}>
+                <Fragment set:html={windows} />Download the installer
+              </a>
+            </p>
+          )}
+          {exe && <p class="note">{exe.name}, {mb(exe.size)}, x86_64.</p>}
+        </div>
+
+        <p class="note">
+          Version {version}. <a href={releaseUrl}>Release notes</a>{
+            checksums && <> and <a href={checksums}>SHA256SUMS</a></>
+          }.
+        </p>
+      </section>
+
+      <footer>
+        <a href={REPO}><Fragment set:html={github} />Source</a>
+        <a href={`${REPO}/blob/main/docs/SERVER.md`}>Self-hosting</a>
+        <a href={`${REPO}/blob/main/docs/INSTALL.md`}>Install notes</a>
+        <a href={`${REPO}/issues`}>Report a bug</a>
+        <span class="spacer">Apache 2.0. Copyright &copy; 2026 datadir s. r. o.</span>
+      </footer>
+    </main>
+  </body>
+</html>

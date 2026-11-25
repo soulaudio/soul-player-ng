@@ -1115,6 +1115,16 @@ jobs:
             echo "ok: $key → $name"
           done
 
+  # player.soulaudio.co reads the latest release at build time, so the download
+  # page keeps offering the previous version until it is rebuilt. If this fails
+  # the run goes red even though the release itself published fine, which is
+  # the point: the page is lagging and someone has to re-run it.
+  site:
+    needs: [guard, verify]
+    if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
+    uses: ./.github/workflows/site.yml
+    secrets: inherit
+
   # `brew install --cask soulaudio/tap/soul-player`: the cask the e2e installed
   # and zapped (gen-cask.py), now pointing at the published universal DMG, pushed
   # to the tap repo. Needs HOMEBREW_TAP_TOKEN (contents: write on
