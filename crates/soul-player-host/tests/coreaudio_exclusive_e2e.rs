@@ -11,7 +11,7 @@
 //! - strict mode with the device hogged by another process refuses to start rather than
 //!   silently downgrading.
 //!
-//! `#[ignore]`d — it takes over a real output device (writing SILENCE only). Run:
+//! `#[ignore]`d: it takes over a real output device (writing SILENCE only). Run:
 //!
 //! ```text
 //! cargo test --test coreaudio_exclusive_e2e -- --ignored --nocapture --test-threads=1
@@ -223,7 +223,7 @@ fn strict_mode_refuses_to_play_when_another_app_hogs_the_device() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("a.wav"), silent_wav(44_100, 2.0)).unwrap();
 
-    // Strict: never downgrade — status Unavailable, no exclusive signal path.
+    // Strict: never downgrade: status Unavailable, no exclusive signal path.
     let (h, rx) = player(true).unwrap();
     let _ = h.open_folder(dir.path());
     let deadline = Instant::now() + Duration::from_secs(5);

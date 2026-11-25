@@ -1,8 +1,8 @@
 //! Generated covers for albums and artists without art: a soft multi-stop gradient with a
-//! film-grain texture, **deterministic** from the album / artist name — the same name gives the
+//! film-grain texture, **deterministic** from the album / artist name, the same name gives the
 //! same cover on every launch, machine and platform (desktop, DAP, a future mobile client).
 //!
-//! - **Seed:** FNV-1a 64 (a fixed, specified hash — never `std`'s randomized `DefaultHasher`)
+//! - **Seed:** FNV-1a 64 (a fixed, specified hash, never `std`'s randomized `DefaultHasher`)
 //!   of the *normalized* name (Unicode NFC, lower-cased, whitespace trimmed + collapsed), so
 //!   `"Björk"` in NFC or NFD, `"björk "` and `"BJÖRK"` share a cover. Albums are keyed by title
 //!   (the library groups albums by title, so every track of a compilation shares one cover);
@@ -10,7 +10,7 @@
 //! - **Picture:** two or three hues picked from the seed in Oklch (perceptually even; no muddy
 //!   browns, no neon), a linear gradient at a seeded angle plus a soft seeded highlight blob,
 //!   interpolated in Oklab (no grey dead zones), then luminance grain from a hash of
-//!   `(seed, x, y)` on a fixed 512-unit grid — stateless, so any size or render order agrees.
+//!   `(seed, x, y)` on a fixed 512-unit grid, stateless, so any size or render order agrees.
 //! - **Same bits everywhere:** transcendental maths goes through `libm` (pure Rust), not the
 //!   platform's C library, so macOS, Windows and Linux render byte-identical covers.
 //! - **Versioned:** [`ALGO_VERSION`] is mixed into every seed and pinned by golden digests in
@@ -178,7 +178,7 @@ fn grain(seed: u64, gx: u32, gy: u32) -> f32 {
     ((h >> 40) as f32 / (1u64 << 24) as f32) * 2.0 - 1.0
 }
 
-/// Grain amplitude (luminance, sRGB units) — subtle texture, never noise.
+/// Grain amplitude (luminance, sRGB units), subtle texture, never noise.
 const GRAIN: f32 = 0.045;
 
 /// Render the cover for `seed` as `px × px` RGBA8 (opaque).

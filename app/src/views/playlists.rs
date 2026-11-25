@@ -263,8 +263,8 @@ pub fn new_playlist_overlay(s: &State, p: &Palette) -> Option<El> {
 
 /// The Playlists page: the shared browse-page top bar (a bounded search that
 /// filters playlists by name, plus a "New playlist" button) over the same
-/// responsive card grid the Albums page uses, one [`playlist_card`] per playlist
-///, or an empty-state message when there are none. Pressing "New playlist"
+/// responsive card grid the Albums page uses, one [`playlist_card`] per playlist,
+/// or an empty-state message when there are none. Pressing "New playlist"
 /// reveals the inline name field under the bar.
 /// A playlist card's non-cover height (name + track count): the `virtual_grid`
 /// row stride is a `card_w`-square cover mosaic plus this.

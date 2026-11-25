@@ -1,13 +1,13 @@
 //! END-TO-END **format matrix**, across BOTH source kinds.
 //!
 //! Every container the decoders claim to support is driven twice over the same
-//! bytes — once as a **local watched folder** and once as a **remote
-//! `soul-server` source** — and the two are then required to agree sample for
+//! bytes, once as a **local watched folder** and once as a **remote
+//! `soul-server` source**, and the two are then required to agree sample for
 //! sample. That cross-check is the point of the file: a per-format local test
 //! can only prove "the decoder decodes it", and a remote test over one or two
 //! formats can only prove "the wire protocol works for those". Together, per
-//! format, they prove the whole path — scan, tag extraction, `.soulidx` bake,
-//! HTTP sync, Range-streamed decode — is format-agnostic, and that nothing
+//! format, they prove the whole path, scan, tag extraction, `.soulidx` bake,
+//! HTTP sync, Range-streamed decode, is format-agnostic, and that nothing
 //! about going over the wire changes a single decoded sample.
 //!
 //! The corpus is the **Aria** fixtures (`testdata/meta.*`): a 1.5 s excerpt of
@@ -15,7 +15,7 @@
 //! BWV 988, CC0 / public domain via the Open Goldberg project, muxed into every
 //! supported container from one PCM master by `testdata/generate-meta.sh`. Real
 //! music rather than a synthetic tone, because tags and musical structure are
-//! what a library scan and a browse are actually judged on — and because one
+//! what a library scan and a browse are actually judged on, and because one
 //! shared master is what makes the local-vs-remote sample comparison meaningful.
 //!
 //! What this file deliberately does NOT do: measure signal fidelity. Whether a
@@ -45,7 +45,7 @@ const ARIA: Tags = Tags {
     artist: "Kimiko Ishizaka",
     album: "Open Goldberg Variations",
 };
-/// The tags the synthetic `tagged.*` fixtures carry — used for MPEG Layer I,
+/// The tags the synthetic `tagged.*` fixtures carry, used for MPEG Layer I,
 /// the one format with no real-music variant (see `Case::fixture` below).
 const SYNTHETIC: Tags = Tags {
     title: "Soul Test Track",
@@ -61,7 +61,7 @@ struct Tags {
 }
 
 struct Case {
-    /// The extension the file is given in the library — this, not the committed
+    /// The extension the file is given in the library, this, not the committed
     /// fixture name, is what the scanner's `SUPPORTED` check and the Tracks
     /// table's FORMAT badge key off.
     ext: &'static str,
@@ -69,14 +69,14 @@ struct Case {
     fixture: &'static str,
     /// The FORMAT badge the Tracks table should show. Usually the uppercased
     /// extension, but `format_label` deliberately ALIASES a few to the label
-    /// the old app showed — `oga` -> `OGG`, `aif` -> `AIFF` — so it is spelled
+    /// the old app showed, `oga` -> `OGG`, `aif` -> `AIFF`, so it is spelled
     /// out per case rather than computed, which pins that aliasing as intended
     /// behaviour instead of re-deriving (and so agreeing with) whatever the
     /// code happens to do.
     badge: &'static str,
     /// What the scan is expected to read back, or `None` for a container with
     /// no tag carrier at all (the library falls back to the file name, so there
-    /// is no fixed string to assert — the local-vs-remote equality check still
+    /// is no fixed string to assert, the local-vs-remote equality check still
     /// applies).
     tags: Option<Tags>,
 }
@@ -88,7 +88,7 @@ struct Case {
 /// them in parallel (the serial loop took ~130 s, most of it DSD decimation and
 /// twenty sequential OAuth logins), and a failure names the format in the test
 /// name instead of surfacing as one red test that stops at the first bad
-/// container — so a regression in, say, WebM doesn't hide whatever WavPack
+/// container, so a regression in, say, WebM doesn't hide whatever WavPack
 /// would have said.
 macro_rules! format_matrix {
     ($($name:ident: $ext:literal, $fixture:literal, $badge:literal, $tags:expr;)*) => {
@@ -110,7 +110,7 @@ macro_rules! format_matrix {
 // Keep this list in lockstep with that set: an extension the importer accepts
 // but that is missing here is an untested format, and
 // `the_matrix_covers_every_supported_extension` fails if the two drift apart.
-// (Plain comments, not doc comments — rustdoc can't attach docs to a macro
+// (Plain comments, not doc comments, rustdoc can't attach docs to a macro
 // invocation, and `#[warn(unused_doc_comments)]` rightly says so.)
 format_matrix! {
     fmt_wav_meta: "wav", "meta.wav",            "WAV",  Some(ARIA);
@@ -134,7 +134,7 @@ format_matrix! {
     // `meta.dsf` above is DSD64. The higher rates matter here and not just in
     // the backend's signal tests because each one is a DIFFERENT decimation
     // ratio (64/128/256/512 -> 44.1 kHz) and a different byte volume per
-    // second — which is exactly what a Range-streamed remote read is most
+    // second, which is exactly what a Range-streamed remote read is most
     // likely to get wrong. Synthetic tone fixtures: no CC0 native-DSD music
     // exists to derive an Aria from at these rates (see soul-audio-core's
     // testdata README), so they carry the canonical tone rather than the Aria.
@@ -146,7 +146,7 @@ format_matrix! {
 /// Decode `id` from `source` to exhaustion and return every interleaved sample.
 ///
 /// `OwnedDecoder` is large by value (the boxed `AnyDecoder` / multichannel
-/// Vorbis variants), so this runs on a big-stack thread — the same precaution
+/// Vorbis variants), so this runs on a big-stack thread, the same precaution
 /// `soul_audio_desktop::decoder`'s own `open_track` tests and `remote_e2e`
 /// take.
 fn decode_all(source: Arc<dyn TrackSource>, id: u32, what: &str) -> Vec<i32> {
@@ -221,7 +221,7 @@ fn stage(case: &Case) -> tempfile::TempDir {
 /// and as a remote server source, and require both to agree.
 ///
 /// One server (and one real OAuth login) per case rather than one shared server
-/// over the whole corpus — deliberately. Several extensions appear twice with
+/// over the whole corpus, deliberately. Several extensions appear twice with
 /// different codecs (`.m4a` as ALAC and as AAC, `.aac` with and without ID3),
 /// and every fixture carries identical tags, so in a pooled library there would
 /// be no stable way to say which browsed view came from which file. Isolating
@@ -251,7 +251,7 @@ fn run_case(case: &Case) {
     );
 
     // Same folder through the public host API every UI head actually
-    // calls — proves the format reaches a real watched source, not just
+    // calls, proves the format reaches a real watched source, not just
     // the backend scanner underneath it.
     let handle = PlayerHandle::offline();
     handle
@@ -334,12 +334,12 @@ fn run_case(case: &Case) {
     // Identical bytes decoded by the identical decoder: streaming over
     // HTTP Range must not perturb a single sample. A mismatch here means a
     // truncated range read, a short final block, or a seek/offset bug in
-    // the streaming source — none of which a "decoded something" assertion
+    // the streaming source, none of which a "decoded something" assertion
     // would catch.
     assert_eq!(
         remote_pcm.len(),
         local_pcm.len(),
-        "{what}: remote decode produced {} samples, local {} — \
+        "{what}: remote decode produced {} samples, local {}: \
          the streamed read did not cover the whole file",
         remote_pcm.len(),
         local_pcm.len()
@@ -359,10 +359,10 @@ fn run_case(case: &Case) {
 
 /// What gating AAC means for a user's files.
 ///
-/// `soul-audio-core` gates its AAC decoder behind an opt-in feature (patent —
+/// `soul-audio-core` gates its AAC decoder behind an opt-in feature (patent,
 /// Via LA) that this product does not enable, and the importer refuses to list
 /// a file whose decoder was not compiled in. So a `.aac` file is simply not
-/// imported — no library entry, no badge, nothing that fails on play.
+/// imported, no library entry, no badge, nothing that fails on play.
 ///
 /// `.m4a` cannot be handled that way and is the honest remaining gap: the
 /// container carries ALAC as well as AAC, only a decode can tell them apart, and
@@ -370,7 +370,7 @@ fn run_case(case: &Case) {
 /// therefore still appears and fails when played.
 ///
 /// This test exists to keep both halves visible, and it is what will fail if the
-/// licence position changes — prompting the matrix cases to come back.
+/// licence position changes, prompting the matrix cases to come back.
 #[test]
 fn aac_files_are_not_imported_while_the_decoder_is_gated_off() {
     // Raw ADTS: the extension can only be AAC, so it is not imported at all.
@@ -384,14 +384,14 @@ fn aac_files_are_not_imported_while_the_decoder_is_gated_off() {
             lib.views().len(),
             0,
             "{fixture}: a .aac file must not be imported when its decoder is gated \
-             off — listing it would show the user a track that fails on play. If \
+             off: listing it would show the user a track that fails on play. If \
              the AAC licence was taken, restore the AAC cases in MATRIX and drop \
              \"aac\" from UNDECODABLE."
         );
     }
 
     // AAC inside MP4: indistinguishable from ALAC by name, so it IS imported and
-    // then cannot be decoded. The gap is deliberate — the alternative is losing
+    // then cannot be decoded. The gap is deliberate, the alternative is losing
     // every ALAC file with it.
     let dir = tempfile::tempdir().expect("create a library temp dir");
     std::fs::copy(
@@ -417,11 +417,11 @@ fn aac_files_are_not_imported_while_the_decoder_is_gated_off() {
         .expect("decode thread panicked");
     assert!(
         opened.is_err(),
-        "AAC-in-MP4 decoded — the AAC feature appears to be ON"
+        "AAC-in-MP4 decoded, the AAC feature appears to be ON"
     );
 }
 
-/// The matrix must cover every extension the importer accepts — otherwise a
+/// The matrix must cover every extension the importer accepts, otherwise a
 /// format can be added to `SUPPORTED` upstream and silently never be tested
 /// from either source.
 ///
@@ -452,7 +452,7 @@ fn the_matrix_covers_every_supported_extension() {
         missing.is_empty(),
         "these supported extensions have no format-matrix case: {missing:?}"
     );
-    // And an exception must be a real exception — one still in `SUPPORTED`.
+    // And an exception must be a real exception, one still in `SUPPORTED`.
     for ext in UNDECODABLE {
         assert!(
             SUPPORTED.contains(ext),
@@ -461,8 +461,8 @@ fn the_matrix_covers_every_supported_extension() {
         );
     }
 
-    // And nothing in the matrix may claim an extension the importer would skip
-    // — such a case would scan to zero tracks and the real failure would read
+    // And nothing in the matrix may claim an extension the importer would skip,
+    // such a case would scan to zero tracks and the real failure would read
     // as a confusing count mismatch.
     let unsupported: Vec<_> = MATRIX
         .iter()

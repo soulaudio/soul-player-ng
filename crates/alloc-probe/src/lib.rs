@@ -10,7 +10,7 @@
 //!
 //! The player crates are `#![forbid(unsafe_code)]`, and a [`GlobalAlloc`] impl needs
 //! `unsafe`. Confining the `unsafe` here lets those crates stay unsafe-free while still
-//! *installing* this allocator — declaring a `#[global_allocator]` static is **safe**,
+//! *installing* this allocator, declaring a `#[global_allocator]` static is **safe**,
 //! only implementing the trait is `unsafe`.
 //!
 //! # Usage

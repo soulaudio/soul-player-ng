@@ -2,8 +2,8 @@
 # Regenerate cargo-sources.json from app/Cargo.lock.
 #
 # Flathub builders have no network, so every crate must be a declared source
-# with a checksum. flatpak-cargo-generator turns the lockfile into exactly that
-#, ~1500 entries, including both git dependencies resolved to the commits the
+# with a checksum. flatpak-cargo-generator turns the lockfile into exactly that,
+# ~1500 entries, including both git dependencies resolved to the commits the
 # lockfile pins.
 #
 # The output is NOT committed: it is derived entirely from the lockfile, and a

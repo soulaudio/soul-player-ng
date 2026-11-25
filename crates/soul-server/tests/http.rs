@@ -137,8 +137,8 @@ async fn ping_reports_version_and_index_version() {
 /// requires for `/v0` access: `POST /authorize` with the seeded test user's
 /// credentials (`"u"`/`"p"`), follow the `302` to pull the authorization
 /// `code` out of the `Location` header, then `POST /token` to redeem it for
-/// a JWT access token. This replaces the old `/v0/auth` opaque-token helper
-///, `/v0` now only accepts a JWT minted by this server's own `Signer`.
+/// a JWT access token. This replaces the old `/v0/auth` opaque-token helper,
+/// `/v0` now only accepts a JWT minted by this server's own `Signer`.
 async fn login(router: &Router) -> String {
     let verifier = "fixed-test-code-verifier-0123456789abcdefghijk";
     let challenge = pkce_challenge(verifier);

@@ -306,8 +306,8 @@ fn remote_health_indicator(summary: RemoteSummary, p: &Palette) -> El {
 }
 
 /// One remote's row in the health popover: host, a status word + dot, and
-/// the same latency/version/last-checked telemetry Settings → Sources shows
-///, reusing its formatters (`settings::display_host`/`latency_text`/
+/// the same latency/version/last-checked telemetry Settings → Sources shows,
+/// reusing its formatters (`settings::display_host`/`latency_text`/
 /// `relative_time`) rather than re-deriving them, so the two views can never
 /// drift on how a latency or a relative time reads.
 fn health_popover_row(i: usize, status: &SourceStatus, p: &Palette) -> El {

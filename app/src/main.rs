@@ -333,8 +333,8 @@ struct State {
     /// when the library changes (keyed by the same fingerprint as the groupings).
     library_rc_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[TrackView]>)>>,
     /// A memoized `track id -> library index` map so [`State::track`] (and the
-    /// detail pages) resolve a track in O(1) instead of an O(n) `library.iter().find`
-    ///, that linear scan, run per queue row and per now-playing lookup, was ~150M
+    /// detail pages) resolve a track in O(1) instead of an O(n) `library.iter().find`,
+    /// that linear scan, run per queue row and per now-playing lookup, was ~150M
     /// scans/frame at a million tracks. Rebuilt only when the library changes.
     track_index_cache: std::cell::RefCell<Option<(u64, TrackIndexMap)>>,
     /// The virtualized Tracks list's `(visible indices, play-context ids)`,
@@ -671,8 +671,8 @@ struct State {
     /// the signal path's Exclusive stage).
     exclusive: bool,
     /// Whether **strict** exclusive (exclusive-or-stop) is requested (persisted). With
-    /// `exclusive`, the next session won't fall back to shared if exclusive can't open
-    ///, playback stops instead (the purist stance). Only meaningful when `exclusive`.
+    /// `exclusive`, the next session won't fall back to shared if exclusive can't open,
+    /// playback stops instead (the purist stance). Only meaningful when `exclusive`.
     exclusive_strict: bool,
     /// ReplayGain normalization mode (persisted), rendered by Settings →
     /// ReplayGain; `Off` = no normalization.
@@ -1070,8 +1070,8 @@ impl State {
         !self.nav_hidden.iter().any(|h| h == id)
     }
 
-    /// The reveal progress (0..1) for nav item `id`: the stored animation value, or
-    ///, before it has ever animated, its resting target (1 shown, 0 hidden).
+    /// The reveal progress (0..1) for nav item `id`: the stored animation value, or,
+    /// before it has ever animated, its resting target (1 shown, 0 hidden).
     pub(crate) fn nav_reveal(&self, id: &str) -> f32 {
         self.nav_reveal
             .get(id)
@@ -1574,8 +1574,8 @@ const REMOTE_HEALTH_POLL_INTERVAL: std::time::Duration = std::time::Duration::fr
 /// How often the device-refresh loop (spawned in `main`) re-enumerates the output devices so
 /// the picker reflects a plugged/unplugged device. Gentle enough not to hammer the audio stack,
 /// frequent enough that an unplug updates the list within a few seconds. Self-paced (the loop
-/// sleeps this long AFTER each enumeration), so a slow cpal enumeration can never overlap itself
-///, and the gap keeps the background enumeration from contending with a live device-open (cpal's
+/// sleeps this long AFTER each enumeration), so a slow cpal enumeration can never overlap itself,
+/// and the gap keeps the background enumeration from contending with a live device-open (cpal's
 /// WASAPI enumeration can be multi-second on a Bluetooth-heavy system).
 const OUTPUT_DEVICE_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -2026,8 +2026,8 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
     }
 }
 
-/// Re-run the interactive browser login for an ALREADY-configured remote `url`
-///, the escape hatch for when a silent [`reconnect_remote_now`] can't recover
+/// Re-run the interactive browser login for an ALREADY-configured remote `url`,
+/// the escape hatch for when a silent [`reconnect_remote_now`] can't recover
 /// it because the stored refresh token is dead (revoked, or orphaned by an
 /// unclean exit mid-rotation): no amount of silent retrying will work, so the
 /// only fix is a fresh sign-in. Unlike Reconnect, this opens the system browser
@@ -6268,8 +6268,8 @@ mod tests {
     fn playlists_layout_contains_itself_in_every_locale() {
         // This test cycles the process-GLOBAL i18n locale over every locale, so it must
         // hold the locale lock (acquired FIRST, before the config lock, per the documented
-        // ordering in config.rs) or it races sibling tests asserting exact English strings
-        //, the known i18n flake. Its sibling sweepers (app_layout_/settings_layout_) do
+        // ordering in config.rs) or it races sibling tests asserting exact English strings,
+        // the known i18n flake. Its sibling sweepers (app_layout_/settings_layout_) do
         // the same.
         let _locale = config::use_test_locale("en");
         let _guard = config::use_test_config_dir();
@@ -15234,8 +15234,8 @@ mod tests {
     }
 
     /// The hover highlight is an inset rounded "pill" on the row body, not an
-    /// edge-to-edge bar, and the drag grip stays hidden until the row is hovered
-    ///, so the resting queue reads as a clean, aligned list.
+    /// edge-to-edge bar, and the drag grip stays hidden until the row is hovered,
+    /// so the resting queue reads as a clean, aligned list.
     #[test]
     fn a_resting_queue_row_hides_its_grip_and_the_pill_is_inset() {
         let mut s = State::new(PlayerHandle::recording());

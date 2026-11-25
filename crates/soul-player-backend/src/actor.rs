@@ -71,11 +71,11 @@ impl AudioPlayer {
     /// Spawn the actor. `make_sink(&OutputConfig)` runs on the pump thread (so `K`
     /// need not be `Send`) and builds a sink for a given output config: once at
     /// startup from `output_desired`, and again whenever the host changes the device
-    /// or exclusive mode live (the pump rebuilds the sink in place — per-track
+    /// or exclusive mode live (the pump rebuilds the sink in place, per-track
     /// native-rate switching still reopens that sink via `Sink::reopen`).
     /// `make_park` builds a device-FREE placeholder sink (same `K`): the pump parks on
     /// it to drop the old sink (freeing its device) before `make_sink` opens the new
-    /// one — release-then-acquire, required so a same-device exclusive switch doesn't
+    /// one, release-then-acquire, required so a same-device exclusive switch doesn't
     /// hit device-in-use. `output_desired` is the shared, host-mutable desired output
     /// config the pump watches. `on_event` is called from the pump thread on every
     /// emitted event. `library` is the initial `id → path` map (swap later via
@@ -99,7 +99,7 @@ impl AudioPlayer {
 
         // 64 MiB: the pump owns a `Player` holding several `OwnedDecoder`
         // preload slots, and `OwnedDecoder` embeds the large by-value
-        // `AnyDecoder` enum (~320 KiB — sized by its multichannel AAC / surround
+        // `AnyDecoder` enum (~320 KiB, sized by its multichannel AAC / surround
         // Opus variants). Debug-build moves through the nested Player/Engine/Deck
         // construction multiply that well past the former 16 MiB; 64 MiB leaves
         // headroom as decoder variants grow. (Release move-elision needs far
@@ -158,12 +158,12 @@ impl Drop for AudioPlayer {
 /// current (see [`pump_thread`]).
 ///
 /// The decoder itself opens via [`TrackSource::open_decoder`], NOT a direct
-/// `path_of` + `open_track` — a local `Library` resolves that straight to
+/// `path_of` + `open_track`, a local `Library` resolves that straight to
 /// `open_track` (the trait's default), but a remote source (the host's
 /// `RemoteLibrary`) overrides it to STREAM over HTTP Range instead of
 /// downloading the whole file first. RG tags still go through `path_of` (see
 /// [`read_rg_tags`]): a local path reads tags straight off disk, and a remote
-/// one resolves through the existing download-cache fetch — the same tag
+/// one resolves through the existing download-cache fetch, the same tag
 /// source remote playback already used before streaming, kept as-is so RG
 /// never regresses for either kind of track.
 fn loader_thread(
@@ -185,7 +185,7 @@ fn loader_thread(
     }
 }
 
-/// Read a track's ReplayGain tags into an [`RgInfo`] (best-effort — an
+/// Read a track's ReplayGain tags into an [`RgInfo`] (best-effort, an
 /// unopenable / untagged / malformed file yields the all-`None` default, which
 /// the pump treats as "no normalization data, preamp only"). Mirrors
 /// [`crate::art::cover_bytes`]'s `read_owned`-over-a-`File` path.
@@ -220,11 +220,11 @@ fn pump_thread<K, Mk, Pk, Ev>(
     // The output config the current sink was built for. Starts at the host's desired
     // config (the initial sink below), and tracks it: when the host mutates the shared
     // `output_desired` (a different device / exclusive mode), the pump loop rebuilds
-    // the sink in place so the change applies to the current track — see below.
+    // the sink in place so the change applies to the current track, see below.
     let mut output_applied = output_desired.lock().expect("output config mutex").clone();
     // `output_live` is false when the deck is on the SILENT park placeholder because a sink
     // build FAILED (e.g. strict exclusive couldn't open the device, or there's no audio
-    // device yet). The pump must STAY ALIVE in that case — a dead pump can't observe a
+    // device yet). The pump must STAY ALIVE in that case, a dead pump can't observe a
     // later config change (the user toggling exclusive/strict off) or a transient
     // device-in-use clearing, so a strict-exclusive failure would lock the user out until a
     // restart. Instead we park on silence and recover in the live-output block below.
@@ -233,7 +233,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
         Err(e) => {
             tracing::warn!(
                 error = %format!("{e:#}"),
-                "initial output sink unavailable (e.g. strict exclusive or no device); starting SILENT — will recover on a config change or when the device frees"
+                "initial output sink unavailable (e.g. strict exclusive or no device); starting SILENT, will recover on a config change or when the device frees"
             );
             (make_park(), false)
         }
@@ -259,7 +259,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
 
     // --- Hybrid ReplayGain: background loudness analysis of untagged tracks. The
     //     worker posts each completed `(path, gain)` back on `loud_res_rx` (like
-    //     the loader's decoder results) so this pump — the one event source —
+    //     the loader's decoder results) so this pump, the one event source,
     //     emits the `TrackLoudnessAnalyzed` event. The cache is read synchronously
     //     at the RG gate below.
     let (loud_res_tx, loud_res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
@@ -288,7 +288,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
     let mut output_apply_failed: Option<OutputConfig> = None;
     // When parked on the SILENT placeholder (`output_live == false`), re-attempt the
     // desired output on this cadence so a TRANSIENT failure (the device momentarily held
-    // by another app) recovers on its own — Roon's "give the device a few seconds to
+    // by another app) recovers on its own, Roon's "give the device a few seconds to
     // disengage from the last proprietor". A persistent failure keeps retrying cheaply;
     // a user toggling exclusive/strict off is a config change that bypasses the timer, so
     // recovery is instant.
@@ -305,7 +305,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
     // the id space is one library's worth of tracks, so it stays small.
     let mut rg_tags: BTreeMap<u32, RgInfo> = BTreeMap::new();
     // The track the deck's current gain was computed for, and a dirty flag set
-    // when the config changes — together they decide when to (re)apply the gain.
+    // when the config changes, together they decide when to (re)apply the gain.
     // `None` + dirty means "apply once up front" (sets the deck to unity).
     let mut rg_applied_for: Option<u32> = None;
     let mut rg_dirty = true;
@@ -320,7 +320,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         // Clamp/track volume at intake so `Tick.volume` matches what
                         // the deck applies, and a positive volume clears mute.
                         Command::SetVolume(v) => vol.set_volume(*v),
-                        // Mute is modelled here — the core player has no mute — and
+                        // Mute is modelled here, the core player has no mute, and
                         // resolves to a 0 effective gain below.
                         Command::ToggleMute => vol.toggle_mute(),
                         // Track the RG config here (the deck call happens below,
@@ -332,7 +332,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
                             rg_dirty = true;
                         }
                         // Seed the in-memory loudness cache (pump state, lives here),
-                        // not a transport call — a no-op in `apply_command`.
+                        // not a transport call, a no-op in `apply_command`.
                         Command::SeedLoudness(entries) => loudness.seed(entries),
                         // Background loudness sweep: enqueue each track (single-flight skips
                         // already-analyzed / in-flight), unless the analysis mode is Off. Pump
@@ -386,7 +386,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
         }
 
         // 2. Install opened decoders; request whatever the engine now wants. Bank
-        //    each track's RG tags (even on a failed open — harmless; it just won't
+        //    each track's RG tags (even on a failed open, harmless; it just won't
         //    become current) so the gain is ready the moment the track plays.
         while let Ok((id, rg, opened)) = res_rx.try_recv() {
             rg_tags.insert(id, rg);
@@ -405,14 +405,14 @@ fn pump_thread<K, Mk, Pk, Ev>(
 
         // 2b. Native-rate switching (bit-perfect exclusive output): before the pump
         //     writes this track's audio, reopen the exclusive device at the track's
-        //     native rate when it differs — see `maybe_switch_native_rate` for the
+        //     native rate when it differs, see `maybe_switch_native_rate` for the
         //     guards (shared sinks never reopen; the latch suppresses retrying a rate
         //     the device just refused; the current exclusive sink is kept on failure).
         maybe_switch_native_rate(&mut player, &mut native_rate_tried);
 
         // 2c. Live output switching: if the host changed the output device or
         //     exclusive mode since the last pump, apply it to the CURRENT track now
-        //     (not just the next session; best practice — foobar/Roon apply
+        //     (not just the next session; best practice, foobar/Roon apply
         //     immediately). `maybe_apply_output_change` does a release-then-acquire
         //     swap (park → drop old sink → build new on the freed device → swap),
         //     preserving position + ReplayGain, so a same-device exclusive switch
@@ -485,7 +485,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
                                 );
                             }
                             Err(e) => {
-                                // Still unavailable — stay silent and retry on the next tick /
+                                // Still unavailable: stay silent and retry on the next tick /
                                 // config change. Debug level so a persistent failure doesn't
                                 // spam the log every second.
                                 output_apply_failed = Some(desired.clone());
@@ -511,7 +511,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         // The device vanished (unplugged DAC / dead exclusive stream):
                         // pause + park, then let the parked-recovery path above re-open
                         // the output on its retry timer. Playback stays paused until the
-                        // user resumes — never a surprise blast on another device.
+                        // user resumes, never a surprise blast on another device.
                         tracing::warn!(error = ?e, "output device lost; paused and parked");
                         if let Err(pe) = handle_device_lost(&mut player, &make_park) {
                             tracing::error!(error = %format!("{pe:#}"), "could not park after device loss");
@@ -534,7 +534,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
             changed = true;
         }
         // On a track change, log the resolved signal path (decode/device rate, resampling,
-        // exclusive) once — event-driven, so the pipeline is visible in the logs without
+        // exclusive) once, event-driven, so the pipeline is visible in the logs without
         // any per-block noise.
         if matches!(progress, Progress::TrackChanged)
             && let Some(sp) = project_signal_path(&player)
@@ -559,7 +559,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
         // 3c. Re-apply ReplayGain when the current track changes, or when the
         //     config changed (`rg_dirty`). The deck holds one constant gain, so a
         //     gapless advance sees the new track's gain updated ~one pump cycle
-        //     after the swap (the id change is observed here, post-`pump`) — a
+        //     after the swap (the id change is observed here, post-`pump`), a
         //     known v1 limitation; exact per-decoder-slot gain across a gapless
         //     splice is a follow-up (it would require the deck to carry a gain
         //     per preload slot). A click isn't a concern: `set_replay_gain`
@@ -569,7 +569,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
         //     a *computed* loudness gain when the analyzer has one cached; a miss
         //     enqueues a single-flight analysis and plays preamp-only this time.
         //     A completed analysis is applied on the NEXT play of that track (when
-        //     `cur` next changes to it), NOT mid-track — deliberately, to avoid an
+        //     `cur` next changes to it), NOT mid-track, deliberately, to avoid an
         //     audible level jump partway through a song. (`resolve_rg_info` carries
         //     the full rationale.)
         let cur = player.current();
@@ -588,7 +588,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
             tick.analysis_pending = loudness.pending() as u32;
             // The deck's duration comes from the decoder; some containers
             // (Matroska, CAF-ALAC) can't report a length, so fall back to the
-            // library's tag-derived duration — keeping the progress bar
+            // library's tag-derived duration, keeping the progress bar
             // consistent with the track-list length.
             if tick.duration_secs.is_none()
                 && let Some(id) = tick.now_playing_id
@@ -598,7 +598,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
             }
             // Parked on the SILENT placeholder (output stopped: strict exclusive could not
             // open, or the device vanished): the deck HOLDS its position but no audio
-            // flows, so present it as PAUSED rather than a frozen "Playing" — the Settings
+            // flows, so present it as PAUSED rather than a frozen "Playing", the Settings
             // exclusive card carries the reason. Only an actually-playing deck is overridden
             // (a stopped/idle one stays as is), and the real state returns on recovery.
             if !output_live && tick.state == PlayState::Playing {
@@ -627,7 +627,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
         }
 
         // 5. Shutdown / idle pacing. The command channel disconnects only when
-        //    the AudioPlayer handle is dropped — that IS the shutdown signal.
+        //    the AudioPlayer handle is dropped, that IS the shutdown signal.
         //    Exit immediately rather than waiting for `!is_active()`: an active
         //    track would otherwise extend the join in `Drop` by the whole
         //    remaining playback (real-time-paced under CpalSink), and Repeat
@@ -653,12 +653,12 @@ fn pump_thread<K, Mk, Pk, Ev>(
 /// The [`RgInfo`] to apply for the current track under the hybrid policy: its read
 /// RG tags, except that an *untagged* track (no track/album gain) under Track or
 /// Album substitutes a background-computed loudness gain when the analyzer has one
-/// cached — folded in as the **track** gain (which Album mode also falls back to,
+/// cached, folded in as the **track** gain (which Album mode also falls back to,
 /// matching the "no album gain computed → use the per-track gain" untagged policy).
 /// On a cache miss it enqueues a single-flight analysis and returns the untagged
 /// tags unchanged, so this play is preamp-only and the computed gain takes effect
 /// only on the track's NEXT play. `Off` and already-tagged tracks pass straight
-/// through — never analyzed.
+/// through, never analyzed.
 fn resolve_rg_info(
     cur: Option<u32>,
     mode: ReplayGainMode,
@@ -686,7 +686,7 @@ fn resolve_rg_info(
             album_gain_db: None,
         })
     } else {
-        // Not analyzed yet — kick off a single-flight job (no-op if already
+        // Not analyzed yet: kick off a single-flight job (no-op if already
         // queued / analyzed) and play preamp-only this time.
         loudness.enqueue(id, path);
         tags
@@ -833,11 +833,11 @@ mod tests {
 
     /// The output-config WIRING: the pump watches the shared `output_desired` and,
     /// when the host changes the device (or exclusive mode) mid-playback, rebuilds
-    /// the sink by calling `make_sink` again with the NEW config — so the change is
+    /// the sink by calling `make_sink` again with the NEW config, so the change is
     /// live, not deferred to the next session. We record the device of every config
     /// `make_sink` builds for; flipping the device while track 0 plays must produce a
-    /// second build carrying the new device name. (The pure apply mechanism —
-    /// position / ReplayGain preservation — is covered by `driver::tests`; this
+    /// second build carrying the new device name. (The pure apply mechanism,
+    /// position / ReplayGain preservation, is covered by `driver::tests`; this
     /// proves the pump is wired to it.)
     #[test]
     fn changing_output_config_mid_play_rebuilds_the_sink_live() {
@@ -920,7 +920,7 @@ mod tests {
     /// `output_desired` mutex the host mutates from Settings. We count live device holders and
     /// snapshot how many were live the instant the pump builds the new device: the gapless
     /// open-new-before-close sees the OLD device still live (1). This is precisely the case the
-    /// fix changed — the old code parked the deck (dropping the old sink → silence for the whole
+    /// fix changed, the old code parked the deck (dropping the old sink → silence for the whole
     /// device open) whenever exclusive was involved, so it would have shown 0 here. The
     /// same-device exclusive reopen (the one case still parked) is covered in `driver::tests`.
     #[test]
@@ -939,7 +939,7 @@ mod tests {
         // (device, live-holders-at-build) recorded per make_sink call.
         type BuildLog = Arc<Mutex<Vec<(Option<String>, usize)>>>;
         let builds: BuildLog = Arc::new(Mutex::new(Vec::new()));
-        // Start in EXCLUSIVE mode on the default device — the case the old code would have
+        // Start in EXCLUSIVE mode on the default device, the case the old code would have
         // parked (gone silent) for the whole device open when switching devices.
         let desired = Arc::new(Mutex::new(OutputConfig {
             device: None,
@@ -952,7 +952,7 @@ mod tests {
             let frames = Arc::clone(&frames);
             let builds = Arc::clone(&builds);
             move |cfg: &OutputConfig| -> anyhow::Result<ConfigSink> {
-                // Snapshot live holders BEFORE constructing the new one — open-new-before-close
+                // Snapshot live holders BEFORE constructing the new one, open-new-before-close
                 // leaves the old sink live here; a release-first park would have dropped it.
                 let live = device_live.load(Ordering::Relaxed);
                 builds.lock().unwrap().push((cfg.device.clone(), live));
@@ -986,7 +986,7 @@ mod tests {
             },
         );
 
-        // Repeat::All so playback never ends under the no-backpressure test sink — the switch
+        // Repeat::All so playback never ends under the no-backpressure test sink, the switch
         // lands mid-stream and we can prove audio keeps flowing after it.
         player.send(Command::SetRepeat(crate::types::RepeatMode::All));
         player.send(Command::PlayContext {
@@ -1025,7 +1025,7 @@ mod tests {
             live_at_dac_build,
             Some(1),
             "GAPLESS: the OLD device must still be live (playing) at the instant the NEW one is \
-             opened (open-new-before-close) — a release-first park would have shown 0; builds = {:?}",
+             opened (open-new-before-close), a release-first park would have shown 0; builds = {:?}",
             builds.lock().unwrap()
         );
 
@@ -1058,7 +1058,7 @@ mod tests {
     }
 
     /// The STRICT-blocking regression: when the output sink can't be built at startup
-    /// (e.g. strict exclusive-or-stop and the device is in use), the pump must NOT die —
+    /// (e.g. strict exclusive-or-stop and the device is in use), the pump must NOT die,
     /// a dead pump can't observe the user toggling exclusive/strict off or the device
     /// freeing, so it would lock the user out until a restart. It must instead start
     /// SILENT, keep emitting ticks (alive), retry the output, and RECOVER once the build
@@ -1107,7 +1107,7 @@ mod tests {
             },
         );
 
-        // The initial strict build FAILS — the old code would `return` here and the pump
+        // The initial strict build FAILS, the old code would `return` here and the pump
         // thread would be gone. Prove it is alive: it keeps emitting ticks AND retries the
         // output build (> the one initial attempt), without ever opening a sink.
         player.send(Command::PlayContext {
@@ -1116,7 +1116,7 @@ mod tests {
         });
         let mut got_tick = false;
         // While parked (silent), a loaded track must present as PAUSED, never a frozen
-        // "Playing" (the strict-stop UX fix) — the deck holds its position but no audio
+        // "Playing" (the strict-stop UX fix), the deck holds its position but no audio
         // flows.
         let mut saw_playing_while_parked = false;
         let mut saw_paused_track = false;
@@ -1137,7 +1137,7 @@ mod tests {
         }
         assert!(
             got_tick,
-            "a dead pump emits no ticks — the pump must stay alive while the output is parked"
+            "a dead pump emits no ticks, the pump must stay alive while the output is parked"
         );
         assert!(
             !saw_playing_while_parked,
@@ -1171,7 +1171,7 @@ mod tests {
         }
         assert!(
             recovered,
-            "the output must recover (a sink opens) once the device frees — the user is \
+            "the output must recover (a sink opens) once the device frees, the user is \
              never locked out"
         );
 
@@ -1203,7 +1203,7 @@ mod tests {
     /// (`folder_switch_loads_the_new_library`, #2) covered flakily: after the library
     /// is swapped mid-playback, a play against the NEW library's ids must resolve and
     /// play the NEW track. The loader reads the shared library fresh on every request
-    /// (there is no stale-library window), so this is deterministic — proven by the
+    /// (there is no stale-library window), so this is deterministic, proven by the
     /// durations: A's tracks are 2 s, B's are 1 s, so the now-playing duration pins
     /// which library resolved the id.
     #[test]
@@ -1245,7 +1245,7 @@ mod tests {
         );
 
         // Swap the loader's library to B mid-play, then play B's track 0. The
-        // now-playing track must resolve to B (≈1 s) — not stale A (2 s).
+        // now-playing track must resolve to B (≈1 s), not stale A (2 s).
         player.set_library(lib_b);
         player.send(Command::PlayContext {
             ids: vec![0],
@@ -1253,7 +1253,7 @@ mod tests {
         });
         assert!(
             wait_for_now_playing(&ev_rx, 0, 1.0),
-            "after the swap, B's 1 s track never became now-playing — the loader \
+            "after the swap, B's 1 s track never became now-playing, the loader \
              resolved the id against the stale library (the #2 folder-switch race)"
         );
 
@@ -1335,7 +1335,7 @@ mod tests {
         let library = Arc::new(Mutex::new(ts));
 
         // A cache seeded (as `SeedLoudness` would) with a computed gain for the
-        // untagged WAV at id 0 — no worker interaction needed to observe the fold.
+        // untagged WAV at id 0, no worker interaction needed to observe the fold.
         let (res_tx, _res_rx) = mpsc::channel::<(PathBuf, crate::TrackLoudness)>();
         let (loudness, _worker) = LoudnessCache::spawn(res_tx);
         let path0 = library.lock().unwrap().path_of(0).unwrap();

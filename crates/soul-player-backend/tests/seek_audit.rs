@@ -1,9 +1,9 @@
-//! END-TO-END **seek-audit** harness — the programmatic replacement for "trust
+//! END-TO-END **seek-audit** harness: the programmatic replacement for "trust
 //! the user's ears" on seek quality, as a **committed, CI-safe, fixturized**
 //! matrix.
 //!
 //! It drives a real [`ServicePlayer`] (the backend's own
-//! `apply_command`/`poll_open`/`provide`/`pump` driver loop — the FULL app path,
+//! `apply_command`/`poll_open`/`provide`/`pump` driver loop, the FULL app path,
 //! synchronously, no actor thread, no audio device) over the committed
 //! `testdata/tone.*` fixtures, through the real desktop decoder
 //! ([`open_track`] → `OwnedDecoder`) → [`Deck`] → a faithful **[`CaptureSink`]**
@@ -12,35 +12,35 @@
 //! * the sink applies the output-stage volume gain like `CpalSink`;
 //! * on `discard()` (a seek) it ramps the last ~8 ms of already-captured audio
 //!   down to zero with the **same falling smoothstep** the real
-//!   `soul-audio-desktop::sink::CpalSink` (its private `Fill`) uses — verified
+//!   `soul-audio-desktop::sink::CpalSink` (its private `Fill`) uses, verified
 //!   against `b7f0489`: `DISCARD_FADE_MS = 8`, `g = t·t·(3 − 2t)`,
 //!   `cur_gain += (target − cur_gain)·0.01`. The deck applies the rising
 //!   fade-IN on the new side (`deck.rs` `FADE_MS = 8`, same curve), so the
 //!   captured stream across a seek is exactly
 //!   `old … fade-out → 0 … 0 ← fade-in … new`.
 //!
-//! The fixtures are the canonical `soul-audio` test tone — left = 440 Hz, right =
+//! The fixtures are the canonical `soul-audio` test tone, left = 440 Hz, right =
 //! 659.25 Hz, −6 dB, derived from one master (`testdata/generate.sh`), so a
 //! format's post-seek audio cross-checks against an independent decode of the
 //! SAME file. A single 440 Hz left channel (period ~100 samples at 44.1 kHz) is
 //! why the ±64-lag cross-correlation on channel 0 has a unique peak at lag 0.
 //!
 //! For each `(format × two seek targets ≈ 30 %/70 %)` it asserts:
-//!   1. **click-free** — the splice window's second-difference peak stays within
+//!   1. **click-free**: the splice window's second-difference peak stays within
 //!      `K_D2`× the surrounding (un-faded) audio's, two-sided (pre AND post
 //!      seek), and introduces no hard step;
-//!   2. **seek-landed-correct** — normalized cross-correlation of the captured
+//!   2. **seek-landed-correct**: normalized cross-correlation of the captured
 //!      post-seek audio vs an INDEPENDENT `open_track`+`seek_to` decode at the
 //!      requested frame peaks at lag 0 and clears the row's floor (lossless
 //!      ~0.99, lossy looser);
-//!   3. **duration** — `project_tick().duration_secs` is `Some` and ≈ the row's
+//!   3. **duration**: `project_tick().duration_secs` is `Some` and ≈ the row's
 //!      known length (ADTS `.aac` / MP1 / MP2 now report an exact length);
-//!   4. **plays** — the pre-seek audio is non-silent with a sane peak/RMS.
+//!   4. **plays**: the pre-seek audio is non-silent with a sane peak/RMS.
 //!
 //! Everything runs deterministically on a 64 MiB-stack thread (no device, no
 //! second thread beyond that, no ffmpeg at test time, `CARGO_MANIFEST_DIR`-
 //! relative paths). Set `E2E_WRITE_CLIPS=1` to also drop a ≈2 s WAV per splice
-//! under `target/e2e-seek-clips/` for a human to audition — off by default so CI
+//! under `target/e2e-seek-clips/` for a human to audition, off by default so CI
 //! stays silent and fast.
 
 use std::fs;
@@ -80,13 +80,13 @@ struct Fixture {
 }
 
 /// The audited formats. ADTS AAC, AAC-LC, ALAC, MP1, MP2, Opus and Vorbis sit
-/// beside the WAV/FLAC/MP3 baseline — the seek-relevant format spread. MP1 is the
+/// beside the WAV/FLAC/MP3 baseline, the seek-relevant format spread. MP1 is the
 /// committed Layer-I conformance vector concatenated to a seekable length (ffmpeg
 /// has no Layer-I encoder); Opus is 48 kHz and MP1 32 kHz, so the harness also
 /// exercises non-44.1 kHz native rates.
 #[rustfmt::skip]
 // AAC is deliberately absent: `soul-audio-core` gates its decoder behind an
-// opt-in `aac` feature (patent — Via LA) that this product does not enable, so
+// opt-in `aac` feature (patent, Via LA) that this product does not enable, so
 // these fixtures cannot be decoded here. `testdata/` still carries them for a
 // build that does take the licence.
 const FIXTURES: &[Fixture] = &[
@@ -105,7 +105,7 @@ const SEEK_FRACS: &[f64] = &[0.30, 0.70];
 
 // --------------------------------------------------------------------------
 // Knobs (ported from the local real-file harness, which tuned them against real
-// music; unchanged — the fixtures are tonal but the thresholds are only looser).
+// music; unchanged, the fixtures are tonal but the thresholds are only looser).
 // --------------------------------------------------------------------------
 
 /// Duration tolerance vs `known_secs` (covers per-encoder trim/padding).
@@ -148,7 +148,7 @@ struct CaptureSink {
     rate: u32,
     channels: u16,
     /// Fade-out length in **interleaved** samples: `round(8 ms · rate · ch /
-    /// 1000)` — the same 8 ms window as the deck's fade-IN (`deck.rs` `FADE_MS`)
+    /// 1000)`, the same 8 ms window as the deck's fade-IN (`deck.rs` `FADE_MS`)
     /// and `CpalSink`'s `DISCARD_FADE_MS` fade-out.
     fade_len: u32,
     /// Smoothed output gain, ramped per-sample toward `target_gain` exactly like
@@ -187,7 +187,7 @@ impl Sink for CaptureSink {
     }
 
     fn write(&mut self, frames: &[i32]) -> Result<(), SinkError> {
-        // Output-stage gain, ramped per interleaved sample toward the target —
+        // Output-stage gain, ramped per interleaved sample toward the target,
         // the mirror of `CpalSink::Fill::next` (truncating cast, not rounding).
         for &s in frames {
             self.cur_gain += (self.target_gain - self.cur_gain) * 0.01;
@@ -231,7 +231,7 @@ impl Sink for CaptureSink {
 // Metric helpers (mirror soul-audio-core's tests/declick.rs).
 // --------------------------------------------------------------------------
 
-/// `max |x[i] − 2·x[i−1] + x[i−2]|` — the discrete second difference's peak. A
+/// `max |x[i] − 2·x[i−1] + x[i−2]|`, the discrete second difference's peak. A
 /// smooth (incl. smoothstep-faded) signal keeps this bounded; a slope break (a
 /// hard splice/click) spikes it toward full scale.
 fn second_difference_peak(xs: &[i32]) -> i64 {
@@ -241,7 +241,7 @@ fn second_difference_peak(xs: &[i32]) -> i64 {
         .unwrap_or(0)
 }
 
-/// `max |x[i] − x[i−1]|` — the largest adjacent step (a hard clear ≈ full scale).
+/// `max |x[i] − x[i−1]|`, the largest adjacent step (a hard clear ≈ full scale).
 fn max_abs_step(xs: &[i32]) -> i64 {
     xs.windows(2)
         .map(|w| i64::from(w[1]).abs_diff(i64::from(w[0])) as i64)
@@ -272,7 +272,7 @@ fn peak_and_rms(xs: &[i32]) -> (i64, f64) {
 }
 
 /// Pearson correlation of two equal-length series (zero-mean, unit-energy
-/// normalized — so it is invariant to the 24-bit-normalization scale factor
+/// normalized, so it is invariant to the 24-bit-normalization scale factor
 /// between captured and reference audio). 0 on a degenerate (flat) input.
 fn pearson(a: &[f64], b: &[f64]) -> f64 {
     let n = a.len() as f64;
@@ -409,7 +409,7 @@ fn on_big_stack(f: impl FnOnce() -> Result<(), String> + Send) -> Result<(), Str
     })
 }
 
-/// `if cond {} else { return Err(format!(..)) }` — keeps the per-format runner
+/// `if cond {} else { return Err(format!(..)) }`, keeps the per-format runner
 /// readable. The `if/else` form (not `if !cond`) avoids
 /// `clippy::neg_cmp_op_on_partial_ord` on the f64 comparisons passed in.
 macro_rules! require {
@@ -481,7 +481,7 @@ fn audit_one(fix: &Fixture, clips_dir: Option<&Path>) -> Result<(), String> {
     let post_frames = (POST_SEEK_SECS * f64::from(rate)) as usize;
 
     // Build a real ServicePlayer<CaptureSink, OwnedDecoder> and start playback
-    // via the backend's own command driver — the full app path.
+    // via the backend's own command driver, the full app path.
     let deck = Deck::new(CaptureSink::new(rate, channels), Quality::Hq);
     let engine = Engine::new(deck, queue_for(vec![0]));
     let mut player: HarnessPlayer = Player::new(engine, u64::from(rate));
@@ -498,7 +498,7 @@ fn audit_one(fix: &Fixture, clips_dir: Option<&Path>) -> Result<(), String> {
     // Pre-seek audio.
     pump_capture_frames(&mut player, &path, pre_frames, ch);
 
-    // (3) Duration — end-to-end, as the UI would see it. Every seekable stream
+    // (3) Duration: end-to-end, as the UI would see it. Every seekable stream
     // must report a real length so the seek bar works (incl. ADTS .aac / MP1 /
     // MP2, which now header-walk for an exact frame count).
     let dur = project_tick(&player, 1.0, false).duration_secs;
@@ -510,7 +510,7 @@ fn audit_one(fix: &Fixture, clips_dir: Option<&Path>) -> Result<(), String> {
         fix.known_secs
     );
 
-    // (4) Plays — the pre-seek audio is non-silent with a sane peak/RMS.
+    // (4) Plays: the pre-seek audio is non-silent with a sane peak/RMS.
     let (peak, rms) = peak_and_rms(&player.deck().sink().written);
     require!(
         (PLAYS_PEAK_FLOOR..=PLAYS_PEAK_CEIL).contains(&peak) && rms > PLAYS_RMS_FLOOR,
@@ -622,46 +622,46 @@ fn audit_one(fix: &Fixture, clips_dir: Option<&Path>) -> Result<(), String> {
         // EXACTLY on the requested frame. Lossy codecs land on a codec-frame /
         // granule boundary (and an Ogg stream's reported position is
         // page-granular), so they are held to account only by the audio-content
-        // cross-correlation below — which compares against an independent decode
+        // cross-correlation below, which compares against an independent decode
         // seeked the same way, so the whole end-to-end app path is still proven.
         if !fix.lossy {
             require!(
                 landed == req,
                 "seek@{secs:.3}s: lossless seek landed at frame {landed}, not the \
-                 requested {req} — a sample-accurate seek must be exact"
+                 requested {req}: a sample-accurate seek must be exact"
             );
         }
 
         // The ratio test is only honest if the signal itself has real curvature.
         require!(
             clean_d2 > 100,
-            "seek@{secs:.3}s: clean d2 {clean_d2} ~0 — window not musical enough"
+            "seek@{secs:.3}s: clean d2 {clean_d2} ~0, window not musical enough"
         );
         require!(
             splice_d2 <= K_D2 * clean_d2,
             "seek@{secs:.3}s: splice d2 {splice_d2} exceeds {K_D2}× clean d2 {clean_d2} \
-             — the seek introduced a slope break (click)"
+: the seek introduced a slope break (click)"
         );
         require!(
             splice_step <= HARD_STEP_CEIL,
             "seek@{secs:.3}s: splice step {splice_step} exceeds hard-step ceiling \
-             {HARD_STEP_CEIL} (≈2^23 is a hard clear) — the fade-out is broken"
+             {HARD_STEP_CEIL} (≈2^23 is a hard clear), the fade-out is broken"
         );
         require!(
             splice_step <= K_STEP * clean_step,
             "seek@{secs:.3}s: splice step {splice_step} exceeds {K_STEP}× clean step \
-             {clean_step} — a hard step at the splice"
+             {clean_step}: a hard step at the splice"
         );
 
         // Seek landed at the requested frame (lag 0) and decodes the same audio.
         require!(
             lag == 0,
-            "seek@{secs:.3}s: cross-correlation peaks at lag {lag}, not 0 — the \
+            "seek@{secs:.3}s: cross-correlation peaks at lag {lag}, not 0, the \
              end-to-end seek did not land at the requested timestamp"
         );
         require!(
             corr > fix.corr_floor,
-            "seek@{secs:.3}s: cross-correlation peak {corr:.4} below floor {:.2} — \
+            "seek@{secs:.3}s: cross-correlation peak {corr:.4} below floor {:.2}: \
              post-seek audio ≠ an independent decode at that frame",
             fix.corr_floor
         );

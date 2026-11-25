@@ -6,18 +6,18 @@
 //!
 //! Shape (mirrors the actor's loader): a single background **worker thread** (a
 //! 64 MiB stack, because [`OwnedDecoder`] is large by value and overflows the
-//! default debug stack) drains a job queue one track at a time — bounding CPU and
-//! disk — and writes a shared cache. The pump reads that cache synchronously when
+//! default debug stack) drains a job queue one track at a time, bounding CPU and
+//! disk, and writes a shared cache. The pump reads that cache synchronously when
 //! a track becomes current: a hit folds the computed gain into the track's
 //! [`RgInfo`](crate::driver::RgInfo); a miss enqueues a **single-flight** analysis
 //! job (never the same path twice, never a path already analyzed) and plays
 //! preamp-only this time. Each completed analysis is posted back to the pump (like
-//! the loader's decoder results) so the pump — the one event source — emits
+//! the loader's decoder results) so the pump, the one event source, emits
 //! [`Event::TrackLoudnessAnalyzed`](crate::types::Event::TrackLoudnessAnalyzed)
 //! for the app to persist.
 //!
 //! Backend purity: this module holds only the in-memory cache + the analyzer. It
-//! does no config-path I/O — the app persists the computed gains (keyed by path +
+//! does no config-path I/O, the app persists the computed gains (keyed by path +
 //! validated against mtime/size) and seeds them back next launch via
 //! [`Command::SeedLoudness`](crate::types::Command::SeedLoudness).
 
@@ -40,7 +40,7 @@ fn gain_from(m: &TrackLoudness) -> f32 {
     REPLAYGAIN2_TARGET_LUFS - m.integrated_lufs
 }
 
-/// One analysis job: the track id that triggered it (informational — the cache is
+/// One analysis job: the track id that triggered it (informational, the cache is
 /// keyed by path) and the path to decode.
 type Job = (u32, PathBuf);
 
@@ -54,7 +54,7 @@ struct CacheInner {
     /// analyzed but got nothing usable from (decode failed, >2 channels / DSD, or
     /// below the loudness gate) so we don't retry it forever.
     done: BTreeMap<PathBuf, Option<TrackLoudness>>,
-    /// Paths currently queued or being analyzed — the single-flight guard.
+    /// Paths currently queued or being analyzed, the single-flight guard.
     inflight: BTreeSet<PathBuf>,
 }
 
@@ -84,7 +84,7 @@ impl LoudnessCache {
     /// analyzed `(path, gain_db)` is posted on `results` for the pump to turn into
     /// a [`TrackLoudnessAnalyzed`](crate::types::Event::TrackLoudnessAnalyzed)
     /// event; failures are recorded as the `None` sentinel and post nothing.
-    /// Returns the worker's [`JoinHandle`] — drop the `LoudnessCache` (closing the
+    /// Returns the worker's [`JoinHandle`], drop the `LoudnessCache` (closing the
     /// job channel) then join it to shut the worker down cleanly.
     pub fn spawn(results: Sender<(PathBuf, TrackLoudness)>) -> (LoudnessCache, JoinHandle<()>) {
         let (jobs_tx, jobs_rx) = mpsc::channel::<Job>();
@@ -132,7 +132,7 @@ impl LoudnessCache {
         self.paused.load(Ordering::Relaxed)
     }
 
-    /// How many paths are currently queued or being analyzed — the background sweep's
+    /// How many paths are currently queued or being analyzed, the background sweep's
     /// remaining work, for the "Analyzing N" progress indicator. Drops to 0 when the
     /// sweep is caught up.
     #[must_use]
@@ -157,7 +157,7 @@ impl LoudnessCache {
     }
 
     /// The usable computed gain for `path`, if one is cached (`None` for either
-    /// "not analyzed yet" or "analyzed, no usable gain" — the pump treats both the
+    /// "not analyzed yet" or "analyzed, no usable gain", the pump treats both the
     /// same: play preamp-only, and [`enqueue`](Self::enqueue) decides whether a
     /// fresh job is still warranted).
     #[must_use]
@@ -265,7 +265,7 @@ fn park_while_paused(paused: &AtomicBool, shutdown: &AtomicBool) {
 
 /// Decode `path` through the desktop stack, canonicalize to signed 24-bit, scan
 /// its integrated loudness, and return the ReplayGain-2.0 gain (dB, to the −18
-/// LUFS target) — or `None` when there is no usable gain: an unopenable / mid-
+/// LUFS target), or `None` when there is no usable gain: an unopenable / mid-
 /// stream-erroring file, a stream reporting native DSD, a silent / below-gate
 /// track, or >2 channels (the analyzer is mono/stereo; surround is a v1 skip).
 /// The canonicalization + feed loop mirrors `soul-audio-loudness`'s
@@ -442,7 +442,7 @@ mod tests {
     }
 
     /// The park must not block when there is nothing to wait for, and must release the
-    /// moment shutdown is set even while paused — otherwise `analyzer.join()` would hang on
+    /// moment shutdown is set even while paused, otherwise `analyzer.join()` would hang on
     /// a parked worker. (Both paths return promptly; the test completing proves they do.)
     #[test]
     fn park_returns_when_idle_or_shutting_down() {
@@ -478,7 +478,7 @@ mod tests {
     }
 
     /// Analyzing a short committed real fixture yields a finite gain without
-    /// panicking. The exact LUFS of a test tone isn't the point — that it decodes,
+    /// panicking. The exact LUFS of a test tone isn't the point, that it decodes,
     /// canonicalizes, feeds the analyzer and produces a sane number is. Runs on a
     /// 64 MiB stack (the `OwnedDecoder`-by-value rule).
     #[test]
@@ -506,7 +506,7 @@ mod tests {
             "integrated loudness is finite"
         );
         // The master tone is −6 dBFS; its gain to −18 LUFS lands in a wide sane
-        // band — this only guards against a nonsense (wrong-canonicalization) value.
+        // band, this only guards against a nonsense (wrong-canonicalization) value.
         assert!(
             (-40.0..=40.0).contains(&gain),
             "gain {gain} dB implausible for a −6 dBFS tone"
@@ -514,7 +514,7 @@ mod tests {
     }
 
     /// A DSD fixture goes through `open_track`'s decimating adapter, so it reports
-    /// PCM and analyzes via that decimated form (not the `is_dsd()` skip) — the
+    /// PCM and analyzes via that decimated form (not the `is_dsd()` skip), the
     /// invariant is that it produces a finite gain without panicking, exactly like
     /// any other PCM track.
     #[test]
@@ -533,7 +533,7 @@ mod tests {
             .expect("spawn big-stack thread")
             .join()
             .expect("analysis thread panicked");
-        // Either finite metrics (decimated to PCM) or None (below gate) — never a
+        // Either finite metrics (decimated to PCM) or None (below gate), never a
         // panic or a non-finite value.
         if let Some(m) = out {
             assert!(

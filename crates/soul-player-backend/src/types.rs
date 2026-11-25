@@ -1,5 +1,5 @@
 //! App-facing command, event, and DTO types crossing the UI↔backend boundary.
-//! Concrete (u32 track ids, seconds) and serde-serializable — distinct from
+//! Concrete (u32 track ids, seconds) and serde-serializable, distinct from
 //! `soul_audio_control::Command<C>` (generic, frames).
 
 use std::path::PathBuf;
@@ -18,13 +18,13 @@ use soul_audio_queue::Repeat;
 /// to the SAME types the backend, host and app all agree on.
 pub use soul_audio_playlist::{TrackLocator, TrackSnapshot};
 
-/// Per-track loudness & dynamic-range metrics for the UI readouts and ReplayGain —
+/// Per-track loudness & dynamic-range metrics for the UI readouts and ReplayGain,
 /// the serde-able DTO mirror of the core analyzer's [`LoudnessMetrics`]. All in
 /// standard units: `integrated_lufs`/`true_peak_dbtp` absolute, `lra`/`plr` in LU,
 /// `dr` the integer DR value.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TrackLoudness {
-    /// Integrated (program) loudness in LUFS — negative; −18 is the RG2 reference.
+    /// Integrated (program) loudness in LUFS, negative; −18 is the RG2 reference.
     pub integrated_lufs: f32,
     /// Loudness range in LU: the spread between the quiet and loud passages.
     pub lra: f32,
@@ -32,7 +32,7 @@ pub struct TrackLoudness {
     pub true_peak_dbtp: f32,
     /// Peak-to-loudness ratio in LU (true-peak minus integrated loudness).
     pub plr: f32,
-    /// The integer DR (dynamic-range) value — crest-factor based, not true LRA.
+    /// The integer DR (dynamic-range) value, crest-factor based, not true LRA.
     pub dr: f32,
 }
 
@@ -49,7 +49,7 @@ impl From<LoudnessMetrics> for TrackLoudness {
 }
 
 // The baked `.soulidx` loudness record ([`soul_audio_catalog::LoudnessRec`]) mirrors these
-// fields 1:1 — `into()` both ways bridges the DTO and the on-disk record for the bake + readback.
+// fields 1:1, `into()` both ways bridges the DTO and the on-disk record for the bake + readback.
 impl From<soul_audio_catalog::LoudnessRec> for TrackLoudness {
     fn from(r: soul_audio_catalog::LoudnessRec) -> Self {
         Self {
@@ -168,7 +168,7 @@ pub enum Command {
 /// can never cause audio dropouts, and that a real "Off" matters to the bit-perfect crowd.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum LoudnessAnalysisMode {
-    /// No background sweep at all — zero background CPU while listening. Lazy-on-play
+    /// No background sweep at all, zero background CPU while listening. Lazy-on-play
     /// analysis still fills the currently playing track (and its column).
     Off,
     /// Low-priority sweep that YIELDS to active playback (the worker pauses while a track
@@ -217,13 +217,13 @@ impl LoudnessAnalysisMode {
 
 /// How ReplayGain tags are applied during playback, chosen in Settings →
 /// ReplayGain. The per-track dB the pump sets on the deck is:
-/// - [`Off`](ReplayGainMode::Off): `0.0` (unity — RG ignored, no preamp).
+/// - [`Off`](ReplayGainMode::Off): `0.0` (unity, RG ignored, no preamp).
 /// - [`Track`](ReplayGainMode::Track): `track_gain + preamp` (untagged → `preamp`).
 /// - [`Album`](ReplayGainMode::Album): `album_gain` (falling back to the track
 ///   gain), `+ preamp` (untagged → `preamp`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum ReplayGainMode {
-    /// No normalization — the deck plays at unity gain.
+    /// No normalization: the deck plays at unity gain.
     #[default]
     Off,
     /// Normalize each track to its own ReplayGain track-gain tag.
@@ -237,7 +237,7 @@ pub enum ReplayGainMode {
 /// from that crate's `serde` feature).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum RepeatMode {
-    /// No repeat — playback ends after the last context track.
+    /// No repeat: playback ends after the last context track.
     #[default]
     Off,
     /// Repeat the whole context, looping back to the start after the last track.
@@ -272,7 +272,7 @@ pub enum PlayState {
     Playing,
     /// Playback is paused, holding its position.
     Paused,
-    /// Stopped or ended — no current playback position.
+    /// Stopped or ended: no current playback position.
     Stopped,
 }
 
@@ -313,7 +313,7 @@ pub enum Event {
     /// since the last scan: `root` is the source they were under and `count` is how
     /// many vanished. Emitted once per affected root so a UI can warn ("N tracks
     /// removed from <folder>"). Only genuine per-file deletions from a reachable
-    /// root are reported — an offline / unmounted root is skipped wholesale (never
+    /// root are reported, an offline / unmounted root is skipped wholesale (never
     /// scanned), so unplugging a drive never mass-reports its tracks as removed.
     TracksRemoved {
         /// The source root the vanished tracks were under.
@@ -324,11 +324,11 @@ pub enum Event {
     /// A library rescan walked past audio files it could not import: `root` is the
     /// source they live under, `groups` counts them per extension with the reason.
     /// Emitted once per affected root (never with an empty `groups`), so a UI can
-    /// say "3 files skipped — 2 .aac, 1 .wma" and name the cause.
+    /// say "3 files skipped, 2 .aac, 1 .wma" and name the cause.
     ///
     /// This exists because the alternative is silence: a user whose `.aac` rips
     /// never appear in the library cannot distinguish a deliberate limitation
-    /// (the decoder is gated off in this build — a different build would play
+    /// (the decoder is gated off in this build, a different build would play
     /// them) from a scan that is simply broken. The reason is what makes the
     /// notice actionable, so it travels with the count.
     TracksSkipped {
@@ -365,7 +365,7 @@ pub struct Tick {
     pub shuffle: bool,
     /// The active repeat mode.
     pub repeat: RepeatMode,
-    /// The user's volume level, 0.0..=1.0 — preserved across mute (so un-muting
+    /// The user's volume level, 0.0..=1.0, preserved across mute (so un-muting
     /// restores it). The actual output gain is 0 while [`Tick::muted`].
     pub volume: f32,
     /// Whether the output is muted (silenced) while keeping `volume`.
@@ -383,7 +383,7 @@ pub struct QueueState {
     /// `PlayNext`/`Enqueue`, in play order. Reorderable/removable.
     pub up_next_ids: Vec<u32>,
     /// The real upcoming CONTEXT tracks ("Next from <album/playlist>") after the
-    /// manual queue — bounded, shuffle-correct, projected from the player (not
+    /// manual queue, bounded, shuffle-correct, projected from the player (not
     /// synthesized from library order). Not reorderable.
     pub context_ids: Vec<u32>,
     /// The current track's position within the context (0-based). u32 since context
@@ -403,7 +403,7 @@ pub struct TrackView {
     /// sharing to gain, unlike the low-cardinality `artist`/`album`/`genre`/`format`.
     pub title: Option<String>,
     /// Track artist, or `None` when untagged. Interned as `Arc<str>` so the many
-    /// tracks sharing one artist share one allocation — `Library::views_by`
+    /// tracks sharing one artist share one allocation, `Library::views_by`
     /// materializes the distinct-artist count of strings, not one-per-track.
     pub artist: Option<Arc<str>>,
     /// Album title, or `None` when untagged. Interned as `Arc<str>` (see `artist`).
@@ -422,11 +422,11 @@ pub struct TrackView {
     /// show WHICH server a track streams from (not just that it's remote).
     /// The backend/local catalog projection always sets this `None`; the
     /// host's remote-aware aggregate (`soul-player-host`) sets `Some(host)`
-    /// for a track whose compound id falls in a remote server's block — see
+    /// for a track whose compound id falls in a remote server's block, see
     /// `soul_player_host::PlayerHandle::views`.
     pub remote_source: Option<String>,
     /// The album's ORIGINAL-release date, packed `(year<<9)|(month<<5)|day`
-    /// (`0` = unknown) — mirrors `soul_audio_catalog::PackedDate`. The audiophile
+    /// (`0` = unknown), mirrors `soul_audio_catalog::PackedDate`. The audiophile
     /// canonical year; the UI prefers it, falling back to `release_date`.
     pub original_date: u32,
     /// The album's main release/reissue date, same packing. Unknown = `0`.
@@ -440,7 +440,7 @@ pub struct TrackView {
     /// FORMAT badge. `None` when the name can't resolve or carries no extension.
     /// Cheap: the backend projection (`Library::views_by`) derives this from the
     /// already-resolved file name, no extra decode or path join. Interned as
-    /// `Arc<str>` — only a handful of distinct extensions exist across a library,
+    /// `Arc<str>`: only a handful of distinct extensions exist across a library,
     /// so one allocation per format is shared by every track that uses it.
     pub format: Option<Arc<str>>,
 }
@@ -462,7 +462,7 @@ pub enum SourceFormat {
     },
 }
 
-/// The current track's original **codec** — the lossless-vs-lossy identity the
+/// The current track's original **codec**, the lossless-vs-lossy identity the
 /// Source stage names (FLAC / ALAC / AAC / …). [`SourceFormat`] only says PCM vs
 /// DSD and the bit depth, so a FLAC, a WAV and an ALAC otherwise read the same.
 /// A serde DTO mirroring `soul_audio_core::SourceCodec`, which (being `no_std`)
@@ -521,15 +521,15 @@ impl From<soul_audio_core::SourceCodec> for SourceCodec {
     }
 }
 
-/// The current track's real decode → DSP → output chain — what the engine
+/// The current track's real decode → DSP → output chain, what the engine
 /// actually does to the samples, for a "signal path" display. A `device_rate`
 /// equal to `decoded_rate` with `!resampling` is a sample-rate-exact path.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SignalPath {
     /// The ORIGINAL source (DSD stays DSD even though it decodes to PCM).
     pub source: SourceFormat,
-    /// The original codec the track is encoded with (FLAC / ALAC / AAC / DSD / …)
-    /// — the lossless-vs-lossy identity the Source stage names.
+    /// The original codec the track is encoded with (FLAC / ALAC / AAC / DSD / …),
+    /// the lossless-vs-lossy identity the Source stage names.
     pub codec: SourceCodec,
     /// The PCM the decoder hands the engine.
     pub decoded_rate: u32,
@@ -543,7 +543,7 @@ pub struct SignalPath {
     pub device_rate: u32,
     /// Whether the engine resamples `decoded_rate` → `device_rate`.
     pub resampling: bool,
-    /// Output bit depth the device actually receives — the shared mixer's format in
+    /// Output bit depth the device actually receives, the shared mixer's format in
     /// shared mode, or the negotiated bit-perfect depth in exclusive mode (no longer
     /// a hardcoded canonical 24).
     pub output_bits: u8,
@@ -551,7 +551,7 @@ pub struct SignalPath {
     /// bypassing the OS mixer. `false` for shared mode (the default / the fallback).
     pub exclusive: bool,
     /// The current track's loudness & dynamic-range metrics, once the background
-    /// analysis has them cached (`None` while unmeasured — the readouts show
+    /// analysis has them cached (`None` while unmeasured, the readouts show
     /// "analyzing…"). Filled by the actor from its loudness cache at projection.
     pub loudness: Option<TrackLoudness>,
 }

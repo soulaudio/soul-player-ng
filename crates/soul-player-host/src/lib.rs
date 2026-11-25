@@ -88,8 +88,8 @@ type WatchSubscriber = Box<dyn Fn(WatchUpdate) + Send>;
 /// [`PlayerHandle::on_scan_progress`]).
 type ScanProgressSubscriber = Box<dyn Fn(Option<ScanProgress>) + Send>;
 
-/// A registered list of event subscribers over payload `T` — the shape behind the
-/// `subscribers` / `watch_subscribers` / `scan_progress_subscribers` mutexes — generic so one
+/// A registered list of event subscribers over payload `T`, the shape behind the
+/// `subscribers` / `watch_subscribers` / `scan_progress_subscribers` mutexes, generic so one
 /// [`fan_out`] serves all three.
 type Subscribers<T> = Mutex<Vec<Box<dyn Fn(T) + Send>>>;
 
@@ -169,7 +169,7 @@ type Deletions = Vec<(PathBuf, Vec<PathBuf>)>;
 type Skips = Vec<(PathBuf, Vec<SkippedGroup>)>;
 
 /// What one rescan produced: the library refresh to broadcast, plus the two
-/// after-the-fact notices a UI reports — what vanished, and what was passed over.
+/// after-the-fact notices a UI reports, what vanished, and what was passed over.
 ///
 /// A struct rather than a widening tuple because the notices are emitted by the
 /// CALLER, deliberately after the refresh is broadcast (so the list already
@@ -190,7 +190,7 @@ type RemoteSources = Vec<(Arc<RemoteServer>, Vec<Vec<u8>>)>;
 /// Long enough to collapse a burst, short enough to feel live.
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(600);
 
-/// A watcher event path that can't change the library — editor temp / partial-
+/// A watcher event path that can't change the library, editor temp / partial-
 /// download files and OS metadata sidecars. When a whole debounced batch is noise,
 /// the watcher skips the rescan. Deliberately CONSERVATIVE: only confirmed junk is
 /// noise, so a real change (including a cover-art image) is never skipped.
@@ -252,7 +252,7 @@ fn path_under(path: &Path, root: &Path) -> bool {
 
 /// Where [`PlayerHandle::add_remote_source`]'s [`DownloadCache`] keeps
 /// downloaded remote track originals: a dedicated subdirectory of the OS
-/// cache dir (falling back to the system temp dir if that's unavailable —
+/// cache dir (falling back to the system temp dir if that's unavailable,
 /// headless CI, an exotic platform `dirs` doesn't recognize), so it survives
 /// across launches but is understood by the OS as reclaimable, unlike the
 /// config dir the app's settings live in.
@@ -265,7 +265,7 @@ fn remote_cache_dir() -> PathBuf {
 
 /// Seconds since the Unix epoch, for timestamping a [`RemoteHealth`] probe
 /// (see [`PlayerHandle::refresh_remote_health`]). Falls back to 0 on a clock
-/// set before the epoch rather than panicking — a timestamp this method
+/// set before the epoch rather than panicking, a timestamp this method
 /// produces is only ever used for display/ordering, never safety-critical.
 fn now_unix() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -275,7 +275,7 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// The configured roots that contain at least one of `paths` — the set a watcher
+/// The configured roots that contain at least one of `paths`, the set a watcher
 /// burst actually touched, so only these need re-reading (the rest are reused). An
 /// empty result means no root was affected.
 fn affected_roots(paths: &[PathBuf], roots: &[PathBuf]) -> std::collections::HashSet<PathBuf> {
@@ -290,11 +290,11 @@ fn affected_roots(paths: &[PathBuf], roots: &[PathBuf]) -> std::collections::Has
     set
 }
 
-/// What kind of source a [`SourceStatus`] describes — a local folder root, or
+/// What kind of source a [`SourceStatus`] describes, a local folder root, or
 /// a remote `soul-server` identified by its base URL. Lets a UI head render
 /// the two kinds distinctly (a Local/Remote badge) without inferring it from
 /// `path` (a remote's `path` is a synthetic stand-in, not a real filesystem
-/// location — see [`SourceStatus::path`]).
+/// location, see [`SourceStatus::path`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceKind {
     /// A watched local folder, by its root path.
@@ -312,24 +312,24 @@ pub enum SourceKind {
 
 /// Point-in-time health of a remote source, as last measured by
 /// [`remote::probe_health`] (via [`PlayerHandle::refresh_remote_health`]).
-/// Never an error value — an unreachable server is `online: false` with the
-/// rest `None`, not a missing [`RemoteHealth`] — so a UI can always render
+/// Never an error value, an unreachable server is `online: false` with the
+/// rest `None`, not a missing [`RemoteHealth`], so a UI can always render
 /// *something* (an offline row) rather than a gap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteHealth {
     /// Whether the most recent `/v0/ping` succeeded.
     pub online: bool,
-    /// Round-trip latency of that ping, in milliseconds — `None` when
+    /// Round-trip latency of that ping, in milliseconds, `None` when
     /// offline (there is nothing to time).
     pub latency_ms: Option<u64>,
-    /// The server's own crate version, as echoed by `/v0/ping` — `None`
+    /// The server's own crate version, as echoed by `/v0/ping`, `None`
     /// when offline.
     pub server_version: Option<String>,
     /// The server's current catalog index version, as echoed by
-    /// `/v0/ping` — `None` when offline. A change since the last sync is a
+    /// `/v0/ping`, `None` when offline. A change since the last sync is a
     /// cheap signal that a re-sync would pick up fresh tracks.
     pub index_version: Option<u64>,
-    /// Unix timestamp of this probe, whether it succeeded or not — `None`
+    /// Unix timestamp of this probe, whether it succeeded or not, `None`
     /// only for a remote that has never been probed.
     pub last_checked_unix: Option<u64>,
 }
@@ -337,7 +337,7 @@ pub struct RemoteHealth {
 /// The per-source status of one configured folder or remote server, as of
 /// the last scan / health probe.
 ///
-/// A source is kept in the configured set regardless of its state — disabling it
+/// A source is kept in the configured set regardless of its state, disabling it
 /// or losing its root to a transient outage never drops it (the "don't wipe the
 /// library when a drive is unplugged" rule that every mature player follows). The
 /// flags describe what that source contributed on the most recent aggregation:
@@ -349,11 +349,11 @@ pub struct SourceStatus {
     /// The configured root path, for a local source (as given by the
     /// caller, deduped in order). For a remote source this is a synthetic
     /// stand-in (the server's URL) kept only for callers that haven't moved
-    /// to matching on [`kind`](Self::kind) yet — never a real filesystem
+    /// to matching on [`kind`](Self::kind) yet, never a real filesystem
     /// path to read.
     pub path: PathBuf,
     /// Whether the user has this source enabled (disabled sources are skipped
-    /// in the aggregate — their tracks leave `views()` — but kept listed
+    /// in the aggregate, their tracks leave `views()`, but kept listed
     /// here). A local root toggles via
     /// [`set_folder_enabled`](PlayerHandle::set_folder_enabled); a remote via
     /// [`set_remote_enabled`](PlayerHandle::set_remote_enabled).
@@ -362,12 +362,12 @@ pub struct SourceStatus {
     /// unmounted / unreadable roots are `false`, but stay in the set). For a
     /// remote source this mirrors [`RemoteHealth::online`].
     pub available: bool,
-    /// Tracks this source contributed to the aggregated library — 0 when the
+    /// Tracks this source contributed to the aggregated library, 0 when the
     /// source is disabled or unavailable.
     pub track_count: usize,
     /// Whether this is a local folder or a remote server, and its identity.
     pub kind: SourceKind,
-    /// The remote's last-probed health — `Some` for every [`SourceKind::Remote`]
+    /// The remote's last-probed health, `Some` for every [`SourceKind::Remote`]
     /// (never probed yet is still `Some`, with every field but the timestamp
     /// `None`), always `None` for a [`SourceKind::Local`].
     pub remote: Option<RemoteHealth>,
@@ -385,7 +385,7 @@ pub struct WatchUpdate {
     pub sources: Vec<SourceStatus>,
 }
 
-/// How hard the library scanner may work — the user-facing "indexing speed"
+/// How hard the library scanner may work, the user-facing "indexing speed"
 /// knob. Resolves to an extraction thread count ([`resolve_threads`](IndexingMode::resolve_threads))
 /// each scan, so [`Automatic`](IndexingMode::Automatic) can follow the machine's
 /// live CPU load.
@@ -393,13 +393,13 @@ pub struct WatchUpdate {
 pub enum IndexingMode {
     /// Follow the machine: scan fast when the CPU is idle, ease off when it's busy.
     /// Reads current CPU load (a brief sample) and scales parallelism to the idle
-    /// headroom — the recommended default a UI should offer.
+    /// headroom, the recommended default a UI should offer.
     #[default]
     Automatic,
     /// Always oversubscribe for the quickest scan (best for a big first import);
     /// may briefly load the machine.
     Maximum,
-    /// Bounded, low parallelism — gentle on an older machine or a network share
+    /// Bounded, low parallelism: gentle on an older machine or a network share
     /// (a NAS), where firing many concurrent reads is counter-productive.
     Gentle,
 }
@@ -429,7 +429,7 @@ impl IndexingMode {
     /// The extraction thread count to **start** a scan with for this mode *right
     /// now*. `Maximum` oversubscribes the cores (hiding I/O latency); `Gentle` stays
     /// low; `Automatic` samples the current CPU load and scales between the two. For
-    /// `Automatic` this is only the *initial* `target` — a [`LoadSampler`] then keeps
+    /// `Automatic` this is only the *initial* `target`, a [`LoadSampler`] then keeps
     /// it tracking load for the rest of the scan (see [`ceiling`](Self::ceiling)).
     #[must_use]
     pub fn resolve_threads(self) -> usize {
@@ -444,7 +444,7 @@ impl IndexingMode {
         }
     }
 
-    /// The worker **ceiling** for this mode — how many extraction threads the pool
+    /// The worker **ceiling** for this mode, how many extraction threads the pool
     /// may spawn. `Automatic` shares `Maximum`'s ceiling; its live `target` varies
     /// underneath (down to 2 on a busy machine, up to here when idle).
     #[must_use]
@@ -470,7 +470,7 @@ fn cores() -> usize {
 }
 
 /// Extraction threads for a given CPU idle `fraction` (0.0 = pegged, 1.0 = idle):
-/// scales `0.25×…4×` cores, clamped to `[2, MAX_SCAN_THREADS]`. Pure — both the
+/// scales `0.25×…4×` cores, clamped to `[2, MAX_SCAN_THREADS]`. Pure: both the
 /// initial [`resolve_threads`](IndexingMode::resolve_threads) and the mid-scan
 /// [`LoadSampler`] go through this, so they stay consistent.
 fn threads_for_idle(cores: usize, fraction: f32) -> usize {
@@ -523,7 +523,7 @@ impl Drop for LoadSampler {
 /// The fraction of CPU that is idle right now (0.0 = pegged, 1.0 = idle), or
 /// `None` if it can't be sampled. Takes two CPU readings a short interval apart
 /// (sysinfo needs the gap to compute a percentage), so it costs ~one
-/// [`MINIMUM_CPU_UPDATE_INTERVAL`] (~200 ms) — only paid in `Automatic` mode.
+/// [`MINIMUM_CPU_UPDATE_INTERVAL`] (~200 ms), only paid in `Automatic` mode.
 fn cpu_idle_fraction() -> Option<f32> {
     let mut sys = System::new();
     sys.refresh_cpu_usage();
@@ -536,7 +536,7 @@ fn cpu_idle_fraction() -> Option<f32> {
 }
 
 /// One configured source: a root path plus whether the user has it enabled.
-/// Stored (deduped, in order) so an enabled flag — like an unavailable root —
+/// Stored (deduped, in order) so an enabled flag, like an unavailable root,
 /// survives re-scans and reconciliation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FolderConfig {
@@ -550,12 +550,12 @@ struct Inner {
     library: Mutex<Option<Arc<Library>>>,
     subscribers: Mutex<Vec<Subscriber>>,
     /// The configured sources (deduped, in order) with their enabled flags,
-    /// including any that are currently disabled or unavailable — so a source is
+    /// including any that are currently disabled or unavailable, so a source is
     /// never lost to a transient outage or a toggle.
     folders: Mutex<Vec<FolderConfig>>,
     /// The most recent [`SourceStatus`] set (with real per-source track counts)
     /// produced by [`rescan`](PlayerHandle::rescan). Cached so
-    /// [`sources`](PlayerHandle::sources) — which seeds UI state at startup —
+    /// [`sources`](PlayerHandle::sources), which seeds UI state at startup,
     /// reports the true counts from the last aggregation instead of a 0
     /// placeholder, keeping the Sources list in step with the loaded library.
     last_sources: Mutex<Vec<SourceStatus>>,
@@ -566,7 +566,7 @@ struct Inner {
     /// a cold full read. A configured-but-unscanned root (disabled / offline) keeps
     /// its cache for when it returns; a de-configured root's cache is pruned.
     caches: Mutex<HashMap<PathBuf, ScanCache>>,
-    /// The per-source baked `.soulidx` bytes, keyed by root path — the last build's
+    /// The per-source baked `.soulidx` bytes, keyed by root path, the last build's
     /// output per root. A scoped (watcher-triggered) rescan re-scans only the roots
     /// whose files changed and reuses the cached bytes of the rest verbatim (each
     /// root bakes independently, so the result is byte-identical to a full rescan).
@@ -575,17 +575,17 @@ struct Inner {
     source_bytes: Mutex<HashMap<PathBuf, Vec<u8>>>,
     /// Remote sources added via [`add_remote_source`](PlayerHandle::add_remote_source),
     /// each authenticated server alongside its last-fetched per-root index
-    /// blobs — the v0 remote state: not threaded through `folders` /
+    /// blobs, the v0 remote state: not threaded through `folders` /
     /// `caches` / `source_bytes` (a plain rescan never touches it), just
     /// replayed in order into a fresh [`RemoteLibrary`] on every add.
     remotes: Mutex<RemoteSources>,
     /// Per-remote enabled flag, keyed by server base URL (trailing slash
-    /// trimmed, matching `remotes`' own key). Absent ⇒ enabled — a remote
+    /// trimmed, matching `remotes`' own key). Absent ⇒ enabled: a remote
     /// added before this flag existed, or never explicitly toggled,
     /// defaults to on (the same "absent from the disabled set ⇒ enabled"
     /// convention `app`'s `sources_disabled` config uses). A disabled
     /// remote stays in `remotes` (and keeps listing in
-    /// [`sources`](PlayerHandle::sources)) — only its blobs are excluded
+    /// [`sources`](PlayerHandle::sources)), only its blobs are excluded
     /// from the aggregate [`rebuild_remote_library`](PlayerHandle::rebuild_remote_library)
     /// builds, so its tracks leave [`views`](PlayerHandle::views) without
     /// disconnecting it. Cleared on [`remove_remote_source`](PlayerHandle::remove_remote_source)
@@ -594,20 +594,20 @@ struct Inner {
     /// The remote-aware aggregate built from `remotes` plus the local
     /// `source_bytes` snapshot at the time of the last
     /// [`add_remote_source`](PlayerHandle::add_remote_source) call, or `None`
-    /// when no remote has ever been added. When `Some`, this — not the plain
-    /// `library` above — is what the actor resolves ids against; `library`
+    /// when no remote has ever been added. When `Some`, this, not the plain
+    /// `library` above, is what the actor resolves ids against; `library`
     /// still holds `remote_library`'s own aggregate `Library` so
     /// [`views`](PlayerHandle::views)/[`art`](PlayerHandle::art)/etc. see the
     /// union unchanged. Cleared by a plain [`set_library`](Self::set_library)
     /// (e.g. a subsequent local rescan), whose fresh `Library` has a source
-    /// layout this aggregate's compound ids no longer match — see
+    /// layout this aggregate's compound ids no longer match, see
     /// `set_library`.
     remote_library: Mutex<Option<Arc<RemoteLibrary>>>,
     /// The last [`RemoteHealth`] probed for each retained remote, keyed by
     /// server base URL. Written only by
     /// [`refresh_remote_health`](PlayerHandle::refresh_remote_health) (the
     /// one place that does the blocking network probe); read by
-    /// [`sources`](PlayerHandle::sources), which must stay non-blocking — a
+    /// [`sources`](PlayerHandle::sources), which must stay non-blocking, a
     /// remote with no entry yet (never probed) reports as offline/unknown
     /// rather than panicking or blocking.
     remote_health: Mutex<HashMap<String, RemoteHealth>>,
@@ -621,7 +621,7 @@ struct Inner {
     /// *during* a rescan (registered via [`on_scan_progress`](PlayerHandle::on_scan_progress)).
     /// The UI drives a progress indicator from these; they fire on the scanning
     /// thread, so only an off-UI-thread rescan (the watcher, a threaded add) shows
-    /// live motion — a rescan that blocks the UI thread repaints only when it ends.
+    /// live motion, a rescan that blocks the UI thread repaints only when it ends.
     scan_progress_subscribers: Mutex<Vec<ScanProgressSubscriber>>,
     /// The live filesystem watcher ([`start_watching`](PlayerHandle::start_watching)),
     /// kept alive here so its debounce thread runs; `None` until started. Replaced
@@ -629,12 +629,12 @@ struct Inner {
     watcher: Mutex<Option<Debouncer<RecommendedWatcher>>>,
     /// The library-scan "indexing speed" mode, resolved to a thread count each scan
     /// (so [`IndexingMode::Automatic`] follows live CPU load). Defaults to
-    /// [`Maximum`](IndexingMode::Maximum) here — no CPU sampling until the app sets
+    /// [`Maximum`](IndexingMode::Maximum) here, no CPU sampling until the app sets
     /// the user's persisted choice ([`set_indexing_mode`](PlayerHandle::set_indexing_mode),
-    /// whose own default is `Automatic`) — which also keeps the test suite fast.
+    /// whose own default is `Automatic`), which also keeps the test suite fast.
     indexing_mode: Mutex<IndexingMode>,
-    /// The desired output config — device (one of
-    /// [`output_devices`](PlayerHandle::output_devices)), exclusive mode, and strict —
+    /// The desired output config, device (one of
+    /// [`output_devices`](PlayerHandle::output_devices)), exclusive mode, and strict,
     /// shared with the running pump so a change made while playing applies to the
     /// CURRENT track (live), not just the next session. Written by
     /// [`set_output_device`](PlayerHandle::set_output_device),
@@ -646,11 +646,11 @@ struct Inner {
     /// What the last exclusive-output request resolved to (active / fell back to
     /// shared with a reason / unavailable under strict / shared by choice). Written by
     /// the sink factory on the pump thread at spawn, read by the UI to show the truth
-    /// — hence an `Arc` shared with the factory.
+    /// hence an `Arc` shared with the factory.
     exclusive_status: Arc<Mutex<ExclusiveStatus>>,
     /// The ReplayGain normalization choice `(mode, preamp_db)`. Remembered so a
     /// freshly-spawned actor is told the current setting (via a `SetReplayGain`
-    /// command) the moment it starts — and, unlike the output device, a change
+    /// command) the moment it starts, and, unlike the output device, a change
     /// also applies to the LIVE actor immediately (see
     /// [`set_replay_gain`](PlayerHandle::set_replay_gain)).
     replay_gain: Mutex<(ReplayGainMode, f32)>,
@@ -661,7 +661,7 @@ struct Inner {
     loudness_mode: Mutex<LoudnessAnalysisMode>,
     /// The app's persisted loudness cache (`(path, computed track_gain_db)`),
     /// supplied once at startup by [`seed_loudness`](PlayerHandle::seed_loudness).
-    /// Banked so a lazily- (or re-) spawned actor is re-seeded on spawn — the
+    /// Banked so a lazily- (or re-) spawned actor is re-seeded on spawn, the
     /// hybrid-ReplayGain cache for previously-untagged tracks survives the actor's
     /// lazy start just like the ReplayGain choice does.
     loudness_seed: Mutex<Vec<(PathBuf, TrackLoudness)>>,
@@ -680,7 +680,7 @@ struct Inner {
     /// asserted headlessly. `None` (the default) in every real handle.
     recorder: Mutex<Option<Vec<Command>>>,
     /// The live DSP chain. Shared with the device sink's [`eq::DspSink`] (created
-    /// per spawn) so a change applies to the LIVE stream at its next block — like
+    /// per spawn) so a change applies to the LIVE stream at its next block, like
     /// ReplayGain, not the output device. Persists across actor respawns (device
     /// changes) because the same `Arc` is handed to each new sink.
     dsp: DspShared,
@@ -695,7 +695,7 @@ struct Inner {
 /// The one UI contract both heads bind to. Owns the backend actor (spawned lazily
 /// on first playback), the current library, and an event fan-out.
 ///
-/// `Clone` shares the same underlying player (it's an `Arc` handle) — a UI head
+/// `Clone` shares the same underlying player (it's an `Arc` handle), a UI head
 /// holds several clones (one per subscriber / init closure) that all drive one
 /// actor.
 #[derive(Clone)]
@@ -723,7 +723,7 @@ impl PlayerHandle {
     }
 
     /// Test-support: a handle that RECORDS sent commands instead of driving the
-    /// actor (headless — no library, no audio). A head's command wiring (which
+    /// actor (headless, no library, no audio). A head's command wiring (which
     /// `Command` a click/drag dispatches) can be asserted with
     /// [`recorded_commands`](PlayerHandle::recorded_commands).
     pub fn recording() -> Self {
@@ -795,7 +795,7 @@ impl PlayerHandle {
     /// library (compound `(source, local)` ids), swap it in so
     /// [`views`](Self::views) / [`art`](Self::art) reflect the union, and build a
     /// [`WatchUpdate`] whose [`sources`](WatchUpdate::sources) carries a
-    /// [`SourceStatus`] for the *full* configured set — the single source of truth
+    /// [`SourceStatus`] for the *full* configured set, the single source of truth
     /// every public mutator funnels through.
     ///
     /// Robustness follows what mature players do with an offline location
@@ -831,7 +831,7 @@ impl PlayerHandle {
         Ok(up)
     }
 
-    /// The enabled **and currently reachable** source roots, in config order — the
+    /// The enabled **and currently reachable** source roots, in config order, the
     /// set a scan actually reads. Availability is checked at the ROOT so a transient
     /// outage skips the whole source rather than purging it file-by-file.
     fn enabled_reachable_roots(&self) -> Vec<PathBuf> {
@@ -856,7 +856,7 @@ impl PlayerHandle {
         }
     }
 
-    /// A full rescan of every enabled + reachable root — the entry for a source
+    /// A full rescan of every enabled + reachable root, the entry for a source
     /// change, a manual Rescan, and the deferred startup scan. See
     /// [`rescan_build`](Self::rescan_build).
     fn rescan_compute(&self) -> anyhow::Result<ScanReport> {
@@ -864,7 +864,7 @@ impl PlayerHandle {
     }
 
     /// A **scoped** rescan: re-read only the roots in `affected` (that are enabled +
-    /// reachable) and reuse every other root's cached baked bytes verbatim — the
+    /// reachable) and reuse every other root's cached baked bytes verbatim, the
     /// watcher's smart path. Byte-identical to a full rescan because each root bakes
     /// independently. A root in `affected` (or any root with no cached bytes to
     /// reuse) is re-scanned.
@@ -876,8 +876,8 @@ impl PlayerHandle {
     }
 
     /// The scan itself, **without emitting any event**: (incrementally) re-read the
-    /// roots this call scans — all enabled + reachable roots when `affected` is
-    /// `None`, else only those roots — swap in the aggregated library, refresh the
+    /// roots this call scans, all enabled + reachable roots when `affected` is
+    /// `None`, else only those roots, swap in the aggregated library, refresh the
     /// per-source caches + baked bytes, and build the [`WatchUpdate`] plus the
     /// per-root deletions. Split out from [`rescan`](Self::rescan) so the live watcher
     /// can broadcast the library refresh *before* the deletion warning (the
@@ -932,7 +932,7 @@ impl PlayerHandle {
         let ceiling = mode.ceiling();
         // A shared, live concurrency target the extractor re-reads per file. For
         // Automatic, a sampler keeps it tracking CPU load FOR THE DURATION of the
-        // scan — a scan that starts idle but hits load mid-run throttles itself (and
+        // scan, a scan that starts idle but hits load mid-run throttles itself (and
         // vice-versa). Fixed modes leave it constant (no sampler).
         let target = Arc::new(AtomicUsize::new(mode.resolve_threads().min(ceiling)));
         let sampler = matches!(mode, IndexingMode::Automatic)
@@ -1008,7 +1008,7 @@ impl PlayerHandle {
         let lib = Arc::new(library);
         let counts = lib.source_counts(); // (root, n) for the scanned roots only
         self.set_library(lib);
-        // Status for the FULL configured set — disabled / unavailable sources are
+        // Status for the FULL configured set, disabled / unavailable sources are
         // listed too, with 0 tracks, so the caller can render and re-enable them.
         let local_sources: Vec<SourceStatus> = cfg
             .iter()
@@ -1035,11 +1035,11 @@ impl PlayerHandle {
                 }
             })
             .collect();
-        // Cache the computed status (with real counts) so `sources()` — the
-        // startup UI seed — reports true counts, not a 0 placeholder.
+        // Cache the computed status (with real counts) so `sources()`, the
+        // startup UI seed, reports true counts, not a 0 placeholder.
         *self.inner.last_sources.lock().expect("last_sources mutex") = local_sources.clone();
         // `set_library` above just cleared `Inner::remote_library` (a fresh local
-        // `Library`'s compound ids don't match the old aggregate — see its own doc
+        // `Library`'s compound ids don't match the old aggregate, see its own doc
         // comment), so a folder reconcile (e.g. Rescan) must rebuild the
         // remote-aware aggregate from the FRESH local bytes just cached above plus
         // every still-retained remote, exactly like `add_remote_source` does.
@@ -1047,7 +1047,7 @@ impl PlayerHandle {
         // (the WatchUpdate reverts to local-only) and zeroes each remote's
         // `track_count` (`remote_statuses` reads `remote_library`'s per-source
         // counts, which were just nulled) even though the remote itself is still
-        // connected — the "rescan shows 0 tracks on the remote" bug. Harmless when
+        // connected, the "rescan shows 0 tracks on the remote" bug. Harmless when
         // there are no remotes: rebuilding would just reclone EVERY source's baked
         // `.soulidx` bytes and produce an aggregate equal to the plain local library, so
         // skip it when there is nothing to aggregate in (wasteful on every rescan,
@@ -1056,12 +1056,12 @@ impl PlayerHandle {
             self.rebuild_remote_library();
         }
         // With remotes, the aggregate (local ∪ retained, enabled remotes) is now active
-        // in `self.inner.library` — not the local-only `lib` above — so a connected
+        // in `self.inner.library`, not the local-only `lib` above, so a connected
         // remote's tracks stay in the WatchUpdate and `views()` stamps `remote_source`
         // on them. With none, the local-only `lib` set above stays active (equivalent).
         let views = self.views();
         // A folder reconcile (e.g. Rescan) must STILL report the retained REMOTE
-        // sources with their live health — otherwise the WatchUpdate drops them
+        // sources with their live health, otherwise the WatchUpdate drops them
         // and the UI shows a connected remote as offline. Append them exactly as
         // `sources()` does; `last_sources` stays local-only above so `sources()`
         // never double-counts the remotes.
@@ -1082,7 +1082,7 @@ impl PlayerHandle {
     /// order (the first occurrence of a path wins). Use this at startup to restore
     /// the persisted set with each source's saved enabled flag.
     ///
-    /// Does **not** change playback — managing what is configured is separate from
+    /// Does **not** change playback, managing what is configured is separate from
     /// what is playing; re-scanning re-bakes, so compound ids can shift and the
     /// caller should re-queue from the returned views if it wants.
     pub fn set_sources(&self, entries: &[(PathBuf, bool)]) -> anyhow::Result<WatchUpdate> {
@@ -1100,12 +1100,12 @@ impl PlayerHandle {
     }
 
     /// Seed the configured-source set from `(path, enabled)` pairs **without
-    /// scanning** — for a fast first paint. The window can render the Sources list
+    /// scanning**, for a fast first paint. The window can render the Sources list
     /// immediately ([`sources`](Self::sources) falls back to a count-0 listing of the
     /// configured set before any scan), while the actual library scan runs off the
     /// main thread afterwards via [`rescan_sources`](Self::rescan_sources). Pairs are
     /// deduped preserving order (first occurrence of a path wins). Touches only the
-    /// configured set — not the library, the caches, or the watcher.
+    /// configured set, not the library, the caches, or the watcher.
     pub fn configure_sources(&self, entries: &[(PathBuf, bool)]) {
         let mut set: Vec<FolderConfig> = Vec::with_capacity(entries.len());
         for (p, en) in entries {
@@ -1120,7 +1120,7 @@ impl PlayerHandle {
     }
 
     /// Rescan the already-configured source set and return the refreshed
-    /// [`WatchUpdate`] — the public entry the app's deferred startup scan (and a
+    /// [`WatchUpdate`], the public entry the app's deferred startup scan (and a
     /// manual Rescan) runs off the main thread. Same as the internal post-mutation
     /// rescan but without changing the configured set. Emits `TracksRemoved` for any
     /// deletions and re-arms the watcher if it is running.
@@ -1129,7 +1129,7 @@ impl PlayerHandle {
     }
 
     /// Seed the per-source scan caches (as persisted by a previous run), keyed by
-    /// root path, **before** [`set_sources`](Self::set_sources) — so the first scan
+    /// root path, **before** [`set_sources`](Self::set_sources), so the first scan
     /// at startup is a warm diff (only new/changed files re-read) instead of a cold
     /// full read of the whole library. The caller restores this from disk and must
     /// drop any caches written by an incompatible importer build (compare the
@@ -1139,7 +1139,7 @@ impl PlayerHandle {
         *self.inner.caches.lock().expect("caches mutex") = caches;
     }
 
-    /// The current per-source scan caches, keyed by root path — persist this (with
+    /// The current per-source scan caches, keyed by root path, persist this (with
     /// [`SCAN_CACHE_VERSION`]) after scans so the next startup is warm (see
     /// [`seed_caches`](Self::seed_caches)). Holds one warm cache per configured
     /// root that has been scanned; de-configured roots are already pruned.
@@ -1149,7 +1149,7 @@ impl PlayerHandle {
     }
 
     /// Set the library-scan [`IndexingMode`] (the "indexing speed" the user picks in
-    /// Settings). Applies to the **next** scan — current scans keep their resolved
+    /// Settings). Applies to the **next** scan, current scans keep their resolved
     /// thread count. The app restores the persisted choice at startup; call before
     /// (or any time after) the first scan.
     pub fn set_indexing_mode(&self, mode: IndexingMode) {
@@ -1180,7 +1180,7 @@ impl PlayerHandle {
             .expect("loudness_mode mutex")
     }
 
-    /// How many sources are configured right now — local folders plus remote servers. Each
+    /// How many sources are configured right now, local folders plus remote servers. Each
     /// consumes one of the [`MAX_SOURCES`] compound-id slots; the UI reads this to refuse a
     /// 17th add before it reaches the scan (which would panic). Counts configured sources
     /// whether enabled or not: a source keeps its slot while disabled.
@@ -1215,7 +1215,7 @@ impl PlayerHandle {
     /// already configured is **preserved**; a newly-introduced path defaults to
     /// enabled. Paths absent from `roots` are dropped.
     ///
-    /// Does **not** change playback — see [`set_sources`](Self::set_sources) for
+    /// Does **not** change playback, see [`set_sources`](Self::set_sources) for
     /// the re-bake caveat.
     pub fn set_folders(&self, roots: &[PathBuf]) -> anyhow::Result<WatchUpdate> {
         let prev = self.inner.folders.lock().expect("folders mutex").clone();
@@ -1276,16 +1276,16 @@ impl PlayerHandle {
         self.rescan()
     }
 
-    /// The configured sources as [`SourceStatus`], in order — a cheap listing that
+    /// The configured sources as [`SourceStatus`], in order, a cheap listing that
     /// does **not** re-scan: it returns the status cached by the most recent
     /// [`rescan`](Self::rescan), so [`track_count`](SourceStatus::track_count)
     /// carries the real per-source counts from the last aggregation (ideal for
     /// seeding UI state at startup). Falls back to a count-0 listing of the
     /// configured set (with live `is_dir` availability) only before the first scan
-    /// — e.g. if the most recent scan errored.
+    /// e.g. if the most recent scan errored.
     ///
     /// Also appends a [`SourceStatus`] for every retained remote (see
-    /// [`remote_statuses`](Self::remote_statuses)) — remotes aren't part of
+    /// [`remote_statuses`](Self::remote_statuses)), remotes aren't part of
     /// the cached local listing above, so they're folded in on every call
     /// regardless of which branch produced the local half.
     pub fn sources(&self) -> Vec<SourceStatus> {
@@ -1327,7 +1327,7 @@ impl PlayerHandle {
     /// "unknown" health (offline, no latency/version, no timestamp) rather
     /// than panicking or blocking on a probe. `track_count` is summed from
     /// the live remote-aggregate's per-source counts for that server's
-    /// sentinel roots (`remote:{url}#i`, see [`RemoteLibrary::build`]) — 0
+    /// sentinel roots (`remote:{url}#i`, see [`RemoteLibrary::build`]), 0
     /// if no remote aggregate has been built yet.
     fn remote_statuses(&self) -> Vec<SourceStatus> {
         let servers: Vec<Arc<RemoteServer>> = self
@@ -1357,7 +1357,7 @@ impl PlayerHandle {
             .into_iter()
             .map(|server| {
                 // Each of this server's blobs was given a sentinel root
-                // `remote:{url}#i` by `RemoteLibrary::build` — sum every
+                // `remote:{url}#i` by `RemoteLibrary::build`, sum every
                 // source whose root falls in that server's namespace.
                 let prefix = format!("remote:{}#", server.url);
                 let track_count = source_counts
@@ -1397,7 +1397,7 @@ impl PlayerHandle {
     /// Probe every retained remote's health over the network (one blocking
     /// `GET /v0/ping` per remote via [`remote::probe_health`]), cache the
     /// result, and return the refreshed [`sources`](Self::sources). THIS is
-    /// the one entry point that does network I/O for remote health —
+    /// the one entry point that does network I/O for remote health,
     /// `sources()` itself never blocks. Callers (the Inc-2 periodic poller,
     /// a manual "refresh" action) are expected to run this off the UI
     /// thread, the same way a library rescan is.
@@ -1462,7 +1462,7 @@ impl PlayerHandle {
     ///
     /// Applies **live**: if a track is playing, the pump rebuilds the sink onto the new
     /// device on the current track (position + ReplayGain preserved), accepting the
-    /// brief hardware reopen — the field consensus (foobar / Roon) is to switch
+    /// brief hardware reopen, the field consensus (foobar / Roon) is to switch
     /// immediately. If nothing is playing, the choice takes effect when playback next
     /// starts.
     pub fn set_output_device(&self, name: Option<String>) {
@@ -1481,7 +1481,7 @@ impl PlayerHandle {
         soul_audio_desktop::output_device_names()
     }
 
-    /// The current system-default output device name, if any — to label / preselect
+    /// The current system-default output device name, if any, to label / preselect
     /// the "system default" choice. Delegates to
     /// [`soul_audio_desktop::default_output_device_name`].
     pub fn default_output_device(&self) -> Option<String> {
@@ -1490,7 +1490,7 @@ impl PlayerHandle {
 
     /// Ask for bit-perfect **exclusive** output (WASAPI exclusive mode on Windows),
     /// or shared mode. Like [`set_output_device`](Self::set_output_device), this
-    /// applies **live** — if a track is playing, the pump reopens the device in the
+    /// applies **live**, if a track is playing, the pump reopens the device in the
     /// new mode on the current track. If the device can't do exclusive at its native
     /// format (in use, 16-bit-only, Bluetooth) or this build/platform has no
     /// exclusive backend, it falls back to shared automatically (unless strict); read
@@ -1504,7 +1504,7 @@ impl PlayerHandle {
     }
 
     /// Whether exclusive output is currently requested (for seeding the Settings
-    /// toggle). Whether it is actually *active* is a property of the live stream —
+    /// toggle). Whether it is actually *active* is a property of the live stream,
     /// see the signal path's `exclusive` flag and
     /// [`exclusive_status`](Self::exclusive_status).
     #[must_use]
@@ -1518,7 +1518,7 @@ impl PlayerHandle {
 
     /// Set **strict** exclusive (exclusive-or-stop): when on together with
     /// [`set_exclusive`](Self::set_exclusive), an exclusive-open failure will NOT fall
-    /// back to shared — playback simply doesn't start, and
+    /// back to shared, playback simply doesn't start, and
     /// [`exclusive_status`](Self::exclusive_status) reports
     /// [`ExclusiveStatus::Unavailable`]. Strict-only changes don't rebuild the live
     /// sink (they only affect how a future exclusive-open handles a device refusal);
@@ -1557,13 +1557,13 @@ impl PlayerHandle {
     /// Set the ReplayGain playback normalization: `mode` picks track vs album (vs
     /// off) gain, `preamp_db` is a constant dB offset applied on top. Remembered
     /// so the NEXT playback session starts already normalized (the stored value is
-    /// sent to the actor on spawn), AND — unlike the output device — applied to the
+    /// sent to the actor on spawn), AND, unlike the output device, applied to the
     /// LIVE actor right away if one is running, so a change in Settings is heard on
     /// the current track at its next pump cycle. Safe to call before any folder is
     /// opened: it just records the choice (no actor is spawned just to set it).
     pub fn set_replay_gain(&self, mode: ReplayGainMode, preamp_db: f32) {
         *self.inner.replay_gain.lock().expect("replay_gain mutex") = (mode, preamp_db);
-        // Apply to a live actor only — never spawn one just to set the gain (that
+        // Apply to a live actor only, never spawn one just to set the gain (that
         // would open a device stream before the user has played anything).
         if let Some(actor) = self.inner.player.lock().expect("player mutex").as_ref() {
             actor.send(Command::SetReplayGain { mode, preamp_db });
@@ -1573,7 +1573,7 @@ impl PlayerHandle {
     /// Set how the background loudness sweep runs (Off / Throttled / Full). Remembered so a
     /// freshly-spawned actor is told the current mode on spawn (see
     /// [`ensure_actor`](Self::ensure_actor)), and applied to a LIVE actor right away. Safe to
-    /// call before any folder is opened — it just records the choice (no actor is spawned).
+    /// call before any folder is opened, it just records the choice (no actor is spawned).
     pub fn set_loudness_analysis_mode(&self, mode: LoudnessAnalysisMode) {
         *self
             .inner
@@ -1587,7 +1587,7 @@ impl PlayerHandle {
 
     /// Set the whole DSP chain (its ordered, typed DSP units). Like
     /// [`set_replay_gain`](Self::set_replay_gain), it applies to the LIVE stream at
-    /// its next block — the device sink reads the shared chain each block — and is
+    /// its next block, the device sink reads the shared chain each block, and is
     /// remembered for the next spawn, without ever spawning an actor just to set it.
     /// An empty / disabled / all-flat chain is a bit-exact passthrough. Each EQ
     /// unit's bands are truncated to [`MAX_BANDS`](eq::MAX_BANDS).
@@ -1603,7 +1603,7 @@ impl PlayerHandle {
     }
 
     /// The live DSP chain the device sink is applying (a clone of the shared state).
-    /// Symmetric with [`set_dsp_chain`](Self::set_dsp_chain) — lets callers and tests
+    /// Symmetric with [`set_dsp_chain`](Self::set_dsp_chain), lets callers and tests
     /// read back exactly what the engine will apply at its next block, including the
     /// `generation` counter that tells the sink to re-design.
     #[must_use]
@@ -1614,7 +1614,7 @@ impl PlayerHandle {
     /// The latest spectrum-analyzer snapshot `(seq, columns)`: `seq` bumps each FFT
     /// (0 if nothing has played yet), `columns` are smoothed dBFS levels on a
     /// 20 Hz…20 kHz log axis. The UI polls this at frame rate; an unchanged `seq`
-    /// means no new frame. Cheap — a brief lock and a fixed-size copy.
+    /// means no new frame. Cheap: a brief lock and a fixed-size copy.
     #[must_use]
     pub fn spectrum(&self) -> (u64, [f32; SPECTRUM_COLS]) {
         let frame = self.inner.spectrum.lock().expect("spectrum mutex");
@@ -1623,7 +1623,7 @@ impl PlayerHandle {
 
     /// The latest live-loudness frame (momentary/short-term LUFS + peak dBFS), for the UI's
     /// real-time meter. The UI polls this at frame rate; `seq` tells a fresh frame from a
-    /// repeat. All `f32::NEG_INFINITY` at silence / before any playback. Cheap — a brief lock.
+    /// repeat. All `f32::NEG_INFINITY` at silence / before any playback. Cheap: a brief lock.
     #[must_use]
     pub fn live_loudness(&self) -> LiveLoudnessFrame {
         *self
@@ -1634,7 +1634,7 @@ impl PlayerHandle {
     }
 
     /// Seed the backend's in-memory loudness cache from the app's persisted cache
-    /// — `(path, computed track_gain_db)` pairs for previously-untagged tracks the
+    /// `(path, computed track_gain_db)` pairs for previously-untagged tracks the
     /// hybrid-ReplayGain path analyzed in a past session. Call once at startup
     /// (before the first playback). Banked so the (lazily-spawned, or later
     /// re-spawned) actor is re-seeded on spawn, and pushed to a live actor right
@@ -1671,7 +1671,7 @@ impl PlayerHandle {
             .push(Box::new(on_event));
     }
 
-    /// Fan one event out to every current subscriber — the host's own path to the
+    /// Fan one event out to every current subscriber, the host's own path to the
     /// same fan-out the actor's forwarder uses, for events the host originates
     /// (e.g. a rescan's [`Event::TracksRemoved`] deletion warning) rather than the
     /// playing actor. Holds only the subscribers lock, briefly.
@@ -1698,7 +1698,7 @@ impl PlayerHandle {
     /// Register a handler for live scan progress. It fires `Some(p)` on every tick
     /// *while* a rescan runs, then exactly one terminal `None` when the rescan ends
     /// (success or error), so the UI can drive a determinate indicator and reliably
-    /// retire it. Fires on the scanning thread — the app marshals onto its UI thread.
+    /// retire it. Fires on the scanning thread, the app marshals onto its UI thread.
     /// The show and hide arrive on this one ordered stream, so the indicator can't be
     /// left stuck by a late tick racing a separate "done" signal.
     pub fn on_scan_progress(&self, on_progress: impl Fn(Option<ScanProgress>) + Send + 'static) {
@@ -1714,31 +1714,31 @@ impl PlayerHandle {
         fan_out(&self.inner.scan_progress_subscribers, p);
     }
 
-    /// Start — or re-arm — the live filesystem watcher over the currently enabled
+    /// Start, or re-arm, the live filesystem watcher over the currently enabled
     /// and reachable roots. A debounced change (an album copy coalesces to one
     /// callback) triggers a background rescan; its [`WatchUpdate`] is broadcast to
     /// [`on_watch_update`](Self::on_watch_update) subscribers so the UI refreshes, and
     /// any deletions are emitted right after (so the list updates before the "N
-    /// removed" warning). Idempotent — replaces any existing watcher, which is how a
+    /// removed" warning). Idempotent: replaces any existing watcher, which is how a
     /// source add/remove re-arms it. A watcher that fails to start degrades silently
     /// (no live reindex; manual Rescan still works).
     ///
     /// The rescan is **smart**: a burst that is all noise (editor temp files, partial
     /// downloads, OS metadata) is dropped with no rescan, and an actual change
-    /// re-reads only the roots it touched — the rest are reused from cache. It falls
+    /// re-reads only the roots it touched, the rest are reused from cache. It falls
     /// back to a full rescan whenever a change can't be attributed to a root.
     pub fn start_watching(&self) {
         let roots: Vec<PathBuf> = self.enabled_reachable_roots();
         let weak = Arc::downgrade(&self.inner);
         let mut debouncer = match new_debouncer(WATCH_DEBOUNCE, move |res: DebounceEventResult| {
             let Ok(events) = res else {
-                return; // watch-backend hiccup — ignore; the next event re-triggers
+                return; // watch-backend hiccup, ignore; the next event re-triggers
             };
             let Some(inner) = weak.upgrade() else {
                 return; // the handle (and app) is gone
             };
             let handle = PlayerHandle { inner };
-            // Drop a pure-noise burst — it can't change the library, so don't pay for
+            // Drop a pure-noise burst, it can't change the library, so don't pay for
             // a rescan (nor make the activity widget flicker) on editor/OS churn.
             let changed: Vec<PathBuf> = events
                 .into_iter()
@@ -1750,7 +1750,7 @@ impl PlayerHandle {
             }
             // Re-read only the roots a change actually touched; reuse the rest from
             // their cached bytes. If nothing maps to a root (shouldn't happen under a
-            // recursive watch), fall back to a full rescan — correctness over cleverness.
+            // recursive watch), fall back to a full rescan, correctness over cleverness.
             let affected = affected_roots(&changed, &handle.enabled_reachable_roots());
             let result = if affected.is_empty() {
                 handle.rescan_compute()
@@ -1779,7 +1779,7 @@ impl PlayerHandle {
         *self.inner.watcher.lock().expect("watcher mutex") = Some(debouncer);
     }
 
-    /// Re-arm the watcher over the current roots, but only if it is already running —
+    /// Re-arm the watcher over the current roots, but only if it is already running,
     /// called after a source-set change so a newly added folder is watched (and a
     /// removed one dropped) without the app re-requesting it.
     fn rearm_watcher(&self) {
@@ -1791,7 +1791,7 @@ impl PlayerHandle {
 
     /// Current library views (empty until a folder is opened). Stamps
     /// [`TrackView::remote_source`] for every track belonging to a retained
-    /// remote source (see [`mark_remote`](Self::mark_remote)) — the backend
+    /// remote source (see [`mark_remote`](Self::mark_remote)), the backend
     /// projection itself always returns `remote_source: None`.
     pub fn views(&self) -> Vec<TrackView> {
         let mut views = self
@@ -1808,7 +1808,7 @@ impl PlayerHandle {
     }
 
     /// Current library views in a chosen browse order (Title / ArtistAlbumTrack /
-    /// Album / Folder) — the baked axis tables, no re-sort. Stamps
+    /// Album / Folder), the baked axis tables, no re-sort. Stamps
     /// [`TrackView::remote_source`] the same way [`views`](Self::views) does.
     pub fn views_by(&self, axis: BrowseAxis) -> Vec<TrackView> {
         let mut views = self
@@ -1825,7 +1825,7 @@ impl PlayerHandle {
     }
 
     /// Sets [`TrackView::remote_source`] on every view whose compound id belongs to a
-    /// retained remote source — the shared tail of [`views`](Self::views) /
+    /// retained remote source, the shared tail of [`views`](Self::views) /
     /// [`views_by`](Self::views_by), run on every materialization. The common case has
     /// NO remotes, so it short-circuits without touching the library (the backend
     /// already emits `remote_source: None`). Otherwise it precomputes the per-source
@@ -1951,7 +1951,7 @@ impl PlayerHandle {
         }
     }
 
-    /// If `SOUL_PLAYER_FOLDER` is set, load it as the watched source set — the
+    /// If `SOUL_PLAYER_FOLDER` is set, load it as the watched source set, the
     /// shared launch harness for both heads. Uses `set_folders`, not
     /// `open_folder`, so the library populates WITHOUT autoplaying (an app
     /// shouldn't start playing on its own at launch); `open_folder` keeps its
@@ -1971,11 +1971,11 @@ impl PlayerHandle {
     /// Also drops any active [`remote_library`](Inner::remote_library): a
     /// plain library swap (a local rescan, `open_folder`, …) hands back a
     /// fresh `Library` whose source layout the old remote aggregate's
-    /// compound ids no longer match — keeping it would resolve remote ids
+    /// compound ids no longer match, keeping it would resolve remote ids
     /// against the wrong source. [`add_remote_source`](Self::add_remote_source)
     /// rebuilds the remote aggregate from this fresh library's generation of
     /// local bytes, so remote sources survive an explicit re-add, just not a
-    /// bare rescan yet (v0 — see
+    /// bare rescan yet (v0, see
     /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)'s
     /// doc comment).
     fn set_library(&self, lib: Arc<Library>) {
@@ -1996,7 +1996,7 @@ impl PlayerHandle {
     /// but the actor resolves ids through `remote_lib` (an `Arc<dyn
     /// TrackSource>`, so remote ids download on demand) while
     /// [`views`](Self::views)/[`art`](Self::art)/etc. keep reading
-    /// `remote_lib`'s own aggregate [`Library`] — the same one the actor's
+    /// `remote_lib`'s own aggregate [`Library`], the same one the actor's
     /// ids are compound-addressed against, so browsing and playback always
     /// agree. Locks library then `remote_library` then player, in that order
     /// (the same discipline as `set_library`), so it can never invert with
@@ -2023,7 +2023,7 @@ impl PlayerHandle {
     /// browser flow ([`remote::login`]), durably store the issued refresh
     /// token in the OS keychain ([`remote::KeyringStore`]) so a later
     /// session can skip the interactive login, then fetch the catalog index
-    /// and fold it into the live library — see
+    /// and fold it into the live library, see
     /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)
     /// for the shared tail (and for tests/E2E, which drive that entry point
     /// directly to skip the browser and the real OS keychain).
@@ -2037,14 +2037,14 @@ impl PlayerHandle {
 
     /// Like [`add_remote_source`](Self::add_remote_source), but takes an
     /// already-obtained [`remote::Tokens`] pair instead of driving the
-    /// browser login itself, and never touches the OS keychain — the entry
+    /// browser login itself, and never touches the OS keychain, the entry
     /// point for tests/E2E (against an in-process AS) and for a caller
     /// (a head, or a refresh-token-backed relogin) that already has tokens
     /// in hand.
     ///
     /// v0: rebuilds the aggregate from the host's already-scanned LOCAL
     /// `(root, bytes)` cache plus every remote added so far (this one
-    /// included) — a dedicated rebuild path rather than threading remote
+    /// included), a dedicated rebuild path rather than threading remote
     /// sources through `set_sources`/`WatchUpdate`/`SourceStatus` the way
     /// local sources are. A follow-up: fold remotes into that machinery (a
     /// remote `SourceStatus`, surviving a plain rescan without re-adding).
@@ -2105,7 +2105,7 @@ impl PlayerHandle {
         self.rebuild_remote_library();
     }
 
-    /// Whether the retained remote at `url` is enabled — `true` unless it has
+    /// Whether the retained remote at `url` is enabled, `true` unless it has
     /// been explicitly disabled via [`set_remote_enabled`](Self::set_remote_enabled)
     /// (see `Inner::remote_enabled`'s "absent ⇒ enabled" convention).
     fn remote_is_enabled(&self, url: &str) -> bool {
@@ -2124,7 +2124,7 @@ impl PlayerHandle {
     /// [`sources`](Self::sources), reporting the new `enabled` with
     /// `track_count` 0 while off) but, disabled, its blobs are excluded from
     /// the aggregate [`rebuild_remote_library`](Self::rebuild_remote_library)
-    /// builds — so its tracks leave [`views`](Self::views) without
+    /// builds, so its tracks leave [`views`](Self::views) without
     /// disconnecting it (no network call, no keychain change; re-enabling
     /// brings its tracks straight back from the already-fetched blobs). A
     /// no-op if `url` isn't currently retained. `url` is matched the same way
@@ -2147,7 +2147,7 @@ impl PlayerHandle {
     /// stored credential" if there is none), redeems it via
     /// [`remote::refresh`] for a fresh access/refresh pair, persists the
     /// ROTATED refresh token back to `store` (the server rotates it on every
-    /// use — the caller must never keep the old one), then reuses
+    /// use, the caller must never keep the old one), then reuses
     /// [`add_remote_source_with_tokens`](Self::add_remote_source_with_tokens)'s
     /// tail to fetch the catalog index and rebuild the aggregate.
     ///
@@ -2159,7 +2159,7 @@ impl PlayerHandle {
     /// A failure here (offline, expired/revoked refresh token, server down)
     /// is returned as an `Err` and otherwise has NO side effect: nothing is
     /// added to `Inner::remotes`, and the caller's persisted config entry is
-    /// untouched — a transient failure must never drop a remote the user
+    /// untouched, a transient failure must never drop a remote the user
     /// configured, only leave it unreconnected until the next retry.
     pub fn reconnect_remote_source(
         &self,
@@ -2171,7 +2171,7 @@ impl PlayerHandle {
         };
         let tokens = remote::refresh(url, &stored_refresh)?;
         // Rotation: the server issued a NEW refresh token with this call, so the
-        // old one (just used) is no longer valid — persist the fresh one before
+        // old one (just used) is no longer valid, persist the fresh one before
         // doing anything else, so a crash between here and the index fetch below
         // still leaves a usable credential for the next attempt.
         store.save_refresh(url, &tokens.refresh)?;
@@ -2181,7 +2181,7 @@ impl PlayerHandle {
     /// Rebuild the remote-aware aggregate from the current local
     /// `source_bytes` cache (in configured-source order) plus every ENABLED
     /// remote in `self.inner.remotes`, and swap it in via
-    /// [`set_remote_library`](Self::set_remote_library) — the shared tail of
+    /// [`set_remote_library`](Self::set_remote_library), the shared tail of
     /// [`add_remote_source`](Self::add_remote_source),
     /// [`remove_remote_source`](Self::remove_remote_source),
     /// [`set_remote_enabled`](Self::set_remote_enabled), and
@@ -2195,7 +2195,7 @@ impl PlayerHandle {
         let local: Vec<(PathBuf, Vec<u8>)> = folders
             .iter()
             // Same gate as a plain rescan (enabled + reachable), so the aggregate's
-            // local sources match what a rescan would produce — a disabled/offline
+            // local sources match what a rescan would produce, a disabled/offline
             // folder with stale cached bytes must not leak back in.
             .filter(|f| f.enabled && f.path.is_dir())
             .filter_map(|f| bytes.get(&f.path).cloned().map(|b| (f.path.clone(), b)))
@@ -2205,7 +2205,7 @@ impl PlayerHandle {
         let remotes = self.inner.remotes.lock().expect("remotes mutex").clone();
         // A disabled remote stays retained (so it keeps listing in `sources()`,
         // and reconnects on restart) but is excluded here, the same way a
-        // disabled local folder is excluded above — its blobs just don't
+        // disabled local folder is excluded above, its blobs just don't
         // contribute sources to the rebuilt aggregate, so its tracks drop out
         // of `views()` until it's re-enabled.
         let remotes: RemoteSources = remotes
@@ -2220,11 +2220,11 @@ impl PlayerHandle {
     }
 
     /// Pre-warm the audio pipeline: spawn the player actor NOW (if a library exists) so the
-    /// output device opens in the background, instead of paying that cost — seconds, on a slow
-    /// WASAPI / Bluetooth endpoint — on the user's FIRST play. Cheap and non-blocking: it only
+    /// output device opens in the background, instead of paying that cost, seconds, on a slow
+    /// WASAPI / Bluetooth endpoint, on the user's FIRST play. Cheap and non-blocking: it only
     /// spawns the pump thread; the device open runs on that thread, off the caller's, so this
     /// is safe to call from the UI thread (e.g. right after the startup scan lands). Idempotent
-    /// — a no-op if the actor is already running or no library has been opened yet. A later
+    /// a no-op if the actor is already running or no library has been opened yet. A later
     /// library update reaches the already-spawned actor via `set_library` (a swap, not a
     /// re-open), so the warmed device stays open.
     pub fn prewarm(&self) {
@@ -2240,7 +2240,7 @@ impl PlayerHandle {
             return; // no folder opened yet
         };
         // A remote-aware aggregate (if one is active) is what the actor must
-        // resolve ids against, not the plain `lib` snapshot above — same
+        // resolve ids against, not the plain `lib` snapshot above, same
         // precedence as `set_remote_library`/`set_library`. Snapshot it here
         // (library-then-player order, matching `set_library`/
         // `set_remote_library`) rather than under `guard`.
@@ -2276,7 +2276,7 @@ impl PlayerHandle {
         // Share the desired output config (device / exclusive / strict) with the pump.
         // It's the SAME cell `set_output_device` / `set_exclusive` /
         // `set_exclusive_strict` write, so a change made while this actor runs is
-        // applied to the current track live by the pump — not deferred to the next
+        // applied to the current track live by the pump, not deferred to the next
         // spawn. Share the status cell too, so the factory records what exclusive
         // resolved to.
         let output_config = Arc::clone(&self.inner.output_config);
@@ -2348,7 +2348,7 @@ impl PlayerHandle {
             .collect()
     }
 
-    /// `(track_id, absolute_path)` for every track in the current library — the batch the
+    /// `(track_id, absolute_path)` for every track in the current library, the batch the
     /// background loudness sweep enqueues. Empty if no library is loaded.
     fn analysis_jobs(&self) -> Vec<(u32, PathBuf)> {
         let guard = self.inner.library.lock().expect("library mutex");
@@ -2363,7 +2363,7 @@ impl PlayerHandle {
 
     /// Enqueue the whole current library for background loudness analysis, iff an actor (and
     /// thus the worker) is already running AND the analysis mode is not Off. A no-op otherwise
-    /// — analysis starts when the user next brings the actor up (see
+    /// analysis starts when the user next brings the actor up (see
     /// [`ensure_actor`](Self::ensure_actor)). Idempotent.
     fn start_library_analysis(&self) {
         if !self
@@ -2711,7 +2711,7 @@ mod tests {
     fn output_device_selection_is_set_without_panicking() {
         // The device picker's host surface: enumerate, read the default, and store a
         // choice. None of these open a stream (the Offline handle never spawns a
-        // CpalSink), so this runs device-free in CI — it just asserts the plumbing
+        // CpalSink), so this runs device-free in CI, it just asserts the plumbing
         // doesn't panic and tolerates a host with no output devices (empty list).
         let h = PlayerHandle::offline();
         let _names = h.output_devices(); // may be empty on a headless runner
@@ -2725,7 +2725,7 @@ mod tests {
     fn exclusive_toggle_is_remembered_and_read_without_spawning() {
         // The exclusive-output toggle's host surface: set/read the request and read
         // the resolved status. None of these open a device (the Offline handle never
-        // spawns a real sink), so this runs device-free in CI — it asserts the
+        // spawns a real sink), so this runs device-free in CI, it asserts the
         // plumbing doesn't panic and starts in the shared state.
         let h = PlayerHandle::offline();
         assert!(
@@ -2756,7 +2756,7 @@ mod tests {
     #[test]
     fn set_replay_gain_before_open_is_remembered_without_spawning() {
         // Recording the choice must not spawn an actor (no device stream before
-        // playback) and must not panic — it is just stored for the next spawn.
+        // playback) and must not panic, it is just stored for the next spawn.
         let h = PlayerHandle::offline();
         h.set_replay_gain(ReplayGainMode::Album, -3.0);
         assert_eq!(
@@ -2830,7 +2830,7 @@ mod tests {
     #[test]
     fn seed_loudness_before_open_is_remembered_without_spawning() {
         // Seeding the loudness cache must not spawn an actor (no device stream
-        // before playback) and must not panic — it's banked for the next spawn.
+        // before playback) and must not panic, it's banked for the next spawn.
         let h = PlayerHandle::offline();
         h.seed_loudness(vec![
             (PathBuf::from("/music/a.flac"), test_loudness(-12.0)),
@@ -2914,7 +2914,7 @@ mod tests {
     /// A local-only rescan must NOT build a redundant remote aggregate. `rescan_build`
     /// called `rebuild_remote_library` unconditionally, which clones EVERY source's
     /// baked `.soulidx` bytes and rebuilds an aggregate equal to the plain local
-    /// library — wasted on every rescan (including every watcher-triggered one) when
+    /// library, wasted on every rescan (including every watcher-triggered one) when
     /// there are no remotes. Observable proxy: with no remotes the rebuild is skipped,
     /// so `remote_library` stays `None` (set_library cleared it) instead of being set to
     /// that redundant aggregate.
@@ -2949,7 +2949,7 @@ mod tests {
         );
 
         // `set_sources` scans + sets the library WITHOUT auto-playing (the app's restore-at-
-        // launch path), so it does not spawn the actor by itself — unlike `open_folder`, which
+        // launch path), so it does not spawn the actor by itself, unlike `open_folder`, which
         // auto-plays. This is exactly the path where pre-warming matters.
         let a = folder_with("prewarm_src", &["a.wav"]);
         h.set_sources(&[(a.path().to_path_buf(), true)]).unwrap();
@@ -3032,7 +3032,7 @@ mod tests {
         );
 
         // Disable the source: its tracks leave the aggregate, so the locator
-        // resolves to None — the playlist greys it, same as a disabled remote.
+        // resolves to None, the playlist greys it, same as a disabled remote.
         h.set_folder_enabled(&real, false).unwrap();
         assert_eq!(
             h.resolve_locators(std::slice::from_ref(&loc)),
@@ -3108,7 +3108,7 @@ mod tests {
         // offline (NullSink) pump is unthrottled, so exact post-seek POSITION
         // isn't deterministically observable here (a track plays to EOF within one
         // ~8 Hz tick, and a load transitions the deck to Playing regardless of a
-        // pre-load pause) — that precision is covered deterministically in the
+        // pre-load pause), that precision is covered deterministically in the
         // backend (tests/seek_audit.rs + driver's seek_clamps_at_track_bounds).
         // What IS robustly observable, and what this asserts, is the host wiring:
         // open_folder spawns the actor, playback starts, a Tick carries the
@@ -3138,13 +3138,13 @@ mod tests {
         );
 
         // Forward a Seek through the handle and confirm the actor stays live
-        // (still emitting events) — i.e. the handle → actor → apply_command(Seek)
+        // (still emitting events), i.e. the handle → actor → apply_command(Seek)
         // path neither panics nor deadlocks the event fan-out.
         h.send(Command::Seek { secs: 3.0 });
         let still_alive = wait_for_tick(&rx, |_| true);
         assert!(
             still_alive.is_some(),
-            "no events after Seek — the handle→actor command path stalled"
+            "no events after Seek, the handle→actor command path stalled"
         );
     }
 
@@ -3158,7 +3158,7 @@ mod tests {
         d
     }
 
-    /// The configured-but-unreachable roots of a `WatchUpdate`, in order — the
+    /// The configured-but-unreachable roots of a `WatchUpdate`, in order, the
     /// new-shape equivalent of the removed `WatchUpdate::unavailable` field.
     fn unavailable_of(up: &WatchUpdate) -> Vec<PathBuf> {
         up.sources
@@ -3201,7 +3201,7 @@ mod tests {
             vec![missing.clone()],
             "the missing root is reported"
         );
-        // Kept in the set so it re-aggregates when it returns — never dropped.
+        // Kept in the set so it re-aggregates when it returns, never dropped.
         assert_eq!(h.watched_folders(), vec![a.path().to_path_buf(), missing]);
     }
 
@@ -3266,7 +3266,7 @@ mod tests {
         assert_eq!(srcs[0].track_count, 0, "no scan yet → count 0 (loading)");
         assert!(
             h.views().is_empty(),
-            "configure_sources does NOT scan — the library stays empty until rescan"
+            "configure_sources does NOT scan, the library stays empty until rescan"
         );
         assert_eq!(h.watched_folders(), vec![aroot.clone()]);
 
@@ -3379,7 +3379,7 @@ mod tests {
         assert_eq!(up.views.len(), 3, "a1 + b1 + b2");
 
         // Change root A only, then rescan SCOPED to just A: B is rebuilt from its
-        // cached bytes (not re-read), and the result still lists B's tracks — exactly
+        // cached bytes (not re-read), and the result still lists B's tracks, exactly
         // what a full rescan would produce.
         std::fs::write(aroot.join("a2.wav"), wav(48_000, 96_000)).unwrap();
         let affected: std::collections::HashSet<PathBuf> = std::iter::once(aroot.clone()).collect();
@@ -3439,13 +3439,13 @@ mod tests {
     ///
     /// The silent alternative is the actual user-facing bug: `.aac` rips that
     /// never appear look identical to a broken scan. A count alone is not enough
-    /// either — the two reasons differ in what the user can do about them, so the
+    /// either, the two reasons differ in what the user can do about them, so the
     /// per-extension reason has to survive the trip to the UI.
     #[test]
     fn a_scan_reports_the_files_it_skipped_with_the_reason() {
         let a = folder_with("warn_skip", &["a.wav"]);
         let aroot = a.path().to_path_buf();
-        // A gated-decoder format (AAC, behind an opt-in feature — patent) and one
+        // A gated-decoder format (AAC, behind an opt-in feature, patent) and one
         // this build does not decode at all, so BOTH reasons are exercised.
         std::fs::copy(
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../testdata/tone.aac"),
@@ -3482,7 +3482,7 @@ mod tests {
         assert_eq!(
             by_ext("aac").map(|g| (g.count, g.reason)),
             Some((1, SkipReason::DecoderDisabled)),
-            "AAC is skipped because this build's decoder is gated off — a \
+            "AAC is skipped because this build's decoder is gated off, a \
              different build would play it, and the notice must say so"
         );
         assert_eq!(
@@ -3638,7 +3638,7 @@ mod tests {
             );
             match rx.recv_timeout(remaining) {
                 Ok(2) => break,
-                Ok(_) => continue, // an earlier broadcast in the burst — keep waiting
+                Ok(_) => continue, // an earlier broadcast in the burst, keep waiting
                 Err(mpsc::RecvTimeoutError::Timeout) => panic!("watcher broadcast timed out"),
                 Err(mpsc::RecvTimeoutError::Disconnected) => panic!("watch channel closed"),
             }
@@ -3649,12 +3649,12 @@ mod tests {
     #[test]
     fn start_watching_is_safe_with_no_or_unavailable_sources() {
         let h = PlayerHandle::offline();
-        h.start_watching(); // no sources configured — must not panic
+        h.start_watching(); // no sources configured, must not panic
         let missing =
             std::env::temp_dir().join(format!("sas_watch_missing_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&missing);
         h.set_sources(&[(missing, true)]).unwrap();
-        h.start_watching(); // an unavailable root — nothing to watch, must not panic
+        h.start_watching(); // an unavailable root, nothing to watch, must not panic
     }
 
     #[test]
@@ -3914,7 +3914,7 @@ mod tests {
     #[test]
     fn sources_reports_cached_counts_after_a_scan() {
         // After a scan, the cheap `sources()` listing (used to seed UI state at
-        // startup) must carry the real per-source counts, not a 0 placeholder —
+        // startup) must carry the real per-source counts, not a 0 placeholder,
         // otherwise a fresh launch shows "0 tracks" until the first rescan.
         let a = folder_with("stat_cache", &["a1.wav", "a2.wav"]);
         let h = PlayerHandle::offline();
@@ -3929,7 +3929,7 @@ mod tests {
     #[test]
     fn disabled_source_contributes_no_tracks_but_stays_listed() {
         // Seed one enabled source, then disable it: the library empties, but the
-        // source is never dropped — it stays listed as disabled with zero tracks.
+        // source is never dropped, it stays listed as disabled with zero tracks.
         let a = folder_with("stat_disable", &["a1.wav", "a2.wav"]);
         let real = a.path().to_path_buf();
 
@@ -4051,7 +4051,7 @@ mod tests {
     #[test]
     fn views_overlay_live_seeded_loudness_onto_the_track_rows() {
         // mark_loudness: a loudness value seeded/analyzed THIS session (keyed by the
-        // track's path) must surface on views()/views_by() without waiting for a rebake —
+        // track's path) must surface on views()/views_by() without waiting for a rebake,
         // the library DR/LUFS column lighting up for a just-analyzed track.
         // `seed_loudness_populates_the_live_map` proves the seed lands in the map; this
         // proves views() actually overlays it onto the row (the path_of join).
@@ -4067,7 +4067,7 @@ mod tests {
         );
 
         // Seed loudness for this exact track's path (derived from its durable locator, so
-        // it matches `path_of` on every platform — the locator is built from path_of).
+        // it matches `path_of` on every platform, the locator is built from path_of).
         let TrackLocator::Local { path } = h.locator_of(id).expect("local locator") else {
             panic!("a local scan yields a Local locator");
         };

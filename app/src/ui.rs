@@ -3,8 +3,8 @@
 //! scattered magic numbers (the "primitive + semantic" token tiers every design
 //! system converges on).
 //!
-//! Values are logical points and match the original soul-player's Tailwind scale
-//!, a 4 pt grid whose common rungs land on 8, plus the 1.5/2.5 half-steps
+//! Values are logical points and match the original soul-player's Tailwind scale,
+//! a 4 pt grid whose common rungs land on 8, plus the 1.5/2.5 half-steps
 //! (`SNUG` = 6, `COZY` = 10) the design actually uses, so adopting them is a
 //! rename with no pixel drift, not a redesign.
 //!

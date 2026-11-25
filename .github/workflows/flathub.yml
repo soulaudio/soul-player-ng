@@ -51,7 +51,7 @@ jobs:
       - name: Generate the vendored crate sources
         # Generated here rather than committed. The file is a 440 KB artifact
         # derived entirely from app/Cargo.lock, so committing it meant
-        # every dependency bump needed a regeneration commit or CI failed —
+        # every dependency bump needed a regeneration commit or CI failed,
         # which, with Dependabot watching app, is every Dependabot PR.
         #
         # Nothing is lost by generating it: the output is deterministic from the

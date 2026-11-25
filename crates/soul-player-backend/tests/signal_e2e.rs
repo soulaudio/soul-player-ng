@@ -1,14 +1,14 @@
 //! END-TO-END **signal verification**: every committed `tone.*` fixture, driven
 //! through the FULL real [`ServicePlayer`] (the backend's own
-//! `apply_command`/`poll_open`/`provide`/`pump` loop — the exact path the app runs
+//! `apply_command`/`poll_open`/`provide`/`pump` loop, the exact path the app runs
 //! when you press Play) into a capturing sink, asserting the captured audio is the
 //! known **440 Hz (LEFT) / 659.25 Hz (RIGHT)** tone at the right **speed**, at both a
 //! matched (44.1 kHz) and a resampling (48 kHz) device rate.
 //!
-//! This is the "does playback actually produce correct audio" gate — it proves, for
+//! This is the "does playback actually produce correct audio" gate, it proves, for
 //! every decoder, **without a device**, that pressing Play yields sound at the right
 //! pitch/speed. It catches: silence (nothing plays), wrong speed (bad resampling or a
-//! broken rate handshake — a shifted Goertzel peak), clipping, and channel swaps.
+//! broken rate handshake, a shifted Goertzel peak), clipping, and channel swaps.
 //! Where `signal_path_matrix` asserts the projected rates/flags against a `NullSink`
 //! (no audio), this asserts the real samples that reach the device. Coverage is the
 //! full decodable codec set: PCM (WAV/AIFF), FLAC, ALAC, MP3, MPEG Layer II, Opus,
@@ -29,7 +29,7 @@ use soul_player_backend::{Command, ServicePlayer, apply_command, project_signal_
 
 /// Every committed fixture carries the SAME tone: A4 = 440 Hz on LEFT, E5 = 659.25 Hz
 /// on RIGHT, stereo, ~0.5 s. The decoded rate differs (44.1 kHz for most, 48 kHz for
-/// Opus, 32 kHz for MP1, DSD decimates to 44.1 kHz) — so at a 48 kHz device several of
+/// Opus, 32 kHz for MP1, DSD decimates to 44.1 kHz), so at a 48 kHz device several of
 /// these resample, exercising the exact path that mangled speed in the wild.
 const FIXTURES: &[&str] = &[
     "tone.wav",        // PCM
@@ -47,10 +47,10 @@ const FIXTURES: &[&str] = &[
     "tone-dsd256.dsf", // DSD256
     "tone-dsd512.dsf", // DSD512
 ];
-// NOTE: `tone.mp1` (MPEG-1 **Layer I**, 32 kHz) is intentionally NOT in the gate —
+// NOTE: `tone.mp1` (MPEG-1 **Layer I**, 32 kHz) is intentionally NOT in the gate,
 // this suite caught that it decodes GARBLED (energy smeared across 220/440 Hz, not a
 // clean tone). MP1 is routed through the MP3 decoder, which doesn't honour Layer I's
-// 384-sample framing — a pre-existing, known-imperfect handling of an extremely rare
+// 384-sample framing, a pre-existing, known-imperfect handling of an extremely rare
 // format that no real music uses (already flagged in the codebase, "left as-is"). If
 // MP1 decode is ever fixed, add `tone.mp1` here and it will be held to the same bar.
 
@@ -62,7 +62,7 @@ const DEVICE_RATES: [u32; 2] = [44_100, 48_000];
 /// Render well under the ~0.5 s fixture length so the track stays live, yet leaves
 /// enough steady audio (past the deck's ~8 ms fade-in) for the Goertzel analysis.
 const RENDER_SECS: f64 = 0.35;
-/// Canonical 24-bit "plays" bounds — a real tone is loud but never past full scale.
+/// Canonical 24-bit "plays" bounds, a real tone is loud but never past full scale.
 const PLAYS_PEAK_FLOOR: i64 = 50_000;
 const PLAYS_PEAK_CEIL: i64 = 1 << 24;
 const PLAYS_RMS_FLOOR: f64 = 10_000.0;
@@ -146,7 +146,7 @@ macro_rules! require {
 
 /// Assert a channel's captured audio is dominated by `expected_hz` and that no
 /// wrong-speed candidate (halving/doubling, or the 44.1↔48 kHz 8.8 % shift) carries
-/// comparable energy — i.e. the tone plays at the RIGHT speed.
+/// comparable energy, i.e. the tone plays at the RIGHT speed.
 fn assert_tone(samples: &[i32], rate: f64, expected_hz: f64, tag: &str) -> Result<(), String> {
     let p_exp = goertzel_power(samples, rate, expected_hz);
     let wrong = [
@@ -161,7 +161,7 @@ fn assert_tone(samples: &[i32], rate: f64, expected_hz: f64, tag: &str) -> Resul
         .fold(0.0f64, f64::max);
     require!(
         p_exp > p_wrong * 10.0,
-        "{tag}: tone not at {expected_hz:.2} Hz — power {p_exp:.3e} not >10x the best \
+        "{tag}: tone not at {expected_hz:.2} Hz, power {p_exp:.3e} not >10x the best \
          wrong-speed candidate {p_wrong:.3e} (candidates {wrong:?}); speed/resample is off"
     );
     Ok(())
@@ -213,17 +213,17 @@ fn audit(file: &str, device_rate: u32) -> Result<(), String> {
     let want_frames = (RENDER_SECS * f64::from(device_rate)) as usize;
     pump_capture_frames(&mut player, &path, want_frames, ch);
 
-    // Non-silent, not clipped — the fundamental "sound actually came out".
+    // Non-silent, not clipped: the fundamental "sound actually came out".
     let written = &player.deck().sink().written;
     let (peak, rms) = peak_and_rms(written);
     require!(
         (PLAYS_PEAK_FLOOR..=PLAYS_PEAK_CEIL).contains(&peak) && rms > PLAYS_RMS_FLOOR,
-        "{file}@{device_rate}: audio peak={peak} rms={rms:.0} — silent or clipped (nothing playing?)"
+        "{file}@{device_rate}: audio peak={peak} rms={rms:.0}, silent or clipped (nothing playing?)"
     );
 
     // Analyse a steady window past the deck's ~8 ms fade-in. The high-rate DSD fixtures
     // (DSD256/512) are deliberately short (~50 ms), so skip only ~10 ms and require only
-    // ~30 ms — still enough Goertzel resolution (~17 cycles of 440 Hz) to separate the
+    // ~30 ms, still enough Goertzel resolution (~17 cycles of 440 Hz) to separate the
     // tone from the wrong-speed candidates.
     let skip = (device_rate as usize / 100) * ch; // ~10 ms (clears the fade)
     let analysis = &written[skip.min(written.len())..];
@@ -256,19 +256,19 @@ fn audit(file: &str, device_rate: u32) -> Result<(), String> {
             sp.device_rate
         );
         println!(
-            "  {file}@{device_rate}Hz: peak={peak} rms={rms:.0} decoded={} resample={} — L=440 R=659.25 OK",
+            "  {file}@{device_rate}Hz: peak={peak} rms={rms:.0} decoded={} resample={}, L=440 R=659.25 OK",
             sp.decoded_rate, sp.resampling
         );
     } else {
         println!(
-            "  {file}@{device_rate}Hz: peak={peak} rms={rms:.0} (short fixture, ended) — L=440 R=659.25 OK"
+            "  {file}@{device_rate}Hz: peak={peak} rms={rms:.0} (short fixture, ended), L=440 R=659.25 OK"
         );
     }
     Ok(())
 }
 
 /// THE playback gate: every common format must produce the correct tone at the right
-/// speed through the full player, at both a matched and a resampling device rate — so
+/// speed through the full player, at both a matched and a resampling device rate, so
 /// "pressing Play works" is proven in CI, not by launching the app.
 #[test]
 fn every_format_produces_the_correct_tone_at_both_device_rates() {
@@ -366,7 +366,7 @@ fn surround_5_1_tone_wav() -> Vec<u8> {
 
 /// END-TO-END multichannel downmix: a 5.1 source whose only audio is in the SURROUND
 /// channels, driven through the full `ServicePlayer` into a stereo device. The captured
-/// stereo must carry LEFT = 440 / RIGHT = 659.25 — which can only happen if the deck folds
+/// stereo must carry LEFT = 440 / RIGHT = 659.25, which can only happen if the deck folds
 /// the surrounds to stereo. Proves `soul-audio-core`'s mask-driven downmix reaches the app's
 /// real playback path (not just a core unit test).
 #[test]
@@ -408,7 +408,7 @@ fn surround_5_1_folds_to_stereo_through_the_player() {
         let (peak, rms) = peak_and_rms(written);
         require!(
             (PLAYS_PEAK_FLOOR..=PLAYS_PEAK_CEIL).contains(&peak) && rms > PLAYS_RMS_FLOOR,
-            "5.1 downmix: peak={peak} rms={rms:.0} — silent (surround not folded to stereo?)"
+            "5.1 downmix: peak={peak} rms={rms:.0}, silent (surround not folded to stereo?)"
         );
 
         let skip = (device_rate as usize / 100) * ch; // ~10 ms (clears the fade)
@@ -431,7 +431,7 @@ fn surround_5_1_folds_to_stereo_through_the_player() {
             "5.1 downmix: L/R surround tones crossed"
         );
         println!(
-            "  5.1→stereo through the player: peak={peak} rms={rms:.0} — surround BL=440 BR=659.25 reached L/R OK"
+            "  5.1→stereo through the player: peak={peak} rms={rms:.0}, surround BL=440 BR=659.25 reached L/R OK"
         );
         Ok(())
     };
@@ -453,7 +453,7 @@ fn surround_5_1_folds_to_stereo_through_the_player() {
 ///
 /// This is a channel-ORDER check: Vorbis and Opus put the surround centre channel second
 /// (`FL C FR …`), unlike WAVEFORMATEXTENSIBLE. If the decoder's order were mis-read (centre
-/// taken as front-right), the centre would land only in R and L would be silent — so a true
+/// taken as front-right), the centre would land only in R and L would be silent, so a true
 /// equal L/R fold proves the order is honoured end to end through the real decode path.
 fn centre_folds_equally(file: &str) -> Result<(), String> {
     let path = testdata_dir().join(file);
@@ -512,7 +512,7 @@ fn centre_folds_equally(file: &str) -> Result<(), String> {
 
 /// END-TO-END channel-ORDER check for the surround formats whose order is NOT
 /// WAVEFORMATEXTENSIBLE. Vorbis and Opus put the centre SECOND (`FL C FR …`); AAC/ALAC put it
-/// FIRST (`C L R …`) — neither expressible as a plain channel mask, so the deck folds them via
+/// FIRST (`C L R …`), neither expressible as a plain channel mask, so the deck folds them via
 /// an ordered layout. WavPack is the WAVEFORMATEXTENSIBLE (mask) case, but assembles its
 /// multichannel frame from a run of ≤2ch sub-blocks, exercised end-to-end here. These committed
 /// 5.1 fixtures (centre-only tone) drive the full `ServicePlayer` and prove the centre reaches
