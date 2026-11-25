@@ -130,12 +130,33 @@ pub(crate) enum Route {
     Settings,
 }
 
+/// Which album a detail page shows: its identity (`TrackView::album_key`, so two
+/// same-title albums are different pages) plus its title, the fallback
+/// `views::albums::resolve_album` uses when a rescan re-numbers album ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AlbumRef {
+    pub key: u32,
+    pub name: String,
+}
+
+#[cfg(test)]
+impl AlbumRef {
+    /// A title-only reference (key 0 never matches a real key, so it resolves by
+    /// title), for tests written against album names.
+    pub(crate) fn by_name(name: &str) -> Self {
+        Self {
+            key: 0,
+            name: name.to_string(),
+        }
+    }
+}
+
 /// One entry in the navigation back-stack: a full location (route + which
 /// album/artist/genre is open). Pushed by `navigate_to`, restored by `go_back`.
 #[derive(Clone, PartialEq)]
 pub(crate) struct NavEntry {
     pub route: Route,
-    pub open_album: Option<String>,
+    pub open_album: Option<AlbumRef>,
     pub open_artist: Option<String>,
     pub open_genre: Option<String>,
     pub open_playlist: Option<playlists::PlaylistId>,
@@ -158,7 +179,7 @@ fn here(s: &State) -> NavEntry {
 pub(crate) fn navigate_to(
     s: &mut State,
     route: Route,
-    open_album: Option<String>,
+    open_album: Option<AlbumRef>,
     open_artist: Option<String>,
     open_genre: Option<String>,
     open_playlist: Option<playlists::PlaylistId>,
@@ -505,9 +526,9 @@ struct State {
     signal_path_open: bool,
     /// Current page (Library vs Settings).
     route: Route,
-    /// The album whose detail page is open (by album name, the `group_albums`
-    /// key), when `route == Route::Album`. Set from an album card's body click.
-    open_album: Option<String>,
+    /// The album whose detail page is open (identity + title fallback), when
+    /// `route == Route::Album`. Set from an album card's body click.
+    open_album: Option<AlbumRef>,
     /// Which artist's detail page is showing, when `route == Route::Artist`.
     /// Set from an artist card's body click.
     open_artist: Option<String>,
@@ -1115,7 +1136,8 @@ impl State {
     /// ORDER, or per-track LOUDNESS of tracks changes, used to invalidate the
     /// grouping / `library_rc` caches. Samples ~16 tracks at even strides plus the
     /// length rather than hashing every track, so it stays O(1)-ish even at a
-    /// million tracks. A scan (content change) moves the length/ids; a sort
+    /// million tracks. A scan (content change) moves the length/ids (and the sampled
+    /// album keys, which a rescan can re-group under the same ids); a sort
     /// (reorder) moves the sampled ids; a background loudness sweep landing values
     /// (which refills the library with same-id, same-order tracks that now carry
     /// DR) moves the sampled loudness, so the DR-bearing caches (album badges, the
@@ -1131,6 +1153,8 @@ impl State {
             let mut i = 0;
             while i < n {
                 lib[i].id.hash(&mut h);
+                // A rescan can re-group albums under the same sampled ids.
+                lib[i].album_key.hash(&mut h);
                 lib[i]
                     .loudness
                     .as_ref()
@@ -1139,6 +1163,7 @@ impl State {
                 i += step;
             }
             lib[n - 1].id.hash(&mut h);
+            lib[n - 1].album_key.hash(&mut h);
             lib[n - 1]
                 .loudness
                 .as_ref()
@@ -3853,7 +3878,8 @@ fn mobile_title(s: &State) -> String {
         Route::Albums => t!("nav.albums").to_string(),
         Route::Album => s
             .open_album
-            .clone()
+            .as_ref()
+            .map(|r| r.name.clone())
             .unwrap_or_else(|| t!("nav.albums").to_string()),
         Route::Artists => t!("nav.artists").to_string(),
         Route::Artist => s
@@ -4669,10 +4695,12 @@ fn scene_artist_detail(s: &mut State) {
 }
 fn scene_album_detail(s: &mut State) {
     s.route = Route::Album;
-    s.open_album = s
-        .library
-        .first()
-        .and_then(|t| t.album.as_deref().map(str::to_string));
+    s.open_album = s.library.first().and_then(|t| {
+        t.album.as_deref().map(|n| AlbumRef {
+            key: t.album_key,
+            name: n.to_string(),
+        })
+    });
     s.now_playing_id = s.library.first().map(|t| t.id);
     s.playing = true;
 }
@@ -4834,15 +4862,25 @@ fn scene_add_to_playlist_open(s: &mut State) {
 /// tall so the square frame leaves horizontal pan room).
 fn scene_artwork_crop(s: &mut State) {
     use views::detail_page::{ArtworkCrop, ArtworkTarget};
-    let album = s
+    let open = s
         .library
         .iter()
-        .find_map(|t| t.album.as_deref())
-        .filter(|a| !a.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "Album".to_string());
+        .find_map(|t| {
+            t.album
+                .as_deref()
+                .filter(|a| !a.is_empty())
+                .map(|n| AlbumRef {
+                    key: t.album_key,
+                    name: n.to_string(),
+                })
+        })
+        .unwrap_or_else(|| AlbumRef {
+            key: 0,
+            name: "Album".to_string(),
+        });
+    let album = open.name.clone();
     s.route = Route::Album;
-    s.open_album = Some(album.clone());
+    s.open_album = Some(open);
     let (w, h) = (480u32, 320u32);
     let mut img = image::RgbImage::new(w, h);
     for (x, y, px) in img.enumerate_pixels_mut() {
@@ -4868,15 +4906,25 @@ fn scene_artwork_crop(s: &mut State) {
 /// no cover set so no Delete) for the a11y sweep + snapshots.
 fn scene_artwork_edit(s: &mut State) {
     use views::detail_page::ArtworkTarget;
-    let album = s
+    let open = s
         .library
         .iter()
-        .find_map(|t| t.album.as_deref())
-        .filter(|a| !a.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "Album".to_string());
+        .find_map(|t| {
+            t.album
+                .as_deref()
+                .filter(|a| !a.is_empty())
+                .map(|n| AlbumRef {
+                    key: t.album_key,
+                    name: n.to_string(),
+                })
+        })
+        .unwrap_or_else(|| AlbumRef {
+            key: 0,
+            name: "Album".to_string(),
+        });
+    let album = open.name.clone();
     s.route = Route::Album;
-    s.open_album = Some(album.clone());
+    s.open_album = Some(open);
     s.artwork_edit = Some(ArtworkTarget::Album(album));
 }
 
@@ -7113,7 +7161,7 @@ mod tests {
         // dir, so clear any cover it left for this same album first.
         s.covers.clear_album_cover(&album_name);
         s.route = Route::Album;
-        s.open_album = Some(album_name.clone());
+        s.open_album = Some(AlbumRef::by_name(&album_name));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -7198,7 +7246,7 @@ mod tests {
         // sibling album-cover test left for this same album before we start.
         s.covers.clear_album_cover(album_name);
         s.route = Route::Album;
-        s.open_album = Some(album_name.to_string());
+        s.open_album = Some(AlbumRef::by_name(album_name));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -7303,7 +7351,7 @@ mod tests {
         let album = first_album_name(&s);
         s.covers.clear_album_cover(&album);
         s.route = Route::Album;
-        s.open_album = Some(album);
+        s.open_album = Some(AlbumRef::by_name(&album));
 
         let env = Env {
             system_dark: true,
@@ -7530,7 +7578,7 @@ mod tests {
         );
         assert!(s.covers.album_cover_path(&album_name).is_some());
         s.route = Route::Album;
-        s.open_album = Some(album_name.clone());
+        s.open_album = Some(AlbumRef::by_name(&album_name));
 
         let env = Env {
             system_dark: true,
@@ -13474,7 +13522,10 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "a list row opens the album"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+        assert_eq!(
+            rt.state.open_album.as_ref().map(|r| r.name.as_str()),
+            Some("Cello Suites")
+        );
     }
 
     /// A discography album card opens that album's detail page.
@@ -13500,7 +13551,14 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "a disc card opens the album"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+        assert_eq!(
+            rt.state.open_album,
+            Some(AlbumRef {
+                key: crate::views::albums::test_album_key(Some("Cello Suites")),
+                name: "Cello Suites".into(),
+            }),
+            "the card opens the album by identity, with its title as the fallback"
+        );
     }
 
     #[test]
@@ -14118,7 +14176,10 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "an album tile opens its detail page"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
+        assert_eq!(
+            rt.state.open_album.as_ref().map(|r| r.name.as_str()),
+            Some("Alb")
+        );
     }
 
     /// Clicking the card body (its title/artist area, not the play button) opens
@@ -14141,7 +14202,10 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "the card body opens the album detail page"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
+        assert_eq!(
+            rt.state.open_album.as_ref().map(|r| r.name.as_str()),
+            Some("Alb")
+        );
         assert!(
             rt.state.host.recorded_commands().is_empty(),
             "navigating does not start playback"
@@ -14185,7 +14249,7 @@ mod tests {
         s.sidebar_collapsed = false;
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         s.route = Route::Album;
-        s.open_album = Some("Alb".into());
+        s.open_album = Some(AlbumRef::by_name("Alb"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -14262,7 +14326,7 @@ mod tests {
             },
         ];
         s.route = Route::Album;
-        s.open_album = Some("Alb".into());
+        s.open_album = Some(AlbumRef::by_name("Alb"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -14301,7 +14365,7 @@ mod tests {
         s.sidebar_collapsed = false;
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         s.route = Route::Album;
-        s.open_album = Some("Alb".into());
+        s.open_album = Some(AlbumRef::by_name("Alb"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -14326,7 +14390,7 @@ mod tests {
         s.sidebar_collapsed = false;
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         s.route = Route::Album;
-        s.open_album = Some("Alb".into());
+        s.open_album = Some(AlbumRef::by_name("Alb"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -14469,7 +14533,10 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "the now-playing title opens its album"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
+        assert_eq!(
+            rt.state.open_album.as_ref().map(|r| r.name.as_str()),
+            Some("Alb")
+        );
     }
 
     /// The now-playing title line shows the remote badge when the current track
@@ -15166,6 +15233,22 @@ mod tests {
             before,
             s.library_fingerprint(),
             "a landed loudness value must move the fingerprint so the memoized caches refresh"
+        );
+    }
+
+    #[test]
+    fn library_fingerprint_moves_when_album_keys_regroup() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        assert!(!s.library.is_empty(), "the test library has tracks");
+        let before = s.library_fingerprint();
+        // A rescan re-groups the same ids, in the same order, under new albums.
+        s.library[0].album_key = s.library[0].album_key.wrapping_add(1);
+        assert_ne!(
+            before,
+            s.library_fingerprint(),
+            "a re-grouped album must move the fingerprint so the album grouping refreshes"
         );
     }
 
