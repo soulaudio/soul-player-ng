@@ -20,9 +20,9 @@ rollback: revert the version's commit on the base branch (a PR through cask-ci).
 Reverting protects new installs; anyone who already upgraded needs a newer
 release, since brew never downgrades.
 
-drill: branches the tap from main with the cask set back to before its latest
-version, publishes that version into the branch, rolls it back, then offers a
-cask with a wrong checksum that cask-ci must reject: publish, rollback and the
+drill: branches the tap from main (set back to before the newest release if the
+tap already has it), publishes the newest release into the branch, rolls it
+back, then offers a cask with a wrong checksum that cask-ci must reject: publish, rollback and the
 gate itself, proven without touching main. The branch is deleted afterwards.
 
 Needs GH_TOKEN with contents + pull-requests write on the tap (the release's
@@ -345,27 +345,30 @@ def rollback(version: str, base: str) -> str | None:
 
 
 def drill(use_brew: bool) -> None:
-    """Publish + roll back the tap's current version on a throwaway branch."""
+    """Publish + roll back the newest release on a throwaway branch of the tap."""
+    # The newest release, not whatever the tap holds: livecheck (and so the
+    # pre-flight audit) only accepts the newest one, and that is what a release
+    # publishes. The tap may lag behind it (a release before this pipeline).
+    version = api("GET", f"repos/{APP_REPO}/releases/latest")["tag_name"].removeprefix("v")
     text, _ = cask_at("main")
-    version = version_of(text)
-    if not version:
-        raise Failed("the tap has no cask to drill with")
-    commits = api("GET", f"repos/{TAP}/commits?sha=main&path={CASK_PATH}&per_page=20")
-    bump = next(c for c in commits if re.match(rf"soul-player {re.escape(version)}\b", c["commit"]["message"]))
-    previous = cask_at(bump["parents"][0]["sha"])[0]
-    before = version_of(previous)
-    # Branch from main as it is now (so the PRs run today's cask-ci), with the
-    # cask set back to what it was before this version.
+    # Branch from main as it is now, so the PRs run today's cask-ci.
     branch = f"drill/{int(time.time())}"
     api("POST", f"repos/{TAP}/git/refs", {"ref": f"refs/heads/{branch}", "sha": head_sha("main")})
-    _, blob = cask_at(branch)
-    message = f"drill: start from {before or 'no cask'}"
-    if previous is None:
-        api("DELETE", f"repos/{TAP}/contents/{CASK_PATH}", {"message": message, "sha": blob, "branch": branch})
-    else:
-        api("PUT", f"repos/{TAP}/contents/{CASK_PATH}", {
-            "message": message, "sha": blob, "branch": branch,
-            "content": base64.b64encode(previous.encode()).decode()})
+    before = version_of(text)
+    if before == version:
+        # Already published: set the branch back to the cask before this version.
+        commits = api("GET", f"repos/{TAP}/commits?sha=main&path={CASK_PATH}&per_page=20")
+        bump = next(c for c in commits if re.match(rf"soul-player {re.escape(version)}\b", c["commit"]["message"]))
+        previous = cask_at(bump["parents"][0]["sha"])[0]
+        before = version_of(previous)
+        _, blob = cask_at(branch)
+        message = f"drill: start from {before or 'no cask'}"
+        if previous is None:
+            api("DELETE", f"repos/{TAP}/contents/{CASK_PATH}", {"message": message, "sha": blob, "branch": branch})
+        else:
+            api("PUT", f"repos/{TAP}/contents/{CASK_PATH}", {
+                "message": message, "sha": blob, "branch": branch,
+                "content": base64.b64encode(previous.encode()).decode()})
     log(f"drill on {branch}: {before or 'no cask'} → publish {version} → roll back")
     try:
         publish(version, branch, use_brew)
