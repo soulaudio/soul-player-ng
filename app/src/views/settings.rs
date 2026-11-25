@@ -1949,6 +1949,23 @@ fn preset_example(id: &str) -> &'static str {
     }
 }
 
+/// The same example as disc 1 of a multi-disc album, in the chosen multi-disc
+/// layout (`1-01 - ` in the album folder, or a `Disc 1/` sub-folder). `None` for a
+/// layout without album folders (`flat`), where disc numbers leave no trace.
+fn preset_example_multi_disc(id: &str, disc_folders: bool) -> Option<&'static str> {
+    Some(match (id, disc_folders) {
+        ("flat", _) => return None,
+        ("artist-year-album", false) => "Daft Punk/2001 - Discovery/1-01 - One More Time.flac",
+        ("artist-year-album", true) => "Daft Punk/2001 - Discovery/Disc 1/01 - One More Time.flac",
+        ("genre-artist-album", false) => "Electronic/Daft Punk/Discovery/1-01 - One More Time.flac",
+        ("genre-artist-album", true) => {
+            "Electronic/Daft Punk/Discovery/Disc 1/01 - One More Time.flac"
+        }
+        (_, false) => "Daft Punk/Discovery/1-01 - One More Time.flac",
+        (_, true) => "Daft Punk/Discovery/Disc 1/01 - One More Time.flac",
+    })
+}
+
 /// The template presets as `(id, human label)` for the dropdown panel, the ids
 /// come from the organizer so the picker always matches the write path.
 fn preset_options() -> Vec<(String, String)> {
@@ -2018,15 +2035,51 @@ fn managed_dest_row(s: &State, p: &Palette) -> El {
         .child(managed_browse_button(p))
 }
 
-/// The template section: a label, the preset picker (the shared `dropdown`), and
-/// an example destination line for the selected preset (keyed `managed-example`).
+/// The layout section: a label, the preset picker (the shared `dropdown`), and
+/// example destination lines for the selected preset (keyed `managed-example`): a
+/// single-disc track, then disc 1 of a multi-disc album in the chosen multi-disc
+/// layout (omitted for `flat`).
 fn managed_template_section(s: &State, p: &Palette) -> El {
-    let (layout, _) = split_template_id(&s.managed_template);
+    let (layout, disc_folders) = split_template_id(&s.managed_template);
+    let mut example = col()
+        .key("managed-example")
+        .w_full()
+        .gap(space::XXS)
+        .child(
+            text(t!("settings.example").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .wrap(),
+        )
+        .child(
+            text(preset_example(layout).to_string())
+                .key("managed-example-path")
+                .font(type_::BODY)
+                .color(p.fg)
+                .wrap(),
+        );
+    if let Some(multi) = preset_example_multi_disc(layout, disc_folders) {
+        example = example
+            .child(
+                text(t!("settings.exampleMultiDisc").to_string())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary)
+                    .wrap(),
+            )
+            .child(
+                text(multi.to_string())
+                    .key("managed-example-multidisc")
+                    .font(type_::BODY)
+                    .color(p.fg)
+                    .wrap(),
+            );
+    }
     col()
         .w_full()
         .gap(space::XS)
         .child(
             text(t!("settings.template").to_string())
+                .key("managed-layout-caption")
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
         )
@@ -2036,26 +2089,9 @@ fn managed_template_section(s: &State, p: &Palette) -> El {
             t!("settings.template").to_string(),
             p,
         ))
-        .child(
-            // A static preview of where a file would land (no real file). `wrap`
-            // keeps a long path inside the card instead of overflowing.
-            col()
-                .key("managed-example")
-                .w_full()
-                .gap(space::XXS)
-                .child(
-                    text(t!("settings.example").to_string())
-                        .font(type_::CAPTION)
-                        .color(p.text_secondary)
-                        .wrap(),
-                )
-                .child(
-                    text(preset_example(layout).to_string())
-                        .font(type_::BODY)
-                        .color(p.fg)
-                        .wrap(),
-                ),
-        )
+        // A static preview of where a file would land (no real file). `wrap`
+        // keeps a long path inside the card instead of overflowing.
+        .child(example)
 }
 
 /// The key identifying the managed-library Multi-disc albums picker.

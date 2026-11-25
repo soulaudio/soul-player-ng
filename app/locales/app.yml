@@ -2296,12 +2296,12 @@ settings.managedDestDialog:
   cs: 'Vyberte cílovou složku'
   ja: '保存先フォルダを選択'
 settings.template:
-  en: 'Template'
-  de: 'Vorlage'
-  es: 'Plantilla'
-  zh: '模板'
-  cs: 'Šablona'
-  ja: 'テンプレート'
+  en: 'Layout'
+  de: 'Ordnerstruktur'
+  es: 'Estructura'
+  zh: '布局'
+  cs: 'Struktura'
+  ja: 'レイアウト'
 settings.example:
   en: 'Example'
   de: 'Beispiel'
@@ -2309,6 +2309,13 @@ settings.example:
   zh: '示例'
   cs: 'Příklad'
   ja: '例'
+settings.exampleMultiDisc:
+  en: 'Multi-disc album'
+  de: 'Album mit mehreren CDs'
+  es: 'Álbum de varios discos'
+  zh: '多碟专辑'
+  cs: 'Vícediskové album'
+  ja: '複数ディスクのアルバム'
 settings.strategy:
   en: 'Copy or move'
   de: 'Kopieren oder verschieben'

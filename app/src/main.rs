@@ -11351,6 +11351,51 @@ mod tests {
         }
     }
 
+    /// The Layout caption reads "Layout", and the example shows a single-disc path
+    /// plus a multi-disc one that follows the Multi-disc albums choice (none for
+    /// `flat`, which has no album folder).
+    #[test]
+    fn managed_example_follows_the_multi_disc_choice() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let render = |template: &str| {
+            let mut s = settings_state(&[], &[]);
+            s.settings_tab = SettingsTab::MusicData;
+            s.managed_template = template.to_string();
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            rt
+        };
+        let text = |rt: &Runtime<State>, k: &str| el_info(rt, k).text;
+        let rt = render("artist-album");
+        assert_eq!(
+            text(&rt, "managed-layout-caption").as_deref(),
+            Some("Layout")
+        );
+        assert_eq!(
+            text(&rt, "managed-example-path").as_deref(),
+            Some("Daft Punk/Discovery/01 - One More Time.flac")
+        );
+        assert_eq!(
+            text(&rt, "managed-example-multidisc").as_deref(),
+            Some("Daft Punk/Discovery/1-01 - One More Time.flac")
+        );
+        let rt = render("artist-year-album+disc-folders");
+        assert_eq!(
+            text(&rt, "managed-example-multidisc").as_deref(),
+            Some("Daft Punk/2001 - Discovery/Disc 1/01 - One More Time.flac")
+        );
+        let rt = render("flat");
+        assert!(rt.find("managed-example-multidisc").is_none());
+        assert_eq!(
+            text(&rt, "managed-example-path").as_deref(),
+            Some("Daft Punk - One More Time.flac")
+        );
+    }
+
     /// Picking a template preset from the dropdown commits its id to state and
     /// persists it to config.
     #[test]
