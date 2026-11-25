@@ -1244,18 +1244,23 @@ impl State {
         grouped
     }
 
+    /// The album title an identity is keyed by: track `rep`'s album tag, `""`
+    /// when untagged (matching the host's untitled reading).
+    fn identity_title(&self, rep: u32) -> &str {
+        self.track(rep)
+            .and_then(|t| t.album.as_deref())
+            .unwrap_or("")
+    }
+
     /// Replace each album's title-only identity with the durable one the host
-    /// derives from its cover track's locator (one host call, one lock). Runs
+    /// derives from its representative track's ([`identity_rep`]) locator (one host call, one lock). Runs
     /// only on a cache fill, i.e. once per library change.
     fn stamp_album_identities(&self, albums: &mut [views::albums::Album]) {
         let reps: Vec<(u32, &str)> = albums
             .iter()
             .map(|a| {
-                let title = self
-                    .track(a.cover_id)
-                    .and_then(|t| t.album.as_deref())
-                    .unwrap_or("");
-                (a.cover_id, title)
+                let rep = identity_rep(a);
+                (rep, self.identity_title(rep))
             })
             .collect();
         let keys = self.host.album_identities(&reps);
@@ -1673,6 +1678,13 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
 #[cfg(test)]
 fn source_set_complete(s: &State) -> bool {
     incomplete_sources(s).is_empty()
+}
+
+/// The track an album's durable identity is derived from: its first track in
+/// disc/track order (`Album::ids` is sorted so), which no library sort axis
+/// changes. Falls back to the cover track for an album without members.
+fn identity_rep(album: &views::albums::Album) -> u32 {
+    album.ids.first().copied().unwrap_or(album.cover_id)
 }
 
 /// What keeps the source set from being complete (see [`source_set_complete`]):
@@ -7954,6 +7966,48 @@ mod tests {
             .filter(|a| a.name == "Footprints of the Traveler")
             .map(|a| a.identity.clone())
             .collect()
+    }
+
+    /// An album's identity comes from its first track in disc/track order, not
+    /// from whichever track the library's sort axis lists first, so an album
+    /// split over side folders keeps one cover key under every sort.
+    #[test]
+    fn an_albums_identity_does_not_depend_on_the_library_order() {
+        let root =
+            std::env::temp_dir().join(format!("soul_rune_identity_sort_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (file, n) in [("Side B/02.flac", "2"), ("Side A/01.flac", "1")] {
+            let track_tag = format!("TRACKNUMBER={n}");
+            let title_tag = format!("TITLE=Track {n}");
+            test_fixtures::put(
+                &root,
+                file,
+                &test_fixtures::flac_with_comments(&[
+                    "ALBUM=Split Sides",
+                    "ARTIST=Two Rooms",
+                    track_tag.as_str(),
+                    title_tag.as_str(),
+                ]),
+            );
+        }
+        let mut s = State::new(PlayerHandle::offline());
+        let up = s.host.add_folder(&root).expect("scan");
+        apply_watch(&mut s, up);
+        let identity = |s: &State| {
+            let albums = s.grouped_albums();
+            let split: Vec<_> = albums.iter().filter(|a| a.name == "Split Sides").collect();
+            assert_eq!(split.len(), 1, "one album across both folders");
+            split[0].identity.clone()
+        };
+        let before = identity(&s);
+        s.library.reverse();
+        *s.albums_cache.borrow_mut() = None;
+        assert_eq!(
+            identity(&s),
+            before,
+            "the same identity in the reversed order"
+        );
+        assert!(before.is_located());
     }
 
     #[test]
