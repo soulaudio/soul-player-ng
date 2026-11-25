@@ -478,3 +478,485 @@ mod tests {
         assert_eq!(normalize_template_id(""), "artist-album");
     }
 }
+
+#[cfg(test)]
+mod e2e {
+    //! The managed-library flow end to end over a Genshin-shaped staging folder
+    //! (the real Soulseek download's shapes: a flat disc-tagged album with an EAC
+    //! log + cue and OS junk, a `Disc01/Disc02` album with a disc subtitle and an
+    //! MBID, a `CD1/CD2` album whose discs come only from the folder names, and
+    //! two same-title editions in different folders), organized through the SAME
+    //! helpers the app's worker threads run (`plan_import` -> `run_apply`), for
+    //! Copy and Move x one-folder and disc-sub-folder layouts. Each run checks the
+    //! exact destination tree and bytes, re-run idempotence, Move pruning, then
+    //! watches the destination like `organize_confirm` does and asserts the
+    //! Albums model and the album page's disc headers.
+
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::{Path, PathBuf};
+
+    use rune::{Env, Runtime};
+    use soul_player_host::PlayerHandle;
+    use soul_player_host::organize::Strategy;
+
+    use super::{plan_import, run_apply, summarize};
+    use crate::test_fixtures::{flac_with_comments, put};
+    use crate::{AlbumRef, Route, State};
+
+    const ARTIST: &str = "HOYO-MiX";
+    const JADE: &str = "Jade Moon Upon a Sea of Clouds";
+    const FOREST: &str = "Genshin Impact - Forest of Jnana and Vidya (Original Game Soundtrack)";
+    const FOOTPRINTS: &str = "Footprints of the Traveler";
+    const VOYAGE: &str = "The Shimmering Voyage";
+    const FOREST_MBID: &str = "0d6c2b4e-6f61-4bd5-9f2c-8a1f3c3e2a10";
+
+    /// A fresh, empty temp directory unique to this process + `tag`.
+    fn fresh(tag: &str) -> PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("soul_rune_org_e2e_{}_{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A HOYO-MiX track tagged like the real download, plus `extra` tags.
+    fn track(album: &str, title: &str, n: u32, extra: &[&str]) -> Vec<u8> {
+        let mut c = vec![
+            format!("ALBUM={album}"),
+            format!("TITLE={title}"),
+            format!("ARTIST={ARTIST}"),
+            format!("ALBUMARTIST={ARTIST}"),
+            "DATE=2022".to_owned(),
+            "GENRE=Game".to_owned(),
+            format!("TRACKNUMBER={n}"),
+        ];
+        c.extend(extra.iter().map(|s| (*s).to_owned()));
+        let refs: Vec<&str> = c.iter().map(String::as_str).collect();
+        flac_with_comments(&refs)
+    }
+
+    /// One staged file: its source path, its destination in the one-folder and
+    /// disc-sub-folder layouts (relative to the managed root), and its bytes.
+    struct Staged {
+        src: String,
+        one: String,
+        discs: String,
+        bytes: Vec<u8>,
+    }
+
+    fn staged(src: String, one: String, discs: String, bytes: Vec<u8>) -> Staged {
+        Staged {
+            src,
+            one,
+            discs,
+            bytes,
+        }
+    }
+
+    /// The staging library, nested like the real downloads (`Flac/<artist>/..`).
+    /// Footprints' two editions sort plain-first, so the Chinese edition is the
+    /// one that gets ` (2)` (the organizer numbers same-title albums in input order).
+    fn staging() -> Vec<Staged> {
+        let j_src = format!("Flac/{ARTIST}/2020.11.06 {JADE}");
+        let j = format!("{ARTIST}/{JADE}");
+        let f_src = format!("Flac/{ARTIST}/Forest of Jnana and Vidya");
+        let f = format!("{ARTIST}/{FOREST}");
+        let fp_src = format!("Flac/{ARTIST}/{FOOTPRINTS}");
+        let fp = format!("{ARTIST}/{FOOTPRINTS}");
+        let v_src = format!("Flac/{ARTIST}/{VOYAGE}");
+        let v = format!("{ARTIST}/{VOYAGE}");
+        let sumeru = "DISCSUBTITLE=Battles of Sumeru";
+        let mbid = format!("MUSICBRAINZ_ALBUMID={FOREST_MBID}");
+        // A file whose destination is the same in both layouts (album root, one disc).
+        let same_in_both =
+            |src: String, dst: String, bytes: &[u8]| staged(src, dst.clone(), dst, bytes.to_vec());
+        vec![
+            // Flat, disc-tagged (`DISCNUMBER=n/total`), files numbered across discs.
+            staged(
+                format!("{j_src}/01. Liyue.flac"),
+                format!("{j}/1-01 - Liyue.flac"),
+                format!("{j}/Disc 1/01 - Liyue.flac"),
+                track(JADE, "Liyue", 1, &["DISCNUMBER=1/2"]),
+            ),
+            staged(
+                format!("{j_src}/02. Rex Incognito.flac"),
+                format!("{j}/1-02 - Rex Incognito.flac"),
+                format!("{j}/Disc 1/02 - Rex Incognito.flac"),
+                track(JADE, "Rex Incognito", 2, &["DISCNUMBER=1/2"]),
+            ),
+            staged(
+                format!("{j_src}/03. Gilded Runway.flac"),
+                format!("{j}/2-01 - Gilded Runway.flac"),
+                format!("{j}/Disc 2/01 - Gilded Runway.flac"),
+                track(JADE, "Gilded Runway", 1, &["DISCNUMBER=2/2"]),
+            ),
+            same_in_both(
+                format!("{j_src}/Cover.png"),
+                format!("{j}/Cover.png"),
+                b"png",
+            ),
+            same_in_both(
+                format!("{j_src}/{JADE}.log"),
+                format!("{j}/{JADE}.log"),
+                b"EAC log, checksum 1234",
+            ),
+            same_in_both(
+                format!("{j_src}/{JADE}.cue"),
+                format!("{j}/{JADE}.cue"),
+                b"FILE \"01. Liyue.flac\" WAVE",
+            ),
+            // `DiscNN/` sub-folders, tagged (`DISCNUMBER` + `DISCTOTAL`), MBID,
+            // a disc subtitle on disc 1, and one same-named EAC log per disc.
+            staged(
+                format!("{f_src}/Disc01/1-01 Forest of Jnana and Vidya.flac"),
+                format!("{f}/1-01 - Forest of Jnana and Vidya.flac"),
+                format!("{f}/Disc 1/01 - Forest of Jnana and Vidya.flac"),
+                track(
+                    FOREST,
+                    "Forest of Jnana and Vidya",
+                    1,
+                    &["DISCNUMBER=1", "DISCTOTAL=2", sumeru, &mbid],
+                ),
+            ),
+            staged(
+                format!("{f_src}/Disc02/2-01 Fading Dawn.flac"),
+                format!("{f}/2-01 - Fading Dawn.flac"),
+                format!("{f}/Disc 2/01 - Fading Dawn.flac"),
+                track(
+                    FOREST,
+                    "Fading Dawn",
+                    1,
+                    &["DISCNUMBER=2", "DISCTOTAL=2", &mbid],
+                ),
+            ),
+            // Same name in both disc folders: `Disc N - ` only where they'd collide.
+            staged(
+                format!("{f_src}/Disc01/Forest.log"),
+                format!("{f}/Disc 1 - Forest.log"),
+                format!("{f}/Disc 1/Forest.log"),
+                b"disc 1 log".to_vec(),
+            ),
+            staged(
+                format!("{f_src}/Disc02/Forest.log"),
+                format!("{f}/Disc 2 - Forest.log"),
+                format!("{f}/Disc 2/Forest.log"),
+                b"disc 2 log!".to_vec(),
+            ),
+            same_in_both(
+                format!("{f_src}/cover.jpg"),
+                format!("{f}/cover.jpg"),
+                b"jpg",
+            ),
+            // `CD1/CD2` with NO disc tags: the disc number is inferred from the
+            // folder names only (the plan warns the one-folder layout loses it).
+            staged(
+                format!("{v_src}/CD1/01 Wave.flac"),
+                format!("{v}/1-01 - Wave.flac"),
+                format!("{v}/Disc 1/01 - Wave.flac"),
+                track(VOYAGE, "Wave", 1, &[]),
+            ),
+            staged(
+                format!("{v_src}/CD2/01 Thunder.flac"),
+                format!("{v}/2-01 - Thunder.flac"),
+                format!("{v}/Disc 2/01 - Thunder.flac"),
+                track(VOYAGE, "Thunder", 1, &[]),
+            ),
+            // Two editions, same ALBUM tag, different folders: distinct albums.
+            same_in_both(
+                format!("{fp_src}/01. {FOOTPRINTS}.flac"),
+                format!("{fp}/01 - {FOOTPRINTS}.flac"),
+                &track(FOOTPRINTS, FOOTPRINTS, 1, &[]),
+            ),
+            same_in_both(
+                format!("{fp_src}/cover.jpg"),
+                format!("{fp}/cover.jpg"),
+                b"jpg-a",
+            ),
+            same_in_both(
+                format!("{fp_src} (Chinese Version)/01. {FOOTPRINTS}.flac"),
+                format!("{fp} (2)/01 - {FOOTPRINTS}.flac"),
+                &track(FOOTPRINTS, FOOTPRINTS, 1, &[]),
+            ),
+            same_in_both(
+                format!("{fp_src} (Chinese Version)/cover.jpg"),
+                format!("{fp} (2)/cover.jpg"),
+                b"jpg-b",
+            ),
+        ]
+    }
+
+    /// OS junk in the flat album: never organized, never swept, keeps its folder.
+    fn junk() -> String {
+        format!("Flac/{ARTIST}/2020.11.06 {JADE}/Thumbs.db")
+    }
+
+    /// `p` relative to `root`, `/`-separated.
+    fn rel(root: &Path, p: &Path) -> String {
+        let parts: Vec<String> = p
+            .strip_prefix(root)
+            .unwrap()
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect();
+        parts.join("/")
+    }
+
+    /// Every file under `root` (relative path -> bytes) and every folder.
+    fn snapshot(root: &Path) -> (BTreeMap<String, Vec<u8>>, BTreeSet<String>) {
+        fn walk(root: &Path, dir: &Path, out: &mut (BTreeMap<String, Vec<u8>>, BTreeSet<String>)) {
+            for e in std::fs::read_dir(dir).unwrap() {
+                let p = e.unwrap().path();
+                if p.is_dir() {
+                    out.1.insert(rel(root, &p));
+                    walk(root, &p, out);
+                } else {
+                    out.0.insert(rel(root, &p), std::fs::read(&p).unwrap());
+                }
+            }
+        }
+        let mut out = Default::default();
+        if root.exists() {
+            walk(root, root, &mut out);
+        }
+        out
+    }
+
+    /// Just the files of [`snapshot`].
+    fn files(root: &Path) -> BTreeMap<String, Vec<u8>> {
+        snapshot(root).0
+    }
+
+    fn run(strategy: Strategy, template: &str) {
+        let disc_folders = template.ends_with(super::DISC_FOLDERS);
+        let tag = format!("{strategy:?}_{}", template.replace('+', "_"));
+        let (src, dest) = (fresh(&format!("{tag}_src")), fresh(&format!("{tag}_dst")));
+        let stage = staging();
+        for f in &stage {
+            put(&src, &f.src, &f.bytes);
+        }
+        put(&src, &junk(), b"junk");
+        let src_before = snapshot(&src);
+        // The exact managed tree, every file byte-identical to its source (the
+        // organizer never rewrites: an EAC log's checksum stays valid, tags survive).
+        let want: BTreeMap<String, Vec<u8>> = stage
+            .iter()
+            .map(|f| {
+                let dst = if disc_folders { &f.discs } else { &f.one };
+                (dst.clone(), f.bytes.clone())
+            })
+            .collect();
+        assert_eq!(
+            want.len(),
+            17,
+            "{tag}: the fixture's destinations are distinct"
+        );
+
+        // Plan exactly as the "Add music" worker does, with the picked folder as root.
+        let plan = plan_import(&src, &dest, template, strategy);
+        let s = summarize(&plan);
+        assert_eq!((s.audio, s.side), (9, 8), "{tag}: 9 tracks + 8 side files");
+        assert_eq!((s.dup, s.conflict), (0, 0), "{tag}: a fresh destination");
+        assert!(
+            s.left.is_empty(),
+            "{tag}: no album keeps its side files: {:?}",
+            s.left
+        );
+        assert_eq!(
+            s.folder_inferred,
+            usize::from(!disc_folders),
+            "{tag}: only the CD1/CD2 album, and only in the one-folder layout"
+        );
+
+        let summary = run_apply(&plan, |_| {});
+        assert!(summary.failed.is_empty(), "{tag}: {:?}", summary.failed);
+        let after = files(&dest);
+        assert_eq!(
+            after.keys().collect::<Vec<_>>(),
+            want.keys().collect::<Vec<_>>(),
+            "{tag}: dest tree"
+        );
+        assert!(
+            after == want,
+            "{tag}: every file byte-identical to its source"
+        );
+
+        match strategy {
+            Strategy::Copy => {
+                assert_eq!((summary.copied, summary.moved), (17, 0), "{tag}");
+                assert_eq!(summary.pruned_dirs, 0, "{tag}: Copy never prunes");
+                assert!(
+                    snapshot(&src) == src_before,
+                    "{tag}: Copy leaves the source as is"
+                );
+                // Re-run: everything is already there, byte for byte.
+                let plan2 = plan_import(&src, &dest, template, strategy);
+                let again = summarize(&plan2);
+                assert_eq!(
+                    (again.copy, again.dup, again.conflict),
+                    (0, 17, 0),
+                    "{tag}: idempotent plan"
+                );
+                let s2 = run_apply(&plan2, |_| {});
+                assert!(s2.failed.is_empty(), "{tag}: {:?}", s2.failed);
+                assert_eq!((s2.copied, s2.skipped, s2.pruned_dirs), (0, 17, 0), "{tag}");
+                assert!(files(&dest) == want, "{tag}: the re-run changes nothing");
+                assert!(snapshot(&src) == src_before, "{tag}: nor the source");
+            }
+            Strategy::Move => {
+                assert_eq!((summary.copied, summary.moved), (0, 17), "{tag}");
+                let (left, left_dirs) = snapshot(&src);
+                assert_eq!(
+                    left.into_keys().collect::<Vec<_>>(),
+                    [junk()],
+                    "{tag}: only junk stays behind"
+                );
+                // Every emptied folder is pruned; the junk keeps its album folder
+                // (and so its parents), and the picked folder itself is never removed.
+                assert!(src.is_dir(), "{tag}: the picked folder survives");
+                assert_eq!(
+                    left_dirs,
+                    BTreeSet::from([
+                        "Flac".to_owned(),
+                        format!("Flac/{ARTIST}"),
+                        format!("Flac/{ARTIST}/2020.11.06 {JADE}"),
+                    ]),
+                    "{tag}: pruned down to the junk's folder"
+                );
+                // Forest/Disc01, Forest/Disc02, Forest, Voyage/CD1, Voyage/CD2,
+                // Voyage, Footprints, Footprints (Chinese Version).
+                assert_eq!(summary.pruned_dirs, 8, "{tag}: emptied folders pruned");
+                // Re-run: nothing left to organize, nothing changes.
+                let plan2 = plan_import(&src, &dest, template, strategy);
+                assert!(plan2.entries.is_empty(), "{tag}: nothing left to plan");
+                let s2 = run_apply(&plan2, |_| {});
+                assert!(s2.failed.is_empty(), "{tag}: {:?}", s2.failed);
+                assert_eq!((s2.moved, s2.skipped, s2.pruned_dirs), (0, 0, 0), "{tag}");
+                assert!(files(&dest) == want, "{tag}: the re-run changes nothing");
+                assert_eq!(files(&src).len(), 1, "{tag}: the junk stays");
+            }
+        }
+
+        // Rescan the managed library the way `organize_confirm` does (watch the
+        // destination, fold the update in), then assert the Albums page model.
+        let mut st = State::new(PlayerHandle::offline());
+        let up = st
+            .host
+            .add_folder(&dest)
+            .expect("watch the managed library");
+        crate::apply_watch(&mut st, up);
+        assert_eq!(st.library.len(), 9, "{tag}: every track imported");
+        let albums = st.grouped_albums();
+        let mut names: Vec<&str> = albums.iter().map(|a| a.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [FOOTPRINTS, FOOTPRINTS, FOREST, JADE, VOYAGE],
+            "{tag}: no CD-split albums; the two editions stay separate"
+        );
+        let by = |n: &str| albums.iter().find(|a| a.name == n).unwrap();
+        let shape = |n: &str| (by(n).disc_count, by(n).ids.len(), by(n).artist.as_str());
+        assert_eq!(shape(JADE), (2, 3, ARTIST), "{tag}: {JADE}");
+        assert_eq!(shape(FOREST), (2, 2, ARTIST), "{tag}: {FOREST}");
+        // Folder-inferred discs survive only as `Disc N/` folders: the one-folder
+        // layout loses them (the organizer never writes tags), which is exactly
+        // what the plan's `folder_inferred` warning announced.
+        let voyage_discs = if disc_folders { 2 } else { 1 };
+        assert_eq!(shape(VOYAGE), (voyage_discs, 2, ARTIST), "{tag}: {VOYAGE}");
+        let editions: Vec<_> = albums.iter().filter(|a| a.name == FOOTPRINTS).collect();
+        assert_ne!(
+            editions[0].key, editions[1].key,
+            "{tag}: two album identities"
+        );
+        assert!(
+            editions
+                .iter()
+                .all(|a| (a.disc_count, a.ids.len()) == (1, 1)),
+            "{tag}: each edition is a one-disc, one-track album"
+        );
+
+        // The disc sections behind the album page: (disc, track) order, the
+        // subtitle read back from the untouched tags.
+        let sections = |n: &str| {
+            let members: Vec<_> = by(n).ids.iter().filter_map(|id| st.track(*id)).collect();
+            soul_player_host::album_tracklist(&members)
+                .into_iter()
+                .map(|d| (d.disc_no, d.subtitle.map(|s| s.to_string()), d.rows.len()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sections(JADE), [(1, None, 2), (2, None, 1)], "{tag}");
+        assert_eq!(
+            sections(FOREST),
+            [(1, Some("Battles of Sumeru".to_owned()), 1), (2, None, 1)],
+            "{tag}"
+        );
+        let jade_titles: Vec<_> = by(JADE)
+            .ids
+            .iter()
+            .filter_map(|id| st.track(*id)?.title.clone())
+            .collect();
+        assert_eq!(
+            jade_titles,
+            ["Liyue", "Rex Incognito", "Gilded Runway"],
+            "{tag}"
+        );
+
+        // The album page draws the disc headers.
+        let forest: AlbumRef = by(FOREST).open_ref();
+        st.route = Route::Album;
+        st.open_album = Some(forest);
+        let env = Env {
+            system_dark: true,
+            scale: 1.0,
+        };
+        let mut rt = Runtime::new(st, crate::view, (1200.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let text = |k: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(k))
+                .and_then(|e| e.text)
+        };
+        assert_eq!(
+            text("album-disc-1-title").as_deref(),
+            Some("Disc 1 · Battles of Sumeru"),
+            "{tag}"
+        );
+        assert_eq!(
+            text("album-disc-2-title").as_deref(),
+            Some("Disc 2"),
+            "{tag}"
+        );
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn organize_copy_one_folder_then_rescan() {
+        let _locale = crate::config::use_test_locale("en");
+        let _cfg = crate::config::use_test_config_dir();
+        run(Strategy::Copy, "artist-album");
+    }
+
+    #[test]
+    fn organize_copy_disc_folders_then_rescan() {
+        let _locale = crate::config::use_test_locale("en");
+        let _cfg = crate::config::use_test_config_dir();
+        run(Strategy::Copy, "artist-album+disc-folders");
+    }
+
+    #[test]
+    fn organize_move_one_folder_then_rescan() {
+        let _locale = crate::config::use_test_locale("en");
+        let _cfg = crate::config::use_test_config_dir();
+        run(Strategy::Move, "artist-album");
+    }
+
+    #[test]
+    fn organize_move_disc_folders_then_rescan() {
+        let _locale = crate::config::use_test_locale("en");
+        let _cfg = crate::config::use_test_config_dir();
+        run(Strategy::Move, "artist-album+disc-folders");
+    }
+}

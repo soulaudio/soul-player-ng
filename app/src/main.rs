@@ -58,6 +58,8 @@ mod open_files;
 mod organize_job;
 mod playlists;
 mod report;
+#[cfg(test)]
+mod test_fixtures;
 // The tray (Rune `Tray`) has Linux/Windows backends only; macOS uses `macos_menu`.
 #[cfg(any(not(target_os = "macos"), test))]
 mod systray;
