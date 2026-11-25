@@ -65,6 +65,14 @@ jobs:
           # flatpak-builder instead would test a different tool than the one
           # that will judge the submission.
           flatpak install --user -y --noninteractive flathub org.flatpak.Builder
+          # Pre-install the runtime and SDK rather than letting the builder do
+          # it with `--install-deps-from`: that path shells out to `flatpak
+          # install`, which wants a session bus and fails on a bare runner with
+          # "Cannot autolaunch D-Bus without X11 $DISPLAY". release.yml already
+          # installs them this way for the bundle build, so this matches a
+          # pattern that is known to work here.
+          flatpak install --user -y --noninteractive flathub \
+            org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
 
       - name: Point the manifest at the commit under test
         # The committed manifest names a RELEASE tag, because that is what gets
@@ -93,9 +101,12 @@ jobs:
           # `--sandbox` and `--disable-rofiles-fuse` match what Flathub does.
           # No `--share=network`: if the build needs the network, it must fail
           # HERE rather than on their builders.
-          flatpak run org.flatpak.Builder --force-clean --sandbox \
-            --user --install --install-deps-from=flathub \
-            --disable-rofiles-fuse --mirror-screenshots-url=https://dl.flathub.org/media/ \
+          # `dbus-run-session` for the same reason: flatpak-builder's own
+          # install step talks to the session bus, and there is none otherwise.
+          dbus-run-session -- flatpak run org.flatpak.Builder \
+            --force-clean --sandbox --user --install \
+            --disable-rofiles-fuse \
+            --mirror-screenshots-url=https://dl.flathub.org/media/ \
             --repo=repo builddir co.soulaudio.soulplayer.yml
 
       - name: flatpak-builder-lint (builddir + repo)
