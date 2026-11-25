@@ -367,6 +367,10 @@ type PlaylistCoverCache = std::cell::RefCell<
     )>,
 >;
 
+/// Memoized album page: `(library_fp, album ref, page)` (see [`State::album_page`]).
+type AlbumPageCache =
+    std::cell::RefCell<Option<(u64, AlbumRef, std::rc::Rc<views::albums::AlbumPage>)>>;
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -397,6 +401,10 @@ struct State {
             std::rc::Rc<[views::albums::Album]>,
         )>,
     >,
+    /// The open album page's content (members, disc sections, play list),
+    /// memoized by (library fingerprint, album ref). `album_detail` otherwise
+    /// re-resolved every member and rebuilt the tracklist EVERY frame.
+    album_page_cache: AlbumPageCache,
     /// A shared `Rc` snapshot of the library for the virtualized Tracks list, so its
     /// per-row closures index the track data by `Rc` instead of CLONING every
     /// visible track every frame, a million clones/frame otherwise. Rebuilt only
@@ -996,6 +1004,7 @@ impl State {
             artists_cache: std::cell::RefCell::new(None),
             genres_cache: std::cell::RefCell::new(None),
             artist_discography_cache: std::cell::RefCell::new(None),
+            album_page_cache: std::cell::RefCell::new(None),
             library_rc_cache: std::cell::RefCell::new(None),
             track_index_cache: std::cell::RefCell::new(None),
             visible_tracks_cache: std::cell::RefCell::new(None),
@@ -1217,6 +1226,37 @@ impl State {
             views::albums::group_albums(&self.library).into();
         *self.albums_cache.borrow_mut() = Some((fp, grouped.clone()));
         grouped
+    }
+
+    /// The album detail page's content for `r`, memoized against the library
+    /// fingerprint and the album ref, so the members, disc sections and play list
+    /// are rebuilt only when the library or the open album changes. `None` when
+    /// the album is not in the library.
+    pub(crate) fn album_page(&self, r: &AlbumRef) -> Option<std::rc::Rc<views::albums::AlbumPage>> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, cr, page)) = self.album_page_cache.borrow().as_ref()
+            && *cfp == fp
+            && cr == r
+        {
+            return Some(page.clone());
+        }
+        let albums = self.grouped_albums();
+        let album = views::albums::resolve_album(&albums, r)?.clone();
+        let members: Vec<&TrackView> = album.ids.iter().filter_map(|id| self.track(*id)).collect();
+        let discs = soul_player_host::album_tracklist(&members);
+        let play_ids: std::rc::Rc<[u32]> = discs
+            .iter()
+            .flat_map(|d| d.rows.iter().map(|row| row.0))
+            .collect();
+        let total_secs = members.iter().map(|t| t.duration_secs).sum();
+        let page = std::rc::Rc::new(views::albums::AlbumPage {
+            album,
+            discs,
+            play_ids,
+            total_secs,
+        });
+        *self.album_page_cache.borrow_mut() = Some((fp, r.clone(), page.clone()));
+        Some(page)
     }
 
     /// The open Artist detail page's discography: the artist's own tracks grouped into

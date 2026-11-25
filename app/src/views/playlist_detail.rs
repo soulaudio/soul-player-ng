@@ -401,7 +401,7 @@ fn entry_row(
     last: usize,
     entry: &PlaylistEntry,
     resolved: Option<u32>,
-    play_ids: &[u32],
+    play_ids: &std::rc::Rc<[u32]>,
     play_index: Option<usize>,
 ) -> El {
     let track_el = resolved
@@ -607,6 +607,8 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
         let last = count - 1;
         let pal = *p;
         let build_resolved = resolved.clone();
+        // One shared play context for every row (the resolution's Vec copied once).
+        let build_play: std::rc::Rc<[u32]> = resolved.play_ids.as_slice().into();
         col()
             .key("playlist-tracks")
             .role("list")
@@ -632,7 +634,7 @@ pub fn page(s: &State, p: &Palette, scale: f32) -> El {
                         last,
                         &pl.entries[i],
                         build_resolved.resolved[i],
-                        &build_resolved.play_ids,
+                        &build_play,
                         build_resolved.play_index_of[i],
                     )
                 },

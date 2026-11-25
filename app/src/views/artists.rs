@@ -330,13 +330,15 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 .font(type_::HEADING)
                 .color(p.fg),
         );
+    // One shared play context for every top-song row (built once per frame).
+    let top_ids: std::rc::Rc<[u32]> = artist.ids.as_slice().into();
     for (i, &id) in artist.ids.iter().take(shown).enumerate() {
         if let Some(t) = s.track(id) {
             top = top.child(detail_track_row(
                 s.now_playing_id,
                 s.playing,
                 p,
-                &artist.ids,
+                &top_ids,
                 i,
                 None,
                 t,

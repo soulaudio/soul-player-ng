@@ -66,6 +66,18 @@ impl Album {
     }
 }
 
+/// The open album's detail page content, derived once per (library, album) by
+/// [`crate::State::album_page`]: the album, its disc sections in (disc, track)
+/// order, the play list the rows and Play-All share (exactly the rendered rows,
+/// so a row's start index can never drift from what it shows), and the total
+/// duration of the tracks the library resolves.
+pub(crate) struct AlbumPage {
+    pub(crate) album: Album,
+    pub(crate) discs: Vec<soul_player_host::DiscSection>,
+    pub(crate) play_ids: std::rc::Rc<[u32]>,
+    pub(crate) total_secs: f64,
+}
+
 /// The open album: same key AND title, else (after a rescan re-numbered ids) the
 /// first album with that title, else `None`.
 pub(crate) fn resolve_album<'a>(albums: &'a [Album], r: &crate::AlbumRef) -> Option<&'a Album> {
@@ -580,7 +592,7 @@ pub(crate) fn detail_track_row(
     now_playing: Option<u32>,
     is_playing: bool,
     p: &Palette,
-    ids: &[u32],
+    ids: &std::rc::Rc<[u32]>,
     i: usize,
     // The row number to show; `None` numbers by position `i + 1`.
     number: Option<u16>,
@@ -593,7 +605,8 @@ pub(crate) fn detail_track_row(
     show_album: bool,
 ) -> El {
     let playing = now_playing == Some(t.id);
-    let ids = ids.to_vec();
+    // One shared list for every row; a click copies it once into the command.
+    let ids = std::rc::Rc::clone(ids);
     let start = i as u32;
     let tid = t.id;
     let mut r = row()
@@ -678,9 +691,9 @@ pub(crate) fn detail_track_row(
     // Right-click opens the same track actions as a library row (the add-to-
     // playlist item opens the themed `views::add_to_playlist` overlay), so a
     // track is reachable from every detail page (album/artist/genre/playlist),
-    // not just the library. `menu_ids` clones the play context for the menu's
+    // not just the library. `menu_ids` shares the play context for the menu's
     // "Play" action; the row's own `on_press` still owns `ids`.
-    let menu_ids = ids.clone();
+    let menu_ids = std::rc::Rc::clone(&ids);
     r.child(
         text(fmt_dur(t.duration_secs))
             .font(type_::ITEM)
@@ -709,7 +722,7 @@ pub(crate) fn detail_track_row(
             press,
             move |st: &mut State, picked, _tx: &mut Tx| match picked {
                 Some("play") => st.host.send(Command::PlayContext {
-                    ids: play_ids.clone(),
+                    ids: play_ids.to_vec(),
                     start,
                 }),
                 Some("play-next") => st.host.send(Command::PlayNext(tid)),
@@ -724,7 +737,7 @@ pub(crate) fn detail_track_row(
             Command::TogglePlay
         } else {
             Command::PlayContext {
-                ids: ids.clone(),
+                ids: ids.to_vec(),
                 start,
             }
         };
@@ -811,27 +824,16 @@ fn disc_header(d: &soul_player_host::DiscSection, p: &Palette) -> El {
 /// `State::open_album`, re-derived from the current library; if it has vanished we
 /// just offer the way back.
 pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
-    // Reuse the memoized album grouping (keyed by the library fingerprint) instead
-    // of re-grouping the whole library every frame to locate one album.
-    let albums = s.grouped_albums();
-    let Some(album) = s
-        .open_album
-        .as_ref()
-        .and_then(|r| resolve_album(&albums, r).cloned())
-    else {
+    // The page content is memoized per (library, album) (see `State::album_page`).
+    let Some(page) = s.open_album.as_ref().and_then(|r| s.album_page(r)) else {
         return col()
             .key("album-detail")
             .grow(1.0)
             .min_h(0.0)
             .padding(space::PANE);
     };
-
-    let total: f64 = album
-        .ids
-        .iter()
-        .filter_map(|id| s.track(*id))
-        .map(|t| t.duration_secs)
-        .sum();
+    let album = &page.album;
+    let total = page.total_secs;
     let mut meta = format!(
         "{} · {}",
         crate::views::library::tracks_label(album.ids.len()),
@@ -850,7 +852,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     let rel_year = (album.release_date != 0).then_some((album.release_date >> 9) as u16);
     if let (Some(oy), Some(ry)) = (orig_year, rel_year)
         && oy != ry
-        && album_year(&album, s.album_year) == Some(oy)
+        && album_year(album, s.album_year) == Some(oy)
     {
         meta = format!("{meta} · {}", t!("detail.reissued", year => ry));
     }
@@ -872,15 +874,6 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             circular: false,
         },
     };
-    let members: Vec<&TrackView> = album.ids.iter().filter_map(|id| s.track(*id)).collect();
-    let discs = soul_player_host::album_tracklist(&members);
-    // Play exactly the list the page shows: the rendered rows in (disc, track)
-    // order, so a row's play-start index can never drift from `Album::ids` (e.g. a
-    // grouping that lags the library by an id the library no longer resolves).
-    let play_ids: Vec<u32> = discs
-        .iter()
-        .flat_map(|d| d.rows.iter().map(|r| r.0))
-        .collect();
     let hero = detail_hero(
         s,
         p,
@@ -890,18 +883,18 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         t!("album.eyebrow").to_uppercase(),
         album.name.clone(),
         album.remote_source.clone(),
-        album_subtitle(&album, s.album_year),
+        album_subtitle(album, s.album_year),
         meta,
         Some(&crate::views::icons::CLOCK),
-        detail_actions("album-play-all", play_ids.clone(), p),
+        detail_actions("album-play-all", page.play_ids.to_vec(), p),
         Some(ArtworkTarget::Album(album.name.clone())),
     );
 
-    let show_disc_headers = album.disc_count > 1 && discs.len() > 1;
+    let show_disc_headers = album.disc_count > 1 && page.discs.len() > 1;
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
     // `i` indexes `play_ids`: it advances only for rows actually added.
     let mut i = 0usize;
-    for d in &discs {
+    for d in &page.discs {
         if show_disc_headers {
             list = list.child(disc_header(d, p));
         }
@@ -911,7 +904,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                     s.now_playing_id,
                     s.playing,
                     p,
-                    &play_ids,
+                    &page.play_ids,
                     i,
                     Some(number),
                     t,
@@ -1994,6 +1987,62 @@ mod tests {
             play_contexts(&rt),
             [(vec![1, 2, 3], 2)],
             "the disc-2 row starts track 3"
+        );
+    }
+
+    /// The album page is built once per (library, album): a second frame reuses
+    /// it, and a library change rebuilds it.
+    #[test]
+    fn album_page_is_memoized_until_the_library_changes() {
+        let mut s = two_disc_album_page();
+        let r = s.open_album.clone().unwrap();
+        let a = s.album_page(&r).expect("the album resolves");
+        let b = s.album_page(&r).expect("the album resolves");
+        assert!(
+            std::rc::Rc::ptr_eq(&a, &b),
+            "same library and album: cached"
+        );
+        assert_eq!(&*a.play_ids, &[1, 2, 3]);
+        assert_eq!(a.discs.len(), 2);
+
+        let mut t = ktv(4, "Box", 7, 2, 2);
+        t.disc_count = 2;
+        s.library.push(t);
+        let c = s.album_page(&r).expect("still resolves");
+        assert!(!std::rc::Rc::ptr_eq(&a, &c), "a library change rebuilds");
+        assert_eq!(&*c.play_ids, &[1, 2, 3, 4]);
+    }
+
+    /// The cache is keyed by album: opening another album builds its own page.
+    #[test]
+    fn album_page_cache_is_per_album() {
+        let mut s = two_disc_album_page();
+        s.library.push(ktv(9, "Other", 8, 1, 1));
+        let boxed = crate::AlbumRef {
+            key: 7,
+            name: "Box".into(),
+        };
+        let other = crate::AlbumRef {
+            key: 8,
+            name: "Other".into(),
+        };
+        assert_eq!(&*s.album_page(&boxed).unwrap().play_ids, &[1, 2, 3]);
+        assert_eq!(&*s.album_page(&other).unwrap().play_ids, &[9]);
+        assert_eq!(&*s.album_page(&boxed).unwrap().play_ids, &[1, 2, 3]);
+    }
+
+    /// Rows share the page's play list instead of each copying it (the copy was
+    /// O(rows) per row, O(rows^2) per frame).
+    #[test]
+    fn album_rows_share_the_page_play_list() {
+        let _locale = crate::config::use_test_locale("en");
+        let rt = render_album_page(two_disc_album_page());
+        let r = rt.state.open_album.clone().unwrap();
+        let page = rt.state.album_page(&r).unwrap();
+        assert!(
+            std::rc::Rc::strong_count(&page.play_ids) > 3,
+            "3 rendered rows hold clones of the one shared list, got {}",
+            std::rc::Rc::strong_count(&page.play_ids)
         );
     }
 
