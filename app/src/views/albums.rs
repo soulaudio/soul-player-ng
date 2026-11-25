@@ -38,16 +38,8 @@ pub(crate) struct Album {
     /// The album's identity (`TrackView::album_key`).
     pub(crate) key: u32,
     pub(crate) name: String,
+    /// The album artist, falling back to the first track's artist.
     pub(crate) artist: String,
-    /// The album artist, when the catalog has one.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the multi-disc album detail page (a later task)"
-        )
-    )]
-    pub(crate) album_artist: Option<String>,
     /// The album's disc count (`>= 1`).
     pub(crate) disc_count: u16,
     pub(crate) cover_id: u32,
@@ -107,19 +99,17 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
                 .as_deref()
                 .map(str::to_string)
                 .unwrap_or_else(|| t!("library.unknown").to_string());
-            let album_artist = t
+            let artist = t
                 .album_artist
                 .as_deref()
                 .filter(|a| !a.is_empty())
-                .map(str::to_string);
-            let artist = album_artist
-                .clone()
-                .unwrap_or_else(|| t.artist.as_deref().unwrap_or_default().to_string());
+                .or(t.artist.as_deref())
+                .unwrap_or_default()
+                .to_string();
             albums.push(Album {
                 key: t.album_key,
                 name,
                 artist,
-                album_artist,
                 disc_count: t.disc_count.max(1),
                 cover_id: t.id,
                 ids: Vec::new(),
@@ -882,6 +872,15 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             circular: false,
         },
     };
+    let members: Vec<&TrackView> = album.ids.iter().filter_map(|id| s.track(*id)).collect();
+    let discs = soul_player_host::album_tracklist(&members);
+    // Play exactly the list the page shows: the rendered rows in (disc, track)
+    // order, so a row's play-start index can never drift from `Album::ids` (e.g. a
+    // grouping that lags the library by an id the library no longer resolves).
+    let play_ids: Vec<u32> = discs
+        .iter()
+        .flat_map(|d| d.rows.iter().map(|r| r.0))
+        .collect();
     let hero = detail_hero(
         s,
         p,
@@ -894,18 +893,16 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         album_subtitle(&album, s.album_year),
         meta,
         Some(&crate::views::icons::CLOCK),
-        detail_actions("album-play-all", album.ids.clone(), p),
+        detail_actions("album-play-all", play_ids.clone(), p),
         Some(ArtworkTarget::Album(album.name.clone())),
     );
 
-    let members: Vec<&TrackView> = album.ids.iter().filter_map(|id| s.track(*id)).collect();
-    let discs = soul_player_host::album_tracklist(&members);
+    let show_disc_headers = album.disc_count > 1 && discs.len() > 1;
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
-    // `i` indexes `album.ids` (already (disc, track) ordered by `group_albums`, the
-    // same order `album_tracklist` yields), so a row's play-start index is right.
+    // `i` indexes `play_ids`: it advances only for rows actually added.
     let mut i = 0usize;
     for d in &discs {
-        if album.disc_count > 1 {
+        if show_disc_headers {
             list = list.child(disc_header(d, p));
         }
         for &(id, number) in &d.rows {
@@ -914,15 +911,15 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
                     s.now_playing_id,
                     s.playing,
                     p,
-                    &album.ids,
+                    &play_ids,
                     i,
                     Some(number),
                     t,
                     false, // album detail: artist is constant
                     false, // album detail: album is constant
                 ));
+                i += 1;
             }
-            i += 1;
         }
     }
 
@@ -997,7 +994,6 @@ mod tests {
         let without = ktv(2, "Solo", 8, 1, 1);
         let albums = group_albums(&[with, without]);
         assert_eq!(albums[0].artist, "HOYO-MiX");
-        assert_eq!(albums[0].album_artist.as_deref(), Some("HOYO-MiX"));
         assert_eq!(
             albums[1].artist, "Guest",
             "no album artist: the track artist"
@@ -1176,7 +1172,6 @@ mod tests {
             key: 1,
             name: "x".into(),
             artist: "y".into(),
-            album_artist: None,
             disc_count: 1,
             cover_id: 0,
             ids: vec![],
@@ -1912,6 +1907,106 @@ mod tests {
             texts.iter().any(|t| t == "DURATION"),
             "DURATION label renders"
         );
+    }
+
+    /// A two-disc album (disc 1: ids 1, 2; disc 2: id 3) on its open detail page,
+    /// over a recording host so the play commands can be read back.
+    fn two_disc_album_page() -> State {
+        let mut lib = vec![
+            ktv(1, "Box", 7, 1, 1),
+            ktv(2, "Box", 7, 1, 2),
+            ktv(3, "Box", 7, 2, 1),
+        ];
+        for t in &mut lib {
+            t.disc_count = 2;
+        }
+        lib[2].duration_secs = 180.0;
+        let mut s = State::new(soul_player_host::PlayerHandle::recording());
+        s.library = lib;
+        s.route = crate::Route::Album;
+        s.open_album = Some(crate::AlbumRef {
+            key: 7,
+            name: "Box".into(),
+        });
+        s
+    }
+
+    fn render_album_page(s: State) -> rune::Runtime<State> {
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+        let env = rune::Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = rune::Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt
+    }
+
+    /// The `PlayContext` commands the recording host received.
+    fn play_contexts(rt: &rune::Runtime<State>) -> Vec<(Vec<u32>, u32)> {
+        rt.state
+            .host
+            .recorded_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::PlayContext { ids, start } => Some((ids, start)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Clicking a disc-2 row plays that track, within the album's (disc, track)
+    /// list; disc 2's header shows its own duration.
+    #[test]
+    fn clicking_a_disc_two_row_plays_that_track() {
+        let _locale = crate::config::use_test_locale("en");
+        let mut rt = render_album_page(two_disc_album_page());
+        let text_of = |rt: &rune::Runtime<State>, k: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(k))
+                .and_then(|e| e.text)
+        };
+        assert_eq!(text_of(&rt, "album-disc-2-dur").as_deref(), Some("3 min"));
+        assert_eq!(text_of(&rt, "album-disc-1-dur").as_deref(), Some("2 min"));
+        click(&mut rt, "album-track-2");
+        assert_eq!(play_contexts(&rt), [(vec![1, 2, 3], 2)]);
+    }
+
+    /// The play list is the rows the page renders, not `Album::ids`: an id the
+    /// library no longer resolves (a grouping that lags the library) must not
+    /// shift which track a row starts.
+    #[test]
+    fn a_row_plays_its_own_track_when_the_grouping_lags_the_library() {
+        let _locale = crate::config::use_test_locale("en");
+        let s = two_disc_album_page();
+        let mut album = group_albums(&s.library).remove(0);
+        album.ids = vec![1, 99, 2, 3];
+        let fp = s.library_fingerprint();
+        *s.albums_cache.borrow_mut() = Some((fp, vec![album].into()));
+        let mut rt = render_album_page(s);
+        click(&mut rt, "album-track-2");
+        assert_eq!(
+            play_contexts(&rt),
+            [(vec![1, 2, 3], 2)],
+            "the disc-2 row starts track 3"
+        );
+    }
+
+    /// A disc header only shows when the page really has more than one disc
+    /// section (a two-disc album with only disc 1 in the library reads flat).
+    #[test]
+    fn no_disc_headers_when_only_one_disc_is_present() {
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = two_disc_album_page();
+        s.library.truncate(2);
+        let rt = render_album_page(s);
+        assert!(rt.find("album-track-1").is_some());
+        assert!(rt.find("album-disc-1").is_none(), "one section: no header");
     }
 
     /// Clicking the detail hero's secondary "add to queue" button enqueues
