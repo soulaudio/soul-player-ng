@@ -26,7 +26,7 @@ use soul_player_host::{
 
 use crate::config::AlbumYearSource;
 use crate::organize_job::{
-    has_disc_folder_variant, layout_presets, scan_audio, split_template_id, template_for,
+    self, has_disc_folder_variant, layout_presets, plan_import, split_template_id,
 };
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
@@ -596,13 +596,7 @@ fn add_music_row(s: &State, p: &Palette) -> El {
                             let template_id = s.managed_template.clone();
                             let strategy = s.managed_strategy;
                             std::thread::spawn(move || {
-                                let files = scan_audio(&src_dir);
-                                let plan = organize::plan(
-                                    &files,
-                                    &dest,
-                                    &organize::Template::new(template_for(&template_id)),
-                                    strategy,
-                                );
+                                let plan = plan_import(&src_dir, &dest, &template_id, strategy);
                                 handle.update(move |s: &mut State, _tx| {
                                     organize_ready(s, plan);
                                 });
@@ -4263,19 +4257,70 @@ fn organize_button(
         .on_press(on_press)
 }
 
-/// Count a plan's entries by [`organize::Action`] into
-/// `(copy, moved, duplicates, conflicts)` for the Confirm summary line.
-fn organize_counts(plan: &organize::OrganizePlan) -> (usize, usize, usize, usize) {
-    let (mut copy, mut moved, mut dup, mut conflict) = (0, 0, 0, 0);
-    for e in &plan.entries {
-        match e.action {
-            organize::Action::Copy => copy += 1,
-            organize::Action::Move => moved += 1,
-            organize::Action::SkipDuplicate => dup += 1,
-            organize::Action::SkipConflict => conflict += 1,
+/// How many left-in-place albums the Confirm modal lists before "and N more".
+const LEFT_SHOWN: usize = 5;
+
+/// The localized reason an album's side files stay in place.
+fn left_reason(r: organize::SideFilesLeft) -> String {
+    use organize::SideFilesLeft::{
+        AtSourceRoot, AudioConflict, NoAlbumFolder, NoSourceRoot, SharedAlbumRoot,
+    };
+    match r {
+        SharedAlbumRoot => t!("settings.organizeLeftShared"),
+        NoAlbumFolder => t!("settings.organizeLeftNoAlbumFolder"),
+        AtSourceRoot => t!("settings.organizeLeftAtSourceRoot"),
+        NoSourceRoot => t!("settings.organizeLeftNoSourceRoot"),
+        AudioConflict => t!("settings.organizeLeftAudioConflict"),
+        // `SideFilesLeft` is non-exhaustive: a newer core reason reads generically.
+        _ => t!("settings.organizeLeftOther"),
+    }
+    .to_string()
+}
+
+/// The Confirm modal's list of albums whose side files stay behind (`None` when
+/// none): one row per album (name, count, reason) with a few of its file names.
+fn organize_left_list(left: &[organize_job::LeftAlbum], p: &Palette) -> Option<El> {
+    if left.is_empty() {
+        return None;
+    }
+    let mut c = col().key("organize-left").w_full().gap(space::XXS).child(
+        text(t!("settings.organizeLeftTitle").to_string())
+            .font(type_::CAPTION)
+            .color(p.text_secondary),
+    );
+    for (i, l) in left.iter().take(LEFT_SHOWN).enumerate() {
+        let row_text = t!(
+            "settings.organizeLeftRow",
+            folder => l.folder,
+            files => l.files,
+            reason => left_reason(l.reason)
+        );
+        c = c.child(
+            text(row_text.to_string())
+                .key(format!("organize-left-{i}"))
+                .font(type_::CAPTION)
+                .color(p.fg)
+                .wrap(),
+        );
+        if !l.names.is_empty() {
+            c = c.child(
+                text(l.names.join(", "))
+                    .key(format!("organize-left-{i}-names"))
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary)
+                    .truncate(),
+            );
         }
     }
-    (copy, moved, dup, conflict)
+    if left.len() > LEFT_SHOWN {
+        c = c.child(
+            text(t!("settings.organizeLeftMore", n => left.len() - LEFT_SHOWN).to_string())
+                .key("organize-left-more")
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        );
+    }
+    Some(c)
 }
 
 /// The per-phase card content (without the scrim / modal wrapper).
@@ -4288,17 +4333,22 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                 .color(p.fg)
                 .wrap(),
         ),
-        OrganizePhase::Confirm(plan) => {
-            let (copy, moved, dup, conflict) = organize_counts(plan);
-            let summary = t!(
+        OrganizePhase::Confirm { plan, summary } => {
+            let actions = t!(
                 "settings.organizeConfirmSummary",
-                copy => copy,
-                moved => moved,
-                dup => dup,
-                conflict => conflict
+                copy => summary.copy,
+                moved => summary.moved,
+                dup => summary.dup,
+                conflict => summary.conflict
             )
             .to_string();
-            organize_card(p)
+            let files = t!(
+                "settings.organizeConfirmFiles",
+                audio => summary.audio,
+                side => summary.side
+            )
+            .to_string();
+            let mut card = organize_card(p)
                 .child(organize_title(
                     t!("settings.organizeConfirmTitle").to_string(),
                     p,
@@ -4308,33 +4358,55 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                         .key("organize-confirm")
                         .w_full()
                         .gap(space::XXS)
-                        .child(text(summary).font(type_::BODY).color(p.fg).wrap())
+                        .child(
+                            text(files)
+                                .key("organize-confirm-files")
+                                .font(type_::BODY)
+                                .color(p.fg)
+                                .wrap(),
+                        )
+                        .child(text(actions).font(type_::BODY).color(p.fg).wrap())
                         .child(
                             text(plan.dest_root.to_string_lossy().into_owned())
                                 .font(type_::CAPTION)
                                 .color(p.text_secondary)
                                 .truncate(),
                         ),
-                )
-                .child(
-                    row()
-                        .gap(space::SM)
-                        .flex_wrap()
-                        .child(organize_button(
-                            "organize-cancel",
-                            t!("settings.cancel").to_string(),
-                            false,
-                            p,
-                            organize_dismiss,
-                        ))
-                        .child(organize_button(
-                            "organize-confirm-go",
-                            t!("settings.confirm").to_string(),
-                            true,
-                            p,
-                            organize_confirm,
-                        )),
-                )
+                );
+            if summary.folder_inferred > 0 {
+                card = card.child(
+                    text(
+                        t!("settings.organizeDiscWarning", n => summary.folder_inferred)
+                            .to_string(),
+                    )
+                    .key("organize-disc-warning")
+                    .font(type_::CAPTION)
+                    .color(p.warning)
+                    .wrap(),
+                );
+            }
+            if let Some(list) = organize_left_list(&summary.left, p) {
+                card = card.child(list);
+            }
+            card.child(
+                row()
+                    .gap(space::SM)
+                    .flex_wrap()
+                    .child(organize_button(
+                        "organize-cancel",
+                        t!("settings.cancel").to_string(),
+                        false,
+                        p,
+                        organize_dismiss,
+                    ))
+                    .child(organize_button(
+                        "organize-confirm-go",
+                        t!("settings.confirm").to_string(),
+                        true,
+                        p,
+                        organize_confirm,
+                    )),
+            )
         }
         OrganizePhase::Applying {
             done,
@@ -4366,7 +4438,7 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                 failed => summary.failed.len()
             )
             .to_string();
-            organize_card(p)
+            let mut card = organize_card(p)
                 .child(organize_title(
                     t!("settings.organizeDoneTitle").to_string(),
                     p,
@@ -4377,14 +4449,23 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                         .font(type_::BODY)
                         .color(p.fg)
                         .wrap(),
-                )
-                .child(row().child(organize_button(
-                    "organize-close",
-                    t!("settings.close").to_string(),
-                    true,
-                    p,
-                    organize_dismiss,
-                )))
+                );
+            if summary.pruned_dirs > 0 {
+                card = card.child(
+                    text(t!("settings.organizePruned", n => summary.pruned_dirs).to_string())
+                        .key("organize-pruned")
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary)
+                        .wrap(),
+                );
+            }
+            card.child(row().child(organize_button(
+                "organize-close",
+                t!("settings.close").to_string(),
+                true,
+                p,
+                organize_dismiss,
+            )))
         }
     }
 }

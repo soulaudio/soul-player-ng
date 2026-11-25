@@ -302,7 +302,11 @@ pub(crate) enum OrganizePhase {
     /// Scanning the chosen files and computing the plan (Task 2 fills the work).
     Planning,
     /// The plan is ready; the user confirms or cancels before anything is written.
-    Confirm(organize::OrganizePlan),
+    /// `summary` is computed once from the plan (the modal only renders it).
+    Confirm {
+        plan: organize::OrganizePlan,
+        summary: organize_job::PlanSummary,
+    },
     /// The plan is being applied; progress ticks in per finished entry.
     Applying {
         done: usize,
@@ -311,6 +315,14 @@ pub(crate) enum OrganizePhase {
     },
     /// The run finished; the outcome tally is shown.
     Done(organize::Summary),
+}
+
+impl OrganizePhase {
+    /// The Confirm phase for `plan`, with its summary precomputed.
+    pub(crate) fn confirm(plan: organize::OrganizePlan) -> Self {
+        let summary = organize_job::summarize(&plan);
+        OrganizePhase::Confirm { plan, summary }
+    }
 }
 
 /// A memoized `track id -> library index` map (see [`State::track_positions`]).
@@ -3110,7 +3122,7 @@ pub(crate) fn organize_begin(s: &mut State) {
 /// Planning → Confirm: a computed plan is ready for the user to review.
 // Posted from the `organize::plan` worker (the "Add music…" menu handler).
 pub(crate) fn organize_ready(s: &mut State, plan: organize::OrganizePlan) {
-    s.organize = Some(OrganizePhase::Confirm(plan));
+    s.organize = Some(OrganizePhase::confirm(plan));
 }
 
 /// Enter the Applying phase at 0 / `total` (progress ticks in via
@@ -3156,7 +3168,7 @@ pub(crate) fn organize_confirm(s: &mut State) {
     // Only act from Confirm; take the plan so the worker owns it. Anything else is
     // restored untouched.
     let plan = match s.organize.take() {
-        Some(OrganizePhase::Confirm(plan)) => plan,
+        Some(OrganizePhase::Confirm { plan, .. }) => plan,
         other => {
             s.organize = other;
             return;
@@ -3172,15 +3184,11 @@ pub(crate) fn organize_confirm(s: &mut State) {
     std::thread::spawn(move || {
         // The progress callback clones the handle per entry and posts an update,
         // that stream drives the Applying modal's `done / total` + current line.
-        let summary = organize::apply(&plan, |pr| {
+        let summary = organize_job::run_apply(&plan, |pr| {
             let h = handle.clone();
             h.update(move |s: &mut State, _tx: &mut Tx| {
                 organize_progress(s, pr.done, pr.total, pr.current.display().to_string());
             });
-        })
-        .unwrap_or_else(|e| organize::Summary {
-            failed: vec![(dest.clone(), e.to_string())],
-            ..Default::default()
         });
         // Watch the destination so the just-copied files show up in the library,
         // then post the final summary (both on the main thread, in one update).
@@ -4786,12 +4794,15 @@ fn scene_signal_path_open(s: &mut State) {
 
 /// The managed-library organize modal mid-flow, on the Music Data tab, with a
 /// small real `Confirm` plan so `--snap` captures the scrim + card + the
-/// copy/skip counts + the Confirm/Cancel buttons. Pair with `--size 1100x860`.
+/// audio/side-file and copy/skip counts, the folder-inferred disc warning, the
+/// side-files-left list and the Confirm/Cancel buttons. Pair with `--size 1100x860`.
 fn scene_organize_confirm(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::MusicData;
     let dest = PathBuf::from("/Users/you/Music/Managed");
-    s.organize = Some(OrganizePhase::Confirm(organize::OrganizePlan {
+    // `LeftInPlace` is core-constructed only, so the left list is set on the
+    // summary directly.
+    let mut phase = OrganizePhase::confirm(organize::OrganizePlan {
         dest_root: dest.clone(),
         entries: vec![
             organize::PlanEntry {
@@ -4812,9 +4823,25 @@ fn scene_organize_confirm(s: &mut State) {
                 action: organize::Action::SkipDuplicate,
                 kind: organize::EntryKind::Audio,
             },
+            organize::PlanEntry {
+                src: PathBuf::from("Discovery/Discovery.log"),
+                dst: dest.join("Daft Punk/Discovery/Discovery.log"),
+                action: organize::Action::Copy,
+                kind: organize::EntryKind::SideFile,
+            },
         ],
+        folder_inferred_discs: vec![PathBuf::from("Alive 2007")],
         ..Default::default()
-    }));
+    });
+    if let OrganizePhase::Confirm { summary, .. } = &mut phase {
+        summary.left = vec![organize_job::LeftAlbum {
+            folder: "Downloads".to_string(),
+            reason: organize::SideFilesLeft::AtSourceRoot,
+            files: 2,
+            names: vec!["cover.jpg".to_string(), "notes.txt".to_string()],
+        }];
+    }
+    s.organize = Some(phase);
 }
 
 /// Two user playlists (one populated, one empty) built entirely in memory, so
@@ -11558,7 +11585,7 @@ mod tests {
     #[test]
     fn organize_overlay_renders_each_phase() {
         // Confirm: title/summary + the Confirm and Cancel buttons.
-        let rt = organize_frame(OrganizePhase::Confirm(sample_plan()));
+        let rt = organize_frame(OrganizePhase::confirm(sample_plan()));
         for k in ["organize-confirm", "organize-confirm-go", "organize-cancel"] {
             assert!(rt.find(k).is_some(), "Confirm phase renders {k}");
         }
@@ -11586,11 +11613,107 @@ mod tests {
         apply_locale("en");
     }
 
+    /// Confirm shows the audio + side-file counts, the folder-inferred disc
+    /// warning, and the albums whose side files stay behind (with the reason, a
+    /// few file names and an "and N more" tail); Done reports pruned folders.
+    #[test]
+    fn organize_modal_shows_side_files_left_albums_and_pruned_folders() {
+        let _locale = config::use_test_locale("en");
+        let mut plan = sample_plan();
+        plan.entries.push(organize::PlanEntry {
+            src: PathBuf::from("A/a.log"),
+            dst: testdata_dir().join("A/a.log"),
+            action: organize::Action::Copy,
+            kind: organize::EntryKind::SideFile,
+        });
+        plan.folder_inferred_discs = vec![PathBuf::from("S/Box"), PathBuf::from("S/Set")];
+        let rt = organize_frame(OrganizePhase::confirm(plan));
+        assert_eq!(
+            el_info(&rt, "organize-confirm-files").text.as_deref(),
+            Some("2 audio files + 1 side files")
+        );
+        assert_eq!(
+            el_info(&rt, "organize-disc-warning").text.as_deref(),
+            Some(
+                "2 albums take their disc numbers only from folder names; the one-folder \
+                 layout will lose them. Choose Disc sub-folders."
+            )
+        );
+        assert!(rt.find("organize-left").is_none(), "nothing left: no list");
+
+        let left = |i: usize, reason| organize_job::LeftAlbum {
+            folder: format!("Album {i}"),
+            reason,
+            files: i + 1,
+            names: vec!["a.log".into(), "cover.jpg".into()],
+        };
+        let mut summary = organize_job::summarize(&sample_plan());
+        summary.left = vec![
+            left(0, organize::SideFilesLeft::SharedAlbumRoot),
+            left(1, organize::SideFilesLeft::NoAlbumFolder),
+            left(2, organize::SideFilesLeft::AtSourceRoot),
+            left(3, organize::SideFilesLeft::NoSourceRoot),
+            left(4, organize::SideFilesLeft::AudioConflict),
+            left(5, organize::SideFilesLeft::SharedAlbumRoot),
+            left(6, organize::SideFilesLeft::SharedAlbumRoot),
+        ];
+        let rt = organize_frame(OrganizePhase::Confirm {
+            plan: sample_plan(),
+            summary,
+        });
+        assert!(rt.find("organize-disc-warning").is_none(), "no warning");
+        let row = |k: &str| el_info(&rt, k).text;
+        assert_eq!(
+            row("organize-left-0").as_deref(),
+            Some("Album 0: 1 files (folder shared with another album)")
+        );
+        assert_eq!(
+            row("organize-left-0-names").as_deref(),
+            Some("a.log, cover.jpg")
+        );
+        assert_eq!(
+            row("organize-left-1").as_deref(),
+            Some("Album 1: 2 files (the layout has no album folder)")
+        );
+        assert_eq!(
+            row("organize-left-2").as_deref(),
+            Some("Album 2: 3 files (loose in the chosen folder)")
+        );
+        assert_eq!(
+            row("organize-left-3").as_deref(),
+            Some("Album 3: 4 files (outside the chosen folder)")
+        );
+        assert_eq!(
+            row("organize-left-4").as_deref(),
+            Some("Album 4: 5 files (its audio conflicts with files already there)")
+        );
+        assert!(
+            rt.find("organize-left-5").is_none(),
+            "only the first 5 rows"
+        );
+        assert_eq!(row("organize-left-more").as_deref(), Some("and 2 more"));
+
+        let rt = organize_frame(OrganizePhase::Done(organize::Summary {
+            moved: 3,
+            pruned_dirs: 2,
+            ..Default::default()
+        }));
+        assert_eq!(
+            el_info(&rt, "organize-pruned").text.as_deref(),
+            Some("2 emptied folders removed")
+        );
+        let rt = organize_frame(OrganizePhase::Done(organize::Summary::default()));
+        assert!(
+            rt.find("organize-pruned").is_none(),
+            "nothing pruned: no line"
+        );
+    }
+
     /// Confirming the plan advances the flow from Confirm to Applying (pressing
     /// the Confirm button drives `organize_confirm`).
     #[test]
     fn confirm_advances_to_applying() {
-        let mut rt = organize_frame(OrganizePhase::Confirm(sample_plan()));
+        let mut rt = organize_frame(OrganizePhase::confirm(sample_plan()));
         click_key(&mut rt, "organize-confirm-go");
         assert!(
             matches!(rt.state.organize, Some(OrganizePhase::Applying { .. })),
