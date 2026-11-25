@@ -101,11 +101,13 @@ const TRACK_ROW_EST_H: f32 = 44.0;
 pub(crate) fn page_search_bar(page: &str, search: El, trailing: Option<El>) -> El {
     let mut bar = row()
         .key(format!("{page}-search-bar"))
-        // Give the top bar the old app's `p-4`-style top breathing room instead of
-        // sitting cramped against the top of the pane; the grid's own top padding
-        // provides the gap below, so no bottom padding here.
+        // The old app's `p-4`-style breathing room on all four sides. The bottom
+        // padding matters as much as the top: what follows is a grid whose rows
+        // carry only a BOTTOM gutter, or a list whose rows start flush, so
+        // without it the first row sits against the search field.
         .px(space::PANE)
         .pt(space::PANE)
+        .pb(space::PANE)
         .gap(space::SM)
         .center_y()
         .child(search.grow(1.0).max_w(SEARCH_MAX_W));
