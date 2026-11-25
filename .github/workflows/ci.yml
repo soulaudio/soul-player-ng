@@ -34,17 +34,11 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      # soul-audio-core is a private git dependency during the pre-public phase.
-      CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
     defaults:
       run:
         shell: bash # available on all three runners; keeps one syntax everywhere
     steps:
       - uses: actions/checkout@v7.0.1
-
-      - name: Authenticate the private soul-audio-core git dependency
-        if: ${{ env.CORE_REPO_TOKEN != '' }}
-        run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       # soul-player-host links cpal → ALSA on Linux. Windows uses WASAPI and macOS
       # CoreAudio, which need no extra packages. It also links keyring →
@@ -52,9 +46,9 @@ jobs:
       # which needs libdbus-1-dev at build time on Linux, and reqwest →
       # native-tls → openssl-sys, which needs libssl-dev. (libssl-dev happens to
       # be preinstalled on ubuntu-latest, so the build passed here without it
-      # while failing on a clean Linux box — it is declared explicitly so this
+      # while failing on a clean Linux box, it is declared explicitly so this
       # list is the real dependency set, not the runner image's leftovers.)
-      - name: Audio + keychain + TLS build deps (cpal/ALSA, D-Bus, OpenSSL — Linux only)
+      - name: Audio + keychain + TLS build deps (cpal/ALSA, D-Bus, OpenSSL, Linux only)
         if: runner.os == 'Linux'
         run: |
           # Ubuntu's apt mirrors intermittently stall under GitHub Actions fleet
@@ -73,7 +67,7 @@ jobs:
           done
           echo "::error::apt-get failed after 5 attempts"; exit 1
 
-      - name: Set up Rust components (Linux — for fmt/clippy)
+      - name: Set up Rust components (Linux, for fmt/clippy)
         if: runner.os == 'Linux'
         run: rustup component add rustfmt clippy
 
@@ -137,7 +131,7 @@ jobs:
     # session; the headless Windows runner has no window session, so a focus
     # change on click aborts the process (STATUS_ACCESS_VIOLATION). The rune head
     # still builds + bundles on Windows (release.yml) and runs on a real Windows
-    # desktop — only this headless UI test run skips it. The Windows-sensitive
+    # desktop: only this headless UI test run skips it. The Windows-sensitive
     # logic (paths, audio backend, config) is covered by the `rust` job on all
     # three OSes.
     strategy:
@@ -148,18 +142,12 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
     defaults:
       run:
         shell: bash
-        working-directory: app/rune
+        working-directory: app
     steps:
       - uses: actions/checkout@v7.0.1
-
-      - name: Authenticate the private soul-audio-core git dependency
-        if: ${{ env.CORE_REPO_TOKEN != '' }}
-        working-directory: .
-        run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       # Rune = wgpu + winit. The headless tests don't open a window, but on Linux
       # the test binary still needs GPU/windowing libs + a software Vulkan adapter
@@ -186,9 +174,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2.9.3
         with:
-          workspaces: app/rune
+          workspaces: app
 
-      # app/rune/rust-toolchain.toml pins the nightly (rune uses unstable compiler
+      # app/rust-toolchain.toml pins the nightly (rune uses unstable compiler
       # features); the first cargo invocation auto-installs it. fmt + clippy are
       # platform-independent, so they run once (Linux).
       - name: Format
@@ -208,7 +196,7 @@ jobs:
       # macOS e2e against the system Now Playing service (what Control Center, the lock
       # screen, media keys and AirPods read/drive): the real app autoplays silent tagged
       # tracks into a BlackHole output; `media-control` asserts metadata + artwork and
-      # sends remote commands — shared, then hog-mode exclusive. Non-blocking until it has
+      # sends remote commands: shared, then hog-mode exclusive. Non-blocking until it has
       # been seen green on hosted runners (needs a GUI login session for MediaRemote).
       - name: Now Playing e2e (macOS only)
         if: runner.os == 'macOS'
@@ -227,7 +215,7 @@ jobs:
 
   rune-wayland:
     name: rune (Wayland)
-    # The `rune` job above runs under Xvfb — X11 only. Wayland is the default
+    # The `rune` job above runs under Xvfb, X11 only. Wayland is the default
     # session on most current Linux desktops AND a materially different path:
     # winit picks a different backend, wgpu a different surface, and (the reason
     # this job exists) Rune places no window controls there, so the app draws its
@@ -241,18 +229,12 @@ jobs:
     env:
       CARGO_TERM_COLOR: always
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
     defaults:
       run:
         shell: bash
-        working-directory: app/rune
+        working-directory: app
     steps:
       - uses: actions/checkout@v7.0.1
-
-      - name: Authenticate the private soul-audio-core git dependency
-        if: ${{ env.CORE_REPO_TOKEN != '' }}
-        working-directory: .
-        run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
 
       - name: Wayland compositor + build deps
         working-directory: .
@@ -274,15 +256,15 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2.9.3
         with:
-          workspaces: app/rune
+          workspaces: app
 
       - name: Test (headless Wayland)
         # The suite runs as a CHILD of sway (its config's `exec`) so it inherits
-        # the compositor's full session environment — both WAYLAND_DISPLAY and
+        # the compositor's full session environment, both WAYLAND_DISPLAY and
         # the Xwayland DISPLAY. That matters: a real Wayland desktop always has
         # Xwayland running, winit still prefers Wayland when WAYLAND_DISPLAY is
         # set, and parts of the suite wedge in a Wayland session with no X at
-        # all — a configuration no actual user has.
+        # all: a configuration no actual user has.
         #
         # Presetting WAYLAND_DISPLAY instead would make sway try to NEST inside
         # an existing compositor rather than take its headless backend.
@@ -291,7 +273,7 @@ jobs:
         # FAIL the job, never hang it until GitHub's own limit.
         run: |
           # A runner has no XDG_RUNTIME_DIR of its own, and BOTH the audio server
-          # and the compositor put their sockets there — if they disagree, the app
+          # and the compositor put their sockets there, if they disagree, the app
           # finds no sink and the session E2E sees a player that never plays.
           export XDG_RUNTIME_DIR=/tmp/soul-ci-runtime
           mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
@@ -299,7 +281,7 @@ jobs:
           unset WAYLAND_DISPLAY DISPLAY
           rm -f /tmp/test-status
 
-          # The whole session — audio server included — runs inside ONE
+          # The whole session, audio server included, runs inside ONE
           # `dbus-run-session`, as a script file rather than a nested-quoted
           # `sh -c`. PulseAudio is a session service: started outside this bus it
           # is a different session, and clients inside it get "Connection
@@ -308,13 +290,13 @@ jobs:
           cat > /tmp/run-tests.sh <<'SCRIPT'
           #!/usr/bin/env bash
           set -o pipefail
-          cd "$GITHUB_WORKSPACE/app/rune"
+          cd "$GITHUB_WORKSPACE/app"
 
           # A CI runner has NO sound card, and the session E2E needs playback to
           # really run: the player's offline sink can't stand in, because it
           # discards writes with no backpressure, so a track "plays" instantly and
           # there is never a playing state to observe. A PulseAudio null sink is
-          # the portable answer — `snd-dummy` is not in the runner image's kernel
+          # the portable answer: `snd-dummy` is not in the runner image's kernel
           # modules. `libasound2-plugins` supplies the ALSA->Pulse bridge cpal opens.
           # Started in the FOREGROUND, backgrounded by the shell, with its log on
           # stderr: `pulseaudio -D` daemonizes through a fork whose startup
@@ -322,7 +304,7 @@ jobs:
           # failed with a bare "Connection refused" and nothing to diagnose.
           # `module-native-protocol-unix` is NOT optional here: `-n` skips
           # `default.pa`, which is what normally loads it, so without this the
-          # daemon starts and runs happily while listening on nothing at all —
+          # daemon starts and runs happily while listening on nothing at all: 
           # every client gets "Connection refused" from a process that looks
           # perfectly healthy in `ps`. That is precisely what failed here before.
           pulseaudio --exit-idle-time=-1 --disallow-exit -n \
@@ -335,7 +317,7 @@ jobs:
           # Poll rather than assume readiness: the daemon has to bind its socket
           # and load both modules before a client can connect, and a race here
           # looks exactly like a broken sink.
-          # `pactl info` is the real check — it proves a CLIENT in this session
+          # `pactl info` is the real check, it proves a CLIENT in this session
           # can reach the daemon, which `pulseaudio --check` does not.
           for _ in $(seq 1 30); do
             pactl info >/dev/null 2>&1 && break
@@ -345,7 +327,7 @@ jobs:
           if ! pactl info; then
             echo "::error::no reachable PulseAudio sink in this session"
             # Without a sink every playback assertion fails for a reason that is
-            # not a code bug, so stop here — and say what was actually running.
+            # not a code bug, so stop here, and say what was actually running.
             jobs -l || true
             exit 1
           fi
@@ -375,7 +357,7 @@ jobs:
     steps:
       - name: Require all checks to pass
         # For a matrix job, `needs.<job>.result` is success only when EVERY matrix
-        # leg (ubuntu/windows/macos) succeeded — so this gate covers all platforms.
+        # leg (ubuntu/windows/macos) succeeded: so this gate covers all platforms.
         #
         # The gate stays strict: anything other than success fails it, because
         # "we don't know" is not "it passed". What changed is that it now SAYS
@@ -383,7 +365,7 @@ jobs:
         # opposite responses and the old message ("a required CI job failed")
         # could not tell them apart.
         #
-        # A cancelled job is usually a hosted-runner shortage — macOS especially:
+        # A cancelled job is usually a hosted-runner shortage, macOS especially:
         # the job sits with zero steps until GitHub gives up. Nothing is wrong
         # with the code and the remedy is `gh run rerun <id> --failed`. Reading
         # that as a real failure sends you looking for a bug that is not there;
@@ -400,17 +382,17 @@ jobs:
                 printf '  ok         %s\n' "$job"
                 ;;
               cancelled)
-                echo "::error::$job was CANCELLED, not failed — it never ran to completion."
+                echo "::error::$job was CANCELLED, not failed, it never ran to completion."
                 echo "           Usually a hosted-runner shortage (check whether the job has"
                 echo "           zero steps). Re-run it: gh run rerun \$GITHUB_RUN_ID --failed"
                 bad=1
                 ;;
               skipped)
-                echo "::error::$job was SKIPPED — a required job must actually run."
+                echo "::error::$job was SKIPPED, a required job must actually run."
                 bad=1
                 ;;
               *)
-                echo "::error::$job: $result — a real failure; read its log."
+                echo "::error::$job: $result, a real failure; read its log."
                 bad=1
                 ;;
             esac
