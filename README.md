@@ -57,7 +57,7 @@ cd app && cargo build --release            # the player
 Linux needs a few system libraries, listed with the Nix shells and the test
 suites in [docs/DEVELOP.md](docs/DEVELOP.md).
 
-| | |
+| Doc | What it covers |
 |---|---|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | How the layers fit together |
 | [docs/DEVELOP.md](docs/DEVELOP.md) | Toolchains, system deps, Nix, tests |
