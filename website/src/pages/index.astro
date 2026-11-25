@@ -55,25 +55,34 @@ const TABS = [
     <meta property="og:url" content="https://player.soulaudio.co/" />
     <meta name="twitter:card" content="summary_large_image" />
     <style>
-      /* IBM Plex, self-hosted and subset to the characters this page sets. A
-         font CDN would be a third party on a page whose pitch is that the app
-         does not phone home, and the CSP stays at `font-src 'self'`. See
-         public/fonts/README.md. */
+      /* Self-hosted and subset to what this page sets. A font CDN would be a
+         third party on a page whose pitch is that the app does not phone home,
+         and the CSP stays at `font-src 'self'`. See public/fonts/README.md.
+
+         Fraunces sets the wordmark and nothing else: a display serif with real
+         character, which the page can afford in exactly one place. Work Sans
+         reads everything else, and JetBrains Mono takes the shell command. */
       @font-face {
-        font-family: "Plex Sans";
-        src: url("/fonts/plex-sans-400.woff2") format("woff2");
-        font-weight: 400;
-        font-display: swap;
-      }
-      @font-face {
-        font-family: "Plex Sans";
-        src: url("/fonts/plex-sans-600.woff2") format("woff2");
+        font-family: "Fraunces";
+        src: url("/fonts/fraunces-600.woff2") format("woff2");
         font-weight: 600;
         font-display: swap;
       }
       @font-face {
-        font-family: "Plex Mono";
-        src: url("/fonts/plex-mono-400.woff2") format("woff2");
+        font-family: "Work Sans";
+        src: url("/fonts/work-sans-400.woff2") format("woff2");
+        font-weight: 400;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "Work Sans";
+        src: url("/fonts/work-sans-600.woff2") format("woff2");
+        font-weight: 600;
+        font-display: swap;
+      }
+      @font-face {
+        font-family: "JetBrains Mono";
+        src: url("/fonts/jetbrains-mono-400.woff2") format("woff2");
         font-weight: 400;
         font-display: swap;
       }
@@ -109,13 +118,14 @@ const TABS = [
         margin: 0;
         background: var(--bg);
         color: var(--fg);
-        font: 400 16px/1.65 "Plex Sans", ui-sans-serif, system-ui, sans-serif;
+        font: 400 16px/1.65 "Work Sans", ui-sans-serif, system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
       }
       main { max-width: 54rem; margin: 0 auto; padding: 5rem 1.25rem 3rem; }
       h1 {
-        font-size: clamp(2.5rem, 7vw, 3.5rem); font-weight: 600;
-        line-height: 1.05; margin: 0 0 2.75rem; letter-spacing: -.025em;
+        font-family: "Fraunces", Georgia, serif;
+        font-size: clamp(2.75rem, 7.5vw, 4rem); font-weight: 600;
+        line-height: 1.02; margin: 0 0 2.75rem; letter-spacing: -.02em;
       }
       img.shot {
         width: 100%; height: auto; display: block;
@@ -151,11 +161,11 @@ const TABS = [
       pre {
         background: var(--raised); border: 1px solid var(--line); border-radius: 10px;
         padding: 1rem 5rem 1rem 1.125rem; overflow-x: auto; margin: 0;
-        font: 400 13.5px/1.55 "Plex Mono", ui-monospace, SFMono-Regular, monospace;
+        font: 400 13.5px/1.55 "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
       }
       /* The UA gives <code> its own monospace default, so without this the
-         command renders in the browser default rather than Plex. Inheriting
-         only the font keeps the box on the <pre> where it belongs. */
+         command renders in the browser default rather than JetBrains Mono.
+         Inheriting only the font keeps the box on the <pre>. */
       pre code { font: inherit; }
       .copy {
         position: absolute; top: .5rem; right: .5rem;
@@ -185,6 +195,31 @@ const TABS = [
       .js .panel h3 { display: none; }
       .js-only { display: none; }
       .js .js-only { display: flex; }
+
+      /* Three tabs with an icon and a label each do not fit a 320 pt screen,
+         and they are what pushes the page into scrolling sideways. Below this
+         they share the row evenly and tighten up instead. */
+      @media (max-width: 23rem) {
+        .tabs { width: 100%; }
+        .tabs button {
+          flex: 1; justify-content: center;
+          gap: .3rem; padding: .4rem .3rem; font-size: .875rem;
+        }
+      }
+
+      /* The command is wider than a phone, so it scrolls inside its box, and a
+         Copy button floating over it ends up on top of the text. Below this
+         width it sits under the box instead, and the box drops the right
+         padding that was reserving room for it. */
+      @media (max-width: 34rem) {
+        pre { padding-right: 1.125rem; }
+        .copy {
+          position: static; display: block; margin: .5rem 0 0 auto;
+          /* On the page ground now, not on the command box, so it needs the
+             other surface colour to stay visible. */
+          background: var(--raised);
+        }
+      }
 
       footer {
         border-top: 1px solid var(--line); margin-top: 4.5rem; padding-top: 1.75rem;
