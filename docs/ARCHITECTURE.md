@@ -4,30 +4,43 @@
 
 ## Layers
 
+Two heads sit on the same headless stack: the desktop UI, and the server.
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  app/rune (Rune)          native GPU UI — binds the host      │
-│                           directly (no webview, no IPC).      │
-├─────────────────────────────────────────────────────────────┤
-│  crates/soul-player-host  the waist: picks the audio sink,    │
-│  (PlayerHandle)           owns the live Library, fans backend │
-│                           events out. The one handle the UI   │
-│                           binds to.                           │
-├─────────────────────────────────────────────────────────────┤
-│  crates/soul-player-backend   headless desktop logic (std):   │
-│                              folder scan, actor lifecycle,     │
-│                              cover resolution, Command/Event.  │
-├─────────────────────────────────────────────────────────────┤
-│  soul-audio-core (git dep)   the reusable engine: decode,     │
-│  (core / engine / control /  playback control, queue, tag/    │
-│   queue / tags / desktop)    metadata parsing. no_std-capable. │
-└─────────────────────────────────────────────────────────────┘
+┌────────────────────────────────┐   ┌────────────────────────────────┐
+│ app (Rune)                │   │ crates/soul-server             │
+│ native GPU UI; binds the host  │   │ remote source server: index,   │
+│ directly, no webview, no IPC.  │   │ auth, and Range streaming.     │
+└──────────────┬─────────────────┘   └──────────────┬─────────────────┘
+               │                                    │
+┌──────────────▼─────────────────┐                  │
+│ crates/soul-player-host        │                  │
+│ the waist: picks the audio     │                  │
+│ sink, owns the live Library,   │                  │
+│ fans backend events out.       │                  │
+└──────────────┬─────────────────┘                  │
+               │                                    │
+┌──────────────▼────────────────────────────────────▼─────────────────┐
+│ crates/soul-player-backend                                          │
+│ headless desktop logic (std): folder scan, actor lifecycle, cover   │
+│ resolution, Command/Event.                                          │
+├─────────────────────────────────────────────────────────────────────┤
+│ soul-audio-core (git dep)    the reusable engine: decode,           │
+│ (core / engine / control /   playback control, queue, tag/          │
+│  queue / tags / desktop)     metadata parsing. no_std-capable.      │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 Each layer may depend only on the ones below it. The dependency direction is the
-architecture: `app/rune` → `soul-player-host` → `soul-player-backend` →
-`soul-audio-core`. The UI reaches the backend **only** through `PlayerHandle` —
-calling Rust methods directly, never by embedding logic in the view.
+architecture: `app` → `soul-player-host` → `soul-player-backend` →
+`soul-audio-core`, and `soul-server` → `soul-player-backend` → `soul-audio-core`.
+The UI reaches the backend **only** through `PlayerHandle`, calling Rust methods
+directly, never by embedding logic in the view.
+
+`soul-server` skips the host: the host's job is owning an audio *sink*, and a
+server has no speakers. It takes the same backend scan/catalog logic, wraps it in
+its own hexagon (domain + ports, with HTTP as one inbound adapter), and serves the
+untouched file bytes. See [SERVER.md](SERVER.md).
 
 ## Why
 
@@ -37,7 +50,7 @@ calling Rust methods directly, never by embedding logic in the view.
 - **The core is reusable.** `soul-audio-core` is `no_std`-capable so the same
   decode/playback/tag code can run on firmware, not just the desktop app. Logic
   that could run there belongs in core, not in a platform crate.
-- **The UI is a shell.** `app/rune` exists to render and to drive `PlayerHandle`.
+- **The UI is a shell.** `app` exists to render and to drive `PlayerHandle`.
   If it starts making playback/library decisions, the boundary has leaked.
 
 ## Enforcement
@@ -46,9 +59,9 @@ calling Rust methods directly, never by embedding logic in the view.
 | --- | --- | --- |
 | Service pulls in no GUI/windowing crate (`tauri`/`wry`/`tao`/`rune`/`wgpu`/`winit`/…) | `cargo deny check bans` (CI) + a `cargo test` architecture test | root `deny.toml` `[bans]`; `crates/soul-player-backend/tests/architecture.rs` |
 | Service stays memory-safe | `unsafe_code = "forbid"` | root `Cargo.toml` `[workspace.lints.rust]` |
-| The GUI stack lives only in the UI head | separate `deny.app.toml` (GUI crates allowed there only) | `deny.app.toml`, used by `app/rune`'s `cargo deny` run |
+| The GUI stack lives only in the UI head | separate `deny.app.toml` (GUI crates allowed there only) | `deny.app.toml`, used by `app`'s `cargo deny` run |
 | UI → host → service → core direction | Cargo path/dep graph (a reverse edge won't compile) | `Cargo.toml` manifests |
-| Editing a playlist does not mutate the active queue (the queue is a decoupled snapshot) | `cargo test` architecture tests | [ADR 0001](adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md); `app/rune` `views/playlist_detail.rs` (`editing_a_playing_playlist_does_not_mutate_the_queue`, `removing_...`) |
+| Editing a playlist does not mutate the active queue (the queue is a decoupled snapshot) | `cargo test` architecture tests | [ADR 0001](adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md); `app` `views/playlist_detail.rs` (`editing_a_playing_playlist_does_not_mutate_the_queue`, `removing_...`) |
 
 Keep the `FORBIDDEN` list in the architecture test in sync with `deny.toml`'s
 `[bans].deny`.
@@ -60,13 +73,13 @@ recorded as ADRs under [`docs/adr/`](adr/), and (where enforceable) backed by an
 architecture test that cites the ADR by number. Supporting research is archived
 under [`docs/research/`](research/).
 
-- [ADR 0001 — The play queue is a stable snapshot, decoupled from playlists](adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md)
+- [ADR 0001: The play queue is a stable snapshot, decoupled from playlists](adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md)
 
 ## Migration roadmap (logic → core)
 
 The goal is for all **reusable** logic to live in `soul-audio-core` (where it can
 be `no_std` for firmware), leaving `soul-player-backend` as the thin std/desktop
-adapter and `app/rune` as pure visualization.
+adapter and `app` as pure visualization.
 
 - **Already in core:** tag/metadata parsing (`soul-audio-tags`), decode,
   playback control, the queue.

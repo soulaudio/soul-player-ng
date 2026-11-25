@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-11-21
 - **Deciders:** project maintainer
-- **Enforced by:** `app/rune` architecture test `editing_a_playing_playlist_does_not_mutate_the_queue` (+ `..._on_remove`), see [docs/ARCHITECTURE.md](../ARCHITECTURE.md) › Enforcement.
+- **Enforced by:** `app` architecture test `editing_a_playing_playlist_does_not_mutate_the_queue` (+ `..._on_remove`), see [docs/ARCHITECTURE.md](../ARCHITECTURE.md) › Enforcement.
 
 ## Context
 
@@ -49,7 +49,7 @@ and the preference there is strong and near-unanimous:
 - **MusicBee** (forum, a senior member correcting a newcomer): the stored
   Playlist and the Playing-Tracks queue are "completely independent… editing the
   Playlist has no effect on what will be played," and queue edits should not
-  touch the playlist — "nor should it"
+  touch the playlist: "nor should it"
   ([MusicBee thread 42491](https://getmusicbee.com/forum/index.php?topic=42491.0)).
 - **Roon** plays a playlist by copying it into the Queue as a detached snapshot;
   power users want the queue as an independent "sandbox"
@@ -91,10 +91,10 @@ are independent.
   MusicBee / Roon) and with those players' actual designs.
 - Predictable: a playlist edit never surprises you by changing what plays next;
   the currently-playing track is never interrupted or restarted.
-- The behavior we already ship (frozen id-snapshot) is correct — no
+- The behavior we already ship (frozen id-snapshot) is correct, no
   playlist→queue coupling to build or maintain.
 - Keeps the layering clean: the player/queue (host/backend/core) stays unaware
-  of the editable playlist store (`app/rune`).
+  of the editable playlist store (`app`).
 
 **Negative / trade-offs**
 
