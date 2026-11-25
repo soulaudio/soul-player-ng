@@ -119,6 +119,13 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 # `available_monitors()`; this queries the OS display list independently.
 display-info = "0.5"
 
+[dev-dependencies]
+# The counting pass-through allocator, for the `#[ignore]`d 1M-track profiling run
+# (bench_browse_1m_end_to_end): it measures allocations-per-frame to prove the
+# per-frame memoization holds. Installed only in the test build via a SAFE
+# `#[global_allocator]` declaration, so the crate stays `forbid(unsafe_code)`.
+alloc-probe = { path = "../crates/alloc-probe" }
+
 # The Linux session E2E test (`tests/linux_session_e2e.rs`) spawns the REAL
 # binary and inspects the MPRIS session it publishes, so it needs a D-Bus
 # client of its own. `zbus` rather than shelling out to `playerctl`/`busctl`:
