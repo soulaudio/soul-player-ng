@@ -6,26 +6,34 @@
 # own target/, not the root /target above.
 /crates/soul-player-host/target/
 
-# app/rune is its own nested cargo workspace (Rune/wgpu), target/ stays out.
-/app/rune/target/
+# app/ (the Rune UI head) is its own nested cargo workspace (Rune/wgpu),
+# so its target/ stays out.
+/app/target/
 
 # alloc-probe is a standalone dev-only crate (its own workspace), path-dep'd by the
 # player crates for the counting test allocator; its build output stays out too.
 /crates/alloc-probe/target/
 
-# Updater private signing key — must NEVER be committed. cargo-packager-updater's
+# Updater private signing key: must NEVER be committed. cargo-packager-updater's
 # keypair is generated locally; the private key is held as a CI secret, the public
 # key is embedded in the app. Keep every private key out of git.
 /.signing/
 *.key
 *.key.pub
 
-# Obsolete Tauri-era updater keypair (Tauri was removed) — keep the whole dir out.
+# Obsolete Tauri-era updater keypair (Tauri was removed). Keep the whole dir out.
 /.tauri/
 
-# Agent / tooling scratch (Claude worktrees, Playwright MCP) — never commit.
+# Agent / tooling scratch (Claude worktrees + skills, Playwright MCP). Never
+# commit these.
 /.claude/
 /.playwright-mcp/
+
+# Internal working notes, kept out of the published repo: agent-written design
+# specs and implementation plans, and the UI parity shots taken against the old
+# closed-source app. Published design rationale belongs in docs/adr/ instead.
+/docs/superpowers/
+/docs/ui-reference/
 
 # Python bytecode from the release scripts (.github/scripts/*.py).
 __pycache__/
@@ -34,9 +42,13 @@ __pycache__/
 .superpowers/
 packaging/deb/generated/
 
-# Generated from app/rune/Cargo.lock by packaging/flathub/generate-sources.sh.
+# Generated from app/Cargo.lock by packaging/flathub/generate-sources.sh.
 # NOT committed: it is a 440 KB build artifact that would need regenerating on
 # every dependency bump, which turned every Dependabot PR into a CI failure.
 # It is deterministic from the lockfile (verified: an independent regeneration
 # matched byte-for-byte), so generating it when needed loses nothing.
 packaging/flathub/cargo-sources.json
+
+# A local soul-server config (library paths, bind address, db location). The
+# committed template is soul-server.example.toml.
+/soul-server.toml
