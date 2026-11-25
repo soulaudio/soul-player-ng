@@ -389,6 +389,29 @@ fn load() -> Config {
     migrate_legacy().unwrap_or_default()
 }
 
+/// Write `bytes` to `path` atomically: write a sibling temp file, then rename it
+/// over `path`. `fs::rename` replaces the destination atomically on both Unix and
+/// Windows (MoveFileEx + REPLACE_EXISTING), and the temp sits beside the target on
+/// the same filesystem, so a crash mid-write can never truncate an existing file: a
+/// reader sees the old complete file or the new one, never a half-written one. The
+/// temp is removed on a rename failure. Shared by every config save below; a plain
+/// `fs::write` would leave a truncated config.toml on a crash, dropping ALL settings
+/// on the next load (the whole file is load-modify-written for each setting). The
+/// caller ensures the parent dir exists.
+fn atomic_write(path: &Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, bytes)?;
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
+}
+
 /// Write the config as pretty TOML (best-effort).
 fn save(cfg: &Config) {
     if let Some(p) = config_path() {
@@ -396,7 +419,7 @@ fn save(cfg: &Config) {
             let _ = std::fs::create_dir_all(dir);
         }
         if let Ok(body) = toml::to_string_pretty(cfg) {
-            let _ = std::fs::write(&p, body);
+            let _ = atomic_write(&p, body);
         }
     }
 }
@@ -846,7 +869,7 @@ fn save_device_to(path: &Path, name: Option<&str>) -> std::io::Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     let body = name.map(str::trim).filter(|n| !n.is_empty()).unwrap_or("");
-    std::fs::write(path, body)
+    atomic_write(path, body)
 }
 
 // --- exclusive (bit-perfect) output preference ---
@@ -888,7 +911,7 @@ fn save_exclusive_to(path: &Path, on: bool) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, if on { "1" } else { "" })
+    atomic_write(path, if on { "1" } else { "" })
 }
 
 /// `<config>/soul-player/output_exclusive_strict.txt`: the persisted **strict**
@@ -1075,7 +1098,7 @@ fn save_rg_to(path: &Path, mode: ReplayGainMode, preamp_db: f32) -> std::io::Res
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(path, format!("{}\n{preamp_db}", mode_as_str(mode)))
+    atomic_write(path, format!("{}\n{preamp_db}", mode_as_str(mode)))
 }
 
 // --- hybrid-ReplayGain loudness cache ---
@@ -1230,7 +1253,7 @@ fn record_loudness_to(
         .map(|(_, l)| l.as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    std::fs::write(cache_path, body)
+    atomic_write(cache_path, body)
 }
 
 // --- per-source scan cache (warm startup) ---
@@ -1298,12 +1321,42 @@ fn save_scan_caches_to(path: &Path, caches: &HashMap<PathBuf, ScanCache>) -> std
     };
     let bytes = postcard::to_allocvec(&payload)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, bytes)
+    atomic_write(path, bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A config write goes through a temp file + rename: it round-trips, OVERWRITES
+    /// an existing file (the rename-over-target that must work on Windows too), and
+    /// leaves no stray `.tmp`. The crash atomicity itself needs crash injection to
+    /// exercise; this locks the temp-then-rename contract so a future edit can't
+    /// quietly regress to a truncating in-place `fs::write`.
+    #[test]
+    fn atomic_write_overwrites_and_leaves_no_temp() {
+        let dir = std::env::temp_dir().join(format!("soul_rune_atomic_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+
+        atomic_write(&path, "first").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+
+        atomic_write(&path, "second, longer content").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "second, longer content"
+        );
+
+        let mut tmp = path.clone().into_os_string();
+        tmp.push(".tmp");
+        assert!(
+            !PathBuf::from(tmp).exists(),
+            "the temp file is renamed away, not left behind"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn config_toml_roundtrips() {
