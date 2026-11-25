@@ -1778,7 +1778,18 @@ impl PlayerHandle {
         for root in &roots {
             let _ = debouncer.watcher().watch(root, RecursiveMode::Recursive);
         }
-        *self.inner.watcher.lock().expect("watcher mutex") = Some(debouncer);
+        // Install the new debouncer and take the old one OUT of the mutex, then drop it
+        // AFTER the guard is released. `Debouncer`'s `Drop` joins its debounce thread,
+        // and a scoped rescan may be in flight on that thread, so dropping the old one
+        // while still holding the `watcher` lock would stall any concurrent
+        // `rearm_watcher`/`start_watching` for the length of that scan.
+        let previous = self
+            .inner
+            .watcher
+            .lock()
+            .expect("watcher mutex")
+            .replace(debouncer);
+        drop(previous);
     }
 
     /// Re-arm the watcher over the current roots, but only if it is already running,
