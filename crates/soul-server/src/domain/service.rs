@@ -1,8 +1,8 @@
 //! `Services`: the use-case layer the protocol adapter calls into.
 //!
 //! Composes the three ports ([`IndexPort`], [`MediaStore`], [`UserStore`])
-//! behind a handful of methods that *are* the server's behavior — auth,
-//! catalog, streaming — so the (forthcoming) HTTP adapter has no business
+//! behind a handful of methods that *are* the server's behavior, auth,
+//! catalog, streaming, so the (forthcoming) HTTP adapter has no business
 //! logic of its own, only wire framing.
 
 use std::io;
@@ -46,8 +46,8 @@ fn io_err(e: io::Error) -> DomainError {
 /// OAuth-flow use cases: credential verification (minting the actual access
 /// token is `/token`'s job, via [`crate::auth::signer::Signer`], not this
 /// store), plus the refresh-token lifecycle. Bounded on
-/// [`RefreshStore`] in addition to [`UserStore`] because — unlike the
-/// `/v0` native protocol — the `/authorize`/`/token`/`/revoke` endpoints
+/// [`RefreshStore`] in addition to [`UserStore`] because, unlike the
+/// `/v0` native protocol, the `/authorize`/`/token`/`/revoke` endpoints
 /// need durable, rotating refresh tokens, which only a store backing both
 /// traits (`FileUsers`) can provide.
 impl<I: IndexPort, M: MediaStore, U> Services<I, M, U>
@@ -55,7 +55,7 @@ where
     U: UserStore + crate::auth::refresh::RefreshStore,
 {
     /// Verify a username/password pair, returning the matched user without
-    /// issuing a token — the `/authorize` login form only needs a yes/no
+    /// issuing a token, the `/authorize` login form only needs a yes/no
     /// answer before minting an OAuth authorization code.
     pub fn verify_credentials(&self, user: &str, pass: &str) -> Option<UserId> {
         self.users.verify(user, pass)
@@ -73,7 +73,7 @@ where
     }
 
     /// Revoke a refresh token. The caller (RFC 7009's `/revoke`) always
-    /// responds `200` regardless of this method's result — it exists so the
+    /// responds `200` regardless of this method's result, it exists so the
     /// handler doesn't need to know the store's internals, not so it can
     /// branch on whether the token existed.
     pub fn revoke_refresh(&self, raw: &str) -> bool {
@@ -127,7 +127,7 @@ mod tests {
         }
     }
 
-    /// [`MediaStore`] fake over the real filesystem (a temp file) — reusing
+    /// [`MediaStore`] fake over the real filesystem (a temp file), reusing
     /// `std::fs` here is simplest and still exercises the real `Read`/`Seek`
     /// path the protocol adapter will stream from.
     struct FakeMedia;
