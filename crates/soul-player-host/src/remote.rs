@@ -30,6 +30,7 @@ use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 
 use anyhow::{Context, bail};
 use base64::Engine as _;
@@ -400,6 +401,18 @@ struct Window {
     bytes: Vec<u8>,
 }
 
+/// A read-ahead fetch of the NEXT sequential window, running on a background
+/// thread. Started once a read crosses the current window's prefetch threshold,
+/// so the read that eventually runs past the window joins an already-in-flight
+/// (usually finished) fetch instead of paying a full round-trip inline on the
+/// consuming thread (the audio pump during playback). `start` is the absolute
+/// track offset this fetch is for, so a read can tell whether the pending
+/// prefetch is the window it now needs or a stale one left behind by a seek.
+struct Prefetch {
+    start: u64,
+    handle: JoinHandle<io::Result<(Vec<u8>, u64)>>,
+}
+
 /// A `std::io::Read + Seek` stream over a remote track's bytes, backed by
 /// HTTP Range requests against `GET {url}/v0/track/{id}` rather than
 /// downloading the whole file up front (see [`DownloadCache`] for that
@@ -426,6 +439,12 @@ pub struct HttpRangeReader {
     /// window, cleared rather than refetched immediately, so a seek itself
     /// never touches the network; the next `read` refetches at `pos`.
     window: Option<Window>,
+    /// An in-flight read-ahead of the next window, if one has been started for
+    /// the current sequential run (see [`Prefetch`]). At most one runs at a
+    /// time. Dropped when the reader drops: the worker owns its own HTTP client
+    /// and finishes on its own (bounded by the request timeout), so no join is
+    /// forced on the dropping thread (which may be the pump or loader).
+    prefetch: Option<Prefetch>,
 }
 
 impl HttpRangeReader {
@@ -443,6 +462,7 @@ impl HttpRangeReader {
             total_len: 0,
             pos: 0,
             window: None,
+            prefetch: None,
         };
         let (bytes, total_len) = reader
             .fetch_chunk(0)
@@ -468,6 +488,59 @@ impl HttpRangeReader {
             .is_some_and(|w| pos >= w.start && pos < w.start + w.bytes.len() as u64)
     }
 
+    /// If a read-ahead for exactly `start` is in flight, take it and block on its
+    /// result (often already ready); otherwise `None`, so the caller fetches
+    /// synchronously. A pending prefetch for a DIFFERENT start, left behind by a
+    /// seek, is discarded here (its handle dropped, detaching the worker) so it is
+    /// never mistaken for the window now needed.
+    fn take_prefetched(&mut self, start: u64) -> Option<io::Result<(Vec<u8>, u64)>> {
+        match self.prefetch.take() {
+            Some(p) if p.start == start => Some(match p.handle.join() {
+                Ok(result) => result,
+                Err(_) => Err(io::Error::other("remote read-ahead worker panicked")),
+            }),
+            _ => None,
+        }
+    }
+
+    /// Start a background read-ahead of the next sequential window once the read
+    /// position has passed the current window's halfway point, giving the fetch a
+    /// head start before the window is exhausted. No-op if one is already in flight,
+    /// if there is no window yet, or if the next window would begin at/after EOF.
+    fn maybe_prefetch(&mut self) {
+        if self.prefetch.is_some() {
+            return;
+        }
+        let Some(window) = self.window.as_ref() else {
+            return;
+        };
+        let window_len = window.bytes.len() as u64;
+        let next_start = window.start + window_len;
+        // Nothing past this window, or not enough of it consumed yet to justify
+        // holding a second window resident.
+        if next_start >= self.total_len || self.pos < window.start + window_len / 2 {
+            return;
+        }
+        let client = self.client.clone();
+        let url = self.url.clone();
+        let access_token = self.access_token.clone();
+        let track_id = self.track_id;
+        let handle = std::thread::Builder::new()
+            .name("remote-prefetch".into())
+            .spawn(move || fetch_range(&client, &url, track_id, &access_token, next_start))
+            .expect("spawn remote read-ahead worker");
+        self.prefetch = Some(Prefetch {
+            start: next_start,
+            handle,
+        });
+    }
+
+    /// Test hook: the absolute start offset of the in-flight read-ahead, if any.
+    #[cfg(test)]
+    fn prefetch_start(&self) -> Option<u64> {
+        self.prefetch.as_ref().map(|p| p.start)
+    }
+
     /// Fetches one [`CHUNK_SIZE`] window starting at `start` via an HTTP
     /// Range request, returning the fetched bytes alongside the track's
     /// total length (parsed from the response's `Content-Range` header).
@@ -480,40 +553,59 @@ impl HttpRangeReader {
     /// back as `(no bytes, length 0)` rather than an `Err`, so opening a
     /// reader over an empty track still succeeds (immediately at EOF).
     fn fetch_chunk(&self, start: u64) -> io::Result<(Vec<u8>, u64)> {
-        let end = start.saturating_add(CHUNK_SIZE - 1);
-        let endpoint = format!("{}/v0/track/{}", self.url, self.track_id);
-        let response = self
-            .client
-            .get(&endpoint)
-            .bearer_auth(&self.access_token)
-            .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
-            .send()
-            .map_err(io::Error::other)?;
-
-        if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
-            return Ok((Vec::new(), 0));
-        }
-        if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-            return Err(io::Error::other(format!(
-                "GET {endpoint} (Range: bytes={start}-{end}) returned {}",
-                response.status()
-            )));
-        }
-
-        let total_len = response
-            .headers()
-            .get(reqwest::header::CONTENT_RANGE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_content_range_total)
-            .ok_or_else(|| {
-                io::Error::other(
-                    "206 Partial Content response had no parsable Content-Range header",
-                )
-            })?;
-
-        let bytes = response.bytes().map_err(io::Error::other)?;
-        Ok((bytes.to_vec(), total_len))
+        fetch_range(
+            &self.client,
+            &self.url,
+            self.track_id,
+            &self.access_token,
+            start,
+        )
     }
+}
+
+/// Fetch one [`CHUNK_SIZE`] window starting at `start` via an HTTP Range request,
+/// returning the bytes plus the track's total length. A free function (not a method)
+/// so the read-ahead worker thread can call it with owned clones of the connection
+/// fields, without borrowing the `HttpRangeReader`. Same contract as
+/// [`HttpRangeReader::fetch_chunk`]: a `416` on a wholly empty track is reported as
+/// `(no bytes, length 0)`, not an error.
+fn fetch_range(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    track_id: u32,
+    access_token: &str,
+    start: u64,
+) -> io::Result<(Vec<u8>, u64)> {
+    let end = start.saturating_add(CHUNK_SIZE - 1);
+    let endpoint = format!("{url}/v0/track/{track_id}");
+    let response = client
+        .get(&endpoint)
+        .bearer_auth(access_token)
+        .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
+        .send()
+        .map_err(io::Error::other)?;
+
+    if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+        return Ok((Vec::new(), 0));
+    }
+    if response.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        return Err(io::Error::other(format!(
+            "GET {endpoint} (Range: bytes={start}-{end}) returned {}",
+            response.status()
+        )));
+    }
+
+    let total_len = response
+        .headers()
+        .get(reqwest::header::CONTENT_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_content_range_total)
+        .ok_or_else(|| {
+            io::Error::other("206 Partial Content response had no parsable Content-Range header")
+        })?;
+
+    let bytes = response.bytes().map_err(io::Error::other)?;
+    Ok((bytes.to_vec(), total_len))
 }
 
 /// Parses the `TOTAL` out of a `Content-Range: bytes START-END/TOTAL` header
@@ -533,7 +625,13 @@ impl Read for HttpRangeReader {
         }
 
         if !self.window_contains(self.pos) {
-            let (bytes, _total_len) = self.fetch_chunk(self.pos)?;
+            // Prefer a read-ahead already fetching this exact window (started when
+            // a prior read crossed the previous window's halfway point); fall back
+            // to a synchronous fetch after a seek or at the very first read.
+            let (bytes, _total_len) = match self.take_prefetched(self.pos) {
+                Some(result) => result?,
+                None => self.fetch_chunk(self.pos)?,
+            };
             self.window = Some(Window {
                 start: self.pos,
                 bytes,
@@ -549,6 +647,10 @@ impl Read for HttpRangeReader {
         let n = available.len().min(buf.len());
         buf[..n].copy_from_slice(&available[..n]);
         self.pos += n as u64;
+        // Line up the next window before this one runs out, so the read that
+        // crosses the boundary joins a finished fetch instead of blocking on one
+        // (the pump thread must never stall on a network round-trip mid-playback).
+        self.maybe_prefetch();
         Ok(n)
     }
 }
@@ -1441,6 +1543,62 @@ mod tests {
         assert_eq!(
             got, expected_bytes,
             "streamed bytes should exactly match a full download of the same track"
+        );
+    }
+
+    /// The read-ahead contract (the anti-dropout guarantee for remote playback):
+    /// once a read crosses the current window's midpoint, the NEXT window is already
+    /// being fetched on a background thread, so the read that eventually runs past
+    /// the window joins a finished fetch instead of stalling the consuming (pump)
+    /// thread on a network round-trip. And the stream stays byte-identical throughout.
+    #[test]
+    fn http_range_reader_reads_the_next_window_ahead_before_the_current_one_runs_out() {
+        let server = start_server();
+        let remote = RemoteServer {
+            url: server.url.clone(),
+            access_token: server.token(),
+        };
+        // Bigger than one window, so there IS a next window to read ahead.
+        let (track_id, expected_bytes) = find_track_at_least(&server, CHUNK_SIZE + 1);
+        let mut reader =
+            HttpRangeReader::new(&remote, track_id).expect("construct HttpRangeReader");
+
+        // Construction only primed window 0; nothing consumed yet, so no read-ahead.
+        assert_eq!(
+            reader.prefetch_start(),
+            None,
+            "a freshly opened reader should not have prefetched anything"
+        );
+
+        // Read past the midpoint of window 0 WITHOUT crossing its end.
+        let head_len = (CHUNK_SIZE * 3 / 4) as usize;
+        let mut head = vec![0u8; head_len];
+        reader
+            .read_exact(&mut head)
+            .expect("read the head of window 0");
+        assert_eq!(
+            head,
+            expected_bytes[..head_len],
+            "window 0 bytes must be exact"
+        );
+
+        // Crossing the midpoint must have started reading window 1 ahead (the spawn
+        // happens synchronously inside read(), so this is deterministic).
+        assert_eq!(
+            reader.prefetch_start(),
+            Some(CHUNK_SIZE),
+            "a read past the window midpoint should begin fetching the next window"
+        );
+
+        // End to end the stream is still byte-identical: the prefetched window
+        // installs at the right offset with its data intact.
+        let mut rest = Vec::new();
+        reader.read_to_end(&mut rest).expect("read the remainder");
+        let mut got = head;
+        got.extend_from_slice(&rest);
+        assert_eq!(
+            got, expected_bytes,
+            "read-ahead must not corrupt or misalign the streamed bytes"
         );
     }
 
