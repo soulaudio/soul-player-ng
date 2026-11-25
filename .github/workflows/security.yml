@@ -20,9 +20,8 @@ jobs:
   audit:
     name: cargo audit (RustSec advisories)
     runs-on: ubuntu-latest
-    # cargo-audit reads only the lockfiles (no source fetch), so the private core
-    # dependency needs no auth here. Pin the shim to stable: the prebuilt binary
-    # is toolchain-independent.
+    # cargo-audit reads only the lockfiles (no source fetch). Pin the shim to
+    # stable: the prebuilt binary is toolchain-independent.
     env:
       RUSTUP_TOOLCHAIN: stable
     steps:
@@ -33,7 +32,7 @@ jobs:
       - name: Scan both lockfiles
         run: |
           cargo audit --file Cargo.lock
-          cargo audit --file app/rune/Cargo.lock
+          cargo audit --file app/Cargo.lock
 
   deny:
     name: cargo-deny (licenses, bans, sources)
@@ -41,12 +40,8 @@ jobs:
     env:
       RUSTUP_TOOLCHAIN: stable
       CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-      CORE_REPO_TOKEN: ${{ secrets.CORE_REPO_TOKEN }}
     steps:
       - uses: actions/checkout@v7.0.1
-      - name: Authenticate the private soul-audio-core git dependency
-        if: ${{ env.CORE_REPO_TOKEN != '' }}
-        run: git config --global url."https://x-access-token:${CORE_REPO_TOKEN}@github.com/".insteadOf "https://github.com/"
       - uses: taiki-e/install-action@v2.90.1
         with:
           # Pinned: cargo-deny moved `--config` between a global flag and a
@@ -57,10 +52,10 @@ jobs:
       # crates via deny.toml; the Rune UI head legitimately uses them (wgpu/winit)
       # and consumes `rune` as a git dep, so it gets its own deny.app.toml (no GUI
       # ban + the rune git source allowed). See docs/ARCHITECTURE.md.
-      - name: Check root workspace (headless — no GUI)
+      - name: Check root workspace (headless, no GUI)
         run: cargo deny --manifest-path Cargo.toml check bans licenses sources
       - name: Check Rune app workspace
-        run: cargo deny --manifest-path app/rune/Cargo.toml check --config deny.app.toml bans licenses sources
+        run: cargo deny --manifest-path app/Cargo.toml check --config deny.app.toml bans licenses sources
 
   secrets:
     name: gitleaks (secret scan)
@@ -85,7 +80,7 @@ jobs:
     # unmaintained / unsoundness notices can't be fixed here; OSV surfaces the
     # broader OSV.dev DB into the run summary without failing CI. The blocking
     # Rust gate is `cargo audit` above. (Lesson from the soul-player monorepo:
-    # don't hard-fail scheduled scans on un-actionable transitive noise — report
+    # don't hard-fail scheduled scans on un-actionable transitive noise, report
     # it.)
     continue-on-error: true
     steps:
@@ -100,7 +95,7 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           osv-scanner scan source \
             -L Cargo.lock \
-            -L app/rune/Cargo.lock 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+            -L app/Cargo.lock 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   sbom:
