@@ -2463,8 +2463,8 @@ mod tests {
 
     /// Memory constraint (via the alloc-probe counting allocator): the baked `.soulidx`
     /// blobs a rebuild gathers out of `source_bytes` are shared [`IndexBlob`]s, so
-    /// cloning them — which `rebuild_remote_library` does for EVERY local source (and
-    /// every remote blob) on every rebuild — is a refcount bump, NOT an O(size) copy of
+    /// cloning them, which `rebuild_remote_library` does for EVERY local source (and
+    /// every remote blob) on every rebuild, is a refcount bump, NOT an O(size) copy of
     /// each (potentially multi-MB) index. Reverting `IndexBlob` to `Vec<u8>` would copy
     /// every byte and fail this.
     #[test]
