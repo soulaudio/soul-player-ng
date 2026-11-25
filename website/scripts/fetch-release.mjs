@@ -77,4 +77,13 @@ const data = {
 
 await mkdir(dirname(OUT), { recursive: true });
 await writeFile(OUT, `${JSON.stringify(data, null, 2)}\n`);
+
+// Served at /version.json: what the live site is currently advertising. The
+// scheduled job compares it against the latest release to decide whether the
+// page has fallen behind, and the deploy checks it afterwards to confirm the
+// new build is really the one being served.
+const MARKER = resolve(HERE, '../public/version.json');
+await mkdir(dirname(MARKER), { recursive: true });
+await writeFile(MARKER, `${JSON.stringify({ version: data.version, tag: data.tag }, null, 2)}\n`);
+
 console.log(`release ${data.tag}: ${downloads.length} downloads -> src/data/release.json`);

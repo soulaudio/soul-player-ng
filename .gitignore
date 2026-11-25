@@ -64,3 +64,4 @@ packaging/flathub/cargo-sources.json
 /website/public/install.sh
 /website/public/screenshot.png
 /website/public/favicon.png
+/website/public/version.json

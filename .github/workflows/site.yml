@@ -3,9 +3,18 @@ name: Site
 # player.soulaudio.co. Built from website/ and published to a Bunny storage
 # zone behind a pull zone.
 #
-# The release trigger is the one that matters: release asset filenames carry
-# the version, so without a redeploy the download buttons keep pointing at the
-# previous release.
+# Keeping the page in sync with the current release takes three triggers,
+# because any one of them can miss:
+#
+#   release.yml  calls this once a release verifies. The normal path, and the
+#                fast one. Asset filenames carry the version, so without it the
+#                download buttons keep pointing at the previous release.
+#   schedule     the backstop. Catches a deploy that failed, a release edited
+#                or withdrawn by hand, and anything else that happened without
+#                a push. It compares the live /version.json against the latest
+#                release and only builds when the site has actually fallen
+#                behind, so a quiet week costs nothing but the check.
+#   push         website/ or the installer changed, so the page changed.
 #
 # release.yml calls this as a reusable workflow rather than firing a
 # repository_dispatch at it, because an event raised with GITHUB_TOKEN does not
@@ -19,6 +28,10 @@ on:
       - "packaging/install.sh"
       - "docs/screenshots/albums-dark.png"
       - ".github/workflows/site.yml"
+  schedule:
+    # Every six hours. The release path already redeploys within minutes, so
+    # this only has to catch the cases that path misses.
+    - cron: "41 */6 * * *"
   workflow_call:
   workflow_dispatch:
 
@@ -30,6 +43,9 @@ permissions:
 concurrency:
   group: site
   cancel-in-progress: false
+
+env:
+  SITE_URL: https://player.soulaudio.co
 
 jobs:
   deploy:
@@ -61,12 +77,61 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: npm run build
 
+      # On a schedule there is usually nothing to do. Deploying anyway would
+      # purge the cache every six hours for no reason, so compare first: the
+      # build knows the latest version, the live site says what it is serving.
+      # Any other trigger means the page itself may have changed, so it always
+      # deploys.
+      - name: Is the live site behind?
+        id: check
+        run: |
+          set -uo pipefail
+          built=$(jq -r .version dist/version.json)
+          echo "built=$built" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "reason=triggered by ${{ github.event_name }}" >> "$GITHUB_OUTPUT"
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Cache-busting query so this reads the origin, not an edge copy.
+          live=$(curl -fsS --max-time 20 "$SITE_URL/version.json?t=$RANDOM" | jq -r .version || echo unreachable)
+          echo "live=$live" >> "$GITHUB_OUTPUT"
+          if [ "$live" = "$built" ]; then
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Live site is on $live, the latest release. Nothing to do."
+          else
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "reason=live is $live, latest is $built" >> "$GITHUB_OUTPUT"
+            echo "::warning::Live site is on $live but the latest release is $built. Redeploying."
+          fi
+
       # Until the Bunny zones exist the build still runs on every push, which is
       # the half that catches a broken page. Publishing is skipped with a notice
       # rather than failing, the same posture as the Homebrew tap push.
       - name: Publish to Bunny
-        if: env.BUNNY_STORAGE_ZONE != ''
+        if: steps.check.outputs.stale == 'true' && env.BUNNY_STORAGE_ZONE != ''
         run: node scripts/deploy-bunny.mjs
+
+      # A deploy that uploads cleanly can still leave the old page in front of
+      # people: a cache rule that holds HTML too long, a purge that did not
+      # take. Checking afterwards turns that into a red run instead of a page
+      # nobody notices is stale.
+      - name: Confirm the live site serves this version
+        if: steps.check.outputs.stale == 'true' && env.BUNNY_STORAGE_ZONE != ''
+        run: |
+          set -uo pipefail
+          built="${{ steps.check.outputs.built }}"
+          for attempt in 1 2 3 4 5; do
+            live=$(curl -fsS --max-time 20 "$SITE_URL/version.json?t=$RANDOM" | jq -r .version || echo unreachable)
+            if [ "$live" = "$built" ]; then
+              echo "::notice::$SITE_URL is serving $live."
+              exit 0
+            fi
+            echo "attempt $attempt: live is $live, expected $built"
+            sleep 10
+          done
+          echo "::error::$SITE_URL still serves $live after the deploy and purge; expected $built."
+          exit 1
 
       - name: Publishing skipped
         if: env.BUNNY_STORAGE_ZONE == ''
