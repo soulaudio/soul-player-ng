@@ -95,6 +95,21 @@ case "$MODE" in
 		# binary is the point.
 		head -c 4 "$bin" | od -An -tx1 | grep -q '7f 45 4c 46' || fail "$bin is not an ELF"
 		[ "$(wc -c <"$bin")" -gt 10000000 ] || fail "$bin is implausibly small"
+		# e_machine sits at offset 18 of the ELF header, little endian:
+		# 3e00 is x86-64, b700 is aarch64. A wrong-architecture AppImage
+		# installs perfectly happily and then fails to exec, so the ELF check
+		# alone is not enough.
+		machine=$(od -An -tx1 -j18 -N2 "$bin" | tr -d ' 
+')
+		case "$(uname -m)" in
+			x86_64) want=3e00 ;;
+			aarch64 | arm64) want=b700 ;;
+			*) want= ;;
+		esac
+		if [ -n "$want" ] && [ "$machine" != "$want" ]; then
+			fail "$bin is built for e_machine $machine, this is $(uname -m) (expected $want)"
+		fi
+		ok "built for $(uname -m)"
 		[ -f "$HOME/.local/share/applications/co.soulaudio.soulplayer.desktop" ] ||
 			fail "no desktop entry"
 		ok "AppImage installed at $bin"
