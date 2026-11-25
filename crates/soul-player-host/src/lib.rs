@@ -78,7 +78,7 @@ pub use soul_player_backend::{
     BrowseAxis, Command, Cover, DiscSection, Event, LoudnessAnalysisMode, PlayState, QueueState,
     RepeatMode, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath,
     SkipReason, SkippedGroup, SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
-    album_identity_key, album_tracklist, disc_track_key,
+    album_identity_key, album_tracklist, disc_track_key, unlocated_album_identity_key,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -1919,6 +1919,23 @@ impl PlayerHandle {
         lib.locator_of(id)
     }
 
+    /// Durable album identities ([`album_identity_key`]) for `(representative
+    /// track id, album title)` pairs, one per pair and in order, resolved against
+    /// the open library (local or remote aggregate) under one lock. A pair whose
+    /// id has no locator (no library open, or a stale id) gets
+    /// [`unlocated_album_identity_key`] for its title.
+    pub fn album_identities(&self, reps: &[(u32, &str)]) -> Vec<String> {
+        let lib = self.inner.library.lock().expect("library mutex").clone();
+        reps.iter()
+            .map(
+                |&(id, title)| match lib.as_ref().and_then(|l| l.locator_of(id)) {
+                    Some(loc) => album_identity_key(&loc, title),
+                    None => unlocated_album_identity_key(title),
+                },
+            )
+            .collect()
+    }
+
     /// Resolve durable locators back to current track ids against whatever
     /// library is open. Delegates to [`Library::resolve_locators`]; `None`
     /// for each entry (no library open, or that locator doesn't resolve)
@@ -3056,6 +3073,49 @@ mod tests {
             path: "D:/nope/gone.flac".into(),
         };
         assert_eq!(h.resolve_locators(&[missing]), vec![None]);
+    }
+
+    /// Same-title albums in two folders get two identities; CD1/CD2 of one album
+    /// get one; an unresolvable id falls back to the title-only identity.
+    #[test]
+    fn album_identities_tell_same_title_editions_apart_and_join_disc_folders() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for rel in [
+            "Hits A/01.wav",
+            "Hits B/01.wav",
+            "Box/CD1/01.wav",
+            "Box/CD2/01.wav",
+        ] {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, wav(48_000, 96_000)).unwrap();
+        }
+        let h = PlayerHandle::offline();
+        h.open_folder(dir.path()).expect("open_folder");
+        let id_of = |suffix: &str| {
+            h.views()
+                .iter()
+                .map(|t| t.id)
+                .find(|&id| {
+                    matches!(h.locator_of(id), Some(TrackLocator::Local { path }) if path.ends_with(suffix))
+                })
+                .unwrap_or_else(|| panic!("no track at {suffix}"))
+        };
+        let (a, b) = (id_of("Hits A/01.wav"), id_of("Hits B/01.wav"));
+        let (c1, c2) = (id_of("Box/CD1/01.wav"), id_of("Box/CD2/01.wav"));
+        let keys = h.album_identities(&[
+            (a, "Greatest Hits"),
+            (b, "Greatest Hits"),
+            (c1, "Box"),
+            (c2, "Box"),
+        ]);
+        assert_ne!(keys[0], keys[1], "two editions, two identities");
+        assert_eq!(keys[2], keys[3], "CD1 and CD2 are one album");
+        assert_eq!(
+            PlayerHandle::offline().album_identities(&[(a, "Greatest Hits")]),
+            vec![unlocated_album_identity_key("Greatest Hits")],
+            "no library: the title-only fallback"
+        );
     }
 
     /// The playlist's greyed "unavailable" state is UNIVERSAL, not remote-only:

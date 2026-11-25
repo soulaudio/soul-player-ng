@@ -1222,10 +1222,31 @@ impl State {
         {
             return rc.clone();
         }
-        let grouped: std::rc::Rc<[views::albums::Album]> =
-            views::albums::group_albums(&self.library).into();
+        let mut albums = views::albums::group_albums(&self.library);
+        self.stamp_album_identities(&mut albums);
+        let grouped: std::rc::Rc<[views::albums::Album]> = albums.into();
         *self.albums_cache.borrow_mut() = Some((fp, grouped.clone()));
         grouped
+    }
+
+    /// Replace each album's title-only identity with the durable one the host
+    /// derives from its cover track's locator (one host call, one lock). Runs
+    /// only on a cache fill, i.e. once per library change.
+    fn stamp_album_identities(&self, albums: &mut [views::albums::Album]) {
+        let titles: Vec<(u32, String)> = albums
+            .iter()
+            .map(|a| {
+                let title = self
+                    .track(a.cover_id)
+                    .and_then(|t| t.album.as_deref())
+                    .unwrap_or("");
+                (a.cover_id, title.to_string())
+            })
+            .collect();
+        let reps: Vec<(u32, &str)> = titles.iter().map(|(id, t)| (*id, t.as_str())).collect();
+        for (album, key) in albums.iter_mut().zip(self.host.album_identities(&reps)) {
+            album.identity = covers::AlbumIdentity::new(key);
+        }
     }
 
     /// The album detail page's content for `r`, memoized against the library
@@ -1284,8 +1305,9 @@ impl State {
             .iter()
             .filter_map(|id| self.track(*id).cloned())
             .collect();
-        let disc: std::rc::Rc<[views::albums::Album]> =
-            views::albums::discography_of(&subset, src).into();
+        let mut disc = views::albums::discography_of(&subset, src);
+        self.stamp_album_identities(&mut disc);
+        let disc: std::rc::Rc<[views::albums::Album]> = disc.into();
         *self.artist_discography_cache.borrow_mut() =
             Some((fp, artist.to_string(), src, disc.clone()));
         disc
@@ -1626,6 +1648,28 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     s.source_limit_notice = false;
     // A WatchUpdate marks a scan complete, retire the title-bar activity widget.
     s.scan_progress = None;
+    adopt_legacy_album_covers(s);
+}
+
+/// Adopt any legacy title-keyed album covers for the albums now in the library
+/// (see `CoverStore::adopt_legacy_album_covers`). A cheap no-op once none remain
+/// or while the library is empty, so every library replacement calls it.
+pub(crate) fn adopt_legacy_album_covers(s: &mut State) {
+    if s.library.is_empty() || !s.covers.has_legacy_album_covers() {
+        return;
+    }
+    let albums = s.grouped_albums();
+    let out = s
+        .covers
+        .adopt_legacy_album_covers(albums.iter().map(|a| (a.name.as_str(), &a.identity)));
+    if out != covers::LegacyCoverAdoption::default() {
+        tracing::info!(
+            adopted = out.adopted,
+            retired = out.retired,
+            kept = out.kept,
+            "migrated title-keyed album covers to album identities"
+        );
+    }
 }
 
 /// Apply a `WatchUpdate` and persist the new source set (with each source's
@@ -1967,6 +2011,7 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
                     s.library = library;
                     s.sources = sources;
                     reapply_sort(s);
+                    adopt_legacy_album_covers(s);
                 });
             });
         }
@@ -1983,6 +2028,7 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
             s.sources = sources;
             s.library = s.host.views();
             reapply_sort(s);
+            adopt_legacy_album_covers(s);
         }
     }
 }
@@ -2086,6 +2132,7 @@ fn apply_remote_connect(s: &mut State, url: &str, result: anyhow::Result<()>) {
             s.library = s.host.views();
             s.sources = s.host.sources();
             reapply_sort(s);
+            adopt_legacy_album_covers(s);
             if !s.remote_urls.iter().any(|u| u == url) {
                 s.remote_urls.push(url.to_string());
             }
@@ -2138,6 +2185,7 @@ pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
                     s.sources = sources;
                     s.library = library;
                     reapply_sort(s);
+                    adopt_legacy_album_covers(s);
                 });
             });
         }
@@ -2150,6 +2198,7 @@ pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
             s.sources = s.host.sources();
             s.library = s.host.views();
             reapply_sort(s);
+            adopt_legacy_album_covers(s);
         }
     }
 }
@@ -2174,6 +2223,7 @@ pub(crate) fn toggle_remote_enabled(s: &mut State, url: String, enabled: bool) {
     s.sources = s.host.sources();
     s.library = s.host.views();
     reapply_sort(s);
+    adopt_legacy_album_covers(s);
 }
 
 /// Manually reconnect (or re-sync) one remote source, an offline row's
@@ -2218,6 +2268,7 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
                     s.sources = sources;
                     s.library = library;
                     reapply_sort(s);
+                    adopt_legacy_album_covers(s);
                 });
             });
         }
@@ -2230,6 +2281,7 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
             let sources = s.host.sources();
             s.library = s.host.views();
             reapply_sort(s);
+            adopt_legacy_album_covers(s);
             s.remote_reconnecting.retain(|u| u != &url);
             if ok {
                 record_synced_index(s, &url, &sources);
@@ -5036,7 +5088,11 @@ fn scene_artwork_crop(s: &mut State) {
             key: 0,
             name: "Album".to_string(),
         });
-    let album = open.name.clone();
+    let album = views::albums::resolve_album(&s.grouped_albums(), &open)
+        .map(|a| a.identity.clone())
+        .unwrap_or_else(|| {
+            covers::AlbumIdentity::new(soul_player_host::unlocated_album_identity_key(&open.name))
+        });
     s.route = Route::Album;
     s.open_album = Some(open);
     let (w, h) = (480u32, 320u32);
@@ -5080,7 +5136,11 @@ fn scene_artwork_edit(s: &mut State) {
             key: 0,
             name: "Album".to_string(),
         });
-    let album = open.name.clone();
+    let album = views::albums::resolve_album(&s.grouped_albums(), &open)
+        .map(|a| a.identity.clone())
+        .unwrap_or_else(|| {
+            covers::AlbumIdentity::new(soul_player_host::unlocated_album_identity_key(&open.name))
+        });
     s.route = Route::Album;
     s.open_album = Some(open);
     s.artwork_edit = Some(ArtworkTarget::Album(album));
@@ -7323,9 +7383,10 @@ mod tests {
             .find_map(|t| t.album.as_deref().map(str::to_string))
             .filter(|a| !a.is_empty())
             .expect("the testdata library has at least one named album");
+        let album_id = album_identity_named(&s, &album_name);
         // Isolation: a sibling album-cover test shares this per-process config
         // dir, so clear any cover it left for this same album first.
-        s.covers.clear_album_cover(&album_name);
+        s.covers.clear_album_cover(&album_id);
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(&album_name));
         let env = Env {
@@ -7335,7 +7396,7 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "no custom cover yet"
         );
 
@@ -7365,7 +7426,7 @@ mod tests {
             "the crop dialogue renders"
         );
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "picking alone stores no cover (the crop confirm does)"
         );
     }
@@ -7402,6 +7463,15 @@ mod tests {
             .expect("the testdata library has at least one named album")
     }
 
+    /// The identity of the album named `name` in `s`'s grouping (the cover key).
+    fn album_identity_named(s: &State, name: &str) -> covers::AlbumIdentity {
+        s.grouped_albums()
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| a.identity.clone())
+            .unwrap_or_else(|| panic!("no album named {name:?}"))
+    }
+
     /// Open an album detail page's "Edit Artwork", answer the file dialog with a
     /// real PNG, and settle so the crop modal is mounted + hittable. Returns the
     /// running `Runtime`. Shared by the two crop e2e tests.
@@ -7410,7 +7480,8 @@ mod tests {
         // The per-process test config dir persists across tests in this binary
         // (the `CONFIG_TEST_LOCK` only serialises them), so clear any cover a
         // sibling album-cover test left for this same album before we start.
-        s.covers.clear_album_cover(album_name);
+        let album_id = album_identity_named(&s, album_name);
+        s.covers.clear_album_cover(&album_id);
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(album_name));
         let env = Env {
@@ -7447,6 +7518,7 @@ mod tests {
         let album_name = first_album_name(&populated_state());
 
         let mut rt = open_artwork_crop(&album_name);
+        let album_id = album_identity_named(&rt.state, &album_name);
         assert!(
             rt.find("artwork-crop-dialog").is_some(),
             "the crop dialogue appeared after the pick"
@@ -7456,7 +7528,7 @@ mod tests {
             "the crop state is set (picking opens the crop step, not a direct cover set)"
         );
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "no cover is stored until the crop is confirmed"
         );
 
@@ -7472,7 +7544,7 @@ mod tests {
         let stored = rt
             .state
             .covers
-            .album_cover_path(&album_name)
+            .album_cover_path(&album_id)
             .expect("Set as cover stored a cropped cover");
         assert!(
             rt.state.artwork_crop.is_none(),
@@ -7493,6 +7565,7 @@ mod tests {
         let album_name = first_album_name(&populated_state());
 
         let mut rt = open_artwork_crop(&album_name);
+        let album_id = album_identity_named(&rt.state, &album_name);
         assert!(rt.state.artwork_crop.is_some(), "the crop dialogue is open");
 
         click_key(&mut rt, "artwork-crop-cancel");
@@ -7501,7 +7574,7 @@ mod tests {
             "cancel closes the crop dialogue"
         );
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "cancelling stored no cover"
         );
     }
@@ -7515,7 +7588,8 @@ mod tests {
         let _g = config::use_test_config_dir();
         let mut s = populated_state();
         let album = first_album_name(&s);
-        s.covers.clear_album_cover(&album);
+        let album_id = album_identity_named(&s, &album);
+        s.covers.clear_album_cover(&album_id);
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(&album));
 
@@ -7736,13 +7810,13 @@ mod tests {
         let album_name = first_album_name(&populated_state());
 
         let mut s = populated_state();
+        let album_id = album_identity_named(&s, &album_name);
         // Pre-set a custom cover so the manage dialogue offers Delete.
         assert!(
-            s.covers
-                .set_album_cover(&album_name, &write_temp_real_png()),
+            s.covers.set_album_cover(&album_id, &write_temp_real_png()),
             "the test PNG is a valid cover"
         );
-        assert!(s.covers.album_cover_path(&album_name).is_some());
+        assert!(s.covers.album_cover_path(&album_id).is_some());
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(&album_name));
 
@@ -7775,8 +7849,87 @@ mod tests {
             "deleting closes the dialogue"
         );
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "Delete cleared the custom cover"
+        );
+    }
+
+    /// A temp library with two same-title editions in two folders (the Genshin
+    /// OST and its Chinese edition): two albums, two identities.
+    fn same_title_editions_library(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("soul_rune_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (folder, title) in [("Footprints", "One"), ("Footprints CN", "Yi")] {
+            let title_tag = format!("TITLE={title}");
+            let tags = [
+                "ALBUM=Footprints of the Traveler",
+                "ARTIST=HOYO-MiX",
+                "TRACKNUMBER=1",
+                title_tag.as_str(),
+            ];
+            test_fixtures::put(
+                &root,
+                &format!("{folder}/01.flac"),
+                &test_fixtures::flac_with_comments(&tags),
+            );
+        }
+        root
+    }
+
+    fn editions(s: &State) -> Vec<covers::AlbumIdentity> {
+        s.grouped_albums()
+            .iter()
+            .filter(|a| a.name == "Footprints of the Traveler")
+            .map(|a| a.identity.clone())
+            .collect()
+    }
+
+    #[test]
+    fn same_title_editions_keep_separate_custom_covers() {
+        let _iso = config::use_isolated_test_config_dir();
+        let root = same_title_editions_library("same_title_covers");
+        let mut s = State::new(PlayerHandle::offline());
+        let up = s.host.add_folder(&root).expect("scan");
+        apply_watch(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 2, "two editions, two albums");
+        assert_ne!(eds[0], eds[1]);
+        let target = views::detail_page::ArtworkTarget::Album(eds[0].clone());
+        assert!(target.set_cover(&mut s, &write_temp_real_png()));
+        assert!(s.covers.album_cover_path(&eds[0]).is_some());
+        assert!(
+            s.covers.album_cover_path(&eds[1]).is_none(),
+            "the other edition keeps its own art"
+        );
+    }
+
+    #[test]
+    fn a_title_keyed_cover_is_adopted_by_both_editions_when_the_library_lands() {
+        let _iso = config::use_isolated_test_config_dir();
+        let root = same_title_editions_library("legacy_cover_adoption");
+        let covers_dir = config::soul_player_dir().unwrap().join("covers");
+        std::fs::create_dir_all(&covers_dir).unwrap();
+        let legacy = covers_dir.join("album-footprints-of-the-traveler.png");
+        std::fs::copy(write_temp_real_png(), &legacy).unwrap();
+
+        let mut s = State::new(PlayerHandle::offline()); // loads the legacy stem
+        let up = s.host.add_folder(&root).expect("scan");
+        apply_watch(&mut s, up); // adopts
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 2);
+        for id in &eds {
+            assert!(
+                s.covers.album_cover_path(id).is_some(),
+                "{id:?} adopted the cover"
+            );
+        }
+        assert!(!legacy.exists(), "retired");
+        assert!(
+            covers_dir
+                .join("legacy-title-keyed")
+                .join("album-footprints-of-the-traveler.png")
+                .exists(),
+            "kept as a backup"
         );
     }
 

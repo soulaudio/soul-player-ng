@@ -37,6 +37,10 @@ use crate::views::player::{group_remote_source, remote_badge};
 pub(crate) struct Album {
     /// The album's identity (`TrackView::album_key`).
     pub(crate) key: u32,
+    /// The album's durable identity, the custom-cover key (see
+    /// [`crate::covers::AlbumIdentity`]). `group_albums` sets the title-only
+    /// fallback; `State::grouped_albums` stamps the real one from the host.
+    pub(crate) identity: crate::covers::AlbumIdentity,
     pub(crate) name: String,
     /// The album artist, falling back to the first track's artist.
     pub(crate) artist: String,
@@ -120,6 +124,11 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
                 .to_string();
             albums.push(Album {
                 key: t.album_key,
+                identity: crate::covers::AlbumIdentity::new(
+                    soul_player_host::unlocated_album_identity_key(
+                        t.album.as_deref().unwrap_or(""),
+                    ),
+                ),
                 name,
                 artist,
                 disc_count: t.disc_count.max(1),
@@ -319,7 +328,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
     // The right-click menu's play context + artwork target (cloned so the outer
     // handler stays `Fn`, like the track row's menu above).
     let menu_ids = a.ids.clone();
-    let menu_name = a.name.clone();
+    let menu_identity = a.identity.clone();
     // What the body click opens: the album's identity, not just its title.
     let open = a.open_ref();
     media_card(
@@ -331,7 +340,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             title: a.name.clone(),
             subtitle: album_subtitle(a, s.album_year),
             cover_id: a.cover_id,
-            cover_override: s.covers.album_cover_path(&a.name),
+            cover_override: s.covers.album_cover_path(&a.identity),
             circular: false,
             play_ids: a.ids.clone(),
             remote_source: a.remote_source.clone(),
@@ -357,7 +366,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
     // Edit Artwork). Mirrors the track row's `on_secondary_press` popup.
     .on_secondary_press(move |_st: &mut State, press: PointerPress, tx: &mut Tx| {
         let play_ids = menu_ids.clone();
-        let art_name = menu_name.clone();
+        let art_identity = menu_identity.clone();
         tx.popup_menu(
             PopupMenu::new()
                 .item(PopupItem::new("play", t!("player.play").to_string()))
@@ -377,7 +386,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
                 }),
                 Some("add-to-playlist") => crate::open_add_to_playlist_many(st, play_ids.clone()),
                 Some("edit-artwork") => {
-                    st.artwork_edit = Some(ArtworkTarget::Album(art_name.clone()));
+                    st.artwork_edit = Some(ArtworkTarget::Album(art_identity.clone()));
                 }
                 _ => {}
             },
@@ -864,7 +873,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
 
     // A user-uploaded custom cover (the old app's "Edit Artwork") wins over the
     // cover-track art, the same precedence the album grid card uses.
-    let art = match s.covers.album_cover_path(&album.name) {
+    let art = match s.covers.album_cover_path(&album.identity) {
         Some(path) => HeroArt::Image {
             path,
             circular: false,
@@ -887,7 +896,7 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         meta,
         Some(&crate::views::icons::CLOCK),
         detail_actions("album-play-all", page.play_ids.to_vec(), p),
-        Some(ArtworkTarget::Album(album.name.clone())),
+        Some(ArtworkTarget::Album(album.identity.clone())),
     );
 
     let show_disc_headers = album.disc_count > 1 && page.discs.len() > 1;
@@ -1163,6 +1172,7 @@ mod tests {
         use crate::config::AlbumYearSource::*;
         let a = Album {
             key: 1,
+            identity: crate::covers::AlbumIdentity::new(String::new()),
             name: "x".into(),
             artist: "y".into(),
             disc_count: 1,

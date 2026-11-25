@@ -92,9 +92,36 @@ pub fn album_identity_key(locator: &TrackLocator, album: &str) -> String {
     format!("{server}\u{1f}{}\u{1f}{album}", parts.join("/"))
 }
 
+/// The identity for an album title with no known track locator (no library
+/// open, or a stale id): the title alone, so two same-title albums share it.
+/// Callers use it only as a fallback when [`album_identity_key`] has no locator.
+#[must_use]
+pub fn unlocated_album_identity_key(album: &str) -> String {
+    album_identity_key(
+        &TrackLocator::Local {
+            path: String::new(),
+        },
+        album,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unlocated_identity_is_the_title_alone() {
+        assert_eq!(
+            unlocated_album_identity_key("Box"),
+            album_identity_key(
+                &TrackLocator::Local {
+                    path: String::new()
+                },
+                "Box"
+            )
+        );
+        assert_eq!(unlocated_album_identity_key("Box"), "\u{1f}\u{1f}Box");
+    }
 
     fn tv(id: u32, disc: u16, track: u16, sub: Option<&str>, secs: f64) -> TrackView {
         TrackView {

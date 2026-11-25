@@ -44,7 +44,9 @@ pub mod types;
 pub(crate) mod testutil;
 
 pub use actor::AudioPlayer;
-pub use album::{DiscSection, album_identity_key, album_tracklist, disc_track_key};
+pub use album::{
+    DiscSection, album_identity_key, album_tracklist, disc_track_key, unlocated_album_identity_key,
+};
 pub use art::{Cover, cover_bytes};
 pub use driver::{
     OutputConfig, RgInfo, ServicePlayer, VolumeState, apply_command, project_queue,

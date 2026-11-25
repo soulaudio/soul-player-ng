@@ -441,7 +441,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                         title: alb.name.clone(),
                         subtitle: None,
                         cover_id: alb.cover_id,
-                        cover_override: s.covers.album_cover_path(&alb.name),
+                        cover_override: s.covers.album_cover_path(&alb.identity),
                         circular: false,
                         play_ids: alb.ids.clone(),
                         remote_source: alb.remote_source.clone(),
@@ -511,7 +511,7 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
-        .child(match s.covers.album_cover_path(&alb.name) {
+        .child(match s.covers.album_cover_path(&alb.identity) {
             // A custom cover wins here too, so the discography list thumbnail
             // matches the album's grid card and detail hero.
             Some(path) => cover_from_path(s, &path, 48.0, radius::SM, p, scale),

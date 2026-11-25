@@ -2731,6 +2731,26 @@ mod tests {
         );
     }
 
+    /// A remote album's identity names its server, so it never shares a custom
+    /// cover with a same-title local album.
+    #[test]
+    fn a_remote_album_identity_names_its_server() {
+        let server = start_server();
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("add remote");
+        let t = handle
+            .views()
+            .into_iter()
+            .find(|t| t.remote_source.is_some())
+            .expect("the remote contributed a track");
+        let title = t.album.as_deref().unwrap_or("").to_string();
+        let key = handle.album_identities(&[(t.id, title.as_str())]).remove(0);
+        assert!(key.contains(&server.url.to_lowercase()), "{key:?}");
+        assert_ne!(key, crate::unlocated_album_identity_key(&title));
+    }
+
     /// A server whose index is another `.soulidx` format version (an older or
     /// newer server) reads as an empty catalog; the aggregate flags that server
     /// (and logs a warning) instead of passing it off as an empty library.
