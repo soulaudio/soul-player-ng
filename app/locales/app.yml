@@ -2358,6 +2358,27 @@ settings.preset.flat:
   zh: '扁平（艺术家 - 标题）'
   cs: 'Ploché (Interpret - Název)'
   ja: 'フラット（アーティスト - タイトル）'
+settings.multiDisc:
+  en: 'Multi-disc albums'
+  de: 'Alben mit mehreren CDs'
+  es: 'Álbumes de varios discos'
+  zh: '多碟专辑'
+  cs: 'Vícedisková alba'
+  ja: '複数ディスクのアルバム'
+settings.multiDiscOneFolder:
+  en: 'One folder (1-01 - Title)'
+  de: 'Ein Ordner (1-01 - Titel)'
+  es: 'Una carpeta (1-01 - Título)'
+  zh: '单个文件夹 (1-01 - 标题)'
+  cs: 'Jedna složka (1-01 - Název)'
+  ja: '1つのフォルダ (1-01 - タイトル)'
+settings.multiDiscFolders:
+  en: 'Disc sub-folders (Disc 1/01 - Title)'
+  de: 'Unterordner je CD (Disc 1/01 - Titel)'
+  es: 'Subcarpetas por disco (Disc 1/01 - Título)'
+  zh: '按碟分子文件夹 (Disc 1/01 - 标题)'
+  cs: 'Podsložky podle disků (Disc 1/01 - Název)'
+  ja: 'ディスクごとのサブフォルダ (Disc 1/01 - タイトル)'
 # Settings -> Music Data: the "Add music -> organize" apply flow (modal). The
 # "Add music…" menu entry starts it; it needs a managed destination configured.
 settings.addMusic:

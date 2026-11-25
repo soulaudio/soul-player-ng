@@ -71,6 +71,57 @@ pub(crate) fn template_for(id: &str) -> &'static str {
     organize::preset(id).unwrap_or(organize::presets()[0].1)
 }
 
+/// The suffix of a preset's disc-sub-folder variant (`artist-album+disc-folders`).
+pub(crate) const DISC_FOLDERS: &str = "+disc-folders";
+
+/// The Layout dropdown's presets: every organizer preset except the
+/// `+disc-folders` variants (the Multi-disc albums dropdown picks those).
+pub(crate) fn layout_presets() -> Vec<&'static str> {
+    organize::presets()
+        .iter()
+        .map(|(id, _)| *id)
+        .filter(|id| !id.ends_with(DISC_FOLDERS))
+        .collect()
+}
+
+/// A stored template id as `(layout preset, disc sub-folders?)`.
+pub(crate) fn split_template_id(id: &str) -> (&str, bool) {
+    match id.strip_suffix(DISC_FOLDERS) {
+        Some(layout) => (layout, true),
+        None => (id, false),
+    }
+}
+
+/// Whether `layout` has a `+disc-folders` variant (`flat` has none: no album folder).
+pub(crate) fn has_disc_folder_variant(layout: &str) -> bool {
+    organize::preset(&format!("{layout}{DISC_FOLDERS}")).is_some()
+}
+
+/// The stored id for a layout + multi-disc choice: `<layout>+disc-folders` when
+/// chosen and available, else `<layout>`.
+pub(crate) fn compose_template_id(layout: &str, disc_folders: bool) -> String {
+    if disc_folders && has_disc_folder_variant(layout) {
+        format!("{layout}{DISC_FOLDERS}")
+    } else {
+        layout.to_string()
+    }
+}
+
+/// Migrate a persisted template id: a known preset id is kept (the pre-multi-disc
+/// ids are still presets, now disc-safe); an unknown `+disc-folders` id keeps its
+/// base layout; anything else falls back to the first preset.
+pub(crate) fn normalize_template_id(id: &str) -> String {
+    if organize::preset(id).is_some() {
+        return id.to_string();
+    }
+    let (layout, _) = split_template_id(id);
+    if organize::preset(layout).is_some() {
+        layout.to_string()
+    } else {
+        organize::presets()[0].0.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +200,57 @@ mod tests {
             organize::presets()[0].1,
             "an unknown id falls back to the first preset"
         );
+    }
+
+    #[test]
+    fn layout_presets_hide_the_disc_folder_variants() {
+        assert_eq!(
+            layout_presets(),
+            [
+                "artist-album",
+                "artist-year-album",
+                "genre-artist-album",
+                "flat"
+            ]
+        );
+    }
+
+    #[test]
+    fn template_ids_split_and_compose() {
+        assert_eq!(split_template_id("artist-album"), ("artist-album", false));
+        assert_eq!(
+            split_template_id("artist-album+disc-folders"),
+            ("artist-album", true)
+        );
+        assert_eq!(
+            compose_template_id("genre-artist-album", true),
+            "genre-artist-album+disc-folders"
+        );
+        assert_eq!(
+            compose_template_id("genre-artist-album", false),
+            "genre-artist-album"
+        );
+        assert_eq!(
+            compose_template_id("flat", true),
+            "flat",
+            "flat has no disc-folder variant"
+        );
+        assert!(has_disc_folder_variant("artist-year-album"));
+        assert!(!has_disc_folder_variant("flat"));
+    }
+
+    #[test]
+    fn stored_template_ids_migrate() {
+        // Pre-multi-disc ids stay valid (core made them disc-safe).
+        assert_eq!(normalize_template_id("artist-album"), "artist-album");
+        assert_eq!(normalize_template_id("flat"), "flat");
+        assert_eq!(
+            normalize_template_id("artist-album+disc-folders"),
+            "artist-album+disc-folders"
+        );
+        // A variant that does not exist keeps its base; garbage falls back.
+        assert_eq!(normalize_template_id("flat+disc-folders"), "flat");
+        assert_eq!(normalize_template_id("bogus"), "artist-album");
+        assert_eq!(normalize_template_id(""), "artist-album");
     }
 }

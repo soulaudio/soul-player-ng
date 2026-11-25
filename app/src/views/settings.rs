@@ -25,7 +25,9 @@ use soul_player_host::{
 };
 
 use crate::config::AlbumYearSource;
-use crate::organize_job::{scan_audio, template_for};
+use crate::organize_job::{
+    has_disc_folder_variant, layout_presets, scan_audio, split_template_id, template_for,
+};
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::dropdown;
@@ -43,10 +45,10 @@ use crate::{
     organize_dismiss, organize_ready, reconnect_remote_now, remove_dsp_unit, remove_eq_band,
     reorder_dsp_units, scan_in_background, set_album_year, set_dsp_unit_enabled,
     set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict, set_indexing_mode,
-    set_locale_pref, set_loudness_analysis_mode, set_managed_dest, set_managed_strategy,
-    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_show_loudness_columns, set_theme_pref,
-    start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
+    set_locale_pref, set_loudness_analysis_mode, set_managed_dest, set_managed_disc_folders,
+    set_managed_layout, set_managed_strategy, set_nav_visible, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_show_loudness_columns,
+    set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
     toggle_eq_bands_expanded, toggle_remote_enabled, unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::{IndexingMode, LoudnessAnalysisMode};
@@ -1956,9 +1958,9 @@ fn preset_example(id: &str) -> &'static str {
 /// The template presets as `(id, human label)` for the dropdown panel, the ids
 /// come from the organizer so the picker always matches the write path.
 fn preset_options() -> Vec<(String, String)> {
-    organize::presets()
-        .iter()
-        .map(|(id, _)| (id.to_string(), preset_label(id)))
+    layout_presets()
+        .into_iter()
+        .map(|id| (id.to_string(), preset_label(id)))
         .collect()
 }
 
@@ -2025,6 +2027,7 @@ fn managed_dest_row(s: &State, p: &Palette) -> El {
 /// The template section: a label, the preset picker (the shared `dropdown`), and
 /// an example destination line for the selected preset (keyed `managed-example`).
 fn managed_template_section(s: &State, p: &Palette) -> El {
+    let (layout, _) = split_template_id(&s.managed_template);
     col()
         .w_full()
         .gap(space::XS)
@@ -2035,7 +2038,7 @@ fn managed_template_section(s: &State, p: &Palette) -> El {
         )
         .child(dropdown::trigger(
             MANAGED_TEMPLATE,
-            preset_label(&s.managed_template),
+            preset_label(layout),
             t!("settings.template").to_string(),
             p,
         ))
@@ -2053,12 +2056,59 @@ fn managed_template_section(s: &State, p: &Palette) -> El {
                         .wrap(),
                 )
                 .child(
-                    text(preset_example(&s.managed_template).to_string())
+                    text(preset_example(layout).to_string())
                         .font(type_::BODY)
                         .color(p.fg)
                         .wrap(),
                 ),
         )
+}
+
+/// The key identifying the managed-library Multi-disc albums picker.
+const MANAGED_MULTI_DISC: &str = "managed-multidisc";
+
+/// `(id, label)` choices of the Multi-disc albums picker.
+fn multi_disc_options() -> Vec<(String, String)> {
+    vec![
+        (
+            "one-folder".into(),
+            t!("settings.multiDiscOneFolder").to_string(),
+        ),
+        (
+            "disc-folders".into(),
+            t!("settings.multiDiscFolders").to_string(),
+        ),
+    ]
+}
+
+/// The Multi-disc albums section: one folder (`1-01 - Title`) or disc sub-folders
+/// (`Disc 1/01 - Title`). Absent for a layout with no album folder (`flat`).
+fn managed_multi_disc_section(s: &State, p: &Palette) -> Option<El> {
+    let (layout, disc_folders) = split_template_id(&s.managed_template);
+    if !has_disc_folder_variant(layout) {
+        return None;
+    }
+    let current = if disc_folders {
+        t!("settings.multiDiscFolders")
+    } else {
+        t!("settings.multiDiscOneFolder")
+    };
+    Some(
+        col()
+            .w_full()
+            .gap(space::XS)
+            .child(
+                text(t!("settings.multiDisc").to_string())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary),
+            )
+            .child(dropdown::trigger(
+                MANAGED_MULTI_DISC,
+                current.to_string(),
+                t!("settings.multiDisc").to_string(),
+                p,
+            )),
+    )
 }
 
 /// One strategy choice (Copy / Move); the active one is filled with the primary
@@ -2114,20 +2164,24 @@ fn managed_strategy_section(s: &State, p: &Palette) -> El {
         )
 }
 
-/// Managed Library: the write-path destination + template preset + Copy/Move
+/// Managed Library: the write-path destination + template preset (layout plus the
+/// Multi-disc albums choice, absent for `flat`) + Copy/Move
 /// strategy, persisted to config. Configuring only: the "Add music…" apply flow
 /// that runs the copy/move is a separate task. Rendered under the Sources card on
 /// the Music Data tab.
 fn managed_library_card(s: &State, p: &Palette) -> El {
-    card("managed-library", p)
+    let mut c = card("managed-library", p)
         .child(heading(
             t!("settings.managedLibrary").to_string(),
             t!("settings.managedLibraryDesc").to_string(),
             p,
         ))
         .child(managed_dest_row(s, p))
-        .child(managed_template_section(s, p))
-        .child(managed_strategy_section(s, p))
+        .child(managed_template_section(s, p));
+    if let Some(md) = managed_multi_disc_section(s, p) {
+        c = c.child(md);
+    }
+    c.child(managed_strategy_section(s, p))
 }
 
 /// Output: a "System default" choice plus one button per enumerated output
@@ -4412,9 +4466,26 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
         overlays.push(dropdown::panel(
             MANAGED_TEMPLATE,
             &preset_options(),
-            &s.managed_template,
+            split_template_id(&s.managed_template).0,
             width,
-            |s: &mut State, id: &str| set_managed_template(s, id),
+            |s: &mut State, id: &str| set_managed_layout(s, id),
+            None,
+            p,
+        ));
+    }
+    if dropdown::is_open(s, MANAGED_MULTI_DISC) {
+        let width = cx.layout_size(MANAGED_MULTI_DISC).map(|wh| wh[0]);
+        let selected = if split_template_id(&s.managed_template).1 {
+            "disc-folders"
+        } else {
+            "one-folder"
+        };
+        overlays.push(dropdown::panel(
+            MANAGED_MULTI_DISC,
+            &multi_disc_options(),
+            selected,
+            width,
+            |s: &mut State, id: &str| set_managed_disc_folders(s, id == "disc-folders"),
             None,
             p,
         ));

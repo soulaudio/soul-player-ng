@@ -954,6 +954,9 @@ impl State {
         // Restore the managed-library choice (defaults: unset dest, "artist-album"
         // template, Copy); the stored strategy id maps to the organizer enum.
         let (managed_dest, managed_template, managed_strategy_id) = config::load_managed_library();
+        // Migrate the stored template id (old preset ids stay; an impossible
+        // `+disc-folders` id keeps its layout; an unknown id falls back).
+        let managed_template = organize_job::normalize_template_id(&managed_template);
         let managed_strategy = if managed_strategy_id == "move" {
             Strategy::Move
         } else {
@@ -3064,6 +3067,20 @@ pub(crate) fn set_managed_template(s: &mut State, template_id: &str) {
         &s.managed_template,
         strategy_as_config(s.managed_strategy),
     );
+}
+
+/// Settings → Layout: keep the current multi-disc choice, swap the layout.
+pub(crate) fn set_managed_layout(s: &mut State, layout: &str) {
+    let (_, disc_folders) = organize_job::split_template_id(&s.managed_template);
+    set_managed_template(s, &organize_job::compose_template_id(layout, disc_folders));
+}
+
+/// Settings → Multi-disc albums: keep the current layout, set the disc layout.
+pub(crate) fn set_managed_disc_folders(s: &mut State, disc_folders: bool) {
+    let layout = organize_job::split_template_id(&s.managed_template)
+        .0
+        .to_string();
+    set_managed_template(s, &organize_job::compose_template_id(&layout, disc_folders));
 }
 
 /// Set + persist the managed-library file strategy (Copy / Move).
@@ -11281,7 +11298,8 @@ mod tests {
     }
 
     /// The Managed Library card renders on the Music Data tab with its destination
-    /// Browse button, template picker, example line, and Copy/Move strategy buttons.
+    /// Browse button, template picker, example line, Multi-disc albums picker, and
+    /// Copy/Move strategy buttons.
     #[test]
     fn managed_library_card_renders() {
         let env = Env {
@@ -11298,6 +11316,7 @@ mod tests {
             "managed-copy",
             "managed-move",
             "managed-example",
+            "managed-multidisc",
         ] {
             assert!(rt.find(k).is_some(), "the Managed Library card shows {k}");
         }
@@ -11342,6 +11361,81 @@ mod tests {
         // `populated_state()` loads the persisted locale, so "de" must not leak.
         config::save_locale("en");
         apply_locale("en");
+    }
+
+    /// Layout lists only the base presets; the Multi-disc picker composes the
+    /// stored template id, which round-trips through config; `flat` hides it.
+    #[test]
+    fn multi_disc_choice_composes_and_persists_the_template() {
+        let _config_guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find("managed-template-opt-artist-album").is_some());
+        assert!(
+            rt.find("managed-template-opt-artist-album+disc-folders")
+                .is_none(),
+            "disc-folder variants are not layouts"
+        );
+        click_key(&mut rt, "managed-template-opt-genre-artist-album");
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-multidisc");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-multidisc-opt-disc-folders");
+        assert_eq!(rt.state.managed_template, "genre-artist-album+disc-folders");
+        assert_eq!(
+            config::load_managed_library().1,
+            "genre-artist-album+disc-folders"
+        );
+        // Switching layout keeps the disc choice.
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template-opt-artist-album");
+        assert_eq!(rt.state.managed_template, "artist-album+disc-folders");
+        assert_eq!(
+            config::load_managed_library().1,
+            "artist-album+disc-folders"
+        );
+        // flat has no album folder: no multi-disc picker, plain id.
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template-opt-flat");
+        assert_eq!(rt.state.managed_template, "flat");
+        rt.frame(0.0);
+        assert!(rt.find("managed-multidisc").is_none());
+    }
+
+    /// Old config values load unchanged; impossible ones are migrated on load.
+    #[test]
+    fn stored_managed_template_is_migrated_on_load() {
+        let _config_guard = config::use_test_config_dir();
+        for (stored, loaded) in [
+            ("artist-year-album", "artist-year-album"),
+            ("artist-album+disc-folders", "artist-album+disc-folders"),
+            ("flat+disc-folders", "flat"),
+            ("removed-preset", "artist-album"),
+        ] {
+            config::save_managed_library(None, stored, "copy");
+            assert_eq!(
+                State::new(PlayerHandle::offline()).managed_template,
+                loaded,
+                "{stored}"
+            );
+        }
     }
 
     /// Toggling the strategy to Move commits it to state and persists `"move"`.
