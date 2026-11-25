@@ -76,17 +76,68 @@ pub(crate) fn use_test_locale(locale: &str) -> std::sync::MutexGuard<'static, ()
     guard
 }
 
+#[cfg(test)]
+thread_local! {
+    /// This thread's isolated config dir, when a test holds an [`IsolatedConfigDir`].
+    /// [`soul_player_dir`] returns it instead of the shared per-process dir.
+    static ISOLATED_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Guard for [`use_isolated_test_config_dir`]: restores the thread's previous
+/// config dir and deletes the isolated one on drop.
+#[cfg(test)]
+pub(crate) struct IsolatedConfigDir {
+    dir: PathBuf,
+    prev: Option<PathBuf>,
+}
+
+#[cfg(test)]
+impl Drop for IsolatedConfigDir {
+    fn drop(&mut self) {
+        let prev = self.prev.take();
+        ISOLATED_CONFIG_DIR.with(|c| *c.borrow_mut() = prev);
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+/// Give THIS thread a fresh, empty config dir for the guard's lifetime. Every
+/// config/cover/playlist path on this thread resolves under it, so a test that
+/// asserts persisted values sees only its own writes: no order dependence on
+/// what earlier tests left in the shared dir, and no lost update from a
+/// concurrent test. Process-global state (e.g. `update::AUTO_INSTALL`) is NOT
+/// isolated by this; serialize that with [`use_test_config_dir`].
+#[cfg(test)]
+pub(crate) fn use_isolated_test_config_dir() -> IsolatedConfigDir {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "soul-player-test-{}-iso-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the isolated test config dir");
+    let prev = ISOLATED_CONFIG_DIR.with(|c| c.replace(Some(dir.clone())));
+    IsolatedConfigDir { dir, prev }
+}
+
 /// The app's config directory. In a **test build this is ALWAYS a throwaway
 /// temp directory** (never the user's real config), tests share it, so a test
 /// that persists a setting must not let another's write leak into its
 /// assertions (set the relevant `State` field explicitly instead of trusting a
 /// loaded value). In production it is `<os-config>/soul-player`.
 ///
+/// In a test build this is the thread's isolated dir while a test holds
+/// [`use_isolated_test_config_dir`]'s guard, else the shared per-process dir.
+///
 /// `pub(crate)`: the playlist store (`playlists::store`) falls back to
 /// `<this>/playlists` when no managed-library root is configured, so it needs
 /// the same test/production split every other per-setting path here gets.
 #[cfg(test)]
 pub(crate) fn soul_player_dir() -> Option<PathBuf> {
+    if let Some(dir) = ISOLATED_CONFIG_DIR.with(|c| c.borrow().clone()) {
+        return Some(dir);
+    }
     Some(
         TEST_CONFIG_DIR
             .get_or_init(|| {
@@ -1468,7 +1519,7 @@ mod tests {
 
     #[test]
     fn update_prefs_round_trip_and_default_to_check_but_not_install() {
-        let _g = use_test_config_dir();
+        let _iso = use_isolated_test_config_dir();
         assert_eq!(
             load_update_prefs(),
             (true, false),
@@ -1479,6 +1530,30 @@ mod tests {
         assert_eq!(load_update_prefs(), (false, true));
         save_update_auto_check(true);
         assert_eq!(load_update_prefs(), (true, true));
+    }
+
+    /// A per-thread isolated config dir starts from defaults whatever the shared
+    /// test dir holds, and dropping it returns this thread to the shared dir.
+    #[test]
+    fn an_isolated_test_config_dir_starts_from_defaults() {
+        let _g = use_test_config_dir();
+        save_update_auto_install(true); // pollute the SHARED dir
+        {
+            let _iso = use_isolated_test_config_dir();
+            assert_eq!(load_update_prefs(), (true, false), "fresh dir, defaults");
+            save_update_auto_install(true);
+            assert_eq!(
+                load_update_prefs(),
+                (true, true),
+                "writes land in the isolated dir"
+            );
+        }
+        assert_eq!(
+            load_update_prefs(),
+            (true, true),
+            "back on the shared dir after the guard drops"
+        );
+        save_update_auto_install(false); // leave the shared dir at its default
     }
 
     #[test]

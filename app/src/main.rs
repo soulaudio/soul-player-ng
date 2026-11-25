@@ -15180,7 +15180,14 @@ mod tests {
     #[test]
     fn update_switches_flip_and_persist() {
         let _locale = config::use_test_locale("en");
+        // Serializes the process-global AUTO_CHECK/AUTO_INSTALL flags with the
+        // other updater tests that flip them.
         let _g = config::use_test_config_dir();
+        // A fresh per-thread config dir: the shared one carries whatever update
+        // prefs an earlier test left there, which made "defaults" order-dependent.
+        let _iso = config::use_isolated_test_config_dir();
+        update::set_auto_check(true);
+        update::set_auto_install(false);
         let mut rt = updates_rt(updater::UpdateStatus::Idle, true);
         assert!(
             rt.state.update.auto_check && !rt.state.update.auto_install,
@@ -15204,6 +15211,7 @@ mod tests {
     fn switching_auto_install_off_drops_a_waiting_download() {
         let _locale = config::use_test_locale("en");
         let _g = config::use_test_config_dir();
+        let _iso = config::use_isolated_test_config_dir();
         let mut s = settings_state(&[], &[]);
         s.update.auto_install = true;
         s.update.status = updater::UpdateStatus::Ready(found("9.9.9", None));
