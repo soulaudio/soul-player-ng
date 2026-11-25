@@ -75,10 +75,18 @@ need() {
 	command -v "$1" >/dev/null 2>&1 || err "this script needs $1, which is not installed"
 }
 
+# Retry transient failures (one asset of 0.4.6 returned 500 for a while).
+# --retry-all-errors is curl 7.71+; older curls (RHEL/Alma 8 ship 7.61) reject
+# the whole command over an unknown option, so only pass it when it exists.
+curl_retry="--retry 3 --retry-delay 2"
+if command -v curl >/dev/null 2>&1 && curl --help all 2>/dev/null | grep -q -- '--retry-all-errors'; then
+	curl_retry="$curl_retry --retry-all-errors"
+fi
+
 # curl and wget are both common enough that requiring one specifically is rude.
 fetch() {
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 "$1" -o "$2"
+		curl -fsSL $curl_retry "$1" -o "$2"
 	elif command -v wget >/dev/null 2>&1; then
 		wget -qO "$2" --tries=4 "$1"
 	else
@@ -88,7 +96,7 @@ fetch() {
 
 fetch_stdout() {
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 "$1"
+		curl -fsSL $curl_retry "$1"
 	elif command -v wget >/dev/null 2>&1; then
 		wget -qO- --tries=4 "$1"
 	else

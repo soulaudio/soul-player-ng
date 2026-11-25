@@ -45,9 +45,16 @@ fail() {
 ok() { printf 'ok: %s\n' "$*"; }
 step() { printf '\n== %s\n' "$*"; }
 
+# Downloaded first, then run: with `curl | sh`, a failed download hands sh an
+# empty script, which "succeeds", and a refusal test would pass for nothing.
+SCRIPT=$(mktemp)
+trap 'rm -f "$SCRIPT"' EXIT
+curl -fsSL --retry 3 "$URL" -o "$SCRIPT" || fail "could not download the installer from $URL"
+[ -s "$SCRIPT" ] || fail "the installer at $URL is empty"
+
 installer() {
 	echo "\$ curl -fsSL $URL | sh -s -- $*"
-	curl -fsSL --retry 3 --retry-all-errors "$URL" | sh -s -- "$@"
+	sh "$SCRIPT" "$@"
 }
 
 MAC_APP="/Applications/Soul Player.app"
@@ -62,17 +69,17 @@ else
 	CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/soul-player"
 fi
 
-# Stand-ins for a user's settings and library index, so "kept" and "purged"
-# are checked against something real.
+# Stand-ins for a user's data in the app's folders, so "kept" and "purged" are
+# checked against something real. A file of our own rather than config.toml:
+# the app rewrites its config whenever it runs (the macOS leg launches it).
 seed_data() {
 	mkdir -p "$DATA" "$CACHE"
-	printf 'volume = 0.42\n' >"$DATA/config.toml"
+	printf 'kept\n' >"$DATA/user-data.marker"
 	printf 'x' >"$CACHE/marker"
 }
 data_kept() {
-	[ -f "$DATA/config.toml" ] || fail "$1 deleted the settings ($DATA)"
-	grep -q 'volume = 0.42' "$DATA/config.toml" || fail "$1 rewrote the settings"
-	ok "settings survived $1"
+	[ -f "$DATA/user-data.marker" ] || fail "$1 deleted the user's data in $DATA"
+	ok "the user's data survived $1"
 }
 data_gone() {
 	for d in "$DATA" "$CACHE"; do
