@@ -5369,6 +5369,65 @@ mod tests {
     use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
     use soul_player_host::{DspChain, Profile, ProfileSet};
 
+    /// `n` synthetic tracks with a realistic fan-out (~12 tracks/album, ~8 albums/
+    /// artist, 10 genres), the library shape the scale profiling and guard tests build on.
+    fn synth_tracks(n: u32) -> Vec<TrackView> {
+        (0..n)
+            .map(|i| {
+                let album = i / 12;
+                let artist = album / 8;
+                TrackView {
+                    id: i,
+                    title: Some(format!("Track {i}")),
+                    artist: Some(std::sync::Arc::from(format!("Artist {artist}"))),
+                    album: Some(std::sync::Arc::from(format!("Album {album}"))),
+                    genre: Some(std::sync::Arc::from(format!("Genre {}", artist % 10))),
+                    duration_secs: 180.0,
+                    remote_source: None,
+                    original_date: 0,
+                    release_date: 0,
+                    loudness: None,
+                    format: None,
+                }
+            })
+            .collect()
+    }
+
+    /// Regression guard (CI-run, NOT `#[ignore]`'d) for the `virtual_rows_version` fix:
+    /// a COMMITTING frame on the tracks list, the view re-running, which a playback tick
+    /// triggers ~8x/sec, must allocate O(window), NOT O(library). Without the version the
+    /// list re-keys every row (a `format!` per row), so the alloc count scales with the
+    /// library size; with it, a committing frame is the mounted window plus the shell,
+    /// independent of length. So a 10x-larger library must not cost ~10x the allocations.
+    #[test]
+    fn a_committing_frame_allocates_independently_of_library_size() {
+        let commit_allocs = |n: u32| -> u64 {
+            let mut s = State::new(PlayerHandle::offline());
+            s.library = synth_tracks(n);
+            let env = Env {
+                system_dark: true,
+                scale: 2.0,
+            };
+            let mut rt = Runtime::new(s, view, (1280.0, 900.0), env);
+            rt.update(|s: &mut State, _tx: &mut Tx| s.route = Route::Library);
+            rt.frame(0.0); // establish the virtual list
+            rt.frame(1.0); // settle the mounted window
+            rt.invalidate(); // force the next frame to re-run the view (as a tick does)
+            alloc_probe::measure(|| rt.frame(2.0)).1.allocs
+        };
+        let small = commit_allocs(2_000);
+        let large = commit_allocs(20_000);
+        // With the version both are O(window), so the 10x library is NOT ~10x the
+        // allocations; without it, `large` carries ~18k extra per-row key allocations.
+        // A generous bound that still fails loudly on a regression:
+        assert!(
+            large <= small + 4_000,
+            "a committing frame scaled with the library ({small} allocs at 2k tracks vs \
+             {large} at 20k): the tracks list is re-keying every row, is \
+             virtual_rows_version missing?"
+        );
+    }
+
     /// End-to-end 1M-track profiling run. `#[ignore]` (slow: it builds a million
     /// synthetic tracks); run with:
     ///   `cargo test -p soul-player-rune bench_browse_1m -- --ignored --nocapture`
