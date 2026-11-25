@@ -47,12 +47,99 @@ use crate::RemoteHealth;
 /// [`login`] (or [`exchange_code`]/[`refresh`]) and carried OPAQUELY, this
 /// client never parses or validates it, it only ever forwards it as a
 /// bearer token.
-#[derive(Clone, Debug)]
 pub struct RemoteServer {
     /// The server's base URL (e.g. `https://listen.home.lan:8080`).
     pub url: String,
     /// The OAuth bearer token, carried opaquely, this client never parses it.
-    pub access_token: String,
+    /// Interior-mutable so [`refresh_access`](RemoteServer::refresh_access) can
+    /// swap in a freshly-minted token in place, visible to every holder of the
+    /// shared `Arc<RemoteServer>` without rebuilding the aggregate.
+    access_token: std::sync::RwLock<String>,
+    /// The refresh-token store, present on a server built for playback so a
+    /// stale (expired) access token can be re-minted on a 401. `None` on the
+    /// bare servers tests/probes build (they use fresh tokens and never 401).
+    store: Option<Arc<dyn TokenStore>>,
+    /// Serializes refresh attempts so N concurrent 401s (e.g. the loader opening
+    /// one track while a prefetch opens the next) collapse to ONE refresh: the
+    /// server rotates the refresh token on each use, so two concurrent refreshes
+    /// would race and one would spend an already-rotated token.
+    refresh_lock: std::sync::Mutex<()>,
+}
+
+/// Marker error for a `401 Unauthorized` from a remote request: the access token
+/// is stale (expired mid-session). [`RemoteLibrary::open_decoder`] catches it to
+/// refresh the token and retry the open once, instead of failing playback.
+#[derive(Debug)]
+struct Unauthorized;
+
+impl std::fmt::Display for Unauthorized {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("remote request was unauthorized (401): the access token is stale")
+    }
+}
+impl std::error::Error for Unauthorized {}
+
+impl RemoteServer {
+    /// A server with no refresh capability: it forwards `access_token` as-is and
+    /// cannot re-mint it on a 401. Used by tests and health probes, which hold a
+    /// fresh token and never need to refresh. Attach a store with
+    /// [`with_store`](RemoteServer::with_store) to enable refresh for playback.
+    pub fn new(url: String, access_token: String) -> Self {
+        Self {
+            url,
+            access_token: std::sync::RwLock::new(access_token),
+            store: None,
+            refresh_lock: std::sync::Mutex::new(()),
+        }
+    }
+
+    /// Attach the refresh-token store so this server can re-mint its access token
+    /// on a 401 (the production playback path; see [`refresh_access`](RemoteServer::refresh_access)).
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<dyn TokenStore>) -> Self {
+        self.store = Some(store);
+        self
+    }
+
+    /// The current access token (a cheap clone; the read lock is held only for it).
+    pub fn access_token(&self) -> String {
+        self.access_token
+            .read()
+            .expect("access-token lock poisoned")
+            .clone()
+    }
+
+    /// Re-mint the access token from the stored refresh token, swap it in, and
+    /// persist the rotated refresh token. Single-flight: concurrent callers that
+    /// find the token already refreshed (changed since they read it) return early
+    /// rather than spending the rotated refresh token a second time. Errors if no
+    /// store is attached, no refresh token is stored, or the server rejects it.
+    fn refresh_access(&self) -> anyhow::Result<()> {
+        let store = self
+            .store
+            .as_ref()
+            .context("remote server has no token store; cannot refresh")?;
+        let stale = self.access_token();
+        let _guard = self.refresh_lock.lock().expect("refresh lock poisoned");
+        // Another caller may have refreshed while we waited for the lock.
+        if self.access_token() != stale {
+            return Ok(());
+        }
+        let refresh_token = store
+            .load_refresh(&self.url)
+            .context("no stored refresh token for this server")?;
+        let tokens = refresh(&self.url, &refresh_token)?;
+        // Persist the rotated refresh token BEFORE swapping the access token, so a
+        // crash between the two leaves the (durable) refresh token current.
+        store
+            .save_refresh(&self.url, &tokens.refresh)
+            .context("persisting the rotated refresh token")?;
+        *self
+            .access_token
+            .write()
+            .expect("access-token lock poisoned") = tokens.access;
+        Ok(())
+    }
 }
 
 /// `url`'s host (and port, if non-default) for display, e.g. as a per-track
@@ -185,9 +272,14 @@ impl MediaFetch for DownloadCache {
         let endpoint = format!("{}/v0/track/{track_id}", server.url);
         let response = http_client(HTTP_DOWNLOAD_TIMEOUT)
             .get(&endpoint)
-            .bearer_auth(&server.access_token)
+            .bearer_auth(server.access_token())
             .send()
             .with_context(|| format!("GET {endpoint}"))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            // Stale access token: surface it distinctly so `open_decoder` can
+            // refresh and retry the open, rather than failing playback.
+            return Err(Unauthorized.into());
+        }
         if !response.status().is_success() {
             bail!("GET {endpoint} failed: {}", response.status());
         }
@@ -361,19 +453,32 @@ impl TrackSource for RemoteLibrary {
                 })?;
                 let server_track_id = pack(j, local);
 
-                let streamed =
-                    HttpRangeReader::new(server, server_track_id).and_then(open_seekable_src);
-                match streamed {
-                    Ok(decoder) => Ok(decoder),
-                    Err(_stream_err) => {
-                        // Streaming didn't work out, fall back to the
-                        // download-to-cache path the loader used before Inc 4b
-                        // (also what RG-tag reading still goes through via
-                        // `path_of`, so this is a well-trodden path, not a new
-                        // failure mode).
-                        let path = self.fetch.fetch(server, server_track_id)?;
-                        open_track(&path)
+                // One open attempt: STREAM over HTTP Range, falling back to the
+                // download-to-cache path (what the loader used before Inc 4b, and
+                // what RG-tag reading still goes through via `path_of`, so it is a
+                // well-trodden path, not a new failure mode) if streaming can't open.
+                let open_once = || -> anyhow::Result<OwnedDecoder> {
+                    match HttpRangeReader::new(server, server_track_id).and_then(open_seekable_src)
+                    {
+                        Ok(decoder) => Ok(decoder),
+                        Err(_stream_err) => {
+                            let path = self.fetch.fetch(server, server_track_id)?;
+                            open_track(&path)
+                        }
                     }
+                };
+                match open_once() {
+                    Err(e) if e.chain().any(|c| c.is::<Unauthorized>()) => {
+                        // The access token expired mid-session (both the stream and
+                        // the download fallback 401'd). Re-mint it from the stored
+                        // refresh token and retry the open ONCE; the rebuilt reader /
+                        // download picks up the fresh token. If the refresh itself
+                        // fails (no store / refresh token, server down), that error
+                        // surfaces and the loader reports it (PlaybackFailed).
+                        server.refresh_access()?;
+                        open_once()
+                    }
+                    other => other,
                 }
             }
         }
@@ -461,7 +566,7 @@ impl HttpRangeReader {
             client: http_client(HTTP_REQUEST_TIMEOUT),
             url: server.url.clone(),
             track_id,
-            access_token: server.access_token.clone(),
+            access_token: server.access_token(),
             total_len: 0,
             pos: 0,
             window: None,
@@ -823,7 +928,7 @@ pub fn fetch_index(server: &RemoteServer) -> anyhow::Result<Vec<IndexBlob>> {
     let endpoint = format!("{}/v0/index", server.url);
     let response = http_client(HTTP_REQUEST_TIMEOUT)
         .get(&endpoint)
-        .bearer_auth(&server.access_token)
+        .bearer_auth(server.access_token())
         .send()
         .with_context(|| format!("GET {endpoint}"))?;
     if !response.status().is_success() {
@@ -1388,6 +1493,14 @@ mod tests {
                 .mint(self.user_id, 3600, now_unix())
                 .expect("mint a test access token")
         }
+
+        /// Mint an ALREADY-EXPIRED access token (1s ttl, dated 2h ago), so the
+        /// server answers it `401`, for the refresh-on-401 test.
+        fn expired_token(&self) -> String {
+            self.signer
+                .mint(self.user_id, 1, now_unix().saturating_sub(7200))
+                .expect("mint an expired test access token")
+        }
     }
 
     /// Seconds since the Unix epoch, for [`Signer::mint`]'s `now_unix`.
@@ -1461,10 +1574,7 @@ mod tests {
     #[test]
     fn fetch_index_returns_blobs_that_rebuild_a_nonempty_library() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
 
         let blobs = fetch_index(&remote).expect("fetch_index");
         assert!(!blobs.is_empty(), "expected at least one per-root blob");
@@ -1480,10 +1590,7 @@ mod tests {
     #[test]
     fn fetch_index_rejects_a_bad_token() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: "not-a-real-token".to_string(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), "not-a-real-token".to_string());
 
         assert!(fetch_index(&remote).is_err());
     }
@@ -1491,10 +1598,7 @@ mod tests {
     #[test]
     fn download_cache_writes_matching_bytes_and_hits_cache_on_the_second_fetch() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
 
         let expected_path = server
             .services
@@ -1531,10 +1635,7 @@ mod tests {
     #[test]
     fn download_cache_fetch_of_unknown_track_errors() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
 
         let cache_dir = tempfile::tempdir().expect("create cache dir");
         let cache = DownloadCache {
@@ -1565,10 +1666,7 @@ mod tests {
     #[test]
     fn http_range_reader_streams_the_whole_track_byte_identical_to_a_full_download() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
         // Bigger than one window, so reading it start to finish also proves
         // the refetch-on-exhaustion path, not just the chunk primed at
         // construction.
@@ -1600,10 +1698,7 @@ mod tests {
     #[test]
     fn http_range_reader_reads_the_next_window_ahead_before_the_current_one_runs_out() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
         // Bigger than one window, so there IS a next window to read ahead.
         let (track_id, expected_bytes) = find_track_at_least(&server, CHUNK_SIZE + 1);
         let mut reader =
@@ -1651,10 +1746,7 @@ mod tests {
     #[test]
     fn http_range_reader_seek_from_start_then_read_matches_the_slice() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
         let (track_id, expected_bytes) = find_track_at_least(&server, CHUNK_SIZE + 1);
 
         let mut reader =
@@ -1685,10 +1777,7 @@ mod tests {
     #[test]
     fn http_range_reader_seek_from_end_lands_at_len_and_reads_zero_at_eof() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
         let expected_path = server
             .services
             .index
@@ -1722,10 +1811,7 @@ mod tests {
     #[test]
     fn http_range_reader_seek_before_the_start_errors() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
         let mut reader = HttpRangeReader::new(&remote, 0).expect("construct HttpRangeReader");
 
         assert!(
@@ -1737,10 +1823,7 @@ mod tests {
     #[test]
     fn http_range_reader_new_for_an_unknown_track_errors() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
 
         assert!(HttpRangeReader::new(&remote, 999_999).is_err());
     }
@@ -1755,10 +1838,7 @@ mod tests {
         // mid-stream token refresh, the reader holds the token captured at construction
         // (`access_token`), so an expired token is terminal for that reader.
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: "not-a-valid-token".to_string(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), "not-a-valid-token".to_string());
         assert!(
             HttpRangeReader::new(&remote, 0).is_err(),
             "a bad access token on the streaming endpoint must error, not open a reader"
@@ -1813,10 +1893,7 @@ mod tests {
                 let _ = sock.write_all(body);
             }
         });
-        let remote = RemoteServer {
-            url: format!("http://{addr}"),
-            access_token: "t".into(),
-        };
+        let remote = RemoteServer::new(format!("http://{addr}"), "t".into());
         assert!(
             HttpRangeReader::new(&remote, 0).is_err(),
             "a 206 answering a different range than requested must be rejected, not trusted"
@@ -2118,10 +2195,7 @@ mod tests {
     #[test]
     fn probe_health_reports_online_latency_and_version() {
         let server = start_server();
-        let remote = RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        };
+        let remote = RemoteServer::new(server.url.clone(), server.token());
 
         let health = probe_health(&remote, now_unix());
 
@@ -2156,10 +2230,8 @@ mod tests {
         let port = listener.local_addr().expect("bound addr").port();
         drop(listener);
 
-        let remote = RemoteServer {
-            url: format!("http://127.0.0.1:{port}"),
-            access_token: "irrelevant".to_string(),
-        };
+        let remote =
+            RemoteServer::new(format!("http://127.0.0.1:{port}"), "irrelevant".to_string());
 
         let health = probe_health(&remote, now_unix());
 
@@ -2283,6 +2355,42 @@ mod tests {
     /// token ROTATION is persisted back into the store, not just the access
     /// token, a caller that kept the old refresh token would be unable to
     /// reconnect a second time.
+    #[test]
+    fn refresh_access_re_mints_a_stale_token_and_rotates_the_refresh() {
+        let server = start_server();
+        let tokens = login_as_test_user(&server);
+        let store = Arc::new(MemStore::new());
+        store
+            .save_refresh(&server.url, &tokens.refresh)
+            .expect("seed the store with a valid refresh token");
+
+        let stale = server.expired_token();
+        let remote = RemoteServer::new(server.url.clone(), stale.clone()).with_store(store.clone());
+        assert_eq!(remote.access_token(), stale);
+        assert!(
+            fetch_index(&remote).is_err(),
+            "the stale (expired) access token is rejected before the refresh"
+        );
+
+        remote
+            .refresh_access()
+            .expect("refresh succeeds with a valid stored refresh token");
+
+        let fresh = remote.access_token();
+        assert_ne!(fresh, stale, "the access token was re-minted");
+        assert_ne!(
+            store
+                .load_refresh(&server.url)
+                .expect("a refresh token is still stored"),
+            tokens.refresh,
+            "the refresh token was rotated and the new one persisted"
+        );
+        assert!(
+            fetch_index(&remote).is_ok(),
+            "the re-minted access token is accepted by the server"
+        );
+    }
+
     #[test]
     fn reconnect_remote_source_rotates_token_and_rebuilds_library() {
         let server = start_server();
@@ -2529,10 +2637,7 @@ mod tests {
                 .unwrap_or_else(|e| panic!("copy remote fixture {name}: {e}"));
         }
         let server = start_server_over(vec![remote_src_dir.path().to_path_buf()]);
-        let remote_server = Arc::new(RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        });
+        let remote_server = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
         let remote_blobs = fetch_index(&remote_server).expect("fetch_index");
         let remote_count = Library::from_source_bytes(
             &vec![PathBuf::from("probe"); remote_blobs.len()],
@@ -2623,10 +2728,7 @@ mod tests {
         )
         .expect("copy remote fixture");
         let server = start_server_over(vec![remote_src_dir.path().to_path_buf()]);
-        let remote_server = Arc::new(RemoteServer {
-            url: server.url.clone(),
-            access_token: server.token(),
-        });
+        let remote_server = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
         let remote_blobs = fetch_index(&remote_server).expect("fetch_index");
 
         let cache_dir = tempfile::tempdir().expect("download cache dir");
@@ -2684,6 +2786,77 @@ mod tests {
         assert!(
             cache_is_empty,
             "streaming a remote track must not fall back to downloading it first"
+        );
+    }
+
+    /// `open_decoder` with a STALE (expired) access token hits a 401 on the open
+    /// (both the stream and its download fallback), re-mints the token from the
+    /// stored refresh token, and retries the open ONCE, so remote playback keeps
+    /// working past the ~1h access-token lifetime instead of failing. End to end
+    /// against a real in-process server through the real refresh flow.
+    #[test]
+    fn open_decoder_refreshes_a_stale_token_and_retries() {
+        let remote_src_dir = tempfile::tempdir().expect("remote dir");
+        fs::copy(
+            testdata_dir().join("tone.flac"),
+            remote_src_dir.path().join("tone.flac"),
+        )
+        .expect("copy remote fixture");
+        let server = start_server_over(vec![remote_src_dir.path().to_path_buf()]);
+
+        // Fetch the index with a VALID token (the library needs the blobs). The
+        // library's own server then carries a STALE token plus a store, so the
+        // first open 401s and must refresh to proceed.
+        let valid = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
+        let remote_blobs = fetch_index(&valid).expect("fetch_index");
+
+        let store = Arc::new(MemStore::new());
+        let tokens = login_as_test_user(&server);
+        store
+            .save_refresh(&server.url, &tokens.refresh)
+            .expect("seed the store with a valid refresh token");
+        let stale_server = Arc::new(
+            RemoteServer::new(server.url.clone(), server.expired_token()).with_store(store),
+        );
+        let expired = stale_server.access_token();
+
+        let cache_dir = tempfile::tempdir().expect("download cache dir");
+        let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
+            dir: cache_dir.path().to_path_buf(),
+        });
+        let remote_lib = Arc::new(RemoteLibrary::build(
+            Vec::new(),
+            vec![(Arc::clone(&stale_server), remote_blobs)],
+            fetch,
+        ));
+
+        let stale_after = Arc::clone(&stale_server);
+        std::thread::Builder::new()
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                // The single remote source is aggregate index 0 (no local before it).
+                let remote_id = pack(0, 0);
+                let mut decoder = remote_lib.open_decoder(remote_id).expect(
+                    "a stale token must be refreshed and the open retried, not fail playback",
+                );
+                let mut buf = [0i32; 4096];
+                let n = decoder
+                    .decode_into(&mut buf)
+                    .expect("decode the first block after the refresh");
+                assert!(
+                    n > 0,
+                    "expected a non-empty decoded block after the refresh"
+                );
+            })
+            .expect("spawn decode thread")
+            .join()
+            .expect("decode thread panicked");
+
+        // The shared server's access token was re-minted in place.
+        assert_ne!(
+            stale_after.access_token(),
+            expired,
+            "the stale access token was refreshed during the open"
         );
     }
 

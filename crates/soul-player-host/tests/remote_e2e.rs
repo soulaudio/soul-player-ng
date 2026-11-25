@@ -81,10 +81,7 @@ fn remote_add_sync_browse_play() {
     //        this doesn't share the host's real on-disk cache; it's only
     //        there as `open_decoder`'s fallback, and the assertion below
     //        proves the happy streaming path never touches it.
-    let remote_server = Arc::new(RemoteServer {
-        url: server.url.clone(),
-        access_token,
-    });
+    let remote_server = Arc::new(RemoteServer::new(server.url.clone(), access_token));
     let blobs = soul_player_host::remote::fetch_index(&remote_server).expect("fetch_index");
     let cache_dir = tempfile::tempdir().expect("create download cache dir");
     let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
