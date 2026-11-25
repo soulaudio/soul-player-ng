@@ -48,11 +48,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Vendored crate sources are in sync with the lockfile
-        # Cheap, and it is the failure that would otherwise surface on Flathub's
-        # builders AFTER review: offline, a stale source list cannot be fixed by
-        # fetching the difference.
-        run: packaging/flathub/generate-sources.sh --check
+      - name: Generate the vendored crate sources
+        # Generated here rather than committed. The file is a 440 KB artifact
+        # derived entirely from app/rune/Cargo.lock, so committing it meant
+        # every dependency bump needed a regeneration commit or CI failed —
+        # which, with Dependabot watching app/rune, is every Dependabot PR.
+        #
+        # Nothing is lost by generating it: the output is deterministic from the
+        # lockfile, confirmed when an independent regeneration here matched a
+        # locally generated copy byte-for-byte. Drift is impossible if there is
+        # no second copy to drift from.
+        run: packaging/flathub/generate-sources.sh
 
       - name: Install flatpak and the Flathub builder
         run: |
