@@ -27,18 +27,38 @@ npm run build      # -> dist/
   `docs/screenshots/albums-dark.png` into `public/`. Both have one source of
   truth outside this directory, so neither is committed here.
 
-`src/data/release.json` and `public/install.sh` / `public/screenshot.png` are
-generated, and gitignored.
+Generated and gitignored: `src/data/release.json`, the served
+`public/version.json`, and the copies at `public/install.sh`,
+`public/screenshot.png`, and `public/favicon.png`.
 
-## Deploying
+## Staying in sync with the current release
 
-The workflow runs on pushes to `main` touching `website/**` or
-`packaging/install.sh`, and on a `repository_dispatch` that `release.yml` fires
-once a release is published. That second trigger is the important one: asset
-filenames carry the version, so without a redeploy the download links keep
-pointing at the previous release.
+The page is static, so it only shows the current version if something rebuilds
+it. Three triggers, because any one of them can miss:
 
-It needs four repository secrets:
+| Trigger | Covers | Lag |
+|---|---|---|
+| `release.yml` calls this workflow once a release verifies | the normal path | minutes |
+| A six-hourly schedule | a failed deploy, a release edited or withdrawn by hand, anything that happened without a push | up to 6 hours |
+| Pushes touching `website/**` or `packaging/install.sh` | the page itself changing | minutes |
+
+The scheduled run does not redeploy blindly. The build writes `/version.json`
+alongside the page, so the job can compare what the live site is serving
+against the latest release and exit when they match. A quiet week costs one
+cheap check every six hours and no cache purges.
+
+After any deploy, the workflow re-reads `/version.json` from the live URL (with
+a cache-busting query) and fails if it is not the version just built. An upload
+that succeeded while the edge kept serving the old HTML is otherwise invisible,
+and this turns it into a red run.
+
+Two cases the automation deliberately does not handle: a rollback (`release.yml`
+withdraws a failed release and restores the previous one as latest, which the
+`site` job never ran for, so the page is already correct), and a release
+published while the Bunny secrets are missing (the workflow says so and does not
+fail).
+
+It needs five repository secrets:
 
 | Secret | What it is |
 |---|---|
