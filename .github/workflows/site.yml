@@ -1,7 +1,7 @@
 name: Site
 
-# player.soulaudio.co. Built from website/ and published to a Bunny storage
-# zone behind a pull zone.
+# player.soulaudio.co. Built from website/ and published to the Bunny storage
+# zone that website/infrastructure manages.
 #
 # Keeping the page in sync with the current release takes three triggers,
 # because any one of them can miss:
@@ -25,6 +25,7 @@ on:
     branches: [main]
     paths:
       - "website/**"
+      - "!website/infrastructure/**"
       - "packaging/install.sh"
       - "docs/screenshots/albums-dark.png"
       - ".github/workflows/site.yml"
@@ -52,14 +53,10 @@ jobs:
     name: build + publish
     runs-on: ubuntu-latest
     env:
-      BUNNY_STORAGE_ZONE: ${{ secrets.BUNNY_STORAGE_ZONE }}
-      BUNNY_STORAGE_PASSWORD: ${{ secrets.BUNNY_STORAGE_PASSWORD }}
-      BUNNY_STORAGE_ENDPOINT: ${{ secrets.BUNNY_STORAGE_ENDPOINT }}
-      BUNNY_PULLZONE_ID: ${{ secrets.BUNNY_PULLZONE_ID }}
-      BUNNY_API_KEY: ${{ secrets.BUNNY_API_KEY }}
-    defaults:
-      run:
-        working-directory: website
+      BUNNYNET_API_KEY: ${{ secrets.BUNNYNET_API_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCW_STATE_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCW_STATE_SECRET_KEY }}
+      TF_VAR_zone_id: ${{ vars.SOULAUDIO_ZONE_ID }}
     steps:
       - uses: actions/checkout@v7.0.1
 
@@ -70,12 +67,51 @@ jobs:
           cache-dependency-path: website/package-lock.json
 
       - run: npm ci
+        working-directory: website
 
       - name: Build
+        working-directory: website
         env:
           # Lifts the unauthenticated rate limit on the latest-release lookup.
           GITHUB_TOKEN: ${{ github.token }}
         run: npm run build
+
+      # Where the zone name, its write password, and the pull zone id come
+      # from. Reading them out of the state that created them beats copying
+      # four values into repository secrets by hand: one source of truth, and
+      # nothing to re-copy when a zone is recreated.
+      - name: Credentials present?
+        id: creds
+        run: |
+          if [ -n "$BUNNYNET_API_KEY" ] && [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$TF_VAR_zone_id" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Bunny and state credentials are not set, so the build was not published."
+          fi
+
+      - uses: hashicorp/setup-terraform@v3.1.2
+        if: steps.creds.outputs.ready == 'true'
+        with:
+          terraform_version: 1.13.3
+          terraform_wrapper: false
+
+      - name: Read the zone details from terraform
+        id: tf
+        if: steps.creds.outputs.ready == 'true'
+        working-directory: website/infrastructure
+        run: |
+          set -euo pipefail
+          terraform init -backend-config=backend.hcl
+          password=$(terraform output -raw storage_password)
+          # Mask it before it can reach a log line.
+          echo "::add-mask::$password"
+          {
+            echo "zone=$(terraform output -raw storage_zone)"
+            echo "password=$password"
+            echo "endpoint=$(terraform output -raw storage_endpoint)"
+            echo "pullzone=$(terraform output -raw pullzone_id)"
+          } >> "$GITHUB_OUTPUT"
 
       # On a schedule there is usually nothing to do. Deploying anyway would
       # purge the cache every six hours for no reason, so compare first: the
@@ -84,32 +120,34 @@ jobs:
       # deploys.
       - name: Is the live site behind?
         id: check
+        working-directory: website
         run: |
           set -uo pipefail
           built=$(jq -r .version dist/version.json)
           echo "built=$built" >> "$GITHUB_OUTPUT"
           if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "reason=triggered by ${{ github.event_name }}" >> "$GITHUB_OUTPUT"
             echo "stale=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Cache-busting query so this reads the origin, not an edge copy.
           live=$(curl -fsS --max-time 20 "$SITE_URL/version.json?t=$RANDOM" | jq -r .version || echo unreachable)
-          echo "live=$live" >> "$GITHUB_OUTPUT"
           if [ "$live" = "$built" ]; then
             echo "stale=false" >> "$GITHUB_OUTPUT"
             echo "::notice::Live site is on $live, the latest release. Nothing to do."
           else
             echo "stale=true" >> "$GITHUB_OUTPUT"
-            echo "reason=live is $live, latest is $built" >> "$GITHUB_OUTPUT"
             echo "::warning::Live site is on $live but the latest release is $built. Redeploying."
           fi
 
-      # Until the Bunny zones exist the build still runs on every push, which is
-      # the half that catches a broken page. Publishing is skipped with a notice
-      # rather than failing, the same posture as the Homebrew tap push.
       - name: Publish to Bunny
-        if: steps.check.outputs.stale == 'true' && env.BUNNY_STORAGE_ZONE != ''
+        if: steps.creds.outputs.ready == 'true' && steps.check.outputs.stale == 'true'
+        working-directory: website
+        env:
+          BUNNY_STORAGE_ZONE: ${{ steps.tf.outputs.zone }}
+          BUNNY_STORAGE_PASSWORD: ${{ steps.tf.outputs.password }}
+          BUNNY_STORAGE_ENDPOINT: ${{ steps.tf.outputs.endpoint }}
+          BUNNY_PULLZONE_ID: ${{ steps.tf.outputs.pullzone }}
+          BUNNY_API_KEY: ${{ secrets.BUNNYNET_API_KEY }}
         run: node scripts/deploy-bunny.mjs
 
       # A deploy that uploads cleanly can still leave the old page in front of
@@ -117,7 +155,7 @@ jobs:
       # take. Checking afterwards turns that into a red run instead of a page
       # nobody notices is stale.
       - name: Confirm the live site serves this version
-        if: steps.check.outputs.stale == 'true' && env.BUNNY_STORAGE_ZONE != ''
+        if: steps.creds.outputs.ready == 'true' && steps.check.outputs.stale == 'true'
         run: |
           set -uo pipefail
           built="${{ steps.check.outputs.built }}"
@@ -132,7 +170,3 @@ jobs:
           done
           echo "::error::$SITE_URL still serves $live after the deploy and purge; expected $built."
           exit 1
-
-      - name: Publishing skipped
-        if: env.BUNNY_STORAGE_ZONE == ''
-        run: echo "::notice::BUNNY_* secrets are not set, so the build was not published."
