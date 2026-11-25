@@ -5,7 +5,7 @@
 > 3-vote refutation per claim → cited synthesis). 2026-11-21.
 
 **Question:** When you add/remove/reorder a track in a playlist you are currently
-playing, does the up-next queue update — and how do established players model the
+playing, does the up-next queue update, and how do established players model the
 relationship? (Spotify, Apple Music, YouTube Music, Tidal, Amazon Music,
 foobar2000, MusicBee, Plexamp/Plex, Roon, Clementine/Strawberry.)
 
@@ -21,7 +21,7 @@ foobar2000, MusicBee, Plexamp/Plex, Roon, Clementine/Strawberry.)
 4. **Plex** is the most explicit model: EXPLICIT queue (played the playlist/album
    whole) vs IMPLICIT queue (played one track, the rest "come along for the
    ride"). Adding to the queue shifts existing items, never deletes them.
-5. **Snapshot vs live is genuinely split** (lower confidence — the crux):
+5. **Snapshot vs live is genuinely split** (lower confidence, the crux):
    MusicBee and Spotify's Web API treat the context as a **frozen snapshot**
    (edits don't propagate); Spotify's native client is *reported* to reflect
    edits (inferred, not documented). A frozen snapshot is a real, shipped
@@ -41,8 +41,8 @@ sections.
 
 ## Primary sources
 
-- Spotify — Play Queue: https://support.spotify.com/us/article/play-queue/
-- Spotify — How the Play Queue works (FAQ): https://community.spotify.com/t5/FAQs/How-does-the-Play-Queue-work/ta-p/1308142
-- Apple — Queue your songs (Mac): https://support.apple.com/guide/music/queue-your-songs-musb1e6d1c76/mac
-- Apple — Use the Playing Next queue: https://support.apple.com/guide/music/use-the-playing-next-queue-musb1e6d1c76/1.1/mac/11.0
+- Spotify: Play Queue: https://support.spotify.com/us/article/play-queue/
+- Spotify: How the Play Queue works (FAQ): https://community.spotify.com/t5/FAQs/How-does-the-Play-Queue-work/ta-p/1308142
+- Apple: Queue your songs (Mac): https://support.apple.com/guide/music/queue-your-songs-musb1e6d1c76/mac
+- Apple: Use the Playing Next queue: https://support.apple.com/guide/music/use-the-playing-next-queue-musb1e6d1c76/1.1/mac/11.0
 - Spotube feature request (Priority vs Automatic queue): https://github.com/team-spotube/spotube/issues/3216

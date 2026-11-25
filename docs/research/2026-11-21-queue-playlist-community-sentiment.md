@@ -6,7 +6,7 @@
 
 **Question:** What do discerning music-player communities (foobar2000 /
 Hydrogenaudio, audiophiles, MusicBee / Roon / Plexamp power users) *prefer* about
-the playlist↔queue relationship — do they want playlist edits to live-update the
+the playlist↔queue relationship: do they want playlist edits to live-update the
 queue, or strict separation? Including dissenting views and the strength of each
 camp.
 
@@ -25,7 +25,7 @@ This is the opposite of the mainstream-streaming "live context" reflex.
    default.** A dedicated separate queue UI is the community default.
 2. **MusicBee:** the stored Playlist and the "Playing Tracks" queue are
    "completely independent." A senior forum member, correcting a newcomer: add
-   the song to the Playing-Tracks queue, not the playlist — "This will NOT add
+   the song to the Playing-Tracks queue, not the playlist, "This will NOT add
    the track to your playlist **nor should it**." (An explicit value judgment.)
 3. **Roon:** plays a playlist by copying it to the Queue as a detached snapshot;
    power users want the queue as an independent "sandbox," and separately want to
@@ -45,7 +45,7 @@ This is the opposite of the mainstream-streaming "live context" reflex.
 ## Dissent / nuance
 
 Mainstream streaming (Spotify) users share the anti-auto-magic instinct but their
-friction is different — they want *more* editability of the auto-populated
+friction is different: they want *more* editability of the auto-populated
 portion, which is a demand for control, not evidence for live playlist↔queue
 linkage. One internal tension: findings #4 (non-destructive, played tracks
 remain) vs a minority "a queue should consume songs as they play" view; resolved
@@ -53,8 +53,8 @@ by Roon's non-destructive model (played tracks stay, visible).
 
 ## Primary sources
 
-- Hydrogenaudio — foo_queue_editor: https://wiki.hydrogenaudio.org/index.php?title=Foobar2000%3AComponents%2FQueue_Editor_%28foo_queue_editor%29
-- Hydrogenaudio — "Playlists, Playback Queue…" thread 108585: https://hydrogenaudio.org/index.php/topic,108585.0.html
-- MusicBee forum — thread 42491 (playlist vs Playing Tracks): https://getmusicbee.com/forum/index.php?topic=42491.0
-- Roon community — currently-playing list vs queue: https://community.roonlabs.com/t/how-to-see-currently-playing-list-not-the-queue/276926
-- Roon community — non-destructive queue (done in 1.4): https://community.roonlabs.com/t/non-destructive-queue-option-done-in-1-4/19694
+- Hydrogenaudio: foo_queue_editor: https://wiki.hydrogenaudio.org/index.php?title=Foobar2000%3AComponents%2FQueue_Editor_%28foo_queue_editor%29
+- Hydrogenaudio: "Playlists, Playback Queue…" thread 108585: https://hydrogenaudio.org/index.php/topic,108585.0.html
+- MusicBee forum: thread 42491 (playlist vs Playing Tracks): https://getmusicbee.com/forum/index.php?topic=42491.0
+- Roon community: currently-playing list vs queue: https://community.roonlabs.com/t/how-to-see-currently-playing-list-not-the-queue/276926
+- Roon community: non-destructive queue (done in 1.4): https://community.roonlabs.com/t/non-destructive-queue-option-done-in-1-4/19694
