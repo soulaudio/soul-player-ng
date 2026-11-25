@@ -26,8 +26,10 @@ back, then offers a cask with a wrong checksum that cask-ci must reject: publish
 gate itself, proven without touching main. The branch is deleted afterwards.
 
 Needs GH_TOKEN with contents + pull-requests write on the tap (the release's
-GitHub App token). The brew tests need macOS; `--no-brew` skips the local ones
-(the tap's cask-ci still runs them on every PR).
+GitHub App token). The local brew tests need macOS. `--no-brew` (what the
+release runs, on Linux, because macOS runners are often unavailable for long
+stretches) leaves the Mac to the tap's cask-ci: on the PR before merging, and on
+the merged commit after, which installs from the tap exactly as users get it.
 """
 
 from __future__ import annotations
@@ -48,6 +50,9 @@ from pathlib import Path
 
 APP_REPO = "soulaudio/soul-player-ng"
 TAP = "soulaudio/homebrew-tap"
+# Local brew tests on this machine (macOS), or rely on the tap's cask-ci for the
+# Mac part, including after each merge (--no-brew, what the release uses).
+USE_BREW = True
 TAP_NAME = "soulaudio/tap"
 CASK = "soul-player"
 CASK_PATH = "Casks/soul-player.rb"
@@ -307,10 +312,14 @@ def publish(version: str, base: str, use_brew: bool) -> None:
                            f"Soul Player {version}: https://github.com/{APP_REPO}/releases/tag/v{version}\n\n"
                            f"Opened by the release workflow after the release was published and verified; "
                            f"pre-flight tested on a Mac. Merges when `cask-ci` passes.")
-    if not use_brew:
-        return
     try:
-        postpublish(version, base, env)
+        if use_brew:
+            postpublish(version, base, env)
+        else:
+            # The tap's cask-ci on the merged commit: a fresh Mac installs from the
+            # tap exactly as it now is, launches the app and zaps it.
+            log("  post-publish: cask-ci on the merged commit")
+            wait_check(merged)
     except Failed as e:
         log(f"  post-publish check failed: {e}\n  rolling back")
         revert(merged, base, f"Revert soul-player {version}", str(e))
@@ -320,10 +329,12 @@ def publish(version: str, base: str, use_brew: bool) -> None:
 def revert(merged: str, base: str, title: str, why: str) -> None:
     parent = api("GET", f"repos/{TAP}/commits/{merged}")["parents"][0]["sha"]
     before, _ = cask_at(parent)
-    pr_through_ci(base, before, title,
+    sha = pr_through_ci(base, before, title,
                   f"Restores the cask from before {merged[:7]}.\n\nReason: {why}\n\n"
                   "Opened by the release workflow. Installs that already took the reverted "
                   "version keep it until a newer release (brew never downgrades).")
+    if not USE_BREW:
+        wait_check(sha)  # the restored cask, installed from the tap as it now is
 
 
 def rollback(version: str, base: str) -> str | None:
@@ -379,7 +390,7 @@ def drill(use_brew: bool) -> None:
         if now != before:
             raise Failed(f"after rolling back, {branch} has {now}, expected {before}")
         if use_brew and before:
-            postpublish(before, branch, brew_env())
+            postpublish(before, branch, brew_env())  # (without brew, revert() checked it)
         # The gate itself: a cask with a wrong checksum must be stopped by
         # cask-ci, its PR closed, and nothing land.
         bad = new_cask(version, "0" * 64)
@@ -423,6 +434,8 @@ def main() -> int:
         selftest()
         return 0
     use_brew = not a.no_brew
+    global USE_BREW
+    USE_BREW = use_brew
     try:
         if a.mode == "publish":
             publish(a.version, a.base, use_brew)

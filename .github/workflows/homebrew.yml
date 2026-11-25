@@ -2,10 +2,11 @@ name: Homebrew
 
 # The soul-player cask in soulaudio/homebrew-tap, published from here.
 #
-#   publish   after a release is verified (release.yml calls this): pre-flight test
-#             the new cask on this Mac, PR it to the tap, merge only when the tap's
-#             cask-ci passes, then install from the live tap as a user would, and
-#             revert the same way if that fails.
+#   publish   after a release is verified (release.yml calls this): PR the new
+#             cask to the tap, merge only when the tap's cask-ci passes on a Mac
+#             (install, launch, zap), check cask-ci again on the merged commit
+#             (the tap exactly as users get it), and revert the same way if that
+#             fails.
 #   rollback  take a version back out of the tap (a revert PR through cask-ci).
 #   drill     publish + roll back for real on a throwaway tap branch; every
 #             release rehearsal runs it, so both paths are proven before they're needed.
@@ -40,7 +41,12 @@ concurrency:
 
 jobs:
   cask:
-    runs-on: macos-15
+    # Linux, not macOS: arm64 macOS runners go unassigned for long stretches
+    # (0.4.7's cask job was cancelled after 17 minutes without ever starting).
+    # The Mac tests run in the tap's cask-ci, on the PR before merging and on
+    # the merged commit after; publish-cask.py reruns a cask-ci that GitHub
+    # cancelled for want of a runner.
+    runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7.0.1
@@ -66,4 +72,4 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           python3 .github/scripts/publish-cask.py --selftest
-          python3 .github/scripts/publish-cask.py "$MODE" ${VERSION:+--version "$VERSION"}
+          python3 .github/scripts/publish-cask.py "$MODE" --no-brew ${VERSION:+--version "$VERSION"}
