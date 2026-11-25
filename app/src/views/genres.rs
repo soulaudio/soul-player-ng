@@ -258,19 +258,11 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
     );
 
     let q = s.genre_search.text.to_lowercase();
-    let shown: Vec<u32> = genre
-        .ids
-        .iter()
-        .copied()
-        .filter(|id| {
-            // `s.track` is O(1) (memoized index map), so filtering a big genre is
-            // O(genre tracks), not the O(genre tracks x library) a per-id library
-            // scan would cost.
-            q.is_empty()
-                || s.track(*id)
-                    .is_some_and(|t| crate::views::library::track_matches(t, &q))
-        })
-        .collect();
+    // This genre's `(library indices, ids)`, filtered by `q`, MEMOIZED by (library
+    // fingerprint, genre, query) so a big genre ("Rock" can be most of the library)
+    // is not re-filtered and re-collected every frame (see
+    // `State::visible_genre_tracks`); the virtual rows below index these directly.
+    let (idxs, ids) = s.visible_genre_tracks(&genre.name, &genre.ids, &q);
     let search = crate::views::library::search_box(
         &s.genre_search,
         "genre-search",
@@ -287,13 +279,13 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
         .padding(space::PANE)
         .child(hero)
         .child(search);
-    if !shown.is_empty() {
+    if !ids.is_empty() {
         top = top.child(detail_track_header(p, true, true));
     }
     // The scrolled, VIRTUALIZED track list: a huge genre lays out only the on-screen
     // window of rows, not all of them. The row closures capture the memoized library
     // `Rc` + the shown tracks' indices (O(1) lookups) so they clone no track data.
-    let body: El = if shown.is_empty() {
+    let body: El = if ids.is_empty() {
         col()
             .key("genre-tracks")
             .px(space::PANE)
@@ -305,13 +297,6 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
             )
     } else {
         let lib = s.library_rc();
-        let positions = s.track_positions();
-        let idxs: Vec<usize> = shown
-            .iter()
-            .filter_map(|id| positions.get(id).copied())
-            .collect();
-        let ids: Rc<[u32]> = shown.into();
-        let idxs: Rc<[usize]> = idxs.into();
         let pal = *p;
         let (now, playing) = (s.now_playing_id, s.playing);
         let count = idxs.len();
@@ -550,5 +535,46 @@ mod tests {
             !labels.contains(&"Rock".to_string()) && !labels.contains(&"Electronic".to_string()),
             "non-matching genres are filtered out, got: {labels:?}"
         );
+    }
+
+    /// The genre detail's filtered track list is MEMOIZED by (library fingerprint,
+    /// genre, query): a repeat call at the same query returns the SAME allocation (a
+    /// cache hit, so the per-frame filter + collect over a big genre does not rerun),
+    /// and a changed query rebuilds and re-filters. Guards the per-frame O(genre)
+    /// allocation fix for the detail page.
+    #[test]
+    fn visible_genre_tracks_is_memoized_per_query() {
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![
+            tv(1, Some("Rock")),
+            tv(2, Some("Rock")),
+            tv(3, Some("Jazz")),
+        ];
+        let grouped = s.grouped_genres();
+        let ids = grouped
+            .iter()
+            .find(|g| g.name == "Rock")
+            .expect("a Rock genre")
+            .ids
+            .clone();
+
+        // Same (genre, query) twice: the returned id list is the SAME allocation, so
+        // the filter + collect ran once, not once per call (per frame).
+        let (_i1, a) = s.visible_genre_tracks("Rock", &ids, "");
+        let (_i2, b) = s.visible_genre_tracks("Rock", &ids, "");
+        assert!(
+            Rc::ptr_eq(&a, &b),
+            "a repeat call at the same query must be a cache hit, not a rebuild"
+        );
+        assert_eq!(&*a, &[1, 2], "both Rock tracks show with an empty query");
+
+        // A changed query invalidates the cache and re-filters: "t1" matches only
+        // track 1's title ("T1"), not "T2".
+        let (_i3, c) = s.visible_genre_tracks("Rock", &ids, "t1");
+        assert!(
+            !Rc::ptr_eq(&a, &c),
+            "a changed query must invalidate the cache"
+        );
+        assert_eq!(&*c, &[1], "only the track matching the query survives");
     }
 }
