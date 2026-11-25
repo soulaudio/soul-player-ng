@@ -144,7 +144,7 @@ serde_json = "1"
 # Unix termination signals (kill / Ctrl-C / closed terminal) → the normal quit path
 # (`signal_quit`), so they are not reported as crashes. Safe iterator API only.
 [target.'cfg(unix)'.dependencies]
-signal-hook = "0.3"
+signal-hook = "0.4"
 
 # macOS notifications (UNUserNotificationCenter): Rune's own notifier crate, at the same
 # pinned rev as `rune`, so its objc2 0.5 is the one Rune already compiles. It posts only
