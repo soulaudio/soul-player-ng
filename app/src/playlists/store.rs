@@ -148,14 +148,27 @@ fn read_playlist_file(folder_dir: &Path) -> Option<Playlist> {
 }
 
 /// Write `playlist` as `<dir>/<folder>/playlist.toml`, creating the folder if
-/// needed. Best-effort (a failed write never panics the UI).
+/// needed. Best-effort (a failed write never panics the UI). The write is atomic
+/// (temp file in the same dir, then rename), so a crash mid-write can't truncate an
+/// existing playlist: a reader sees either the old complete file or the new one,
+/// never a half-written one that `read_playlist_file` would drop (silently losing
+/// that playlist, since `rebuild_from_folders` skips a folder it can't parse).
 fn write_playlist_file(dir: &Path, folder: &str, playlist: &Playlist) {
     let folder_dir = dir.join(folder);
     if fs::create_dir_all(&folder_dir).is_err() {
         return;
     }
     if let Ok(body) = toml::to_string_pretty(playlist) {
-        let _ = fs::write(folder_dir.join("playlist.toml"), body);
+        let tmp = folder_dir.join("playlist.toml.tmp");
+        if fs::write(&tmp, body).is_ok() {
+            // `rename` replaces the destination atomically on both Unix and Windows
+            // (MoveFileEx + REPLACE_EXISTING); the temp sits in the same directory,
+            // so it is the same filesystem. On failure, drop the temp so a stray
+            // `.tmp` doesn't linger.
+            if fs::rename(&tmp, folder_dir.join("playlist.toml")).is_err() {
+                let _ = fs::remove_file(&tmp);
+            }
+        }
     }
 }
 
@@ -570,6 +583,36 @@ mod tests {
         assert_eq!(s2.get(id).unwrap().entries.len(), 2);
         assert_eq!(s2.list()[0].name, "Road Trip");
         assert_eq!(s2.list()[0].count, 2);
+    }
+
+    /// A playlist write goes through a temp file + rename, so it leaves exactly
+    /// `playlist.toml` (complete, roundtrips) and no stray `.tmp`. The crash
+    /// atomicity itself needs crash injection to exercise, but this locks the
+    /// temp-then-rename contract, so a future edit can't quietly regress to a
+    /// truncating in-place write that would lose the playlist on a mid-write crash.
+    #[test]
+    fn writing_a_playlist_is_atomic_and_leaves_no_temp() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let dir = playlist_store_path();
+        let folder = "road-trip-1";
+        let playlist = Playlist {
+            id: 1,
+            name: "Road Trip".to_string(),
+            custom_cover: None,
+            entries: vec![entry("song one")],
+        };
+        write_playlist_file(&dir, folder, &playlist);
+
+        let folder_dir = dir.join(folder);
+        let back = read_playlist_file(&folder_dir).expect("playlist.toml roundtrips");
+        assert_eq!(back.id, 1);
+        assert_eq!(back.name, "Road Trip");
+        assert_eq!(back.entries.len(), 1);
+        assert!(
+            !folder_dir.join("playlist.toml.tmp").exists(),
+            "no temp file is left after a successful write"
+        );
     }
 
     #[test]
