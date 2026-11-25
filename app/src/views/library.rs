@@ -7,7 +7,7 @@ use rune::{
     Align, Color, Cursor, Cx, El, GrowthSpec, Live, PointerPress, PopupItem, PopupMenu, ScrollSpec,
     Tx, col, el, icon, row, text,
 };
-use soul_player_host::{BrowseAxis, Command, TrackView};
+use soul_player_host::{BrowseAxis, Command, TrackLoudness, TrackView};
 
 use crate::State;
 use crate::theme::Palette;
@@ -131,14 +131,23 @@ fn lufs_cell(t: &TrackView, p: &Palette) -> El {
         .w(64.0)
 }
 
+/// The DR value to show for a track row: `Some(dr)` for a finite analyzed reading,
+/// else `None` (un-analyzed, or a non-finite reading, which falls back to the `·`
+/// placeholder like `lufs_cell` and `album_dr`). `f32::round as i32` would otherwise
+/// turn a NaN into `DR0` and an inf into `DR2147483647`, so the finite reading is
+/// filtered here.
+fn displayable_dr(loudness: Option<TrackLoudness>) -> Option<f32> {
+    loudness.and_then(|l| l.dr.is_finite().then_some(l.dr))
+}
+
 /// The DR cell for a track row: `DR12`, color-banded by [`crate::views::signal_path::dr_color`]
 /// (green dynamic, warm compressed), or `·` until analyzed. DR is an indicator, not a precise
 /// quality score (it is crest factor, not true dynamic range).
 fn dr_cell(t: &TrackView, p: &Palette) -> El {
-    let (label, color) = match t.loudness {
-        Some(l) => (
-            format!("DR{}", l.dr.round() as i32),
-            crate::views::signal_path::dr_color(l.dr, p),
+    let (label, color) = match displayable_dr(t.loudness) {
+        Some(dr) => (
+            format!("DR{}", dr.round() as i32),
+            crate::views::signal_path::dr_color(dr, p),
         ),
         None => ("·".to_string(), p.text_secondary),
     };
@@ -853,6 +862,28 @@ mod tests {
             loudness: None,
             format: format.map(|f| f.into()),
         }
+    }
+
+    fn loud(dr: f32) -> TrackLoudness {
+        TrackLoudness {
+            integrated_lufs: -14.0,
+            lra: 5.0,
+            true_peak_dbtp: -1.0,
+            plr: 8.0,
+            dr,
+        }
+    }
+
+    /// The DR cell drops a non-finite reading to the `·` placeholder (matching
+    /// `lufs_cell`), rather than rendering `DR0` (NaN) or `DR2147483647` (inf) that
+    /// `round() as i32` would produce.
+    #[test]
+    fn displayable_dr_drops_a_non_finite_reading() {
+        assert_eq!(displayable_dr(Some(loud(12.3))), Some(12.3));
+        assert_eq!(displayable_dr(Some(loud(f32::NAN))), None);
+        assert_eq!(displayable_dr(Some(loud(f32::INFINITY))), None);
+        assert_eq!(displayable_dr(Some(loud(f32::NEG_INFINITY))), None);
+        assert_eq!(displayable_dr(None), None);
     }
 
     /// Lossless, lossy and DSD each get their own color, and the lossy bucket is

@@ -2901,6 +2901,12 @@ pub(crate) fn import_profile(s: &mut State, path: &std::path::Path) {
 
 /// Set unit `unit`'s preamp in dB.
 pub(crate) fn set_eq_preamp(s: &mut State, unit: usize, preamp_db: f32) {
+    // Defense in depth, matching the band setters: a non-finite preamp would poison
+    // the chain's gain. Its only caller today is the bounded slider, so this just
+    // keeps the invariant if a text field is ever wired to it.
+    if !preamp_db.is_finite() {
+        return;
+    }
     if let Some(eq) = s.dsp_units.get_mut(unit).and_then(DspUnit::as_eq_mut) {
         eq.preamp_db = preamp_db;
     }
