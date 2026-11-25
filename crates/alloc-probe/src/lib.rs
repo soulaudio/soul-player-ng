@@ -135,7 +135,10 @@ mod tests {
     fn measure_counts_a_heap_allocation_and_its_bytes() {
         let (v, probe) = measure(|| Vec::<u8>::with_capacity(64));
         assert!(probe.allocs >= 1, "a heap Vec allocates at least once");
-        assert!(probe.bytes >= 64, "and records at least the requested bytes");
+        assert!(
+            probe.bytes >= 64,
+            "and records at least the requested bytes"
+        );
         drop(v);
     }
 
