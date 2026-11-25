@@ -21,6 +21,11 @@ pre-commit:
     clippy-service:
       glob: "*.{rs,toml}"
       run: cargo clippy --all-targets -- -D warnings
+    # Prose style, and it is a grep, so it costs nothing. The repo was swept
+    # once and a later PR put em dashes straight back: a rule nothing checks
+    # is a rule that decays.
+    em-dashes:
+      run: sh scripts/check-em-dashes.sh
 
 # Thorough gate before pushing: service tests. The Rune head build + headless
 # tests run in CI (they need the nightly toolchain + a GPU / software Vulkan).
