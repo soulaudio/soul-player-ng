@@ -578,8 +578,13 @@ jobs:
         # around the flatpak fetches, not a blanket cap: a timeout cannot tell
         # a stall from a slow mirror, and only one of those is a bug.
         run: |
+          # Only flatpak itself from the distro. flatpak-builder and appstreamcli
+          # come from Flathub's org.flatpak.Builder (what Flathub builds with),
+          # so they do not depend on the runner's Ubuntu: 22.04's appstreamcli
+          # 0.15 rejects the <developer> tag and vcs-browser URL that Flathub
+          # requires.
           sudo apt-get install -y -o Acquire::Retries=3 \
-            flatpak flatpak-builder appstream xvfb dbus-x11
+            flatpak xvfb dbus-x11
           flatpak remote-add --user --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y --noninteractive flathub \
@@ -587,7 +592,9 @@ jobs:
 
           stage=app/target/release/linux-stage
           cp packaging/flatpak/co.soulaudio.soulplayer.yml "$stage/"
-          appstreamcli validate --no-net "$stage/co.soulaudio.soulplayer.metainfo.xml"
+          flatpak install --user -y --noninteractive flathub org.flatpak.Builder
+          flatpak run --command=appstreamcli org.flatpak.Builder \
+            validate --no-net "$stage/co.soulaudio.soulplayer.metainfo.xml"
 
           # Flathub's OWN linter, which `appstreamcli validate` does not replace:
           # they run different checks. appstreamcli asks "is this valid
@@ -601,7 +608,6 @@ jobs:
           # It is fatal on purpose. It is also useful before we ever submit: it
           # is the only mechanical check that our packaging matches Flathub's
           # requirements, and a warning nobody reads would not provide that.
-          flatpak install --user -y --noninteractive flathub org.flatpak.Builder
           lint() { flatpak run --command=flatpak-builder-lint org.flatpak.Builder "$@"; }
           echo "::group::flatpak-builder-lint appstream"
           lint appstream "$stage/co.soulaudio.soulplayer.metainfo.xml"
@@ -616,7 +622,7 @@ jobs:
           # `.flatpak-builder` in the CWD, which is the repo checkout, while
           # the target is under RUNNER_TEMP. Those are not guaranteed to be the
           # same mount.
-          ( cd "$stage" && flatpak-builder --user --force-clean --install \
+          ( cd "$stage" && flatpak run org.flatpak.Builder --user --force-clean --install \
               --state-dir="$RUNNER_TEMP/fp-state" \
               --repo="$RUNNER_TEMP/fp-repo" "$RUNNER_TEMP/fp-build" \
               co.soulaudio.soulplayer.yml )
