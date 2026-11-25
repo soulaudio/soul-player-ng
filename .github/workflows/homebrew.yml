@@ -1,0 +1,69 @@
+name: Homebrew
+
+# The soul-player cask in soulaudio/homebrew-tap, published from here.
+#
+#   publish   after a release is verified (release.yml calls this): pre-flight test
+#             the new cask on this Mac, PR it to the tap, merge only when the tap's
+#             cask-ci passes, then install from the live tap as a user would, and
+#             revert the same way if that fails.
+#   rollback  take a version back out of the tap (a revert PR through cask-ci).
+#   drill     publish + roll back for real on a throwaway tap branch; every
+#             release rehearsal runs it, so both paths are proven before they're needed.
+#
+# Credential: the soulaudio tap GitHub App, installed only on homebrew-tap. Its
+# token is minted per run, scoped to that one repo, and expires within the hour.
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: publish
+      version:
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [drill, publish, rollback]
+        default: drill
+      version:
+        description: "Release version (publish/rollback), e.g. 0.4.6"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-tap
+  cancel-in-progress: false
+
+jobs:
+  cask:
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: app
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          client-id: ${{ vars.TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          owner: soulaudio
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-actions: write # rerun a cask-ci job GitHub cancelled for want of a macOS runner
+
+      - name: ${{ inputs.mode }} ${{ inputs.version }}
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          MODE: ${{ inputs.mode }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .github/scripts/publish-cask.py --selftest
+          python3 .github/scripts/publish-cask.py "$MODE" ${VERSION:+--version "$VERSION"}
