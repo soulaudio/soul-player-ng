@@ -1043,13 +1043,17 @@ impl PlayerHandle {
         // `track_count` (`remote_statuses` reads `remote_library`'s per-source
         // counts, which were just nulled) even though the remote itself is still
         // connected — the "rescan shows 0 tracks on the remote" bug. Harmless when
-        // there are no remotes: `rebuild_remote_library` then rebuilds an aggregate
-        // equal to the plain local library.
-        self.rebuild_remote_library();
-        // The aggregate (local ∪ retained, enabled remotes) now active in
-        // `self.inner.library` — not the local-only `lib` above — so a connected
-        // remote's tracks stay in the WatchUpdate; `views()` also stamps
-        // `remote_source` on them.
+        // there are no remotes: rebuilding would just reclone EVERY source's baked
+        // `.soulidx` bytes and produce an aggregate equal to the plain local library, so
+        // skip it when there is nothing to aggregate in (wasteful on every rescan,
+        // including every watcher-triggered one).
+        if !self.inner.remotes.lock().expect("remotes mutex").is_empty() {
+            self.rebuild_remote_library();
+        }
+        // With remotes, the aggregate (local ∪ retained, enabled remotes) is now active
+        // in `self.inner.library` — not the local-only `lib` above — so a connected
+        // remote's tracks stay in the WatchUpdate and `views()` stamps `remote_source`
+        // on them. With none, the local-only `lib` set above stays active (equivalent).
         let views = self.views();
         // A folder reconcile (e.g. Rescan) must STILL report the retained REMOTE
         // sources with their live health — otherwise the WatchUpdate drops them
@@ -2786,6 +2790,33 @@ mod tests {
             probe.allocs, 0,
             "stamping remote_source with no remotes must not allocate per view (made {})",
             probe.allocs
+        );
+    }
+
+    /// A local-only rescan must NOT build a redundant remote aggregate. `rescan_build`
+    /// called `rebuild_remote_library` unconditionally, which clones EVERY source's
+    /// baked `.soulidx` bytes and rebuilds an aggregate equal to the plain local
+    /// library — wasted on every rescan (including every watcher-triggered one) when
+    /// there are no remotes. Observable proxy: with no remotes the rebuild is skipped,
+    /// so `remote_library` stays `None` (set_library cleared it) instead of being set to
+    /// that redundant aggregate.
+    #[test]
+    fn a_local_rescan_with_no_remotes_does_not_build_a_remote_aggregate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("a.wav"), wav(48_000, 48_000)).unwrap();
+        let h = PlayerHandle::offline();
+        h.add_folder(dir.path()).expect("add_folder"); // goes through rescan_build
+        assert!(
+            h.inner.remotes.lock().expect("remotes mutex").is_empty(),
+            "no remotes configured"
+        );
+        assert!(
+            h.inner
+                .remote_library
+                .lock()
+                .expect("remote_library mutex")
+                .is_none(),
+            "a local-only rescan must not build a redundant remote aggregate"
         );
     }
 
