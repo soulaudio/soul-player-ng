@@ -1771,8 +1771,8 @@ impl PlayerHandle {
 
     /// Current library views (empty until a folder is opened). Stamps
     /// [`TrackView::remote_source`] for every track belonging to a retained
-    /// remote source (see [`remote_source_of`](Self::remote_source_of)) — the
-    /// backend projection itself always returns `remote_source: None`.
+    /// remote source (see [`mark_remote`](Self::mark_remote)) — the backend
+    /// projection itself always returns `remote_source: None`.
     pub fn views(&self) -> Vec<TrackView> {
         let mut views = self
             .inner
@@ -1804,13 +1804,47 @@ impl PlayerHandle {
         views
     }
 
-    /// Sets [`TrackView::remote_source`] on every view whose compound id
-    /// belongs to a retained remote source, using
-    /// [`remote_source_of`](Self::remote_source_of) for each — the shared
-    /// tail of [`views`](Self::views)/[`views_by`](Self::views_by).
+    /// Sets [`TrackView::remote_source`] on every view whose compound id belongs to a
+    /// retained remote source — the shared tail of [`views`](Self::views) /
+    /// [`views_by`](Self::views_by), run on every materialization. The common case has
+    /// NO remotes, so it short-circuits without touching the library (the backend
+    /// already emits `remote_source: None`). Otherwise it precomputes the per-source
+    /// host label ONCE (at most [`MAX_SOURCES`] sources; a remote aggregate source's
+    /// root is `remote:{url}#i`, set by [`RemoteLibrary::build`]) and stamps each view
+    /// by its packed source index, instead of resolving a path per view. Allocation-free
+    /// when there are no remotes (asserted by
+    /// `mark_remote_does_not_allocate_when_there_are_no_remotes`).
     fn mark_remote(&self, views: &mut [TrackView]) {
+        // Snapshot the remote servers' (url, host label), releasing the remotes lock
+        // BEFORE taking the library lock below, so the two are never held together (the
+        // old per-view path locked library then remotes; keeping a consistent order
+        // avoids a deadlock hazard). No remotes -> nothing to stamp, and no allocation.
+        let servers: Vec<(String, String)> = {
+            let remotes = self.inner.remotes.lock().expect("remotes mutex");
+            if remotes.is_empty() {
+                return;
+            }
+            remotes
+                .iter()
+                .map(|(server, _blobs)| (server.url.clone(), remote::host_label(&server.url)))
+                .collect()
+        };
+        let guard = self.inner.library.lock().expect("library mutex");
+        let Some(lib) = guard.as_ref() else { return };
+        let labels: Vec<Option<String>> = lib
+            .source_counts()
+            .into_iter()
+            .map(|(root, _count)| {
+                let root = root.to_string_lossy();
+                servers
+                    .iter()
+                    .find(|(url, _label)| root.starts_with(&format!("remote:{url}#")))
+                    .map(|(_url, label)| label.clone())
+            })
+            .collect();
         for view in views {
-            view.remote_source = self.remote_source_of(view.id);
+            let source = soul_audio_multicatalog::unpack(view.id).0 as usize;
+            view.remote_source = labels.get(source).cloned().flatten();
         }
     }
 
@@ -1833,29 +1867,6 @@ impl PlayerHandle {
                 }
             }
         }
-    }
-
-    /// `Some(host)` naming the remote server aggregate track `track_id`
-    /// belongs to, if it belongs to one of the retained remote servers in
-    /// [`Inner::remotes`] — the SAME sentinel-root convention
-    /// [`remote_statuses`](Self::remote_statuses)' `track_count` sum relies
-    /// on (`remote:{url}#i`, set by [`RemoteLibrary::build`]): locate the
-    /// id's aggregate source, then check whether that source's root falls in
-    /// any remote server's namespace, returning that server's
-    /// [`remote::host_label`] if so. `None` for a local id, an id with no
-    /// current library, or an id that doesn't resolve.
-    fn remote_source_of(&self, track_id: u32) -> Option<String> {
-        let lib = self.inner.library.lock().expect("library mutex").clone()?;
-        let located = lib.locate(track_id)?;
-        let (root, _) = lib.source_counts().into_iter().nth(located.source)?;
-        let root = root.to_string_lossy();
-        self.inner
-            .remotes
-            .lock()
-            .expect("remotes mutex")
-            .iter()
-            .find(|(server, _blobs)| root.starts_with(&format!("remote:{}#", server.url)))
-            .map(|(server, _blobs)| remote::host_label(&server.url))
     }
 
     /// Raw cover art for a track id (bytes + mime), or `None`.
@@ -2748,6 +2759,34 @@ mod tests {
         let views = h.open_folder(dir.path()).expect("open_folder");
         assert_eq!(views.len(), 2, "both wavs scanned");
         assert_eq!(h.views().len(), 2, "views() reflects the opened library");
+    }
+
+    /// Constraint (via alloc-probe): stamping `remote_source` on a library with NO
+    /// remotes must allocate NOTHING. `mark_remote` runs on every `views()` /
+    /// `views_by()` materialization (and once per ~8 Hz Tick during a loudness sweep);
+    /// it used to call `remote_source_of` per view (a library lock, an Arc clone, a
+    /// discarded `locate` that resolves + drops a PathBuf, and a fresh `source_counts`
+    /// Vec) even with zero remotes, so a million-track library paid ~millions of wasted
+    /// allocations per materialization in the common all-local case.
+    #[test]
+    fn mark_remote_does_not_allocate_when_there_are_no_remotes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for i in 0..8 {
+            std::fs::write(dir.path().join(format!("t{i}.wav")), wav(48_000, 48_000)).unwrap();
+        }
+        let h = PlayerHandle::offline();
+        let mut views = h.open_folder(dir.path()).expect("open_folder");
+        assert_eq!(views.len(), 8);
+        assert!(
+            h.inner.remotes.lock().expect("remotes mutex").is_empty(),
+            "no remotes configured"
+        );
+        let (_, probe) = alloc_probe::measure(|| h.mark_remote(&mut views));
+        assert_eq!(
+            probe.allocs, 0,
+            "stamping remote_source with no remotes must not allocate per view (made {})",
+            probe.allocs
+        );
     }
 
     #[test]
