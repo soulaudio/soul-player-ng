@@ -1,0 +1,123 @@
+name: Infrastructure
+
+# Terraform for player.soulaudio.co's Bunny CDN (website/infrastructure).
+#
+# Plan on a pull request, apply when it lands on main. Nothing is applied from
+# anyone's laptop, so the state in the shared Scaleway bucket is always what
+# this repo says it should be, and the credentials live in one place.
+#
+# Everything is guarded on the secrets existing, so until they are configured
+# this runs fmt + validate (which need no credentials) and stops there rather
+# than failing.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/infrastructure/**"
+      - ".github/workflows/infrastructure.yml"
+  pull_request:
+    paths:
+      - "website/infrastructure/**"
+      - ".github/workflows/infrastructure.yml"
+  workflow_dispatch:
+    inputs:
+      destroy:
+        description: "Destroy the CDN instead of applying it"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Terraform takes a state lock, so a second run would fail on the lock rather
+# than wait. One at a time, and never cancel one midway: an interrupted apply
+# is how state drifts from reality.
+concurrency:
+  group: infrastructure
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: website/infrastructure
+
+jobs:
+  terraform:
+    name: plan + apply
+    runs-on: ubuntu-latest
+    env:
+      # Bunny account key: the provider authenticates with it.
+      BUNNYNET_API_KEY: ${{ secrets.BUNNYNET_API_KEY }}
+      # The scoped Scaleway Object Storage key the S3 state backend uses.
+      AWS_ACCESS_KEY_ID: ${{ secrets.SCW_STATE_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SCW_STATE_SECRET_KEY }}
+      # Not a secret: it is a zone id, and it appears in every plan output.
+      # A repository variable, so it is visible and editable without rotating
+      # anything.
+      TF_VAR_zone_id: ${{ vars.SOULAUDIO_ZONE_ID }}
+      TF_IN_AUTOMATION: "true"
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: hashicorp/setup-terraform@v3.1.2
+        with:
+          terraform_version: 1.13.3
+          # The wrapper rewrites stdout, which breaks `output -raw` for anything
+          # that consumes it.
+          terraform_wrapper: false
+
+      # Both of these are static checks, so they run on every trigger whether
+      # or not the credentials are present. This is also the fmt gate the
+      # infrastructure repo keeps in its Taskfile.
+      - name: Format
+        run: terraform fmt -check -recursive -diff
+
+      - name: Validate
+        run: |
+          terraform init -backend=false
+          terraform validate
+
+      - name: Credentials present?
+        id: creds
+        run: |
+          if [ -n "$BUNNYNET_API_KEY" ] && [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$TF_VAR_zone_id" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::BUNNYNET_API_KEY / SCW_STATE_* / SOULAUDIO_ZONE_ID are not all set, so only fmt and validate ran."
+          fi
+
+      - name: Init
+        if: steps.creds.outputs.ready == 'true'
+        run: terraform init -backend-config=backend.hcl
+
+      - name: Plan
+        if: steps.creds.outputs.ready == 'true'
+        run: terraform plan -input=false -out=tfplan
+
+      # The plan is the review artifact on a pull request. Posting it in the
+      # job summary means it is read before the merge rather than after the
+      # apply.
+      - name: Plan summary
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          {
+            echo '## Terraform plan'
+            echo '```'
+            terraform show -no-color tfplan
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Apply only from main. A pull request gets the plan and nothing else.
+      - name: Apply
+        if: >-
+          steps.creds.outputs.ready == 'true' &&
+          github.event_name != 'pull_request' &&
+          github.event.inputs.destroy != 'true'
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: Destroy
+        if: >-
+          steps.creds.outputs.ready == 'true' &&
+          github.event_name == 'workflow_dispatch' &&
+          github.event.inputs.destroy == 'true'
+        run: terraform destroy -input=false -auto-approve

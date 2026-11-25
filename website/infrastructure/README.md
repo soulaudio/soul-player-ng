@@ -23,39 +23,52 @@ which is the failure `dns/datadir-sites` was split out to avoid.
 
 ## Applying
 
-Needs two credentials, both from the infrastructure repo's `.env`:
-`BUNNYNET_API_KEY` (account-level, for Bunny) and
-`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` (the scoped Scaleway Object
-Storage key, for the state backend).
+In CI, not from a laptop. `.github/workflows/infrastructure.yml` plans on a
+pull request that touches this directory and applies when it lands on main, so
+the state in the shared bucket always matches what the repo says, and the
+credentials live in one place instead of in whoever applied last.
+
+| Setting | Kind | What it is |
+|---|---|---|
+| `BUNNYNET_API_KEY` | secret | Bunny account key |
+| `SCW_STATE_ACCESS_KEY` | secret | Scaleway Object Storage key id, for the state backend |
+| `SCW_STATE_SECRET_KEY` | secret | Its secret |
+| `SOULAUDIO_ZONE_ID` | variable | `soulaudio.co` zone id, from `terraform -chdir=dns/soulaudio.co output zone_id` in the infrastructure repo |
+
+`terraform fmt -check` and `validate` run on every trigger, credentials or
+not, so a malformed change fails before it reaches a plan. Until the
+credentials are set the workflow stops after those two and says so rather than
+failing.
+
+The plan is written into the run's job summary, so it is read before the merge
+rather than after the apply.
+
+Destroying is a `workflow_dispatch` with the `destroy` input, which keeps it
+deliberate and off the automatic path.
+
+### Running it locally anyway
+
+For a break-glass case or to try something before committing it. Needs
+`BUNNYNET_API_KEY` plus the Scaleway state key as `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY`, all from the infrastructure repo's `.env`:
 
 ```sh
 cd website/infrastructure
-
-# The DNS zone id comes from the infrastructure repo:
-#   terraform -chdir=dns/soulaudio.co output zone_id
-export TF_VAR_zone_id=...
-
+export TF_VAR_zone_id=...   # terraform -chdir=dns/soulaudio.co output zone_id
 terraform init -backend-config=backend.hcl
 terraform plan
-terraform apply
 ```
 
-`terraform fmt -check -recursive` and `terraform validate` both pass; the
-config is checked under Terraform and OpenTofu.
+Prefer leaving the apply to CI: a local apply takes the same state lock and
+the next pipeline run will plan against whatever you left behind.
 
-## After the first apply
+## What the deploy does with the outputs
 
-The outputs are exactly the repository secrets
-`.github/workflows/site.yml` needs. Until they are set, the workflow builds the
-site on every push and skips publishing with a notice.
-
-| Secret | Where it comes from |
-|---|---|
-| `BUNNY_STORAGE_ZONE` | `terraform output -raw storage_zone` |
-| `BUNNY_STORAGE_PASSWORD` | `terraform output -raw storage_password` (the **write** password; the read-only one cannot upload) |
-| `BUNNY_STORAGE_ENDPOINT` | `terraform output -raw storage_endpoint` |
-| `BUNNY_PULLZONE_ID` | `terraform output -raw pullzone_id` |
-| `BUNNY_API_KEY` | the Bunny account API key, not a terraform output |
+`.github/workflows/site.yml` reads `storage_zone`, `storage_password`,
+`storage_endpoint` and `pullzone_id` from this state at deploy time (masking
+the password before it can reach a log line). That is why there are no
+`BUNNY_STORAGE_*` repository secrets: a zone recreated under a new name needs
+no secret updated anywhere.
 
 The TLS certificate is issued only once the DNS record resolves, which is why
 `bunnynet_pullzone_hostname` depends on it. Give it a minute after the first

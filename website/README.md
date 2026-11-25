@@ -63,25 +63,30 @@ and this turns it into a red run.
 Two cases the automation deliberately does not handle: a rollback (`release.yml`
 withdraws a failed release and restores the previous one as latest, which the
 `site` job never ran for, so the page is already correct), and a release
-published while the Bunny secrets are missing (the workflow says so and does not
+published while the credentials are missing (the workflow says so and does not
 fail).
 
-It needs five repository secrets:
+It needs three repository secrets and one repository variable, and nothing
+has to be copied out of a terraform output by hand: the deploy reads the zone
+name, its write password, and the pull zone id straight from the state that
+created them.
 
-| Secret | What it is |
-|---|---|
-| `BUNNY_STORAGE_ZONE` | Storage zone name |
-| `BUNNY_STORAGE_PASSWORD` | That zone's **write** password |
-| `BUNNY_STORAGE_ENDPOINT` | Zone's region host, e.g. `storage.bunnycdn.com` |
-| `BUNNY_PULLZONE_ID` | Numeric pull zone id, for the cache purge |
-| `BUNNY_API_KEY` | Account API key, for the cache purge |
+| Setting | Kind | What it is |
+|---|---|---|
+| `BUNNYNET_API_KEY` | secret | Bunny account key. The terraform provider authenticates with it, and the deploy purges the cache with it. |
+| `SCW_STATE_ACCESS_KEY` | secret | Scaleway Object Storage key id, for the terraform state backend. |
+| `SCW_STATE_SECRET_KEY` | secret | Its secret. |
+| `SOULAUDIO_ZONE_ID` | variable | The `soulaudio.co` Bunny DNS zone id. Not a secret: it is in every plan output. |
+
+The same three secrets serve both workflows, so there is one set of
+credentials to rotate rather than two.
 
 ### Bunny configuration
 
 Not configured by hand: `infrastructure/` is terraform for the storage zone,
 the pull zone, the `player` DNS record, and every edge rule (what is cached,
 how long, the `install.sh` content type, the security headers). Its README
-covers applying it and where the five secrets above come from.
+covers how it is applied (in CI) and what each rule is for.
 
 The DNS *zone* is not here. It belongs to the infrastructure repo's
 `dns/soulaudio.co` slice; only the `player` record is created from this
