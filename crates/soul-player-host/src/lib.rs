@@ -671,7 +671,12 @@ struct Inner {
     /// accumulated from every `Event::TrackLoudnessAnalyzed` the actor emits (snooped in
     /// the event forwarder). Joined onto the `TrackView` list (`mark_loudness`) for the
     /// library loudness/DR column, and stamped into the baked `.soulidx` on a scan.
-    loudness_map: Mutex<HashMap<PathBuf, TrackLoudness>>,
+    ///
+    /// Held behind an `Arc` so a rescan can snapshot it for the bake with an O(1)
+    /// refcount bump (`.lock().clone()`) instead of an O(n) deep copy of every
+    /// `(PathBuf, TrackLoudness)` on every rescan; inserts copy-on-write via
+    /// `Arc::make_mut` (at most one real copy per snapshot generation).
+    loudness_map: Mutex<Arc<HashMap<PathBuf, TrackLoudness>>>,
     /// Test-support: when `Some`, [`send`](PlayerHandle::send) records commands
     /// here instead of driving the actor, so a head's command wiring can be
     /// asserted headlessly. `None` (the default) in every real handle.
@@ -765,7 +770,7 @@ impl PlayerHandle {
                 replay_gain: Mutex::new((ReplayGainMode::Off, 0.0)),
                 loudness_mode: Mutex::new(LoudnessAnalysisMode::default()),
                 loudness_seed: Mutex::new(Vec::new()),
-                loudness_map: Mutex::new(HashMap::new()),
+                loudness_map: Mutex::new(Arc::new(HashMap::new())),
                 recorder: Mutex::new(None),
                 dsp: Arc::new(Mutex::new(DspChain::default())),
                 spectrum: Arc::new(Mutex::new(SpectrumFrame::default())),
@@ -1641,7 +1646,8 @@ impl PlayerHandle {
         // Mirror the seed into the live map so the column + bake have prior-session loudness
         // immediately, before any fresh analysis.
         {
-            let mut map = self.inner.loudness_map.lock().expect("loudness map mutex");
+            let mut guard = self.inner.loudness_map.lock().expect("loudness map mutex");
+            let map = Arc::make_mut(&mut guard);
             for (path, m) in &entries {
                 map.insert(path.clone(), *m);
             }
@@ -2264,11 +2270,8 @@ impl PlayerHandle {
             // Snoop analysis results into the live loudness map (for the library column +
             // the next scan's bake) before fanning the event out to the app's subscribers.
             if let Event::TrackLoudnessAnalyzed { path, loudness } = &ev {
-                inner
-                    .loudness_map
-                    .lock()
-                    .expect("loudness map mutex")
-                    .insert(path.clone(), *loudness);
+                let mut guard = inner.loudness_map.lock().expect("loudness map mutex");
+                Arc::make_mut(&mut guard).insert(path.clone(), *loudness);
             }
             fan_out(&inner.subscribers, ev);
         };
@@ -2544,6 +2547,46 @@ mod tests {
             )
             .expect_err("a new remote past the cap must be refused before fetching its index");
         assert!(err.to_string().contains("maximum"), "names the cap: {err}");
+    }
+
+    /// Memory constraint (via the alloc-probe counting allocator): a rescan snapshots
+    /// the live loudness map for the bake with `loudness_map.lock().clone()`. With the
+    /// map held behind an `Arc` that is an O(1) refcount bump, NOT an O(n) deep copy of
+    /// every `(PathBuf, TrackLoudness)` on EVERY rescan. At a million analyzed tracks the
+    /// old deep clone was ~1M `PathBuf` allocations per rescan.
+    #[test]
+    fn snapshotting_the_loudness_map_does_not_deep_clone_it() {
+        let h = PlayerHandle::offline();
+        {
+            let mut guard = h.inner.loudness_map.lock().expect("loudness map mutex");
+            let map = Arc::make_mut(&mut guard);
+            for i in 0..5000 {
+                map.insert(
+                    std::path::PathBuf::from(format!("/music/track{i}.flac")),
+                    TrackLoudness {
+                        integrated_lufs: -14.0,
+                        lra: 6.0,
+                        true_peak_dbtp: -1.0,
+                        plr: 9.0,
+                        dr: 12.0,
+                    },
+                );
+            }
+        }
+        // The exact snapshot `rescan_build` takes before a bake.
+        let (_snap, probe) = alloc_probe::measure(|| {
+            h.inner
+                .loudness_map
+                .lock()
+                .expect("loudness map mutex")
+                .clone()
+        });
+        assert_eq!(
+            probe.allocs, 0,
+            "snapshotting the loudness map for a bake must be an O(1) Arc clone, not a deep \
+             copy (made {} allocations over 5000 entries)",
+            probe.allocs
+        );
     }
 
     #[test]
