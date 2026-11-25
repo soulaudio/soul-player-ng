@@ -58,7 +58,7 @@ modules:
     build-options:
       # The toolchain is installed into the build dir, not /app: it is a build
       # dependency and must not end up in the finished runtime.
-      append-path: /run/build/soul-player/toolchain/bin
+      append-path: /run/build/soul-player/rust/bin
       env:
         # Must be `<build dir>/cargo`, because that is where
         # cargo-sources.json writes the vendor config it generates.
@@ -71,7 +71,10 @@ modules:
       # `--without=rust-docs` drops ~200 MB of HTML nobody unpacks here, and
       # `--disable-ldconfig` is required: the installer cannot run ldconfig
       # inside the build sandbox.
-      - ./toolchain/install.sh --prefix=/run/build/soul-player/toolchain
+      # Extracted to `toolchain-dist`, installed into `rust`: Rust's install.sh
+      # refuses when the prefix is the directory it is running from ("cannot
+      # install to same directory as installer").
+      - ./toolchain-dist/install.sh --prefix=/run/build/soul-player/rust
         --without=rust-docs --disable-ldconfig
       # Run from the BUILD ROOT, not app/rune: the generated vendor config says
       # `directory = "cargo/vendor"`, a path relative to the working directory.
@@ -102,13 +105,13 @@ modules:
       - type: archive
         url: https://static.rust-lang.org/dist/2026-11-10/rust-nightly-x86_64-unknown-linux-gnu.tar.xz
         sha256: ce515c16d6565c500e01ecf57c93d92e37fed260fc0e41f92cb4acad8feb3466
-        dest: toolchain
+        dest: toolchain-dist
         only-arches:
           - x86_64
       - type: archive
         url: https://static.rust-lang.org/dist/2026-11-10/rust-nightly-aarch64-unknown-linux-gnu.tar.xz
         sha256: 1e44ac4427195b3a69fe7d80d0602f02ba6bbf5735392b087978f3254bdc5cf0
-        dest: toolchain
+        dest: toolchain-dist
         only-arches:
           - aarch64
 
