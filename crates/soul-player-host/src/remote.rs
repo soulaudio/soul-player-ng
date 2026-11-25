@@ -38,7 +38,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use soul_audio_desktop::{OwnedDecoder, open_seekable_src, open_track};
 use soul_audio_multicatalog::{pack, unpack};
-use soul_player_backend::library::{Library, TrackSource};
+use soul_player_backend::library::{IndexBlob, Library, TrackSource};
 
 use crate::RemoteHealth;
 
@@ -265,8 +265,8 @@ impl RemoteLibrary {
     /// list so `source_counts` / compound ids line up with `resolve`).
     #[must_use]
     pub fn build(
-        local: Vec<(PathBuf, Vec<u8>)>,
-        remotes: Vec<(Arc<RemoteServer>, Vec<Vec<u8>>)>,
+        local: Vec<(PathBuf, IndexBlob)>,
+        remotes: Vec<(Arc<RemoteServer>, Vec<IndexBlob>)>,
         fetch: Arc<dyn MediaFetch>,
     ) -> Self {
         let mut roots = Vec::new();
@@ -785,7 +785,7 @@ impl TokenStore for MemStore {
 /// Fetch `{server.url}/v0/index` (Bearer-authenticated) and split the
 /// response's framed `.soulidx` bytes back into one blob per source root
 /// (see [`deframe`]). A non-2xx response is an `Err`.
-pub fn fetch_index(server: &RemoteServer) -> anyhow::Result<Vec<Vec<u8>>> {
+pub fn fetch_index(server: &RemoteServer) -> anyhow::Result<Vec<IndexBlob>> {
     let endpoint = format!("{}/v0/index", server.url);
     let response = http_client(HTTP_REQUEST_TIMEOUT)
         .get(&endpoint)
@@ -808,7 +808,7 @@ pub fn fetch_index(server: &RemoteServer) -> anyhow::Result<Vec<Vec<u8>>> {
 /// This mirrors the server's `soul_server::index::frame_index`/`deframe_index`
 /// byte-for-byte, reimplemented here rather than taken as a runtime
 /// dependency on that crate, the wire format is the contract.
-fn deframe(bytes: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
+fn deframe(bytes: &[u8]) -> anyhow::Result<Vec<IndexBlob>> {
     fn read_u32(bytes: &[u8], pos: &mut usize) -> anyhow::Result<u32> {
         let slice = bytes
             .get(*pos..*pos + 4)
@@ -835,10 +835,10 @@ fn deframe(bytes: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
     let mut blobs = Vec::with_capacity(n);
     for _ in 0..n {
         let len = read_u32(bytes, &mut pos)? as usize;
-        let blob = bytes
+        let blob: IndexBlob = bytes
             .get(pos..pos + len)
             .context("framed index truncated: expected a blob")?
-            .to_vec();
+            .into();
         pos += len;
         blobs.push(blob);
     }
@@ -1741,7 +1741,10 @@ mod tests {
         let framed = soul_server::index::frame_index(&blobs);
 
         let back = deframe(&framed).expect("deframe should parse what the server framed");
-        assert_eq!(back, blobs);
+        assert_eq!(back.len(), blobs.len());
+        for (got, want) in back.iter().zip(&blobs) {
+            assert_eq!(got.as_ref(), want.as_slice());
+        }
     }
 
     #[test]
@@ -1802,7 +1805,7 @@ mod tests {
     /// blob, reuses the server's own `CoreIndex`/framing so this is exactly
     /// the shape `RemoteLibrary::build`'s `local` and `fetch_index`'s remote
     /// blobs both take.
-    fn scan_blob(root: &std::path::Path) -> Vec<u8> {
+    fn scan_blob(root: &std::path::Path) -> IndexBlob {
         let index = CoreIndex::scan(vec![root.to_path_buf()]).expect("scan the given root");
         let framed = index.index_bytes().expect("frame the scanned index");
         let mut blobs = deframe(&framed).expect("deframe what we just framed");

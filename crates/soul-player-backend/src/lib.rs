@@ -42,7 +42,7 @@ pub use driver::{
 };
 pub use fingerprint::{Fingerprint, fingerprint_file, fingerprint_pcm};
 pub use identify::{AcousticId, IdentifyCache};
-pub use library::{IncrementalBuild, Library};
+pub use library::{IncrementalBuild, IndexBlob, Library};
 pub use soul_audio_catalog::BrowseAxis;
 /// The importer's reusable scan cache + its version tag, surfaced so the host can
 /// persist it (warm startup) through the one backend contract.

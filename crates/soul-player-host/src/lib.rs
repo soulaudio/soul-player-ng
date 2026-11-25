@@ -39,7 +39,9 @@ use std::time::Duration;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use soul_player_backend::library::TrackSource;
-use soul_player_backend::{AudioPlayer, IncrementalBuild, Library, OutputConfig, cover_bytes};
+use soul_player_backend::{
+    AudioPlayer, IncrementalBuild, IndexBlob, Library, OutputConfig, cover_bytes,
+};
 use sysinfo::{MINIMUM_CPU_UPDATE_INTERVAL, System};
 
 use remote::{DownloadCache, MediaFetch, RemoteLibrary, RemoteServer, TokenStore};
@@ -134,13 +136,13 @@ fn fan_out<T: Clone>(subs: &Subscribers<T>, payload: T) {
 fn merge_scoped_bytes(
     to_scan: &[PathBuf],
     rescan_mask: &[bool],
-    fresh_bytes: Vec<Vec<u8>>,
-    cached: &HashMap<PathBuf, Vec<u8>>,
-) -> (Vec<PathBuf>, Vec<Vec<u8>>, Vec<(PathBuf, Vec<u8>)>) {
+    fresh_bytes: Vec<IndexBlob>,
+    cached: &HashMap<PathBuf, IndexBlob>,
+) -> (Vec<PathBuf>, Vec<IndexBlob>, Vec<(PathBuf, IndexBlob)>) {
     let mut fresh_iter = fresh_bytes.into_iter();
     let mut roots: Vec<PathBuf> = Vec::with_capacity(to_scan.len());
-    let mut merged: Vec<Vec<u8>> = Vec::with_capacity(to_scan.len());
-    let mut store: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut merged: Vec<IndexBlob> = Vec::with_capacity(to_scan.len());
+    let mut store: Vec<(PathBuf, IndexBlob)> = Vec::new();
     for (root, &scanned_here) in to_scan.iter().zip(rescan_mask) {
         if scanned_here {
             let b = fresh_iter.next().expect("fresh bytes per re-scanned root");
@@ -182,7 +184,7 @@ struct ScanReport {
 }
 /// Remote sources added so far: each authenticated server alongside its
 /// last-fetched per-root index blobs (see [`Inner::remotes`]).
-type RemoteSources = Vec<(Arc<RemoteServer>, Vec<Vec<u8>>)>;
+type RemoteSources = Vec<(Arc<RemoteServer>, Vec<IndexBlob>)>;
 
 /// Debounce window for the live filesystem watcher: filesystem events for one
 /// logical change (an editor's write-rename, an album copy's many files) are
@@ -572,7 +574,7 @@ struct Inner {
     /// root bakes independently, so the result is byte-identical to a full rescan).
     /// Kept in lock-step with `caches`: refreshed for re-scanned roots, pruned for
     /// de-configured ones.
-    source_bytes: Mutex<HashMap<PathBuf, Vec<u8>>>,
+    source_bytes: Mutex<HashMap<PathBuf, IndexBlob>>,
     /// Remote sources added via [`add_remote_source`](PlayerHandle::add_remote_source),
     /// each authenticated server alongside its last-fetched per-root index
     /// blobs, the v0 remote state: not threaded through `folders` /
@@ -971,7 +973,7 @@ impl PlayerHandle {
         // the scanned library; a scoped one interleaves the freshly-baked bytes of the
         // re-scanned roots with the cached bytes of the reused ones, in `to_scan`
         // order, and rebuilds the aggregate from them.
-        let (library, store_bytes): (Library, Vec<(PathBuf, Vec<u8>)>) = if affected.is_none() {
+        let (library, store_bytes): (Library, Vec<(PathBuf, IndexBlob)>) = if affected.is_none() {
             let store = to_scan
                 .iter()
                 .cloned()
@@ -2192,7 +2194,7 @@ impl PlayerHandle {
         // Configured-source order (not the `HashMap`'s arbitrary one) so the
         // aggregate's local source indices are stable and match what a plain
         // rescan would have produced.
-        let local: Vec<(PathBuf, Vec<u8>)> = folders
+        let local: Vec<(PathBuf, IndexBlob)> = folders
             .iter()
             // Same gate as a plain rescan (enabled + reachable), so the aggregate's
             // local sources match what a rescan would produce, a disabled/offline
@@ -2434,9 +2436,10 @@ mod tests {
         ];
         // /a was re-scanned; /b and /c are "reused" (mask false).
         let rescan_mask = vec![true, false, false];
-        let fresh = vec![b"A".to_vec()];
-        let mut cached = HashMap::new();
-        cached.insert(PathBuf::from("/b"), b"B".to_vec());
+        let ib = |b: &[u8]| -> IndexBlob { b.into() };
+        let fresh = vec![ib(b"A")];
+        let mut cached: HashMap<PathBuf, IndexBlob> = HashMap::new();
+        cached.insert(PathBuf::from("/b"), ib(b"B"));
         // /c's cached bytes are MISSING: a concurrent rescan pruned them after this rescan's
         // reuse set was computed. The old code `.expect`'d here and panicked the scan thread.
         let (roots, merged, store) = merge_scoped_bytes(&to_scan, &rescan_mask, fresh, &cached);
@@ -2445,7 +2448,7 @@ mod tests {
             vec![PathBuf::from("/a"), PathBuf::from("/b")],
             "the raced-away /c is omitted, not panicked on"
         );
-        assert_eq!(merged, vec![b"A".to_vec(), b"B".to_vec()]);
+        assert_eq!(merged, vec![ib(b"A"), ib(b"B")]);
         assert_eq!(
             roots.len(),
             merged.len(),
@@ -2453,8 +2456,41 @@ mod tests {
         );
         assert_eq!(
             store,
-            vec![(PathBuf::from("/a"), b"A".to_vec())],
+            vec![(PathBuf::from("/a"), ib(b"A"))],
             "only the freshly re-scanned root is persisted"
+        );
+    }
+
+    /// Memory constraint (via the alloc-probe counting allocator): the baked `.soulidx`
+    /// blobs a rebuild gathers out of `source_bytes` are shared [`IndexBlob`]s, so
+    /// cloning them — which `rebuild_remote_library` does for EVERY local source (and
+    /// every remote blob) on every rebuild — is a refcount bump, NOT an O(size) copy of
+    /// each (potentially multi-MB) index. Reverting `IndexBlob` to `Vec<u8>` would copy
+    /// every byte and fail this.
+    #[test]
+    fn gathering_the_baked_byte_cache_for_a_rebuild_clones_no_blob() {
+        let mut cache: HashMap<PathBuf, IndexBlob> = HashMap::new();
+        for i in 0..8 {
+            cache.insert(
+                PathBuf::from(format!("/root{i}")),
+                vec![0u8; 1 << 20].into(),
+            );
+        }
+        // The exact move `rebuild_remote_library` makes: clone each cached blob into the
+        // `local` list handed to `RemoteLibrary::build`. The destination is pre-sized so
+        // a push can't grow it, leaving only the blob clones for the probe to count.
+        let mut gathered: Vec<IndexBlob> = Vec::with_capacity(cache.len());
+        let (_g, probe) = alloc_probe::measure(|| {
+            for b in cache.values() {
+                gathered.push(b.clone());
+            }
+        });
+        assert_eq!(gathered.len(), 8);
+        assert_eq!(
+            probe.allocs, 0,
+            "gathering 8 cached 1 MiB blobs for a rebuild must copy none of them \
+             (made {} allocations)",
+            probe.allocs
         );
     }
 
