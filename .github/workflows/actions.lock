@@ -8,6 +8,9 @@ workflows:
         - 'swatinem/rust-cache@v2.9.3'
     '.github/workflows/flathub.yml':
         - 'actions/checkout@v7.0.1'
+    '.github/workflows/infrastructure.yml':
+        - 'actions/checkout@v7.0.1'
+        - 'hashicorp/setup-terraform@v3.1.2'
     '.github/workflows/pr-title.yml': []
     '.github/workflows/release.yml':
         - 'actions/attest-build-provenance@v4.2.2'
@@ -21,6 +24,7 @@ workflows:
     '.github/workflows/site.yml':
         - 'actions/checkout@v7.0.1'
         - 'actions/setup-node@v5.0.0'
+        - 'hashicorp/setup-terraform@v3.1.2'
     '.github/workflows/verify-lockfile.yml':
         - 'actions/checkout@v7.0.1'
 dependencies:
@@ -61,6 +65,11 @@ dependencies:
         commit: 'sha1-66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c'
         owner_id: 16208487
         repo_id: 399925381
+    'hashicorp/setup-terraform@v3.1.2':
+        ref: 'v3.1.2'
+        commit: 'sha1-b9cd54a3c349d3f38e8881555d616ced269862dd'
+        owner_id: 761456
+        repo_id: 258271226
     'swatinem/rust-cache@v2.9.3':
         ref: 'v2.9.3'
         commit: 'sha1-d1527c8f67ef9af357290475d4af4b0fab8f12e0'
