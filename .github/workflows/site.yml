@@ -29,10 +29,6 @@ on:
       - "packaging/install.sh"
       - "docs/screenshots/albums-dark.png"
       - ".github/workflows/site.yml"
-  schedule:
-    # Every six hours. The release path already redeploys within minutes, so
-    # this only has to catch the cases that path misses.
-    - cron: "41 */6 * * *"
   workflow_call:
   workflow_dispatch:
 
@@ -116,34 +112,13 @@ jobs:
             echo "pullzone=$(terraform output -raw pullzone_id)"
           } >> "$GITHUB_OUTPUT"
 
-      # On a schedule there is usually nothing to do. Deploying anyway would
-      # purge the cache every six hours for no reason, so compare first: the
-      # build knows the latest version, the live site says what it is serving.
-      # Any other trigger means the page itself may have changed, so it always
-      # deploys.
-      - name: Is the live site behind?
+      - name: Version being published
         id: check
         working-directory: website
-        run: |
-          set -uo pipefail
-          built=$(jq -r .version dist/version.json)
-          echo "built=$built" >> "$GITHUB_OUTPUT"
-          if [ "${{ github.event_name }}" != "schedule" ]; then
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          # Cache-busting query so this reads the origin, not an edge copy.
-          live=$(curl -fsS --max-time 20 "$SITE_URL/version.json?t=$RANDOM" | jq -r .version || echo unreachable)
-          if [ "$live" = "$built" ]; then
-            echo "stale=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Live site is on $live, the latest release. Nothing to do."
-          else
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Live site is on $live but the latest release is $built. Redeploying."
-          fi
+        run: echo "built=$(jq -r .version dist/version.json)" >> "$GITHUB_OUTPUT"
 
       - name: Publish to Bunny
-        if: steps.creds.outputs.ready == 'true' && steps.check.outputs.stale == 'true'
+        if: steps.creds.outputs.ready == 'true'
         working-directory: website
         env:
           BUNNY_STORAGE_ZONE: ${{ steps.tf.outputs.zone }}
@@ -158,7 +133,7 @@ jobs:
       # take. Checking afterwards turns that into a red run instead of a page
       # nobody notices is stale.
       - name: Confirm the live site serves this version
-        if: steps.creds.outputs.ready == 'true' && steps.check.outputs.stale == 'true'
+        if: steps.creds.outputs.ready == 'true'
         run: |
           set -uo pipefail
           built="${{ steps.check.outputs.built }}"

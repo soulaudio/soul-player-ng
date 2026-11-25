@@ -11,8 +11,8 @@ name: Installer
 # asset was fine, and nothing in CI would have caught it.
 #
 # Two entry points, one body:
-#   workflow_call      release.yml runs it after the site redeploys
-#   schedule           daily, so asset rot is caught within a day
+#   workflow_call      release.yml runs it after the site redeploys, and a
+#                      failure here rolls the release back
 #   workflow_dispatch  run it against any published release, any time
 on:
   workflow_call:
@@ -25,12 +25,6 @@ on:
         description: "Skip `soul-player --version`, for releases older than the one that fixed it"
         default: false
         type: boolean
-  # Daily, because the thing this catches does not happen at release time. The
-  # 0.4.6 x86_64 rpm started returning 500 from GitHub AFTER the release went
-  # out, with every other asset fine; no release-time test can see that, and
-  # without a schedule nobody would have noticed until a user complained.
-  schedule:
-    - cron: "17 7 * * *"
   workflow_dispatch:
     inputs:
       version:

@@ -1164,7 +1164,9 @@ jobs:
   # revert the same way if that fails. A Homebrew failure fails this run but never
   # demotes the release: the release itself was verified, the cask is one channel.
   homebrew:
-    needs: [guard, verify]
+    # After the install tests, not beside them: pushing a cask for a release
+    # that is about to be rolled back would leave brew users on it.
+    needs: [guard, verify, install-script, install-script-macos]
     if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
     uses: ./.github/workflows/homebrew.yml
     with:
@@ -1183,11 +1185,27 @@ jobs:
       mode: drill
     secrets: inherit
 
+  # `site` already published the page for a release that has just been
+  # demoted, and the page is built from whatever GitHub calls latest, so
+  # rebuilding it now moves it back to the previous release. Without this the
+  # download page would keep offering a withdrawn version.
+  site-after-rollback:
+    needs: [rollback]
+    if: always() && needs.rollback.result != 'skipped'
+    uses: ./.github/workflows/site.yml
+    secrets: inherit
+
   rollback:
-    needs: [guard, draft, publish, verify]
+    needs: [guard, draft, publish, verify, install-script, install-script-macos]
+    # A release whose published installer does not install is a broken
+    # release, so the install matrix joins the stages that undo one. It runs
+    # after publish, so the remedy is the same as a failed verify: demote it,
+    # make the previous release latest again, keep the tag.
     if: >-
       always() && github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true' &&
-      (needs.draft.result == 'failure' || needs.publish.result == 'failure' || needs.verify.result == 'failure')
+      (needs.draft.result == 'failure' || needs.publish.result == 'failure' ||
+       needs.verify.result == 'failure' || needs.install-script.result == 'failure' ||
+       needs.install-script-macos.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

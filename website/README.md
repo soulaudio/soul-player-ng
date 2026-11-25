@@ -41,30 +41,30 @@ Generated and gitignored: `src/data/release.json`, the served
 
 ## Staying in sync with the current release
 
-The page is static, so it only shows the current version if something rebuilds
-it. Three triggers, because any one of them can miss:
+The page is built from the current release and deployed by the release, so it
+is 1:1 by construction rather than by reconciliation. Two triggers:
 
-| Trigger | Covers | Lag |
-|---|---|---|
-| `release.yml` calls this workflow once a release verifies | the normal path | minutes |
-| A six-hourly schedule | a failed deploy, a release edited or withdrawn by hand, anything that happened without a push | up to 6 hours |
-| Pushes touching `website/**` or `packaging/install.sh` | the page itself changing | minutes |
+| Trigger | Covers |
+|---|---|
+| `release.yml` calls this workflow once a release verifies | a new version |
+| Pushes touching `website/**` or `packaging/install.sh` | the page itself changing |
 
-The scheduled run does not redeploy blindly. The build writes `/version.json`
-alongside the page, so the job can compare what the live site is serving
-against the latest release and exit when they match. A quiet week costs one
-cheap check every six hours and no cache purges.
+There is deliberately no scheduled poll. A cron comparing the live site
+against the latest release would only ever catch a case the release path was
+supposed to handle, which is a reason to fix that path rather than to watch
+it. The release path checks itself instead:
 
-After any deploy, the workflow re-reads `/version.json` from the live URL (with
-a cache-busting query) and fails if it is not the version just built. An upload
-that succeeded while the edge kept serving the old HTML is otherwise invisible,
-and this turns it into a red run.
+- After deploying, the workflow re-reads `/version.json` from the live URL
+  with a cache-busting query and fails if it is not the version just built. An
+  upload that succeeded while the edge kept serving the old HTML is otherwise
+  invisible.
+- The installer matrix then installs from the deployed `install.sh` on nine
+  systems, and **a failure there rolls the release back**: the release is
+  demoted, the previous one becomes latest again, and `site-after-rollback`
+  rebuilds this page so it follows.
 
-Two cases the automation deliberately does not handle: a rollback (`release.yml`
-withdraws a failed release and restores the previous one as latest, which the
-`site` job never ran for, so the page is already correct), and a release
-published while the credentials are missing (the workflow says so and does not
-fail).
+One case the automation does not handle: a release published while the
+credentials are missing. The workflow says so and does not fail.
 
 It needs three secrets and one variable, set on the **`production`
 environment** (Settings -> Environments -> production), not at repository
