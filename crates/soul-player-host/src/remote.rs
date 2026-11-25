@@ -109,6 +109,13 @@ impl RemoteServer {
             .clone()
     }
 
+    /// Whether this server can re-mint its access token (a store is attached).
+    /// A bare server (tests / health probes) cannot, so a 401 against it is just a
+    /// failure, not a refresh trigger.
+    pub fn can_refresh(&self) -> bool {
+        self.store.is_some()
+    }
+
     /// Re-mint the access token from the stored refresh token, swap it in, and
     /// persist the rotated refresh token. Single-flight: concurrent callers that
     /// find the token already refreshed (changed since they read it) return early
@@ -526,13 +533,14 @@ struct Prefetch {
 /// one more Range request, fetched lazily on the next `read`.
 ///
 /// Built so a decoder can be opened directly over it on the loader thread,
-/// `Send` (every field is), no interior mutability shared with anything
-/// else, no `unsafe`.
+/// `Send` (every field is, including the shared `Arc<RemoteServer>`), no `unsafe`.
 pub struct HttpRangeReader {
     client: reqwest::blocking::Client,
-    url: String,
+    /// The server this reader streams from, shared (`Arc`) so a mid-stream 401 can
+    /// refresh the interior-mutable access token in place for the NEXT window fetch,
+    /// the read-ahead worker's included (it reads the token live, not a snapshot).
+    server: Arc<RemoteServer>,
     track_id: u32,
-    access_token: String,
     /// The track's total byte length, learned from the first request's
     /// `Content-Range` header (see [`HttpRangeReader::new`]) and stable for
     /// the reader's whole lifetime.
@@ -561,12 +569,11 @@ impl HttpRangeReader {
     /// track's total length AND prime the window for the common case of
     /// reading sequentially from the start, rather than a separate `HEAD`-ish
     /// probe followed by a second request for the first chunk.
-    pub fn new(server: &RemoteServer, track_id: u32) -> anyhow::Result<Self> {
+    pub fn new(server: &Arc<RemoteServer>, track_id: u32) -> anyhow::Result<Self> {
         let mut reader = Self {
             client: http_client(HTTP_REQUEST_TIMEOUT),
-            url: server.url.clone(),
+            server: Arc::clone(server),
             track_id,
-            access_token: server.access_token(),
             total_len: 0,
             pos: 0,
             window: None,
@@ -630,15 +637,14 @@ impl HttpRangeReader {
             return;
         }
         let client = self.client.clone();
-        let url = self.url.clone();
-        let access_token = self.access_token.clone();
+        let server = Arc::clone(&self.server);
         let track_id = self.track_id;
         // A spawn failure (thread / resource exhaustion) must NOT panic the consuming
         // thread (the audio pump or the loader): skip the read-ahead this time and let
         // the next `read` fetch this window synchronously.
         if let Ok(handle) = std::thread::Builder::new()
             .name("remote-prefetch".into())
-            .spawn(move || fetch_range(&client, &url, track_id, &access_token, next_start))
+            .spawn(move || fetch_range(&client, &server, track_id, next_start))
         {
             self.prefetch = Some(Prefetch {
                 start: next_start,
@@ -665,13 +671,7 @@ impl HttpRangeReader {
     /// back as `(no bytes, length 0)` rather than an `Err`, so opening a
     /// reader over an empty track still succeeds (immediately at EOF).
     fn fetch_chunk(&self, start: u64) -> io::Result<(Vec<u8>, u64)> {
-        fetch_range(
-            &self.client,
-            &self.url,
-            self.track_id,
-            &self.access_token,
-            start,
-        )
+        fetch_range(&self.client, &self.server, self.track_id, start)
     }
 }
 
@@ -683,19 +683,32 @@ impl HttpRangeReader {
 /// `(no bytes, length 0)`, not an error.
 fn fetch_range(
     client: &reqwest::blocking::Client,
-    url: &str,
+    server: &RemoteServer,
     track_id: u32,
-    access_token: &str,
     start: u64,
 ) -> io::Result<(Vec<u8>, u64)> {
     let end = start.saturating_add(CHUNK_SIZE - 1);
-    let endpoint = format!("{url}/v0/track/{track_id}");
-    let response = client
-        .get(&endpoint)
-        .bearer_auth(access_token)
-        .header(reqwest::header::RANGE, format!("bytes={start}-{end}"))
-        .send()
-        .map_err(io::Error::other)?;
+    let endpoint = format!("{}/v0/track/{track_id}", server.url);
+    let range = format!("bytes={start}-{end}");
+    let send = |token: &str| {
+        client
+            .get(&endpoint)
+            .bearer_auth(token)
+            .header(reqwest::header::RANGE, range.as_str())
+            .send()
+            .map_err(io::Error::other)
+    };
+    let mut response = send(&server.access_token())?;
+    // A 401 here means the access token expired while the track was streaming. Re-mint
+    // it (single-flight across this reader's windows AND its read-ahead worker, which
+    // share the server) and retry the window ONCE, so a long track or a gapless run
+    // past the token's ~1h lifetime keeps playing instead of failing mid-track. A bare
+    // server (tests / probes, no store) can't refresh, so its 401 falls through to the
+    // error below unchanged.
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED && server.can_refresh() {
+        server.refresh_access().map_err(io::Error::other)?;
+        response = send(&server.access_token())?;
+    }
 
     if response.status() == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
         return Ok((Vec::new(), 0));
@@ -1574,7 +1587,7 @@ mod tests {
     #[test]
     fn fetch_index_returns_blobs_that_rebuild_a_nonempty_library() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
 
         let blobs = fetch_index(&remote).expect("fetch_index");
         assert!(!blobs.is_empty(), "expected at least one per-root blob");
@@ -1598,7 +1611,7 @@ mod tests {
     #[test]
     fn download_cache_writes_matching_bytes_and_hits_cache_on_the_second_fetch() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
 
         let expected_path = server
             .services
@@ -1635,7 +1648,7 @@ mod tests {
     #[test]
     fn download_cache_fetch_of_unknown_track_errors() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
 
         let cache_dir = tempfile::tempdir().expect("create cache dir");
         let cache = DownloadCache {
@@ -1666,7 +1679,7 @@ mod tests {
     #[test]
     fn http_range_reader_streams_the_whole_track_byte_identical_to_a_full_download() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
         // Bigger than one window, so reading it start to finish also proves
         // the refetch-on-exhaustion path, not just the chunk primed at
         // construction.
@@ -1695,10 +1708,48 @@ mod tests {
     /// being fetched on a background thread, so the read that eventually runs past
     /// the window joins a finished fetch instead of stalling the consuming (pump)
     /// thread on a network round-trip. And the stream stays byte-identical throughout.
+    /// Tier 2: with a STALE (expired) access token plus a store, the reader's first
+    /// window 401s, re-mints the token, and streams the whole MULTI-window track on the
+    /// fresh token, so a track that outlives the token's ~1h lifetime (or a gapless run
+    /// across it) keeps playing. Every later window and the read-ahead worker read the
+    /// token live from the shared server, so the one refresh carries them all.
+    #[test]
+    fn http_range_reader_refreshes_a_stale_token_and_streams_every_window() {
+        let server = start_server();
+        // Bigger than one window, so streaming it end to end fetches a SECOND window
+        // after the refresh, proving later windows use the re-minted token.
+        let (track_id, expected) = find_track_at_least(&server, CHUNK_SIZE + 1);
+
+        let store = Arc::new(MemStore::new());
+        let tokens = login_as_test_user(&server);
+        store
+            .save_refresh(&server.url, &tokens.refresh)
+            .expect("seed the store with a valid refresh token");
+        let stale = Arc::new(
+            RemoteServer::new(server.url.clone(), server.expired_token()).with_store(store),
+        );
+        let expired = stale.access_token();
+
+        let mut reader = HttpRangeReader::new(&stale, track_id)
+            .expect("the reader opens: the first window's 401 refreshes the token");
+        let mut got = Vec::new();
+        std::io::Read::read_to_end(&mut reader, &mut got)
+            .expect("stream every window on the re-minted token");
+        assert_eq!(
+            got, expected,
+            "the whole track streamed byte-identical across windows after the refresh"
+        );
+        assert_ne!(
+            stale.access_token(),
+            expired,
+            "the stale access token was refreshed"
+        );
+    }
+
     #[test]
     fn http_range_reader_reads_the_next_window_ahead_before_the_current_one_runs_out() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
         // Bigger than one window, so there IS a next window to read ahead.
         let (track_id, expected_bytes) = find_track_at_least(&server, CHUNK_SIZE + 1);
         let mut reader =
@@ -1746,7 +1797,7 @@ mod tests {
     #[test]
     fn http_range_reader_seek_from_start_then_read_matches_the_slice() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
         let (track_id, expected_bytes) = find_track_at_least(&server, CHUNK_SIZE + 1);
 
         let mut reader =
@@ -1777,7 +1828,7 @@ mod tests {
     #[test]
     fn http_range_reader_seek_from_end_lands_at_len_and_reads_zero_at_eof() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
         let expected_path = server
             .services
             .index
@@ -1811,7 +1862,7 @@ mod tests {
     #[test]
     fn http_range_reader_seek_before_the_start_errors() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
         let mut reader = HttpRangeReader::new(&remote, 0).expect("construct HttpRangeReader");
 
         assert!(
@@ -1823,7 +1874,7 @@ mod tests {
     #[test]
     fn http_range_reader_new_for_an_unknown_track_errors() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
 
         assert!(HttpRangeReader::new(&remote, 999_999).is_err());
     }
@@ -1838,7 +1889,10 @@ mod tests {
         // mid-stream token refresh, the reader holds the token captured at construction
         // (`access_token`), so an expired token is terminal for that reader.
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), "not-a-valid-token".to_string());
+        let remote = Arc::new(RemoteServer::new(
+            server.url.clone(),
+            "not-a-valid-token".to_string(),
+        ));
         assert!(
             HttpRangeReader::new(&remote, 0).is_err(),
             "a bad access token on the streaming endpoint must error, not open a reader"
@@ -1893,7 +1947,7 @@ mod tests {
                 let _ = sock.write_all(body);
             }
         });
-        let remote = RemoteServer::new(format!("http://{addr}"), "t".into());
+        let remote = Arc::new(RemoteServer::new(format!("http://{addr}"), "t".into()));
         assert!(
             HttpRangeReader::new(&remote, 0).is_err(),
             "a 206 answering a different range than requested must be rejected, not trusted"
@@ -2195,7 +2249,7 @@ mod tests {
     #[test]
     fn probe_health_reports_online_latency_and_version() {
         let server = start_server();
-        let remote = RemoteServer::new(server.url.clone(), server.token());
+        let remote = Arc::new(RemoteServer::new(server.url.clone(), server.token()));
 
         let health = probe_health(&remote, now_unix());
 
