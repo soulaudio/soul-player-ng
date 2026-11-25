@@ -102,6 +102,13 @@ pub(crate) fn virtual_grid(
                 row_el
             },
         )
+        // The row keys are purely positional (`{key}-row-{r}`) and the cards hold no
+        // memo, so they never change for a given row count (a count change is detected
+        // without a version bump), and the build closure rebuilds each row's current
+        // content every commit. A constant version therefore lets every re-commit skip
+        // the per-row key call, so the grid commits in time independent of its length
+        // (a playback tick re-running the view otherwise re-keyed every grid row).
+        .virtual_rows_version(0u8)
 }
 
 #[cfg(test)]
