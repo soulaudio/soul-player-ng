@@ -63,7 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - uses: actions/setup-node@v5.0.0
+      - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22
           cache: npm
@@ -93,7 +93,7 @@ jobs:
             echo "::notice::Bunny and state credentials are not set, so the build was not published."
           fi
 
-      - uses: hashicorp/setup-terraform@v3.1.2
+      - uses: hashicorp/setup-terraform@v4.0.1
         if: steps.creds.outputs.ready == 'true'
         with:
           terraform_version: 1.13.3
