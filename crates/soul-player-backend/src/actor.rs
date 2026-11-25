@@ -60,6 +60,18 @@ fn deck_error_is_unsupported(e: &DeckError) -> bool {
     )
 }
 
+/// Classify a loader open failure (an `anyhow::Error` from [`TrackSource::open_decoder`])
+/// for the `unsupported` flag on [`Event::PlaybackFailed`]: true only when the error
+/// chain carries a decode "unsupported" (a gated-off codec like AAC), so it reads as
+/// "this build can't decode that format" rather than the generic failure a remote
+/// token/network error gets. Defaults to `false` for an opaque error.
+fn open_error_is_unsupported(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        c.downcast_ref::<DecodeError>()
+            .is_some_and(|d| matches!(d, DecodeError::Unsupported))
+    })
+}
+
 /// Handle to the running player actor. Dropping it stops the threads.
 pub struct AudioPlayer {
     cmd_tx: Option<Sender<Command>>,
@@ -396,7 +408,24 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         changed = true;
                     }
                 }
-                Err(e) => tracing::warn!(id, error = %format!("{e:#}"), "open track failed"),
+                Err(e) => {
+                    tracing::warn!(id, error = %format!("{e:#}"), "open track failed");
+                    // The open ran off the pump on the loader thread, so the
+                    // synchronous command-failure path never saw it: a failed open
+                    // (a remote access token expiring, the server offline, a dropped
+                    // connection, or a gated-off codec) left the user with silence and
+                    // no reason. When the failed track is the deck's CURRENT target
+                    // (`current()` is set to the target the moment it's armed, before
+                    // any decoder loads), tell the app WHY, mirroring the command path
+                    // above. A prefetch open failing while another track is current
+                    // (`current() != Some(id)`) stays a silent log, so it never flashes
+                    // a banner over working audio.
+                    if player.is_active() && player.current() == Some(id) {
+                        on_event(Event::PlaybackFailed {
+                            unsupported: open_error_is_unsupported(&e),
+                        });
+                    }
+                }
             }
         }
         while let Some(id) = player.poll_open() {
@@ -829,6 +858,64 @@ mod tests {
         std::fs::write(dir.join("a.wav"), wav(48_000, 96_000)).unwrap(); // 2 s
         std::fs::write(dir.join("b.wav"), wav(48_000, 96_000)).unwrap();
         Arc::new(Library::scan(dir).unwrap())
+    }
+
+    /// A track whose decoder fails to open (the common remote case: an expired
+    /// access token, the server offline, a dropped connection) must surface a
+    /// `PlaybackFailed` event, not just a log line. The open happens off the pump on
+    /// the loader thread, so the synchronous command-failure path never sees it; the
+    /// pump used to only `warn!` on the loader's `Err`, leaving the UI showing the
+    /// track as "playing" with silence and no explanation.
+    #[test]
+    fn actor_emits_playback_failed_when_the_current_track_cannot_open() {
+        /// A source that resolves a path (so the loader proceeds to open) but then
+        /// fails the open, standing in for a remote token/network failure.
+        struct FailingSource;
+        impl TrackSource for FailingSource {
+            fn path_of(&self, _id: u32) -> Option<std::path::PathBuf> {
+                Some(std::path::PathBuf::from("remote://unreachable"))
+            }
+            fn open_decoder(&self, _id: u32) -> anyhow::Result<OwnedDecoder> {
+                anyhow::bail!("simulated open failure (e.g. expired remote token)")
+            }
+        }
+
+        let (ev_tx, ev_rx) = mpsc::channel::<Event>();
+        let player = AudioPlayer::spawn(
+            |_cfg| Ok(NullSink::new(48_000, 2)),
+            || NullSink::new(48_000, 2),
+            Arc::new(Mutex::new(OutputConfig::default())),
+            {
+                let d: Arc<dyn TrackSource> = Arc::new(FailingSource);
+                d
+            },
+            move |ev| {
+                let _ = ev_tx.send(ev);
+            },
+        );
+
+        player.send(Command::PlayContext {
+            ids: vec![0],
+            start: 0,
+        });
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut saw_failed = false;
+        while std::time::Instant::now() < deadline {
+            match ev_rx.recv_timeout(Duration::from_millis(250)) {
+                Ok(Event::PlaybackFailed { .. }) => {
+                    saw_failed = true;
+                    break;
+                }
+                Ok(_) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        assert!(
+            saw_failed,
+            "a current-track open failure must surface a PlaybackFailed event"
+        );
     }
 
     #[test]
