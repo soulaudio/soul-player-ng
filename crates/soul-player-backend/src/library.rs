@@ -86,6 +86,15 @@ pub type IndexBlob = Arc<[u8]>;
 /// swapped out on rescan.
 type MemReader = IndexReader<FromStd<Cursor<IndexBlob>>>;
 
+/// Whether `blob` is a `.soulidx` of the reader's current format version. A blob
+/// of another version (e.g. from an older or newer remote server) reads as an
+/// empty catalog; this tells that apart from a genuinely empty library.
+#[must_use]
+pub fn index_is_current(blob: &IndexBlob) -> bool {
+    let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(blob.clone())));
+    reader.is_current()
+}
+
 /// The desktop library: the baked catalog (one source per watched folder,
 /// aggregated by [`MultiCatalog`]) plus each source's physical root, needed to
 /// turn a track's `/`-separated folder path + file name back into an absolute
@@ -671,6 +680,20 @@ fn real_name(s: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A freshly baked (even empty) index is current; a `.soulidx` of another
+    /// format version, or bytes without a header, are not.
+    #[test]
+    fn index_is_current_tells_a_stale_index_from_an_empty_one() {
+        let empty: IndexBlob =
+            soul_audio_index::build::write_index(&soul_audio_index::build::CatalogInput::default())
+                .into();
+        assert!(index_is_current(&empty), "an empty library is current");
+        let mut stale = empty.to_vec();
+        stale[4..6].copy_from_slice(&(soul_audio_index::FORMAT_VERSION - 1).to_le_bytes());
+        assert!(!index_is_current(&stale.into()), "another format version");
+        assert!(!index_is_current(&Arc::from(&b"junk"[..])), "no header");
+    }
 
     /// Quantifies the memory the `Arc<str>` interning of `TrackView`'s
     /// artist/album/genre saves over owned `String`s at scale, the delivered win,
