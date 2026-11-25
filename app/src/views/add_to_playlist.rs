@@ -32,10 +32,10 @@ const MEMBER_CHECK_PX: f32 = 12.0;
 /// Build the `PlaylistEntry` for `track_id` from its durable locator (via
 /// `host.locator_of`) and the on-screen `TrackView` for that id in
 /// `s.library` (title/artist/album/duration plus track and disc number via
-/// `TrackView::snapshot`), then append it to playlist `playlist_id`. This is the one
-/// call site every "add to playlist" action shares (the overlay's pick list,
-/// its New-playlist field, and any future surface), so the snapshot shape
-/// never drifts between them.
+/// `TrackView::snapshot`), then append it to playlist `playlist_id`. This is
+/// the one call site every "add to playlist" action shares (the overlay's pick
+/// list, its New-playlist field, and any future surface), so the snapshot
+/// shape never drifts between them.
 ///
 /// A no-op if `track_id` doesn't resolve to a locator (no library open, or
 /// the id has since vanished) or isn't found in `s.library`: there is

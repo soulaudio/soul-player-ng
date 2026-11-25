@@ -550,9 +550,10 @@ struct State {
     /// Set from a genre row's click.
     open_genre: Option<String>,
     /// Which playlist's detail page is showing, when `route == Route::Playlist`.
-    /// Unlike `open_album`/`open_artist`/`open_genre` (keyed by display name),
-    /// this is the playlist's stable [`playlists::PlaylistId`]: a
-    /// playlist has no natural unique name, so the id is the only durable key.
+    /// Like `open_album` (an [`AlbumRef`]: album identity plus title) and unlike
+    /// `open_artist`/`open_genre` (keyed by display name), this is the playlist's
+    /// stable [`playlists::PlaylistId`]: a playlist has no natural unique name, so
+    /// the id is the only durable key.
     /// Set from a playlist row's click.
     open_playlist: Option<playlists::PlaylistId>,
     /// The navigation back-stack (ephemeral): locations behind the current one, so

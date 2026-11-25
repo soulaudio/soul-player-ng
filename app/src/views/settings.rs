@@ -2195,10 +2195,10 @@ fn managed_strategy_section(s: &State, p: &Palette) -> El {
 }
 
 /// Managed Library: the write-path destination + template preset (layout plus the
-/// Multi-disc albums choice, absent for `flat`) + Copy/Move
-/// strategy, persisted to config. Configuring only: the "Add music…" apply flow
-/// that runs the copy/move is a separate task. Rendered under the Sources card on
-/// the Music Data tab.
+/// Multi-disc albums choice, absent for `flat`) + Copy/Move strategy, persisted to
+/// config. Configuring only: the copy/move itself runs from the Add source menu's
+/// "Add music…" entry (the organize modal, see [`organize_overlay`]). Rendered
+/// under the Sources card on the Music Data tab.
 fn managed_library_card(s: &State, p: &Palette) -> El {
     let mut c = card("managed-library", p)
         .child(heading(
