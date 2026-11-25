@@ -2337,9 +2337,17 @@ impl PlayerHandle {
         // so the column fills in over time without re-analyzing. (The actor owns the audio
         // device, so we never force-spawn it just to analyze; analysis rides an actor the
         // user brought up by playing, plus any later rescan.)
-        let jobs = self.analysis_jobs();
-        if loudness_mode.sweeps() && !jobs.is_empty() {
-            actor.send(Command::AnalyzeTracks(jobs));
+        // Only walk the library when a sweep is actually wanted. `analysis_jobs` is
+        // O(library) (a full `views()` + a per-track `path_of`, under the library
+        // lock), and `ensure_actor` runs on the caller, which for the cold-open
+        // prewarm is the UI thread, so computing it unconditionally stalled startup
+        // just to discard it at the gate under the default Off mode. Mirrors
+        // `start_library_analysis`, which checks `sweeps()` before the walk.
+        if loudness_mode.sweeps() {
+            let jobs = self.analysis_jobs();
+            if !jobs.is_empty() {
+                actor.send(Command::AnalyzeTracks(jobs));
+            }
         }
         *guard = Some(actor);
     }
