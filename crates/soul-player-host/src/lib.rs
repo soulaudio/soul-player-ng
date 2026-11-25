@@ -1406,15 +1406,25 @@ impl PlayerHandle {
             .map(|(server, _blobs)| Arc::clone(server))
             .collect();
         let now = now_unix();
-        // Probe the network WITHOUT holding `remote_health`: each probe blocks up to
-        // the 5s ping timeout, and `sources()` / `remote_statuses()` read this same
-        // lock on the UI thread, so holding it across the probes would stall the UI
-        // for the whole refresh (seconds, worse with several remotes). Collect the
-        // results first, then take the lock only for the fast inserts.
-        let probed: Vec<(String, RemoteHealth)> = servers
-            .iter()
-            .map(|server| (server.url.clone(), remote::probe_health(server, now)))
-            .collect();
+        // Probe every remote CONCURRENTLY, and WITHOUT holding `remote_health`. Each
+        // `GET /v0/ping` blocks up to the 5s ping timeout, so probing sequentially made
+        // the refresh take the SUM of the timeouts (several offline remotes = tens of
+        // seconds); one scoped thread per remote bounds it to the slowest SINGLE probe.
+        // The lock is still taken only for the fast inserts below, so `sources()` /
+        // `remote_statuses()` on the UI thread never wait on a probe. (Bounded fan-out:
+        // at most MAX_SOURCES remotes.)
+        let probed: Vec<(String, RemoteHealth)> = std::thread::scope(|scope| {
+            let handles: Vec<_> = servers
+                .iter()
+                .map(|server| {
+                    scope.spawn(move || (server.url.clone(), remote::probe_health(server, now)))
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().expect("remote-health probe thread panicked"))
+                .collect()
+        });
         {
             let mut cache = self
                 .inner
@@ -2558,6 +2568,71 @@ mod tests {
             assert!(
                 waited < Duration::from_secs(1),
                 "remote_health was held across the network probe (waited {waited:?})"
+            );
+        });
+    }
+
+    /// `refresh_remote_health` must probe remotes CONCURRENTLY, not one by one: each
+    /// `GET /v0/ping` blocks up to the 5s timeout, so sequential probing takes the SUM
+    /// of the timeouts (several offline remotes = tens of seconds). Proven without
+    /// waiting a real timeout: each of N servers bumps an in-flight counter when its
+    /// ping arrives and then stalls; with concurrent probes all N are in flight at once
+    /// (count reaches N), whereas sequential probing never exceeds 1 (the second probe
+    /// can't start until the first returns).
+    #[test]
+    fn refresh_remote_health_probes_remotes_concurrently() {
+        use std::io::Read;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        const N: usize = 3;
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(AtomicBool::new(false));
+        let h = PlayerHandle::offline();
+
+        for _ in 0..N {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+            let addr = listener.local_addr().expect("local addr");
+            h.inner.remotes.lock().expect("remotes mutex").push((
+                Arc::new(RemoteServer {
+                    url: format!("http://{addr}"),
+                    access_token: String::new(),
+                }),
+                Vec::new(),
+            ));
+            let in_flight = Arc::clone(&in_flight);
+            let release = Arc::clone(&release);
+            std::thread::spawn(move || {
+                if let Ok((mut sock, _)) = listener.accept() {
+                    let mut buf = [0u8; 256];
+                    let _ = sock.read(&mut buf);
+                    in_flight.fetch_add(1, Ordering::SeqCst);
+                    // Stall until the test has observed the in-flight count (or a
+                    // fallback), then drop `sock` so the probe returns promptly.
+                    let start = Instant::now();
+                    while !release.load(Ordering::SeqCst)
+                        && start.elapsed() < Duration::from_secs(5)
+                    {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                }
+            });
+        }
+
+        std::thread::scope(|scope| {
+            let refresher = scope.spawn(|| h.refresh_remote_health());
+            // With concurrent probes every ping is in flight almost immediately.
+            let start = Instant::now();
+            while in_flight.load(Ordering::SeqCst) < N && start.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let reached = in_flight.load(Ordering::SeqCst);
+            release.store(true, Ordering::SeqCst);
+            let _ = refresher.join();
+            assert_eq!(
+                reached, N,
+                "all {N} remotes must be probed concurrently (only {reached} in flight at once; \
+                 sequential probing never exceeds 1)"
             );
         });
     }
