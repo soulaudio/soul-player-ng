@@ -195,19 +195,35 @@ fn read_ledger(dir: &Path) -> HashSet<(String, String)> {
         .collect()
 }
 
-/// Append adopted `(legacy stem, identity stem)` pairs to the ledger.
+/// Append adopted `(legacy stem, identity stem)` pairs to the ledger as one
+/// write of complete lines. If the file's last line was torn (a crash mid-write
+/// left no trailing newline), the batch starts on a fresh line so the torn
+/// fragment can't swallow its first entry.
 fn append_ledger(dir: &Path, pairs: &[(String, String)]) -> std::io::Result<()> {
-    use std::io::Write as _;
+    use std::io::{Read as _, Seek as _, Write as _};
     let backup = dir.join(LEGACY_BACKUP_DIR);
     fs::create_dir_all(&backup)?;
     let mut f = fs::OpenOptions::new()
         .create(true)
+        .read(true)
         .append(true)
         .open(backup.join(ADOPTION_LEDGER))?;
-    for (legacy, adopted) in pairs {
-        writeln!(f, "{legacy}\t{adopted}")?;
+    let mut batch = String::new();
+    if f.metadata()?.len() > 0 {
+        let mut last = [0u8];
+        f.seek(std::io::SeekFrom::End(-1))?;
+        f.read_exact(&mut last)?;
+        if last[0] != b'\n' {
+            batch.push('\n');
+        }
     }
-    Ok(())
+    for (legacy, adopted) in pairs {
+        batch.push_str(legacy);
+        batch.push('\t');
+        batch.push_str(adopted);
+        batch.push('\n');
+    }
+    f.write_all(batch.as_bytes())
 }
 
 /// The path of the file in `dir` whose stem is exactly `stem`, if one exists
@@ -223,8 +239,8 @@ fn find_by_stem(dir: &Path, stem: &str) -> Option<PathBuf> {
 }
 
 /// Remove every file in `dir` whose stem is exactly `stem` (best-effort;
-/// ignores I/O errors). Called before writing a fresh cover so a previous
-/// cover saved under a different extension is never orphaned.
+/// ignores I/O errors). Clearing a cover removes every extension it was
+/// saved under.
 fn remove_by_stem(dir: &Path, stem: &str) {
     let Ok(read) = fs::read_dir(dir) else {
         return;
@@ -232,6 +248,21 @@ fn remove_by_stem(dir: &Path, stem: &str) {
     for entry in read.flatten() {
         let path = entry.path();
         if path.is_file() && path.file_stem().and_then(|s| s.to_str()) == Some(stem) {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+/// Remove every file in `dir` whose stem is `stem`, except `keep` (the cover
+/// just written). Best-effort, like [`remove_by_stem`].
+fn remove_by_stem_except(dir: &Path, stem: &str, keep: &Path) {
+    let Ok(read) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path != keep && path.is_file() && path.file_stem().and_then(|s| s.to_str()) == Some(stem)
+        {
             let _ = fs::remove_file(&path);
         }
     }
@@ -263,9 +294,11 @@ impl CoverStore {
     }
 
     /// Validate `src` (an accepted image extension, lowercased, a real file at
-    /// most [`COVER_MAX_BYTES`]) and copy it into the store as `<stem>.<ext>`,
-    /// removing any prior `<stem>.*` first so a cover replaced under a
-    /// different extension doesn't orphan the old file. Returns `true` iff
+    /// most [`COVER_MAX_BYTES`]) and copy it into the store as `<stem>.<ext>`
+    /// (crash-safely, see [`copy_into_place`]). Only once the new file is in
+    /// place is any other `<stem>.*` removed, so a failed copy never costs the
+    /// previous cover and a replacement under a different extension doesn't
+    /// orphan the old file. Returns `true` iff
     /// applied; never panics (an invalid `src` or any I/O failure yields
     /// `false`). Shared by [`Self::set_artist_cover`]/[`Self::set_album_cover`].
     fn set_cover(&mut self, stem: String, src: &Path) -> bool {
@@ -288,10 +321,11 @@ impl CoverStore {
         if fs::create_dir_all(&self.dir).is_err() {
             return false;
         }
-        remove_by_stem(&self.dir, &stem);
-        if copy_into_place(src, &self.dir.join(format!("{stem}.{ext}"))).is_err() {
+        let dst = self.dir.join(format!("{stem}.{ext}"));
+        if copy_into_place(src, &dst).is_err() {
             return false;
         }
+        remove_by_stem_except(&self.dir, &stem, &dst);
         self.known.insert(stem);
         true
     }
@@ -922,6 +956,48 @@ mod tests {
                 .flatten()
                 .all(|e| e.path().extension().is_none_or(|x| x != "partial")),
             "no temp file is left behind"
+        );
+    }
+
+    /// A replacement whose copy fails leaves the previous cover in place: the
+    /// new image is copied first, and only then are the old files removed.
+    #[test]
+    fn a_failed_replacement_keeps_the_previous_cover() {
+        let _iso = config::use_isolated_test_config_dir();
+        let a = id("a");
+        let mut s = CoverStore::load();
+        assert!(s.set_album_cover(&a, &write_temp_png()));
+        let old = s.album_cover_path(&a).unwrap();
+        // Force the copy to fail: a directory where the in-flight copy goes.
+        let blocker = covers_dir().join(format!("{}.jpg.{PARTIAL_EXT}", album_identity_stem(&a)));
+        fs::create_dir_all(&blocker).unwrap();
+        assert!(!s.set_album_cover(&a, &write_temp_file("new.jpg", b"\xff\xd8\xff\xe0jpg")));
+        assert!(
+            old.exists(),
+            "the previous cover survives a failed replacement"
+        );
+        assert_eq!(s.album_cover_path(&a), Some(old));
+    }
+
+    /// A ledger whose last line was torn (no trailing newline) does not swallow
+    /// the next batch: the append starts on a fresh line.
+    #[test]
+    fn a_torn_ledger_line_does_not_corrupt_the_next_append() {
+        let _iso = config::use_isolated_test_config_dir();
+        legacy_cover("Box");
+        let backup = covers_dir().join(LEGACY_BACKUP_DIR);
+        fs::create_dir_all(&backup).unwrap();
+        fs::write(backup.join(ADOPTION_LEDGER), "album-bo").unwrap();
+        let a = id("a");
+        let mut s = CoverStore::load();
+        assert_eq!(s.adopt_legacy_album_covers([("Box", &a)], false).adopted, 1);
+        s.clear_album_cover(&a);
+        assert_eq!(
+            CoverStore::load()
+                .adopt_legacy_album_covers([("Box", &a)], false)
+                .adopted,
+            0,
+            "the adoption was recorded on its own line"
         );
     }
 }

@@ -1930,17 +1930,15 @@ impl PlayerHandle {
     /// identity.
     pub fn album_identities(&self, reps: &[(u32, &str)]) -> Vec<String> {
         let lib = self.inner.library.lock().expect("library mutex").clone();
+        let locs = lib.map(|l| l.album_locators(reps)).unwrap_or_default();
         reps.iter()
-            .map(|&(id, title)| {
-                let loc = lib.as_ref().and_then(|l| {
-                    let same_album = l.album_of(id).as_deref().unwrap_or("") == title;
-                    same_album.then(|| l.locator_of(id)).flatten()
-                });
-                match loc {
-                    Some(loc) => album_identity_key(&loc, title),
+            .enumerate()
+            .map(
+                |(i, &(_, title))| match locs.get(i).and_then(Option::as_ref) {
+                    Some(loc) => album_identity_key(loc, title),
                     None => unlocated_album_identity_key(title),
-                }
-            })
+                },
+            )
             .collect()
     }
 

@@ -1655,16 +1655,45 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
 /// in flight, every listed source enabled and reachable, and every configured
 /// remote listed. Until then an album that showed a legacy title-keyed cover
 /// may still be missing, so the legacy file is not retired yet.
-pub(crate) fn source_set_complete(s: &State) -> bool {
-    let listed = |url: &str| {
-        s.sources.iter().any(|x| {
-            matches!(&x.kind, soul_player_host::SourceKind::Remote { url: u } if u.eq_ignore_ascii_case(url))
-        })
-    };
-    !s.remote_connecting
-        && s.remote_reconnecting.is_empty()
-        && s.sources.iter().all(|x| x.enabled && x.available)
-        && s.remote_urls.iter().all(|u| listed(u))
+#[cfg(test)]
+fn source_set_complete(s: &State) -> bool {
+    incomplete_sources(s).is_empty()
+}
+
+/// What keeps the source set from being complete (see [`source_set_complete`]):
+/// a connect in flight, each reconnecting remote, each disabled or unreachable
+/// source, and each configured remote not listed yet. Remote URLs compare
+/// normalized (`views::settings::normalize_remote_url`, case-insensitive), so a
+/// persisted `http://h/` and a live `http://h` are one source.
+fn incomplete_sources(s: &State) -> Vec<String> {
+    use views::settings::normalize_remote_url as norm;
+    let same = |a: &str, b: &str| norm(a).eq_ignore_ascii_case(norm(b));
+    let mut out = Vec::new();
+    if s.remote_connecting {
+        out.push("a remote being added".to_string());
+    }
+    out.extend(
+        s.remote_reconnecting
+            .iter()
+            .map(|u| format!("{u} (reconnecting)")),
+    );
+    for x in s.sources.iter().filter(|x| !(x.enabled && x.available)) {
+        let name = match &x.kind {
+            soul_player_host::SourceKind::Remote { url } => url.clone(),
+            soul_player_host::SourceKind::Local { path } => path.display().to_string(),
+        };
+        let why = if x.enabled { "unreachable" } else { "disabled" };
+        out.push(format!("{name} ({why})"));
+    }
+    for u in &s.remote_urls {
+        let listed = s.sources.iter().any(
+            |x| matches!(&x.kind, soul_player_host::SourceKind::Remote { url } if same(url, u)),
+        );
+        if !listed {
+            out.push(format!("{u} (not connected yet)"));
+        }
+    }
+    out
 }
 
 /// Adopt any legacy title-keyed album covers for the albums now in the library
@@ -1674,12 +1703,18 @@ pub(crate) fn adopt_legacy_album_covers(s: &mut State) {
     if s.library.is_empty() || !s.covers.has_legacy_album_covers() {
         return;
     }
-    let may_retire = source_set_complete(s);
+    let incomplete = incomplete_sources(s);
     let albums = s.grouped_albums();
     let out = s.covers.adopt_legacy_album_covers(
         albums.iter().map(|a| (a.name.as_str(), &a.identity)),
-        may_retire,
+        incomplete.is_empty(),
     );
+    if out.kept > 0 && !incomplete.is_empty() {
+        tracing::info!(
+            incomplete = %incomplete.join(", "),
+            "deferring retirement of title-keyed album covers until every source has landed"
+        );
+    }
     if out != covers::LegacyCoverAdoption::default() {
         tracing::info!(
             adopted = out.adopted,
@@ -8013,7 +8048,12 @@ mod tests {
         s.sources = vec![online_remote_status("http://a.test")];
         s.remote_urls = vec!["http://a.test".to_string()];
         assert!(source_set_complete(&s));
-        s.remote_urls.push("http://b.test".to_string());
+        s.remote_urls = vec!["http://a.test/".to_string()];
+        assert!(
+            source_set_complete(&s),
+            "a persisted URL with a trailing slash is the same listed remote"
+        );
+        s.remote_urls = vec!["http://a.test".to_string(), "http://b.test".to_string()];
         assert!(
             !source_set_complete(&s),
             "a configured remote not listed yet"

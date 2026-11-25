@@ -298,6 +298,12 @@ impl Library {
     /// file name.
     #[must_use]
     pub fn locate(&self, id: u32) -> Option<Located> {
+        self.locate_in(&self.cat(), id)
+    }
+
+    /// [`locate`](Self::locate) against an already-locked catalog, so a batch
+    /// can resolve many ids under one lock.
+    fn locate_in(&self, cat: &MultiCatalog, id: u32) -> Option<Located> {
         let (source, _) = unpack(id);
         let source = source as usize;
         // Bounds-check the source even though nothing here indexes `roots`,
@@ -306,11 +312,10 @@ impl Library {
         if source >= self.roots.len() {
             return None;
         }
-        let cat = self.cat();
         let t = cat.track(id).ok()?;
         let folder = cat.folder(t.folder).ok()?;
-        let rel_str = resolve(&cat, folder.path)?;
-        let name = resolve(&cat, t.file_name)?;
+        let rel_str = resolve(cat, folder.path)?;
+        let name = resolve(cat, t.file_name)?;
         let mut rel = PathBuf::new();
         if !rel_str.is_empty() {
             for seg in rel_str.split('/') {
@@ -335,14 +340,34 @@ impl Library {
         })
     }
 
-    /// Track `id`'s album title exactly as [`views`](Self::views) reports it:
-    /// `None` for an untitled album (or the "Unknown Album" sentinel) and for an
-    /// id that doesn't resolve.
+    /// For each `(id, album title)` pair, track `id`'s [`locator_of`](Self::locator_of)
+    /// when its album title (as [`views`](Self::views) reports it, the "Unknown
+    /// Album" sentinel reading as untitled, i.e. `""`) equals `title`, else `None`
+    /// (another album, or an id that doesn't resolve). The whole batch runs under
+    /// one catalog lock and compares titles as `&str` in one reused buffer.
     #[must_use]
-    pub fn album_of(&self, id: u32) -> Option<String> {
+    pub fn album_locators(&self, reps: &[(u32, &str)]) -> Vec<Option<TrackLocator>> {
         let cat = self.cat();
-        let t = cat.track(id).ok()?;
-        real_name(album_title(&cat, t.album))
+        let mut buf = Vec::new();
+        reps.iter()
+            .map(|&(id, title)| {
+                let t = cat.track(id).ok()?;
+                let name = cat
+                    .album(t.album)
+                    .ok()
+                    .and_then(|a| decode_into(&cat, a.title, &mut buf))
+                    .unwrap_or("");
+                let name = if name == "Unknown Album" { "" } else { name };
+                if name != title {
+                    return None;
+                }
+                let located = self.locate_in(&cat, id)?;
+                let path = self.roots.get(located.source)?.join(located.rel);
+                Some(TrackLocator::Local {
+                    path: path.to_string_lossy().replace('\\', "/"),
+                })
+            })
+            .collect()
     }
 
     /// Resolve durable locators back to **current** track ids, surviving a
@@ -1022,6 +1047,43 @@ mod tests {
             TrackLocator::Local { path } => assert!(path.ends_with("a.wav")),
             TrackLocator::Remote { .. } => panic!("expected a local locator"),
         }
+    }
+
+    /// `album_locators` resolves a batch under one catalog lock: an id whose
+    /// track carries the given album title yields its locator; another title
+    /// (or an unknown id) yields `None`.
+    #[test]
+    fn album_locators_match_titles_in_one_batch() {
+        let root = tmpdir("album_locators");
+        std::fs::write(root.join("a.flac"), flac_with_art("One", "Artist", "Box")).unwrap();
+        std::fs::write(root.join("b.wav"), wav(48_000, 48_000)).unwrap();
+        let lib = Library::scan(&root).unwrap();
+        let views = lib.views();
+        let id_of = |suffix: &str| {
+            views
+                .iter()
+                .map(|t| t.id)
+                .find(|&id| lib.path_of(id).is_some_and(|p| p.ends_with(suffix)))
+                .unwrap()
+        };
+        let (a, b) = (id_of("a.flac"), id_of("b.wav"));
+        let got = lib.album_locators(&[
+            (a, "Box"),
+            (a, "Other"),
+            (b, ""),
+            (b, "Box"),
+            (u32::MAX, "Box"),
+        ]);
+        assert_eq!(got[0], lib.locator_of(a));
+        assert!(got[0].is_some());
+        assert_eq!(got[1], None, "another title");
+        assert_eq!(
+            got[2],
+            lib.locator_of(b),
+            "an untitled track matches the empty title"
+        );
+        assert_eq!(got[3], None);
+        assert_eq!(got[4], None, "an unknown id");
     }
 
     #[test]

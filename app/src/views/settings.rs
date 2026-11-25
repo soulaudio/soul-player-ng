@@ -871,7 +871,7 @@ enum SourceRow<'a> {
 /// `add_remote_source_with_tokens`/`remove_remote_source`). Mirrors that
 /// host-side `trim_end_matches('/')` so a persisted `http://h:8080` and a
 /// live `http://h:8080/` are recognized as the same source here too.
-fn normalize_remote_url(url: &str) -> &str {
+pub(crate) fn normalize_remote_url(url: &str) -> &str {
     url.trim_end_matches('/')
 }
 
