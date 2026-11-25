@@ -14,7 +14,6 @@
 #![forbid(unsafe_code)]
 
 use rune::{Color, Cursor, El, col, el, icon, row, text, text_input};
-use soul_player_host::TrackSnapshot;
 
 use crate::State;
 use crate::playlists::{PlaylistEntry, PlaylistId, PlaylistSummary};
@@ -32,8 +31,8 @@ const MEMBER_CHECK_PX: f32 = 12.0;
 
 /// Build the `PlaylistEntry` for `track_id` from its durable locator (via
 /// `host.locator_of`) and the on-screen `TrackView` for that id in
-/// `s.library` (title/artist/album/duration; track/disc number aren't
-/// captured yet), then append it to playlist `playlist_id`. This is the one
+/// `s.library` (title/artist/album/duration plus track and disc number via
+/// `TrackView::snapshot`), then append it to playlist `playlist_id`. This is the one
 /// call site every "add to playlist" action shares (the overlay's pick list,
 /// its New-playlist field, and any future surface), so the snapshot shape
 /// never drifts between them.
@@ -48,14 +47,7 @@ pub(crate) fn add_track_to_playlist(s: &mut State, track_id: u32, playlist_id: P
     let Some(view) = s.track(track_id) else {
         return;
     };
-    let snapshot = TrackSnapshot {
-        title: view.title.clone().unwrap_or_default(),
-        artist: view.artist.as_deref().unwrap_or_default().to_string(),
-        album: view.album.as_deref().unwrap_or_default().to_string(),
-        duration_secs: view.duration_secs.round() as u32,
-        track_no: None,
-        disc_no: None,
-    };
+    let snapshot = view.snapshot();
     s.playlists.add_entry(
         playlist_id,
         PlaylistEntry {

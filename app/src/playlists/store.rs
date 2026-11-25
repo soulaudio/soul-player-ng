@@ -42,18 +42,18 @@ const CUSTOM_COVER_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
 const CUSTOM_COVER_MAX_BYTES: u64 = 16 * 1024 * 1024;
 
 /// The first [`MANIFEST_COVER_LIMIT`] distinct-album entries' locators, in
-/// playlist order; shares the dedupe rule [`super::cover::select_cover`]
-/// uses, so the list page's cover candidates are already album-distinct.
+/// playlist order. Albums are told apart by their durable identity
+/// ([`soul_player_host::album_identity_key`]: album folder + title), so two
+/// editions sharing a title get their own tiles and a `CD1`/`CD2` album gets one.
 fn manifest_cover(entries: &[PlaylistEntry]) -> Vec<TrackLocator> {
-    first_distinct_album_indices(
-        entries,
-        MANIFEST_COVER_LIMIT,
-        |_| true,
-        |e| e.snapshot.album.as_str(),
-    )
-    .into_iter()
-    .map(|i| entries[i].locator.clone())
-    .collect()
+    let keys: Vec<String> = entries
+        .iter()
+        .map(|e| soul_player_host::album_identity_key(&e.locator, &e.snapshot.album))
+        .collect();
+    first_distinct_album_indices(&keys, MANIFEST_COVER_LIMIT, |_| true, |k| k.as_str())
+        .into_iter()
+        .map(|i| entries[i].locator.clone())
+        .collect()
 }
 
 /// Where playlists live on disk: `<managed-library-root>/.soul/playlists`
@@ -846,6 +846,43 @@ mod tests {
         s.clear_custom_cover(id);
         assert!(!path.exists());
         assert!(PlaylistStore::load().custom_cover_path(id).is_none());
+    }
+
+    fn entry_at(path: &str, album: &str) -> PlaylistEntry {
+        PlaylistEntry {
+            locator: TrackLocator::Local { path: path.into() },
+            ..entry_with_album("x", album)
+        }
+    }
+
+    #[test]
+    fn manifest_cover_dedupes_by_album_identity_not_title() {
+        let _g = config::use_test_config_dir();
+        reset();
+        let mut s = PlaylistStore::load();
+        let id = s.create("Mix");
+        // One album across CD1/CD2: one tile.
+        s.add_entry(id, entry_at("D:/m/Box/CD1/01.flac", "Box"));
+        s.add_entry(id, entry_at("D:/m/Box/CD2/01.flac", "Box"));
+        // Two different albums that share a title: two tiles.
+        s.add_entry(id, entry_at("D:/m/Hits A/01.flac", "Greatest Hits"));
+        s.add_entry(id, entry_at("D:/m/Hits B/01.flac", "Greatest Hits"));
+        let cover: Vec<String> = s.list()[0]
+            .cover
+            .iter()
+            .map(|l| match l {
+                TrackLocator::Local { path } => path.clone(),
+                TrackLocator::Remote { .. } => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            cover,
+            [
+                "D:/m/Box/CD1/01.flac",
+                "D:/m/Hits A/01.flac",
+                "D:/m/Hits B/01.flac"
+            ]
+        );
     }
 
     #[test]
