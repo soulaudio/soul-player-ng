@@ -322,6 +322,139 @@ fn the_metainfo_lists_the_version_being_shipped() {
     );
 }
 
+/// Pull every `- --flag` line out of a manifest's `finish-args:` block.
+fn finish_args(src: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in src.lines() {
+        let t = line.trim();
+        if t.starts_with("finish-args:") {
+            inside = true;
+            continue;
+        }
+        if inside {
+            if let Some(flag) = t.strip_prefix("- --") {
+                out.push(format!("--{flag}"));
+            } else if !t.is_empty() && !t.starts_with('#') {
+                break; // the next top-level key ends the block
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// There are two Flatpak manifests and they must differ in exactly one respect.
+///
+/// `packaging/flatpak/` installs the already-tested binary and produces the
+/// `.flatpak` bundle on each release. `packaging/flathub/` builds from source,
+/// because Flathub requires it ("All source available submissions must be built
+/// entirely from source code") and prebuilt `extra-data` is reserved for
+/// non-redistributable content, which Apache-2.0 is not.
+///
+/// Everything a USER experiences has to match, or the bundle and the Flathub
+/// build become two different applications wearing one name: the same app id
+/// (which decides the MPRIS name and the desktop entry), the same runtime, and
+/// above all the same sandbox permissions. A `--device=all` that silently
+/// existed in one and not the other would mean bit-perfect output worked for
+/// some users and not others, with nothing to explain why.
+#[test]
+fn the_two_flatpak_manifests_agree() {
+    let root = repo_root();
+    let bundle = read(&root.join("packaging/flatpak/co.soulaudio.soulplayer.yml"));
+    let flathub = read(&root.join("packaging/flathub/co.soulaudio.soulplayer.yml"));
+
+    for key in [
+        "app-id:",
+        "runtime:",
+        "runtime-version:",
+        "sdk:",
+        "command:",
+    ] {
+        let pick = |src: &str| {
+            src.lines()
+                .find_map(|l| l.trim().strip_prefix(key))
+                .map(|v| v.trim().to_string())
+        };
+        assert_eq!(
+            pick(&bundle),
+            pick(&flathub),
+            "the bundle and Flathub manifests disagree about `{key}`. They build \
+             the same application and must present the same identity."
+        );
+    }
+
+    let bundle_args = finish_args(&bundle);
+    let flathub_args = finish_args(&flathub);
+
+    // A parser that found nothing would make the comparison below pass for the
+    // wrong reason, which is the quiet way a guard like this stops working.
+    assert!(
+        bundle_args.len() >= 5 && bundle_args.contains(&"--device=all".to_string()),
+        "finish-args parsing is broken: got {bundle_args:?} from the bundle manifest"
+    );
+
+    assert_eq!(
+        bundle_args, flathub_args,
+        "the two manifests grant different sandbox permissions. Whichever one a \
+         user installed would then behave differently — and `--device=all` is \
+         what bit-perfect exclusive output depends on."
+    );
+}
+
+/// The Flathub build cannot run cargo-packager (not vendored, and its builders
+/// have no network), so its desktop entry is committed instead of generated.
+/// That makes it a second source of truth for the app's name and category, and
+/// this keeps it from drifting from the one cargo-packager derives from
+/// Cargo.toml.
+#[test]
+fn the_flathub_desktop_entry_matches_the_packaged_one() {
+    let root = repo_root();
+    let cargo = read(&root.join("app/rune/Cargo.toml"));
+    let desktop = read(&root.join("packaging/flathub/co.soulaudio.soulplayer.desktop"));
+
+    let field = |src: &str, k: &str| {
+        src.lines()
+            .find_map(|l| l.trim().strip_prefix(k))
+            .map(|v| v.trim().to_string())
+    };
+
+    let product = toml_string(&cargo, "product-name").expect("packager product-name");
+    assert_eq!(
+        field(&desktop, "Name="),
+        Some(product.clone()),
+        "the desktop entry's Name must be the packager's product-name ({product})"
+    );
+
+    // `description` under [package.metadata.packager] is the user-facing one —
+    // cargo-packager puts it in `Comment=` for every other Linux package.
+    let section = cargo
+        .split_once("[package.metadata.packager]")
+        .expect("packager section")
+        .1;
+    let description = toml_string(section, "description").expect("packager description");
+    assert_eq!(
+        field(&desktop, "Comment="),
+        Some(description.clone()),
+        "the desktop entry's Comment must be the packager's description"
+    );
+
+    // Icon and the installed filename are the app id, which is Flatpak's rule
+    // rather than a choice: it installs the entry as `$FLATPAK_ID.desktop` and
+    // resolves the icon under the same name.
+    let app_id = toml_string(&cargo, "identifier").expect("packager identifier");
+    assert_eq!(
+        field(&desktop, "Icon="),
+        Some(app_id.clone()),
+        "inside Flatpak the icon must be named for the app id, not the binary"
+    );
+    assert_eq!(
+        field(&desktop, "Exec="),
+        Some("soul-player".to_string()),
+        "Exec runs the binary, which is what the manifest's `command:` starts"
+    );
+}
+
 /// The .deb ships files that have to exist in the tree, and a missing one is a
 /// build failure deep inside cargo-packager rather than anything readable.
 #[test]

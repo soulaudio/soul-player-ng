@@ -168,49 +168,58 @@ packaging/flatpak/metainfo-release.py --version 0.4.6 \
   access during build. Flathub runs the manifest and repo checks on their own
   infrastructure, so whatever fails here fails there.
 
-### Flathub (not submitted, and not a one-step job)
+### Flathub (manifest built; submission is the remaining step)
 
-The `.flatpak` we ship is a self-hosted **bundle**: built in CI, installed with
-`flatpak install --bundle`, and verified by running it sandboxed. That is
-independent of Flathub, and it works today.
+Two Flatpak manifests exist, and they differ in exactly one respect:
 
-Submitting to Flathub is a separate project, blocked on two things in this repo
-rather than on paperwork:
+| | builds from | produces |
+|---|---|---|
+| `packaging/flatpak/` | the already-tested binary | the `.flatpak` bundle on each release |
+| `packaging/flathub/` | **source, offline** | what Flathub's builders compile |
 
-1. **The manifest installs prebuilt local files** (`type: file` with a bare
-   `path:`). Flathub builds from a manifest in *its* repository, where those
-   files do not exist, so it needs either sources with a URL + `sha256` or a
-   genuine from-source build.
-2. **A from-source build must vendor everything, offline.** Flathub build
-   machines have no network ("There is no network access during the build
-   process"), so every crate has to be a declared source. That part is solved:
-   `flatpak-cargo-generator` turns `app/rune/Cargo.lock` into ~1500 sources
-   (440 KB), and it resolves both of our git dependencies — `rune` and
-   `soul-audio-core` — to pinned commits.
+Flathub requires the second shape — *"All source available submissions must be
+built entirely from source code"*, with prebuilt `extra-data` reserved for
+non-redistributable content, which Apache-2.0 is not. `the_two_flatpak_manifests_agree`
+keeps them from diverging on app id, runtime or sandbox permissions, since a
+`--device=all` present in one and not the other would mean bit-perfect output
+worked for some users and not others.
 
-   The pinned toolchain is **not** a blocker, contrary to an earlier reading of
-   this. `app/rune` pins `nightly-2026-11-10` (Rune uses unstable features;
-   stable 1.93.1 fails with ``use of unstable library feature
-   `atomic_try_update` ``), and the fix is to declare the toolchain as a source
-   like any other: the `static.rust-lang.org/dist/<date>/rust-nightly-<arch>-…`
-   archives are public, permanent and checksummed. Installing the tarball
-   directly also removes rustup from the picture, so `rust-toolchain.toml` stops
-   mattering — the build gets exactly the pinned nightly. Do NOT use the
-   `rust-nightly` SDK extension: it was archived in September 2026 and went
-   untouched between May 2024 and then.
+Because *"there is no network access during the build process"*, everything the
+compiler needs is a checksummed source:
 
-So the remaining work is a from-source module (plus an in-tree desktop entry,
-since cargo-packager will not run there — the icon is already in-tree at
-`app/rune/icons/128x128.png`), and the submission itself. Note `cargo` must run
-from the build root, not `app/rune`: the generated vendor path is relative.
-`--device=all` is the thing a reviewer will ask about — the manifest explains
-why it is there and what breaks without it.
+* **`cargo-sources.json`** — ~1500 entries generated from `app/rune/Cargo.lock`
+  by `flatpak-cargo-generator`, with both git dependencies (`rune`,
+  `soul-audio-core`) resolved to the commits the lockfile pins. Regenerate with
+  `packaging/flathub/generate-sources.sh`; `--check` is what CI runs, because a
+  stale list fails on *their* builders, offline, after review.
+* **The toolchain** — the dated nightly tarball from `static.rust-lang.org` per
+  architecture, by sha256. Installing it directly rather than via rustup is what
+  makes it reproducible: with no rustup shim, `rust-toolchain.toml` is inert and
+  the build gets exactly `nightly-2026-11-10`. Do **not** use the `rust-nightly`
+  SDK extension — archived September 2026, untouched since May 2024.
 
-Where the time goes, since this is easy to get wrong: Flathub builds the app on
-**their** builders, so the long offline Rust compile costs us nothing. A release
-only needs to push an updated manifest. The expensive verification belongs where
-breakage originates — a PR touching `Cargo.lock`, the manifest or the toolchain
-pin — not on every release, where the code is the same code CI already passed.
+`cargo` runs from the build root, not `app/rune`: the generated vendor config
+says `directory = "cargo/vendor"`, relative to the working directory.
+
+The `.github/workflows/flathub.yml` job builds it offline with
+`org.flatpak.Builder` (the same tool Flathub uses, carrying the matching
+linter), runs `flatpak-builder-lint builddir` and `repo`, then starts the app and
+requires it to own its MPRIS name. It runs on PRs that touch the lockfile, the
+manifest or the toolchain pin, weekly to catch upstream rot, and on demand —
+**not** on releases, because Flathub compiles on their own infrastructure and at
+release time nothing has changed but the tag.
+
+To submit: fork `flathub/flathub` with "copy master only" unchecked, branch from
+`new-pr`, add the manifest at the top level named for the app id, and open a PR
+against `new-pr` titled `Add co.soulaudio.soulplayer`. The PR must explain the
+permissions — `--device=all` is the one they will ask about. The app id is a
+reverse-DNS claim on `soulaudio.co`, which must stay reachable over HTTPS;
+Flathub may ask for a token at
+`https://soulaudio.co/.well-known/org.flathub.VerifiedApps.txt`.
+
+Submit against a tag whose metainfo lists that version — the store shows
+`<releases>` as the app's release notes, so submitting an older tag would
+advertise stale ones.
 
 ## Auto-update (implemented, free)
 
