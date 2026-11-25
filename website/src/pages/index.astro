@@ -43,7 +43,9 @@ const TABS = [
       name="description"
       content="A desktop music player for people who still keep their own files. Gapless, bit-perfect, no account, no cloud."
     />
-    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" href="/favicon-light.png" />
+    <link rel="icon" type="image/png" media="(prefers-color-scheme: dark)" href="/favicon-dark.png" />
     <script src="/switch.js" defer is:inline></script>
     <link rel="canonical" href="https://player.soulaudio.co/" />
     <meta property="og:title" content="Soul Player" />
@@ -122,10 +124,25 @@ const TABS = [
         -webkit-font-smoothing: antialiased;
       }
       main { max-width: 54rem; margin: 0 auto; padding: 5rem 1.25rem 3rem; }
+      /* Wordmark lockup: the emblem sits to the left of the Soul Player
+         wordmark and shares its baseline. The mark is painted with a CSS mask
+         over `--fg`, so it follows the text colour into dark mode for free. */
+      .brand {
+        display: flex; align-items: center; gap: .85rem;
+        margin: 0 0 2.75rem;
+      }
+      .mark {
+        flex: none;
+        height: clamp(2.9rem, 7.7vw, 4.1rem);
+        aspect-ratio: 15778 / 14130;
+        background: var(--fg);
+        -webkit-mask: url(/soul-mark.svg) center / contain no-repeat;
+        mask: url(/soul-mark.svg) center / contain no-repeat;
+      }
       h1 {
         font-family: "Fraunces", Georgia, serif;
         font-size: clamp(2.75rem, 7.5vw, 4rem); font-weight: 600;
-        line-height: 1.02; margin: 0 0 2.75rem; letter-spacing: -.02em;
+        line-height: 1.02; margin: 0; letter-spacing: -.02em;
       }
       img.shot {
         width: 100%; height: auto; display: block;
@@ -236,7 +253,10 @@ const TABS = [
   </head>
   <body>
     <main>
-      <h1>Soul Player</h1>
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <h1>Soul Player</h1>
+      </div>
 
       <img
         class="shot"

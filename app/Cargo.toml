@@ -68,6 +68,9 @@ rune = { git = "https://github.com/anomalyco/rune", rev = "07c369b13e8bd82c3f0a7
 # compiled_data) is used. Must track Rune's parley version (0.12).
 parley_engine = { version = "0.12", features = ["complex-scripts"] }
 soul-player-host = { path = "../crates/soul-player-host" }
+# Runtime window-icon swap (Win32 WM_SETICON), confined to its own crate so this
+# one stays `#![forbid(unsafe_code)]`; lets the taskbar mark follow an OS theme flip.
+soul-window-icon = { path = "../crates/soul-window-icon" }
 anyhow = "1"
 # Per-user config dir, to persist settings across launches.
 dirs = "6"

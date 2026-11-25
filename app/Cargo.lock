@@ -5275,6 +5275,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "soul-player-host",
+ "soul-window-icon",
  "souvlaki",
  "sys-locale",
  "tempfile",
@@ -5287,6 +5288,13 @@ dependencies = [
  "windows 0.62.2",
  "windows-registry",
  "zbus 5.19.0",
+]
+
+[[package]]
+name = "soul-window-icon"
+version = "0.1.0"
+dependencies = [
+ "windows 0.62.2",
 ]
 
 [[package]]

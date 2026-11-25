@@ -14,6 +14,10 @@
 # player crates for the counting test allocator; its build output stays out too.
 /crates/alloc-probe/target/
 
+# soul-window-icon is a standalone crate (its own workspace) path-dep'd by app/ for
+# the Win32 taskbar-icon theme watcher; its build output stays out too.
+/crates/soul-window-icon/target/
+
 # Updater private signing key: must NEVER be committed. cargo-packager-updater's
 # keypair is generated locally; the private key is held as a CI secret, the public
 # key is embedded in the app. Keep every private key out of git.

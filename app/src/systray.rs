@@ -39,11 +39,17 @@ pub(crate) fn menu_action(id: &str) -> Option<TrayAction> {
     }
 }
 
-/// Decode the bundled app icon (PNG) to RGBA for the tray.
-fn icon() -> Option<TrayIcon> {
-    let img = image::load_from_memory(include_bytes!("../icons/icon.png"))
-        .ok()?
-        .to_rgba8();
+/// Decode the bundled app icon (PNG) to RGBA for the tray, in the variant that
+/// contrasts the taskbar theme (`dark` → white-bodied mark; light → dark-bodied), so
+/// the tray mark stays legible. Rune can't repaint a live tray icon, so a theme flip
+/// recreates the tray with the other variant (see `main`'s theme watcher).
+fn icon(dark: bool) -> Option<TrayIcon> {
+    let png: &[u8] = if dark {
+        include_bytes!("../icons/icon.png")
+    } else {
+        include_bytes!("../icons/icon-light.png")
+    };
+    let img = image::load_from_memory(png).ok()?.to_rgba8();
     let (w, h) = img.dimensions();
     Some(TrayIcon::rgba(w, h, img.into_raw()))
 }
@@ -64,8 +70,8 @@ fn menu() -> Vec<TrayItem> {
 /// Create the tray icon and wire its events. The returned [`Tray`] must stay alive
 /// for the app's lifetime (dropping it removes the icon), so the caller leaks it.
 /// `None` where the platform has no tray / creation failed.
-pub(crate) fn create(host: PlayerHandle, ah: AppHandle<State>) -> Option<Tray> {
-    let spec = TraySpec::new("soul-player", "Soul Player", icon()?)
+pub(crate) fn create(host: PlayerHandle, ah: AppHandle<State>, dark: bool) -> Option<Tray> {
+    let spec = TraySpec::new("soul-player", "Soul Player", icon(dark)?)
         .tooltip("Soul Player")
         .menu(menu());
     match Tray::new(spec, move |event| handle(&host, &ah, event)) {
