@@ -1,7 +1,5 @@
 # Soul Player
 
-**Your music. Your way. Your privacy.**
-
 A desktop music player for people who still keep their own files.
 
 ![The Albums view](docs/screenshots/albums-dark.png)
