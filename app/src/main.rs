@@ -2598,6 +2598,10 @@ fn edit_text_for(b: &Band, field: NumField) -> String {
 
 /// Set unit `unit`'s band `band` frequency in Hz (clamped), applying live.
 pub(crate) fn set_eq_band_freq(s: &mut State, unit: usize, band: usize, hz: f32) {
+    // Defense in depth: `clamp` does not stop a NaN, which would poison the biquad.
+    if !hz.is_finite() {
+        return;
+    }
     if let Some(slot) = band_mut(s, unit, band) {
         slot.freq = hz.clamp(FREQ_MIN, FREQ_MAX);
     }
@@ -2606,6 +2610,10 @@ pub(crate) fn set_eq_band_freq(s: &mut State, unit: usize, band: usize, hz: f32)
 
 /// Set unit `unit`'s band `band` gain in dB (clamped + rounded to 0.1), applying live.
 pub(crate) fn set_eq_band_gain(s: &mut State, unit: usize, band: usize, db: f32) {
+    // Defense in depth: `clamp` does not stop a NaN, which would poison the biquad.
+    if !db.is_finite() {
+        return;
+    }
     if let Some(slot) = band_mut(s, unit, band) {
         slot.gain_db = (db.clamp(-GAIN_LIMIT_DB, GAIN_LIMIT_DB) * 10.0).round() / 10.0;
     }
@@ -2714,7 +2722,14 @@ pub(crate) fn commit_eq_edit(s: &mut State) {
         return;
     };
     if let Ok(value) = s.eq_edit_buf.text.trim().parse::<f32>() {
-        set_eq_band_field(s, unit, band, field, value);
+        // "nan"/"inf" parse Ok as a non-finite f32, and `f32::clamp` passes NaN
+        // straight through, so an unchecked value here would reach the real-time
+        // biquad and make it output NaN forever (the filter's feedback state never
+        // recovers) and persist to the saved profile. Reject it: leave the band at
+        // its prior value instead of snapping it anywhere.
+        if value.is_finite() {
+            set_eq_band_field(s, unit, band, field, value);
+        }
     }
 }
 
@@ -2738,6 +2753,10 @@ pub(crate) fn set_eq_band(s: &mut State, unit: usize, band: usize, value: Band) 
 
 /// Set unit `unit`'s band `band` Q (the scroll-wheel / curvature gesture).
 pub(crate) fn set_eq_band_q(s: &mut State, unit: usize, band: usize, q: f32) {
+    // Defense in depth: `clamp` does not stop a NaN, which would poison the biquad.
+    if !q.is_finite() {
+        return;
+    }
     if let Some(slot) = band_mut(s, unit, band) {
         slot.q = q.clamp(Q_MIN, Q_MAX);
     }
@@ -9133,6 +9152,33 @@ mod tests {
             "the typed frequency applied (got {})",
             active_eq(&rt.state).bands[1].freq
         );
+    }
+
+    /// A non-finite inline EQ entry ("nan"/"inf") is REJECTED, not written to the
+    /// band. `f32::clamp` passes NaN through, so without an explicit finite check a
+    /// typed "nan" would reach the real-time biquad and make it output NaN forever
+    /// (the filter's feedback state never recovers, and the bad value persists to the
+    /// saved profile). The band keeps its prior, finite value instead.
+    #[test]
+    fn eq_rejects_a_non_finite_inline_entry() {
+        let _guard = config::use_test_config_dir();
+        let mut s = populated_state();
+        active_eq_mut(&mut s).enabled = true;
+        active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
+        let before = active_eq(&s).bands[1].freq;
+        assert!(before.is_finite(), "the band starts finite");
+
+        // Open band 1's frequency editor and type "nan", then commit.
+        eq_edit_start(&mut s, 0, 1, NumField::Freq);
+        s.eq_edit_buf = rune::TextEdit::new("nan");
+        commit_eq_edit(&mut s);
+
+        let after = active_eq(&s).bands[1].freq;
+        assert_eq!(
+            after, before,
+            "a non-finite entry leaves the band unchanged"
+        );
+        assert!(after.is_finite(), "the band frequency stays finite");
     }
 
     /// Double-clicking a DSP card's title opens an inline rename field; typing a name
