@@ -680,6 +680,165 @@ mod tests {
             );
         }
     }
+
+    /// Synthesize a `CatalogInput` of `n` tracks with a believable fan-out
+    /// (~12 tracks/album, ~8 albums/artist, 10 genres), WITHOUT touching disk.
+    /// Lets `bench_data_pipeline_at_scale` profile the bake -> load -> views
+    /// path at a scale (1M) no real on-disk corpus reaches, since the baker
+    /// consumes this exact `CatalogInput`, the same struct `soul_audio_import`
+    /// hands it after a real scan. (The file-walk / tag-read scan itself is
+    /// disk-I/O-bound and un-profilable without 1M real files, so it is out of
+    /// scope here, this measures everything downstream of the bytes being read.)
+    #[cfg(test)]
+    fn synth_catalog_input(n: u32) -> soul_audio_index::build::CatalogInput {
+        use soul_audio_catalog::{NO_FOLDER, PackedDate};
+        use soul_audio_index::build::{AlbumMeta, CatalogInput, FolderInput, TrackInput};
+
+        // `div_ceil` so the highest track's album id (and album's artist id) stays
+        // in range: track i -> album i/12, album a -> artist a/8.
+        let n_albums = n.div_ceil(12).max(1);
+        let n_artists = n_albums.div_ceil(8).max(1);
+        let n_genres = 10u32;
+
+        let artists: Vec<String> = (0..n_artists).map(|i| format!("Artist {i}")).collect();
+        let genres: Vec<String> = (0..n_genres).map(|i| format!("Genre {i}")).collect();
+        let folders: Vec<FolderInput> = (0..n_albums)
+            .map(|a| FolderInput {
+                path: format!("Music/Artist {}/Album {a}", a / 8),
+                parent: NO_FOLDER,
+            })
+            .collect();
+        let albums: Vec<AlbumMeta> = (0..n_albums)
+            .map(|a| AlbumMeta {
+                title: format!("Album {a}"),
+                album_artist: a / 8,
+                original_date: PackedDate::UNKNOWN,
+                release_date: PackedDate::UNKNOWN,
+                folder: a,
+            })
+            .collect();
+        let tracks: Vec<TrackInput> = (0..n)
+            .map(|i| {
+                let album = i / 12;
+                let artist = album / 8;
+                TrackInput {
+                    title: format!("Track {i}"),
+                    artist,
+                    album,
+                    album_artist: artist,
+                    genre: artist % n_genres,
+                    folder: album,
+                    track_no: (i % 12 + 1) as u16,
+                    disc_no: 1,
+                    duration_ms: 180_000,
+                    sample_rate: 44_100,
+                    channels: 2,
+                    file_name: format!("{:02} - Track {i}.flac", i % 12 + 1),
+                    mbid: String::new(),
+                    loudness: None,
+                }
+            })
+            .collect();
+        CatalogInput {
+            tracks,
+            artists,
+            artist_sorts: Vec::new(),
+            genres,
+            albums,
+            folders,
+            playlists: Vec::new(),
+            covers: Vec::new(),
+        }
+    }
+
+    /// Profiles the whole data-handling pipeline at scale, the counterpart to the
+    /// render-path benches, turning "reasoned" into "measured" for the bytes ->
+    /// library -> views path. For n in {100k, 1M} it times + counts allocations
+    /// for: (1) BAKE `write_index` (CatalogInput -> .soulidx bytes) + blob size,
+    /// (2) LOAD `from_source_bytes` (bytes -> `Library`), (3) VIEWS `views_by`
+    /// (materialize the browse-order `Vec<TrackView>`), and (4) an 8-source
+    /// AGGREGATE rebuild (the re-wrap the watcher pays when one remote source
+    /// changes; the changed source's re-bake is measured separately by BAKE).
+    /// `#[ignore]`d; MUST run `--release` (debug over-states time ~10x):
+    /// `cargo test -p soul-player-backend --release bench_data_pipeline -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn bench_data_pipeline_at_scale() {
+        use std::time::Instant;
+
+        for &n in &[100_000u32, 1_000_000] {
+            let input = synth_catalog_input(n);
+            let n_albums = input.albums.len();
+            let n_artists = input.artists.len();
+            let nf = f64::from(n);
+
+            // (1) BAKE: CatalogInput -> .soulidx bytes.
+            let t = Instant::now();
+            let (blob_vec, bake) =
+                alloc_probe::measure(|| soul_audio_index::build::write_index(&input));
+            let bake_ms = t.elapsed().as_secs_f64() * 1e3;
+            let blob_len = blob_vec.len();
+            let blob: IndexBlob = blob_vec.into();
+
+            // (2) LOAD: bytes -> Library (one source). Cloning the blob is a
+            // refcount bump, so this measures the reader build, not a byte copy.
+            let root = PathBuf::from("/synthetic/library");
+            let t = Instant::now();
+            let (lib, load) = alloc_probe::measure(|| {
+                Library::from_source_bytes(std::slice::from_ref(&root), vec![blob.clone()])
+            });
+            let load_ms = t.elapsed().as_secs_f64() * 1e3;
+
+            // (3) VIEWS: materialize the browse-order Vec<TrackView>.
+            let t = Instant::now();
+            let (views, viewm) =
+                alloc_probe::measure(|| lib.views_by(BrowseAxis::ArtistAlbumTrack));
+            let views_ms = t.elapsed().as_secs_f64() * 1e3;
+            let view_count = views.len();
+
+            // (4) AGGREGATE rebuild: K remote sources, each this blob (Arc-shared).
+            // The cost the watcher re-pays to re-aggregate when ONE source changes.
+            const K: usize = 8;
+            let roots: Vec<PathBuf> = (0..K)
+                .map(|i| PathBuf::from(format!("/synthetic/source{i}")))
+                .collect();
+            let t = Instant::now();
+            let (agg, aggm) =
+                alloc_probe::measure(|| Library::from_source_bytes(&roots, vec![blob.clone(); K]));
+            let agg_ms = t.elapsed().as_secs_f64() * 1e3;
+            let agg_len = agg.len();
+
+            eprintln!(
+                "\n===== DATA PIPELINE @ {n} tracks ({n_artists} artists, {n_albums} albums) ====="
+            );
+            eprintln!(
+                "  BAKE   write_index       {bake_ms:>8.1} ms   blob {:>6.1} MB ({:>3.0} B/trk)   {:>9} allocs / {:>6.1} MB   {:>5.0} ns/trk",
+                blob_len as f64 / 1e6,
+                blob_len as f64 / nf,
+                bake.allocs,
+                bake.bytes as f64 / 1e6,
+                bake_ms * 1e6 / nf,
+            );
+            eprintln!(
+                "  LOAD   from_source_bytes {load_ms:>8.2} ms                            {:>9} allocs / {:>6.1} MB",
+                load.allocs,
+                load.bytes as f64 / 1e6,
+            );
+            eprintln!(
+                "  VIEWS  views_by (AAT)    {views_ms:>8.1} ms   {view_count:>8} views           {:>9} allocs / {:>6.1} MB   {:>5.0} ns/trk",
+                viewm.allocs,
+                viewm.bytes as f64 / 1e6,
+                views_ms * 1e6 / nf,
+            );
+            eprintln!(
+                "  AGG    {K}x source rebuild {agg_ms:>7.2} ms   {agg_len:>8} tracks          {:>9} allocs / {:>6.1} MB   {:>5.2} ms/source",
+                aggm.allocs,
+                aggm.bytes as f64 / 1e6,
+                agg_ms / K as f64,
+            );
+        }
+    }
+
     use soul_audio_import::{ScanPhase, SkipReason};
 
     /// A minimal valid PCM WAV of `frames` stereo frames at `rate` (silence).
