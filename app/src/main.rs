@@ -1666,8 +1666,8 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     adopt_legacy_album_covers(s);
 }
 
-/// Whether every configured source has landed: no remote connect or reconnect
-/// in flight, every listed source enabled and reachable, and every configured
+/// Whether every configured source has landed: the startup scan landed, no
+/// scan running, no remote connect or reconnect in flight, every listed source enabled and reachable, and every configured
 /// remote listed. Until then an album that showed a legacy title-keyed cover
 /// may still be missing, so the legacy file is not retired yet.
 #[cfg(test)]
@@ -1676,7 +1676,8 @@ fn source_set_complete(s: &State) -> bool {
 }
 
 /// What keeps the source set from being complete (see [`source_set_complete`]):
-/// a connect in flight, each reconnecting remote, each disabled or unreachable
+/// the restored library's startup scan still pending, a scan in progress, a
+/// connect in flight, each reconnecting remote, each disabled or unreachable
 /// source, and each configured remote not listed yet. Remote URLs compare
 /// normalized (`views::settings::normalize_remote_url`, case-insensitive), so a
 /// persisted `http://h/` and a live `http://h` are one source.
@@ -1684,6 +1685,12 @@ fn incomplete_sources(s: &State) -> Vec<String> {
     use views::settings::normalize_remote_url as norm;
     let same = |a: &str, b: &str| norm(a).eq_ignore_ascii_case(norm(b));
     let mut out = Vec::new();
+    if s.startup_scan_pending {
+        out.push("the restored library (startup scan pending)".to_string());
+    }
+    if s.scan_progress.is_some() {
+        out.push("a library scan in progress".to_string());
+    }
     if s.remote_connecting {
         out.push("a remote being added".to_string());
     }
@@ -1769,13 +1776,15 @@ fn should_prewarm(library_empty: bool, exclusive: bool) -> bool {
 /// The restored library's first scan landed: apply it like any Sources edit, then open any
 /// files the OS handed us while it ran.
 pub(crate) fn apply_startup_scan(s: &mut State, up: WatchUpdate) {
+    // Cleared first: the apply below runs the legacy-cover adoption pass, which
+    // may retire covers only once the restored library is in (see `incomplete_sources`).
+    s.startup_scan_pending = false;
     apply_and_save(s, up);
     tracing::debug!(
         library = s.library.len(),
         queued = s.pending_open.len(),
         "startup scan landed"
     );
-    s.startup_scan_pending = false;
     // Pre-warm the audio pipeline now that a library exists: spawn the actor so the output
     // device opens in the BACKGROUND (the device open is seconds on a slow WASAPI/Bluetooth
     // endpoint), instead of making the user's FIRST play wait the whole open. Non-blocking:
@@ -8043,6 +8052,73 @@ mod tests {
             "the late album adopted the cover too"
         );
         assert!(!legacy.exists(), "retired once the source set is complete");
+    }
+
+    /// A source landing while the restored library's startup scan is still
+    /// pending (a remote reconnect is the usual case) must not retire a legacy
+    /// cover: the local albums that showed it are not in the library yet. Once
+    /// the startup scan lands, those albums adopt it and only then is it retired.
+    #[test]
+    fn a_title_keyed_cover_waits_for_the_startup_scan_before_retiring() {
+        let root = same_title_editions_library("legacy_cover_startup");
+        let early = std::env::temp_dir().join(format!(
+            "soul_rune_legacy_cover_startup_early_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&early);
+        test_fixtures::put(
+            &early,
+            "Footprints JP/01.flac",
+            &test_fixtures::flac_with_comments(&[
+                "ALBUM=Footprints of the Traveler",
+                "ARTIST=HOYO-MiX",
+                "TRACKNUMBER=1",
+                "TITLE=Ichi",
+            ]),
+        );
+        let covers_dir = config::soul_player_dir().unwrap().join("covers");
+        std::fs::create_dir_all(&covers_dir).unwrap();
+        let legacy = covers_dir.join("album-footprints-of-the-traveler.png");
+        std::fs::copy(write_temp_real_png(), &legacy).unwrap();
+
+        let mut s = State::new(PlayerHandle::offline());
+        s.startup_scan_pending = true;
+        let up = s.host.add_folder(&early).expect("scan the early source");
+        apply_watch(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 1, "only the early source's edition so far");
+        assert!(s.covers.album_cover_path(&eds[0]).is_some(), "it adopted");
+        assert!(
+            legacy.exists(),
+            "not retired while the startup scan is still pending"
+        );
+
+        let up = s.host.add_folder(&root).expect("the startup scan");
+        apply_startup_scan(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 3);
+        assert!(
+            eds.iter().all(|id| s.covers.album_cover_path(id).is_some()),
+            "the startup scan's editions adopted the cover too"
+        );
+        assert!(!legacy.exists(), "retired once the startup scan landed");
+    }
+
+    /// A scan in progress keeps the source set incomplete: its albums may be
+    /// about to appear.
+    #[test]
+    fn a_running_scan_keeps_the_source_set_incomplete() {
+        let mut s = State::new(PlayerHandle::offline());
+        assert!(source_set_complete(&s));
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 1,
+            total: 2,
+        });
+        assert!(!source_set_complete(&s), "a scan in progress");
+        s.scan_progress = None;
+        s.startup_scan_pending = true;
+        assert!(!source_set_complete(&s), "the startup scan has not landed");
     }
 
     /// The source set is complete only when nothing is connecting or
