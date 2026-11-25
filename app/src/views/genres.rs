@@ -317,6 +317,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
                         &pal,
                         &build_ids,
                         i,
+                        None,
                         &build_lib[build_idxs[i]],
                         true, // a genre spans many artists
                         true, // and many albums

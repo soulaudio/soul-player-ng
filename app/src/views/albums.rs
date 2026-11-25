@@ -49,13 +49,6 @@ pub(crate) struct Album {
     )]
     pub(crate) album_artist: Option<String>,
     /// The album's disc count (`>= 1`).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "read by the multi-disc album detail page (a later task)"
-        )
-    )]
     pub(crate) disc_count: u16,
     pub(crate) cover_id: u32,
     pub(crate) ids: Vec<u32>,
@@ -599,6 +592,8 @@ pub(crate) fn detail_track_row(
     p: &Palette,
     ids: &[u32],
     i: usize,
+    // The row number to show; `None` numbers by position `i + 1`.
+    number: Option<u16>,
     t: &TrackView,
     // Which of the ARTIST / ALBUM columns to show. The old app always shows both;
     // we show them only where they add information: genre and playlist detail
@@ -637,8 +632,9 @@ pub(crate) fn detail_track_row(
             text(if playing {
                 (if is_playing { "⏸" } else { "▶" }).to_string()
             } else {
-                format!("{}", i + 1)
+                number.map_or_else(|| format!("{}", i + 1), |n| n.to_string())
             })
+            .key(format!("album-track-{i}-no"))
             .font(type_::ITEM)
             .color(if playing { p.accent } else { p.text_secondary })
             .align(Align::Center)
@@ -788,6 +784,37 @@ pub(crate) fn detail_track_header(p: &Palette, show_artist: bool, show_album: bo
     )
 }
 
+/// A multi-disc album's disc header row: "Disc 2 · Liyue" (subtitle when present)
+/// and the disc's total duration, aligned with the track rows' insets.
+fn disc_header(d: &soul_player_host::DiscSection, p: &Palette) -> El {
+    let title = match &d.subtitle {
+        Some(sub) => t!("album.discWithSubtitle", n => d.disc_no, subtitle => sub).to_string(),
+        None => t!("album.disc", n => d.disc_no).to_string(),
+    };
+    row()
+        .key(format!("album-disc-{}", d.disc_no))
+        .w_full()
+        .gap(space::MD)
+        .center_y()
+        .px(space::MD)
+        .py(space::SM)
+        .child(
+            text(title)
+                .key(format!("album-disc-{}-title", d.disc_no))
+                .font(type_::TITLE)
+                .color(p.fg)
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        )
+        .child(
+            text(fmt_total_dur(d.duration_secs))
+                .key(format!("album-disc-{}-dur", d.disc_no))
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+}
+
 /// An album's detail page (the old app's AlbumPage): a back link, then the shared
 /// hero, square cover, "ALBUM" eyebrow, title, artist, "{n} tracks · {duration}"
 /// and a Play-All pill, over the album's numbered track list. The album is
@@ -871,19 +898,31 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         Some(ArtworkTarget::Album(album.name.clone())),
     );
 
+    let members: Vec<&TrackView> = album.ids.iter().filter_map(|id| s.track(*id)).collect();
+    let discs = soul_player_host::album_tracklist(&members);
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
-    for (i, &id) in album.ids.iter().enumerate() {
-        if let Some(t) = s.track(id) {
-            list = list.child(detail_track_row(
-                s.now_playing_id,
-                s.playing,
-                p,
-                &album.ids,
-                i,
-                t,
-                false, // album detail: artist is constant
-                false, // album detail: album is constant
-            ));
+    // `i` indexes `album.ids` (already (disc, track) ordered by `group_albums`, the
+    // same order `album_tracklist` yields), so a row's play-start index is right.
+    let mut i = 0usize;
+    for d in &discs {
+        if album.disc_count > 1 {
+            list = list.child(disc_header(d, p));
+        }
+        for &(id, number) in &d.rows {
+            if let Some(t) = s.track(id) {
+                list = list.child(detail_track_row(
+                    s.now_playing_id,
+                    s.playing,
+                    p,
+                    &album.ids,
+                    i,
+                    Some(number),
+                    t,
+                    false, // album detail: artist is constant
+                    false, // album detail: album is constant
+                ));
+            }
+            i += 1;
         }
     }
 

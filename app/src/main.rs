@@ -15983,6 +15983,110 @@ mod tests {
 
     // ── Keyboard & accessibility ─────────────────────────────────────────────
 
+    /// The album page orders by (disc, track) whatever the library sort, numbers
+    /// rows by the TAGGED track number, and draws one header per disc
+    /// ("Disc 2 · Liyue") when the album has more than one disc.
+    #[test]
+    fn album_detail_orders_by_disc_and_draws_disc_headers() {
+        let _locale = config::use_test_locale("en");
+        let t =
+            |id: u32, title: &str, disc: u16, track: u16, sub: &str| soul_player_host::TrackView {
+                id,
+                title: Some(title.into()),
+                artist: Some("HOYO-MiX".into()),
+                album: Some("Box".into()),
+                album_key: 7,
+                disc_no: disc,
+                track_no: track,
+                disc_count: 2,
+                disc_subtitle: Some(sub.into()),
+                duration_secs: 90.0,
+                ..Default::default()
+            };
+        let mut s = State::new(PlayerHandle::offline());
+        // Title-sorted library order: Intro, Reprise, Theme.
+        s.library = vec![
+            t(1, "Intro", 1, 5, "Mondstadt"),
+            t(3, "Reprise", 2, 1, "Liyue"),
+            t(2, "Theme", 1, 6, "Mondstadt"),
+        ];
+        s.route = Route::Album;
+        s.open_album = Some(AlbumRef {
+            key: 7,
+            name: "Box".into(),
+        });
+        let env = Env {
+            system_dark: true,
+            scale: 1.0,
+        };
+        let mut rt = Runtime::new(s, view, (1200.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let labels: Vec<Option<String>> = (0..3)
+            .map(|i| el_info(&rt, &format!("album-track-{i}")).label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                Some("Intro".into()),
+                Some("Theme".into()),
+                Some("Reprise".into())
+            ],
+            "disc 1 (tracks 5, 6) then disc 2"
+        );
+        let no = |i: usize| el_info(&rt, &format!("album-track-{i}-no")).text;
+        assert_eq!(
+            (no(0), no(1), no(2)),
+            (Some("5".into()), Some("6".into()), Some("1".into()))
+        );
+        assert_eq!(
+            el_info(&rt, "album-disc-1-title").text.as_deref(),
+            Some("Disc 1 · Mondstadt")
+        );
+        assert_eq!(
+            el_info(&rt, "album-disc-2-title").text.as_deref(),
+            Some("Disc 2 · Liyue")
+        );
+        assert_eq!(
+            el_info(&rt, "album-disc-1-dur").text.as_deref(),
+            Some("3 min")
+        );
+        let y = |k: &str| el_info(&rt, k).rect[1];
+        assert!(y("album-disc-1") < y("album-track-0"));
+        assert!(y("album-track-1") < y("album-disc-2") && y("album-disc-2") < y("album-track-2"));
+    }
+
+    /// A single-disc album draws no disc header.
+    #[test]
+    fn single_disc_album_has_no_disc_header() {
+        let _locale = config::use_test_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.library = vec![soul_player_host::TrackView {
+            id: 1,
+            title: Some("Solo".into()),
+            album: Some("One".into()),
+            album_key: 3,
+            disc_no: 1,
+            track_no: 1,
+            disc_count: 1,
+            duration_secs: 60.0,
+            ..Default::default()
+        }];
+        s.route = Route::Album;
+        s.open_album = Some(AlbumRef {
+            key: 3,
+            name: "One".into(),
+        });
+        let env = Env {
+            system_dark: true,
+            scale: 1.0,
+        };
+        let mut rt = Runtime::new(s, view, (1200.0, 900.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("album-track-0").is_some());
+        assert!(rt.find("album-disc-1").is_none());
+    }
+
     /// The key of the currently-focused element, from the a11y element tree.
     fn focused_key(rt: &Runtime<State>) -> Option<String> {
         rt.elements()

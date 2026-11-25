@@ -131,6 +131,22 @@ album.playAll:
   zh: '全部播放'
   cs: 'Přehrát vše'
   ja: 'すべて再生'
+# Album detail: a disc header row on multi-disc albums ("Disc 2", or "Disc 2 · Liyue"
+# with the disc subtitle).
+album.disc:
+  en: 'Disc %{n}'
+  de: 'CD %{n}'
+  es: 'Disco %{n}'
+  zh: '第 %{n} 碟'
+  cs: 'Disk %{n}'
+  ja: 'ディスク %{n}'
+album.discWithSubtitle:
+  en: 'Disc %{n} · %{subtitle}'
+  de: 'CD %{n} · %{subtitle}'
+  es: 'Disco %{n} · %{subtitle}'
+  zh: '第 %{n} 碟 · %{subtitle}'
+  cs: 'Disk %{n} · %{subtitle}'
+  ja: 'ディスク %{n} · %{subtitle}'
 albums.searchPlaceholder:
   en: 'Search %{count} albums'
   de: '%{count} Alben durchsuchen'
