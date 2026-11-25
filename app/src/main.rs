@@ -11543,7 +11543,9 @@ mod tests {
         };
         let mut s = settings_state(&[], &[]);
         s.settings_tab = SettingsTab::MusicData;
-        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // Tall enough that the Copy/Move row (below the Multi-disc albums picker)
+        // is inside the viewport, a click only lands on a visible control.
+        let mut rt = Runtime::new(s, view, (1100.0, 900.0), env);
         rt.frame(0.0);
         click_key(&mut rt, "managed-move");
         assert_eq!(
