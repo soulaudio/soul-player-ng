@@ -1,0 +1,164 @@
+name: Flathub (from-source build)
+
+# Proves the Flathub manifest builds — offline, from source, the way Flathub's
+# builders will.
+#
+# NOT part of the release. Flathub builds the app on their own infrastructure
+# from the manifest in their repo, so the long compile costs us nothing at
+# release time; and at release time nothing has changed but the tag, so a
+# rebuild would re-prove what this job already proved. It runs where breakage is
+# actually introduced instead:
+#
+#   * a PR touching the lockfile, this manifest, or the toolchain pin
+#   * weekly, to catch upstream rot — a yanked crate, a vanished git rev, a
+#     toolchain archive that stops being served — before a release needs it
+#   * on demand
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "app/rune/Cargo.lock"
+      - "app/rune/rust-toolchain.toml"
+      - "packaging/flathub/**"
+      - ".github/workflows/flathub.yml"
+  schedule:
+    # Mondays 04:17 UTC. Off the hour because scheduled runs cluster there.
+    - cron: "17 4 * * 1"
+
+concurrency:
+  group: flathub-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # A full offline release build of ~740 crates (wgpu, icu, resvg) inside
+    # flatpak-builder. Generous on purpose: this job exists to tell us whether
+    # it builds at all, and a cap that merely says "slow" would tell us nothing.
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Vendored crate sources are in sync with the lockfile
+        # Cheap, and it is the failure that would otherwise surface on Flathub's
+        # builders AFTER review: offline, a stale source list cannot be fixed by
+        # fetching the difference.
+        run: packaging/flathub/generate-sources.sh --check
+
+      - name: Install flatpak and the Flathub builder
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -o Acquire::Retries=3 flatpak xvfb dbus-x11
+          flatpak remote-add --user --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          # org.flatpak.Builder is what Flathub itself builds with, and it
+          # carries the matching flatpak-builder-lint. Using the distro's
+          # flatpak-builder instead would test a different tool than the one
+          # that will judge the submission.
+          flatpak install --user -y --noninteractive flathub org.flatpak.Builder
+          # Pre-install the runtime and SDK rather than letting the builder do
+          # it with `--install-deps-from`: that path shells out to `flatpak
+          # install`, which wants a session bus and fails on a bare runner with
+          # "Cannot autolaunch D-Bus without X11 $DISPLAY". release.yml already
+          # installs them this way for the bundle build, so this matches a
+          # pattern that is known to work here.
+          flatpak install --user -y --noninteractive flathub \
+            org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
+
+      - name: Point the manifest at the commit under test
+        # The committed manifest names a RELEASE tag, because that is what gets
+        # submitted. Here we need the code in this checkout, so the git source
+        # is rewritten to this commit. Everything else — the vendored crates,
+        # the pinned toolchain, the offline build — is exercised unchanged.
+        run: |
+          mkdir -p "$RUNNER_TEMP/fh"
+          cp packaging/flathub/cargo-sources.json "$RUNNER_TEMP/fh/"
+          python3 - <<'PY'
+          import os, re, pathlib
+          src = pathlib.Path("packaging/flathub/co.soulaudio.soulplayer.yml").read_text()
+          sha = os.environ["GITHUB_SHA"]
+          # Drop the tag: flatpak-builder requires tag and commit to agree, and
+          # this commit is not the tagged one.
+          src = re.sub(r"\n\s*tag: v[0-9.]+", "", src, count=1)
+          src = re.sub(r"commit: [0-9a-f]{40}", f"commit: {sha}", src, count=1)
+          out = pathlib.Path(os.environ["RUNNER_TEMP"]) / "fh" / "co.soulaudio.soulplayer.yml"
+          out.write_text(src)
+          print(f"building from commit {sha}")
+          PY
+
+      - name: Build from source, offline
+        working-directory: ${{ runner.temp }}/fh
+        run: |
+          # `--sandbox` and `--disable-rofiles-fuse` match what Flathub does.
+          # No `--share=network`: if the build needs the network, it must fail
+          # HERE rather than on their builders.
+          # `dbus-run-session` for the same reason: flatpak-builder's own
+          # install step talks to the session bus, and there is none otherwise.
+          # `--compose-url-policy=full` is required WITH
+          # `--mirror-screenshots-url`, not instead of it: AppStream only
+          # mirrors the metainfo's screenshots and remote icons into the build
+          # when both are given. With just the URL, the first attempt produced
+          #   errors: appstream-remote-icon-not-mirrored,
+          #           appstream-external-screenshot-url
+          # because the images were still pointing at github.com. The URL has no
+          # trailing slash, matching what Flathub's own invocation uses.
+          dbus-run-session -- flatpak run org.flatpak.Builder \
+            --force-clean --sandbox --user --install \
+            --disable-rofiles-fuse \
+            --compose-url-policy=full \
+            --mirror-screenshots-url=https://dl.flathub.org/media \
+            --repo=repo builddir co.soulaudio.soulplayer.yml
+
+      - name: flatpak-builder-lint (builddir + repo)
+        working-directory: ${{ runner.temp }}/fh
+        run: |
+          # The two checks Flathub runs on their own infrastructure. Doing them
+          # on the real build output is the closest we get to their verdict
+          # without submitting.
+          lint() { flatpak run --command=flatpak-builder-lint org.flatpak.Builder "$@"; }
+          echo "::group::builddir"; lint builddir builddir; echo "::endgroup::"
+          echo "::group::repo"; lint repo repo; echo "::endgroup::"
+
+      - name: It runs, and owns its MPRIS name
+        run: |
+          # Building is not evidence. The from-source build could differ from
+          # the prebuilt one in ways only running shows — a missing runtime
+          # library, a toolchain that produced a broken binary.
+          mkdir -p "$HOME/Music" && cp testdata/meta.flac "$HOME/Music/"
+          dbus-run-session -- bash -c '
+            xvfb-run -a -s "-screen 0 1280x800x24" \
+              flatpak run --user --socket=x11 \
+                --env=SOUL_PLAYER_FOLDER="$HOME/Music" \
+                --env=SOUL_PLAYER_NO_UPDATE=1 \
+                co.soulaudio.soulplayer >"$RUNNER_TEMP/run.log" 2>&1 &
+            for i in $(seq 1 60); do
+              n=$(dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
+                    org.freedesktop.DBus.ListNames 2>/dev/null \
+                  | grep -oE "org\.mpris\.MediaPlayer2\.[A-Za-z0-9_.-]+" | head -1)
+              [ -n "$n" ] && break
+              sleep 1
+            done
+            if [ "$n" != "org.mpris.MediaPlayer2.co.soulaudio.soulplayer" ]; then
+              echo "::error::the from-source build did not own its MPRIS name (saw ${n:-nothing})"
+              tail -40 "$RUNNER_TEMP/run.log" || true
+              exit 1
+            fi
+            echo "the from-source build runs and owns $n"
+            flatpak kill co.soulaudio.soulplayer || true
+          '
+
+      - name: Report what was built
+        if: always()
+        run: |
+          flatpak info --user co.soulaudio.soulplayer 2>/dev/null | sed 's/^/  /' || true
+          echo "toolchain the build used:"
+          grep -m1 -A1 "static.rust-lang.org" packaging/flathub/co.soulaudio.soulplayer.yml | sed 's/^/  /'
