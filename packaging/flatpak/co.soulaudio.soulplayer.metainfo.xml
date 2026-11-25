@@ -95,6 +95,40 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.7" date="2026-11-25">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Manage the Bunny CDN in terraform under website/infrastructure</li>
+          <li>Set the page in Fraunces and Work Sans, and fix it on phones</li>
+          <li>Drop the motto, set the page in IBM Plex</li>
+          <li>Platform icons, a segmented switcher, and a light default</li>
+          <li>Add the player.soulaudio.co download page and an install script</li>
+          <li>Let soul-server advertise a public URL, and document hosting</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>Answer --version without opening a window</li>
+          <li>Give immutable assets a browser cache, not just an edge one</li>
+          <li>Pin the Bunny provider to a version the registry still has</li>
+          <li>Wait for DNS before asking Bunny for the certificate</li>
+          <li>Keep the command box on the &lt;pre&gt;, not on the &lt;code&gt; inside it</li>
+          <li>Join the previous filesystem watcher off the watcher lock</li>
+          <li>Saturate next_id so a corrupt on-disk id can't overflow</li>
+          <li>Harden the streaming + login paths against misbehaving servers</li>
+          <li>Resolve the track path off the library lock on the pump thread</li>
+          <li>Give the browse pages a gap between the search bar and the content</li>
+        </ul>
+        <p>Faster</p>
+        <ul>
+          <li>Version the virtual lists so a re-commit doesn't re-key every row</li>
+          <li>Memoize the Artist detail discography so it isn't rebuilt every frame</li>
+          <li>Memoize the Genre detail track list so it isn't re-filtered every frame</li>
+          <li>Share baked .soulidx blobs via Arc, don't deep-copy them per rebuild</li>
+          <li>Read the next window ahead so remote playback can't stall the pump</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.6" date="2026-11-25">
       <description>
         <p>New</p>
