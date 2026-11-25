@@ -15,6 +15,14 @@ extern crate rust_i18n;
 // pref / OS language in `apply_locale`), falling back to English.
 i18n!("locales", fallback = "en");
 
+// Install the counting pass-through allocator in the TEST build only, so the 1M
+// profiling run (`bench_browse_1m_end_to_end`) can measure allocations per frame and
+// prove the per-frame memoization holds. Declaring a `#[global_allocator]` is SAFE;
+// only the trait impl (in `alloc-probe`) is `unsafe`, so this crate stays unsafe-free.
+#[cfg(test)]
+#[global_allocator]
+static PROFILE_PROBE: alloc_probe::Counting = alloc_probe::Counting;
+
 use std::path::PathBuf;
 
 use rune::{App, AppSpec, Cx, El, Key, KeyEvent, Titlebar, Tx, Waker, col, el, row};
@@ -5360,6 +5368,117 @@ mod tests {
     // reaches them through `soul_player_host::` full paths).
     use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH, STRIP_WIDTH};
     use soul_player_host::{DspChain, Profile, ProfileSet};
+
+    /// End-to-end 1M-track profiling run. `#[ignore]` (slow: it builds a million
+    /// synthetic tracks); run with:
+    ///   `cargo test -p soul-player-rune bench_browse_1m -- --ignored --nocapture`
+    ///
+    /// Drives the REAL top-level [`view`] through the `Runtime` at a million tracks and
+    /// reports, per browse page: the COLD first-frame cost (which builds that page's
+    /// memoized grouping/filter) vs the WARM steady-state frame time (the "is it smooth
+    /// at 1M?" number), and ALLOCATIONS PER WARM FRAME (the per-frame memoization holds
+    /// iff this is ~0, no re-grouping/re-filtering/clone churn). Plus a resident-memory
+    /// estimate for the view model. Not an assertion harness; it prints a report for a
+    /// human to read, alongside the `bench_*_at_scale` micro-benchmarks it complements.
+    #[test]
+    #[ignore]
+    fn bench_browse_1m_end_to_end() {
+        use std::sync::Arc;
+        use std::time::Instant;
+
+        const N: u32 = 1_000_000;
+        // Realistic fan-out: ~12 tracks/album, ~8 albums/artist, 10 genres
+        // => ~83k albums, ~10.4k artists, 10 genres at 1M (the string-interning target).
+        let lib: Vec<TrackView> = (0..N)
+            .map(|i| {
+                let album = i / 12;
+                let artist = album / 8;
+                TrackView {
+                    id: i,
+                    title: Some(format!("Track {i}")),
+                    artist: Some(Arc::from(format!("Artist {artist}"))),
+                    album: Some(Arc::from(format!("Album {album}"))),
+                    genre: Some(Arc::from(format!("Genre {}", artist % 10))),
+                    duration_secs: 180.0,
+                    remote_source: None,
+                    original_date: 0,
+                    release_date: 0,
+                    loudness: None,
+                    format: None,
+                }
+            })
+            .collect();
+
+        // ---- Resident view-model footprint (the dominant terms) ----
+        let n = N as usize;
+        let struct_sz = std::mem::size_of::<TrackView>();
+        let vec_mb = (n * struct_sz) as f64 / 1e6;
+        // Unique titles ("Track {i}"): heap content only (the 24-byte String header sits
+        // inside the struct). Averaged over an even sample.
+        let sample: Vec<usize> = (0..N)
+            .step_by(n / 200)
+            .map(|i| format!("Track {i}").len())
+            .collect();
+        let title_mb = (sample.iter().sum::<usize>() as f64 / sample.len() as f64) * n as f64 / 1e6;
+        // Interned artist/album/genre: each DISTINCT value stored once (16-byte Arc
+        // header + content). The 16-byte fat pointers per field are already in struct_sz.
+        let distinct_mb =
+            ((n / 96) * (16 + 12) + (n / 12) * (16 + 11) + 10 * (16 + 7)) as f64 / 1e6;
+        eprintln!(
+            "\nRESIDENT view model @ {N} tracks: {vec_mb:.0} MB structs ({struct_sz} B/TrackView) + \
+             {title_mb:.0} MB unique titles + {distinct_mb:.1} MB interned artist/album/genre \
+             = ~{:.0} MB. Grouping caches add O(distinct), bounded, built lazily per page.\n",
+            vec_mb + title_mb + distinct_mb
+        );
+
+        // ---- Frame-time + allocations per browse page ----
+        let mut s = State::new(PlayerHandle::offline());
+        s.library = lib;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1280.0, 900.0), env);
+
+        let warm_avg = |rt: &mut Runtime<State>, frames: u32| -> Duration {
+            let t = Instant::now();
+            for i in 0..frames {
+                rt.frame(f64::from(i) * 0.016);
+            }
+            t.elapsed() / frames
+        };
+
+        for (label, route) in [
+            ("Library (tracks)", Route::Library),
+            ("Albums", Route::Albums),
+            ("Artists", Route::Artists),
+            ("Genres", Route::Genres),
+        ] {
+            rt.update(|s: &mut State, _tx: &mut Tx| s.route = route);
+            let t = Instant::now();
+            rt.frame(1000.0); // COLD: builds this page's memoized grouping / filter
+            let cold = t.elapsed();
+            let avg = warm_avg(&mut rt, 60); // WARM steady-state
+            let (_, p) = alloc_probe::measure(|| rt.frame(9999.0));
+            eprintln!(
+                "{label:<18} cold {cold:>11.2?}   warm {avg:>9.2?}/frame   allocs/warm-frame {}",
+                p.allocs
+            );
+        }
+
+        // ---- A search keystroke on the Tracks page: re-filter 1M once, memoized after ----
+        rt.update(|s: &mut State, _tx: &mut Tx| {
+            s.route = Route::Library;
+            s.library_search = rune::TextEdit::new("track 5");
+        });
+        let t = Instant::now();
+        rt.frame(5000.0); // COLD: visible_tracks re-filters the whole library once
+        let search_cold = t.elapsed();
+        let search_warm = warm_avg(&mut rt, 30);
+        eprintln!(
+            "search 'track 5'   cold-filter {search_cold:>11.2?}   warm {search_warm:>9.2?}/frame\n"
+        );
+    }
 
     #[test]
     fn prewarm_only_in_shared_mode_with_a_library() {

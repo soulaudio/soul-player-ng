@@ -121,6 +121,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-probe"
+version = "0.1.0"
+
+[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5252,6 +5256,7 @@ dependencies = [
 name = "soul-player-rune"
 version = "0.4.6"
 dependencies = [
+ "alloc-probe",
  "anyhow",
  "cargo-packager-updater",
  "dirs 6.0.0",
