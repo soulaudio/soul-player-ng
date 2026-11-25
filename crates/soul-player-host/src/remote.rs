@@ -2273,6 +2273,47 @@ mod tests {
         );
     }
 
+    /// The remote aggregate packs album ids per source exactly like track ids:
+    /// the test server serves the SAME `testdata/` the local source scans, so
+    /// both sides have identical LOCAL album ids, and only the source bits of
+    /// `album_key` keep a local album and its remote twin apart.
+    #[test]
+    fn local_and_remote_album_keys_never_collide() {
+        use std::collections::HashSet;
+        let server = start_server();
+        let tokens = login_as_test_user(&server);
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .set_sources(&[(testdata_dir(), true)])
+            .expect("seed a local source");
+        handle
+            .add_remote_source_with_tokens(&server.url, tokens)
+            .expect("add remote source with tokens");
+
+        let views = handle.views();
+        let keys = |remote: bool| -> HashSet<u32> {
+            views
+                .iter()
+                .filter(|v| v.remote_source.is_some() == remote)
+                .map(|v| v.album_key)
+                .collect()
+        };
+        let (local, remote) = (keys(false), keys(true));
+        assert!(
+            !local.is_empty() && !remote.is_empty(),
+            "both sides contribute albums"
+        );
+        assert!(
+            local.is_disjoint(&remote),
+            "no local album key equals a remote one"
+        );
+        let ids = |s: &HashSet<u32>| -> HashSet<u32> { s.iter().map(|k| unpack(*k).1).collect() };
+        assert!(
+            !ids(&local).is_disjoint(&ids(&remote)),
+            "the local album ids DO coincide, so the disjointness above is meaningful"
+        );
+    }
+
     /// The Inc-5 reconnect seam, end to end: a [`MemStore`] pre-seeded with a
     /// valid refresh token (obtained via the same [`login_as_test_user`] flow
     /// [`add_remote_source_with_tokens_lists_views`] uses) lets
