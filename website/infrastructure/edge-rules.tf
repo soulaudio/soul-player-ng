@@ -13,12 +13,23 @@ resource "bunnynet_pullzone_edgerule" "immutable_assets" {
   enabled     = true
   match_type  = "MatchAny"
 
-  actions = [{
-    type       = "OverrideCacheTime"
-    parameter1 = "31536000"
-    parameter2 = null
-    parameter3 = null
-  }]
+  actions = [
+    {
+      type       = "OverrideCacheTime"
+      parameter1 = "31536000"
+      parameter2 = null
+      parameter3 = null
+    },
+    # OverrideCacheTime is the EDGE cache only: the browser still gets the pull
+    # zone default, which is 300s, so a visitor re-fetched hashed assets every
+    # five minutes. Verified against the live headers, not assumed.
+    {
+      type       = "SetResponseHeader"
+      parameter1 = "Cache-Control"
+      parameter2 = "public, max-age=31536000, immutable"
+      parameter3 = null
+    },
+  ]
 
   triggers = [{
     type       = "Url"
