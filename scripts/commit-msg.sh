@@ -18,7 +18,7 @@ if printf '%s' "$body" | grep -iqE 'claude|anthropic|co-?authored|generated with
 	exit 1
 fi
 
-# 2. Conventional Commits subject — first non-empty line, exempting the standard
+# 2. Conventional Commits subject: first non-empty line, exempting the standard
 #    machine-generated subjects (merge, revert, autosquash).
 subject=$(printf '%s\n' "$body" | sed '/^[[:space:]]*$/d' | head -n1)
 case "$subject" in

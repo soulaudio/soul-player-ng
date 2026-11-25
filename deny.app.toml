@@ -1,5 +1,5 @@
-# cargo-deny policy for the Rune UI head workspace (`app/rune`). Identical to the
-# root `deny.toml` minus the "no GUI crates" ban — the UI head is the one place
+# cargo-deny policy for the Rune UI head workspace (`app`). Identical to the
+# root `deny.toml` minus the "no GUI crates" ban: the UI head is the one place
 # wgpu/winit and the `rune` git dep legitimately live (see docs/ARCHITECTURE.md).
 # Advisory (CVE) scanning is owned by the `cargo audit` job; this gate enforces
 # license compliance, dependency-source pinning, and ban rules across the graph.
@@ -23,7 +23,7 @@ allow = [
   # (pulled in transitively by cargo-packager-updater's reqwest/rustls TLS stack).
   "CDLA-Permissive-2.0",
   # clipboard-win + error-code (Rune's Windows clipboard support) are BSL-1.0,
-  # the Boost license — permissive/OSI-approved, in keeping with this allow-list.
+  # the Boost license, permissive/OSI-approved, in keeping with this allow-list.
   "BSL-1.0",
 ]
 private = { ignore = true }
@@ -37,7 +37,7 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-git = [
   "https://github.com/soulaudio/soul-audio-core",
-  # The Rune UI framework is consumed as a pinned git rev (pre-release; not on
-  # crates.io) — see docs/superpowers/specs/2026-11-10-rune-head-migration.md.
+  # The Rune UI framework is consumed as a pinned git rev: it is pre-release and
+  # not published to crates.io, so there is no registry version to depend on.
   "https://github.com/anomalyco/rune",
 ]

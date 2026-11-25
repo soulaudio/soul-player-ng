@@ -34,17 +34,17 @@ soul-audio-desktop = { git = "https://github.com/soulaudio/soul-audio-core", bra
 # re-exported so a UI head can plan/apply without a direct core git dep.
 soul-audio-organize = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
 # The `pack`/`unpack` compound-id helpers the remote-source client needs to
-# recover a server's OWN track id from an aggregate (local+remote) id — see
+# recover a server's OWN track id from an aggregate (local+remote) id, see
 # `remote::RemoteLibrary::path_of`. `soul-player-backend` already depends on
 # this crate for the same `Library`/`MultiCatalog` plumbing; declaring it here
 # too just names the dependency the host code itself calls directly.
 soul-audio-multicatalog = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main" }
-# Portable no_std playlist model, re-exported so app/rune can import
+# Portable no_std playlist model, re-exported so the UI head can import
 # `Playlist`/`PlaylistEntry`/`PlaylistCover`/etc. from the host without a
 # direct core git dep of its own.
 soul-audio-playlist = { git = "https://github.com/soulaudio/soul-audio-core", branch = "main", features = ["serde"] }
 anyhow = "1"
-# Real-input FFT for the EQ spectrum analyzer (std host only — the no_std core
+# Real-input FFT for the EQ spectrum analyzer (std host only, the no_std core
 # never sees it). Wraps rustfft with an r2c API and reused buffers.
 realfft = "3"
 # Live filesystem watcher (A6): debounced change events over the watched roots →
@@ -59,7 +59,7 @@ sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # track download all happen synchronously on the loader's thread.
 reqwest = { version = "0.12", features = ["blocking", "json"] }
 # JSON bodies for the remote-source `/v0/auth` request/response (via
-# `serde_json::json!`/`Value` — no derive macros needed for two string fields).
+# `serde_json::json!`/`Value`, no derive macros needed for two string fields).
 serde_json = "1"
 # Generated covers (`generated_cover`): PNG encoding (0.18 is already in the graph via
 # `image`) and Unicode NFC so differently-normalized names share a cover.
@@ -68,7 +68,7 @@ unicode-normalization = "0.1"
 # Pure-Rust maths so generated covers are bit-identical on every platform (already in the graph).
 libm = "0.2"
 # Per-OS cache directory for the remote-source download cache
-# (`add_remote_source`'s `DownloadCache`). Same version the app/rune head uses
+# (`add_remote_source`'s `DownloadCache`). Same version the app head uses
 # for its own config dir.
 dirs = "6"
 # OS keychain storage for the remote-source OAuth refresh token
@@ -88,7 +88,7 @@ keyring = { version = "3", features = [
 # `openidconnect`/`oauth2` crate: the client only ever carries the access
 # token opaquely as a `Bearer` header, so it needs zero JWT-validation
 # machinery (and the transitive `rsa` crate, RUSTSEC-2023-0071, that pulls
-# in) — just the PKCE verifier/challenge hash and four plain HTTP calls.
+# in), just the PKCE verifier/challenge hash and four plain HTTP calls.
 sha2 = "0.10"
 base64 = "0.22"
 # CSPRNG for the PKCE code verifier and the `/authorize` CSRF `state`.
@@ -129,7 +129,7 @@ tempfile = "3"
 # `#![forbid(unsafe_code)]` while still installing the allocator in the test build.
 alloc-probe = { path = "../alloc-probe" }
 # The `remote` module's tests drive a REAL in-process soul-server rather than
-# faking the HTTP boundary — a dev-only dependency; the shipped player never
+# faking the HTTP boundary, a dev-only dependency; the shipped player never
 # links soul-server (the client speaks its wire protocol over plain HTTP).
 soul-server = { path = "../soul-server" }
 tokio = { version = "1", features = ["rt-multi-thread", "net"] }

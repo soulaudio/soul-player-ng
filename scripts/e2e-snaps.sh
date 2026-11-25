@@ -2,23 +2,23 @@
 # Visual e2e: render the real Rune UI head to PNGs for inspection.
 #
 # Rune's headless `--snap` renders the actual app offscreen (GPU, no visible
-# window) — so this works both on a dev box and in CI (software Vulkan + Xvfb),
+# window), so this works both on a dev box and in CI (software Vulkan + Xvfb),
 # and sidesteps the "GUI window is invisible to the agent" problem entirely. It
-# drives the committed `--scene`s (see app/rune/src/main.rs) to capture each view.
+# drives the committed `--scene`s (see app/src/main.rs) to capture each view.
 #
 # Inspect the PNGs by eye. A future step can diff them against committed
 # references for visual-regression e2e in CI.
 #
-# Usage:  scripts/e2e-snaps.sh [OUT_DIR]      (default: app/rune/target/e2e-snaps)
+# Usage:  scripts/e2e-snaps.sh [OUT_DIR]      (default: app/target/e2e-snaps)
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-out="${1:-$root/app/rune/target/e2e-snaps}"
+out="${1:-$root/app/target/e2e-snaps}"
 mkdir -p "$out"
 
 # The Rune head is a nested nightly workspace; its toolchain resolves from CWD.
-( cd "$root/app/rune" && cargo build )
-exe="$root/app/rune/target/debug/soul-player"
+( cd "$root/app" && cargo build )
+exe="$root/app/target/debug/soul-player"
 [ -f "$exe.exe" ] && exe="$exe.exe"
 
 # The app expects a native path; convert from the MSYS path on Windows.

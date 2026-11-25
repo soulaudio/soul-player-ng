@@ -583,7 +583,7 @@ struct Inner {
     /// trimmed, matching `remotes`' own key). Absent ⇒ enabled — a remote
     /// added before this flag existed, or never explicitly toggled,
     /// defaults to on (the same "absent from the disabled set ⇒ enabled"
-    /// convention `app/rune`'s `sources_disabled` config uses). A disabled
+    /// convention `app`'s `sources_disabled` config uses). A disabled
     /// remote stays in `remotes` (and keeps listing in
     /// [`sources`](PlayerHandle::sources)) — only its blobs are excluded
     /// from the aggregate [`rebuild_remote_library`](PlayerHandle::rebuild_remote_library)

@@ -7,7 +7,7 @@
 *.png binary
 *.ico binary
 
-# Audio test fixtures (testdata/) are binary — never line-ending-normalized.
+# Audio test fixtures (testdata/) are binary, never line-ending-normalized.
 *.wav binary
 *.flac binary
 *.mp3 binary

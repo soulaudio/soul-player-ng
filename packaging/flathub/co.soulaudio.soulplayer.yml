@@ -1,4 +1,4 @@
-# Flathub manifest — builds Soul Player FROM SOURCE, offline.
+# Flathub manifest: builds Soul Player FROM SOURCE, offline.
 #
 # This is a second manifest on purpose, and `packaging/flatpak/` is not it.
 # That one installs the already-built, already-tested binary and produces the
@@ -6,17 +6,17 @@
 # shape for us: "All source available submissions must be built entirely from
 # source code", with prebuilt `extra-data` reserved for non-redistributable
 # content, and we are Apache-2.0. So the two manifests differ in exactly one
-# respect — where the binary comes from — and must agree on everything else.
+# respect, where the binary comes from, and must agree on everything else.
 # `the_two_flatpak_manifests_agree` enforces that.
 #
 # "There is no network access during the build process", so everything the
 # compiler needs is a declared source with a checksum:
 #
-#   * cargo-sources.json — every crate, generated from app/rune/Cargo.lock by
+#   * cargo-sources.json: every crate, generated from app/Cargo.lock by
 #     flatpak-cargo-generator (~1500 sources). Both git dependencies, `rune` and
 #     `soul-audio-core`, are resolved to the commits the lockfile pins.
-#   * the Rust toolchain — the dated nightly tarball from static.rust-lang.org,
-#     per architecture, by sha256. `app/rune/rust-toolchain.toml` pins
+#   * the Rust toolchain, the dated nightly tarball from static.rust-lang.org,
+#     per architecture, by sha256. `app/rust-toolchain.toml` pins
 #     nightly-2026-11-10 because Rune uses unstable features (stable 1.93.1
 #     fails outright on `atomic_try_update`), and the `rust-nightly` SDK
 #     extension is not an option: it was archived in September 2026 after
@@ -27,7 +27,7 @@
 # the build gets exactly the pinned nightly, verified by checksum.
 #
 # Regenerate the crate sources with packaging/flathub/generate-sources.sh
-# whenever app/rune/Cargo.lock changes; CI fails if they disagree.
+# whenever app/Cargo.lock changes; CI fails if they disagree.
 app-id: co.soulaudio.soulplayer
 runtime: org.freedesktop.Platform
 runtime-version: '26.08'
@@ -35,7 +35,7 @@ sdk: org.freedesktop.Sdk
 command: soul-player
 
 finish-args:
-  # Kept identical to packaging/flatpak/co.soulaudio.soulplayer.yml — see there
+  # Kept identical to packaging/flatpak/co.soulaudio.soulplayer.yml, see there
   # for why each one is needed. A test fails if the two lists diverge.
   - --socket=wayland
   - --socket=fallback-x11
@@ -76,19 +76,19 @@ modules:
       # install to same directory as installer").
       - ./toolchain-dist/install.sh --prefix=/run/build/soul-player/rust
         --without=rust-docs --disable-ldconfig
-      # Run from the BUILD ROOT, not app/rune: the generated vendor config says
+      # Run from the BUILD ROOT, not app: the generated vendor config says
       # `directory = "cargo/vendor"`, a path relative to the working directory.
-      # `cd app/rune && cargo build` would resolve it to app/rune/cargo/vendor
+      # `cd app && cargo build` would resolve it to app/cargo/vendor
       # and fail to find a single crate.
-      - cargo build --release --offline --manifest-path app/rune/Cargo.toml
-      - install -Dm755 app/rune/target/release/soul-player /app/bin/soul-player
+      - cargo build --release --offline --manifest-path app/Cargo.toml
+      - install -Dm755 app/target/release/soul-player /app/bin/soul-player
       - install -Dm644 packaging/flathub/co.soulaudio.soulplayer.desktop
         /app/share/applications/co.soulaudio.soulplayer.desktop
       # The 512x512 icon: Flathub requires SVG or at least 256x256, and this is
       # the same artwork cargo-packager uses for every other package.
-      - install -Dm644 app/rune/icons/icon.png
+      - install -Dm644 app/icons/icon.png
         /app/share/icons/hicolor/512x512/apps/co.soulaudio.soulplayer.png
-      - install -Dm644 app/rune/icons/128x128.png
+      - install -Dm644 app/icons/128x128.png
         /app/share/icons/hicolor/128x128/apps/co.soulaudio.soulplayer.png
       # Installed from the repo rather than copied in here, so the store listing
       # and the bundle cannot describe different releases.

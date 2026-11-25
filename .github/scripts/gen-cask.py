@@ -4,7 +4,7 @@ It installs the universal DMG (one URL for every Mac, which is what a cask
 wants). `auto_updates true` because the app updates itself in place, so
 `brew upgrade` leaves it alone instead of fighting the in-app updater. `zap`
 lists exactly the paths the in-app uninstall removes on macOS
-(`app/rune/src/uninstall.rs`), so `brew uninstall --zap` and Settings ->
+(`app/src/uninstall.rs`), so `brew uninstall --zap` and Settings ->
 About -> Uninstall leave the same nothing behind.
 
     python gen-cask.py --version 0.4.4 --sha256 <universal dmg sha> --out soul-player.rb

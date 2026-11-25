@@ -14,7 +14,7 @@
 # that is what `command:` runs inside the sandbox.
 Type=Application
 Name=Soul Player
-Comment=Play your music library — gapless, bit-perfect playback
+Comment=Play your music library, gapless, bit-perfect playback
 Exec=soul-player
 Icon=co.soulaudio.soulplayer
 Categories=AudioVideo;Audio;Music;

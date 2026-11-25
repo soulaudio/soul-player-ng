@@ -1,8 +1,8 @@
 name: Release
 
-# Cut a release by bumping app/rune/Cargo.toml on main and pushing a matching `vX.Y.Z` tag
+# Cut a release by bumping app/Cargo.toml on main and pushing a matching `vX.Y.Z` tag
 # (or run it manually with the tag). `dry_run: true` runs build + e2e on every platform
-# and publishes nothing — use it on a branch before tagging (see app/rune/PACKAGING.md).
+# and publishes nothing: use it on a branch before tagging (see app/PACKAGING.md).
 #
 #   guard ──► build (4 OS legs) ──► e2e (4 OS legs) ──► draft ──► publish ──► verify
 #                                                          └────────┴─────────┴──► rollback (on failure)
@@ -17,15 +17,15 @@ name: Release
 #          to it → uninstall (.github/scripts/release-e2e.py).
 # draft    a DRAFT release with the installers, latest.json and SHA256SUMS; the uploaded
 #          bytes are re-downloaded and checked against the tested ones.
-# publish  undraft and mark latest — only now do users and in-app updaters see it.
+# publish  undraft and mark latest, only now do users and in-app updaters see it.
 # verify   the public `latest/download/latest.json` serves this version and every
 #          platform URL in it downloads the tested bytes.
 # rollback anything failing after the draft exists: a draft is deleted; a published
 #          release is demoted to pre-release and the previous release made latest again,
 #          so updaters stop offering it. The tag is kept.
 #
-# Installers are updater-signed with UPDATER_PRIVATE_KEY (independent of OS code-signing —
-# see app/rune/src/update.rs). Apple/Windows code-signing is deferred: macOS ships with a
+# Installers are updater-signed with UPDATER_PRIVATE_KEY (independent of OS code-signing,
+# see app/src/update.rs). Apple/Windows code-signing is deferred: macOS ships with a
 # sealed ad-hoc signature.
 on:
   push:
@@ -33,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag (e.g. v0.4.0) — must match app/rune/Cargo.toml. Empty with dry_run: the manifest version."
+        description: "Release tag (e.g. v0.4.0), must match app/Cargo.toml. Empty with dry_run: the manifest version."
         required: false
       dry_run:
         description: "Build + e2e every platform, publish nothing (installers stay as run artifacts)"
@@ -60,7 +60,7 @@ env:
   CARGO_TERM_COLOR: always
   DRY_RUN: ${{ github.event.inputs.dry_run == 'true' }}
   REHEARSAL: ${{ github.event.inputs.rehearsal == 'true' }}
-  # How many platforms a complete release covers — one entry per leg of the
+  # How many platforms a complete release covers, one entry per leg of the
   # `build` matrix, and the number `latest.json` must carry for the in-app
   # updater to reach every user. Defined once because it was previously written
   # out as a literal `4` in three separate checks, which is three places to
@@ -92,7 +92,7 @@ jobs:
           INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
           set -euo pipefail
-          cargo_ver=$(grep -m1 '^version' app/rune/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          cargo_ver=$(grep -m1 '^version' app/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             tag="$INPUT_TAG"
             if [ -z "$tag" ]; then
@@ -105,9 +105,9 @@ jobs:
           fi
           ver="${tag#v}"
           # The installer names and the running app's version come from Cargo.toml, the
-          # manifest version from the tag — a mismatch ships an update that never applies.
+          # manifest version from the tag, a mismatch ships an update that never applies.
           [ "$ver" = "$cargo_ver" ] || {
-            echo "::error::tag $tag implies $ver but app/rune/Cargo.toml is $cargo_ver — bump it and retag"; exit 1; }
+            echo "::error::tag $tag implies $ver but app/Cargo.toml is $cargo_ver, bump it and retag"; exit 1; }
 
           if [ "$DRY_RUN" != "true" ] && [ "$REHEARSAL" != "true" ]; then
             sha=$(git rev-parse "$tag^{commit}") || { echo "::error::tag $tag does not exist"; exit 1; }
@@ -122,9 +122,9 @@ jobs:
                            elif all(.check_runs[]; .conclusion == "success") then "success"
                            else "failure" end')
               case "$ci" in success|failure) break ;; esac
-              echo "CI on $sha: $ci — waiting"; sleep 20
+              echo "CI on $sha: $ci, waiting"; sleep 20
             done
-            [ "$ci" = "success" ] || { echo "::error::CI on $sha is '$ci' — release only a green commit"; exit 1; }
+            [ "$ci" = "success" ] || { echo "::error::CI on $sha is '$ci', release only a green commit"; exit 1; }
             # Published releases are immutable; a leftover draft is replaced by the draft job.
             if draft=$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null) \
                && [ "$draft" = "false" ]; then
@@ -165,7 +165,7 @@ jobs:
             asset_arch: x86_64
           # Linux ships per architecture too. `ubuntu-24.04-arm` is a standard
           # GitHub-hosted runner (free on public repos), so this is a native
-          # build rather than a cross-compile — which matters for a project that
+          # build rather than a cross-compile, which matters for a project that
           # links ALSA, D-Bus, OpenSSL and a GPU stack through `-sys` crates.
           - os: ubuntu-24.04
             target_key: linux-x86_64
@@ -192,7 +192,7 @@ jobs:
           persist-credentials: false
 
       - name: Install the pinned toolchain
-        working-directory: app/rune # rust-toolchain.toml resolves from CWD
+        working-directory: app # rust-toolchain.toml resolves from CWD
         run: rustup show
 
       - name: Install cargo-packager
@@ -211,7 +211,7 @@ jobs:
       # openssl-sys), not packaging ones; they happen to be preinstalled on
       # ubuntu-latest, so the release built here while a clean Linux box failed.
       # Declared explicitly so this list is the real dependency set rather than
-      # the runner image's leftovers — same reasoning as ci.yml's.
+      # the runner image's leftovers, same reasoning as ci.yml's.
       - name: Linux build + packaging dependencies
         if: runner.os == 'Linux'
         run: |
@@ -231,7 +231,7 @@ jobs:
 
       # cargo-packager only packages a pre-built binary, so build first.
       - name: Build the release binary
-        working-directory: app/rune
+        working-directory: app
         run: cargo build --release --locked
 
       # Strip before any package is built, so the AppImage, the .deb and the
@@ -243,32 +243,32 @@ jobs:
       - name: Strip the Linux binary
         if: runner.os == 'Linux'
         run: |
-          before=$(stat -c%s app/rune/target/release/soul-player)
-          strip app/rune/target/release/soul-player
-          after=$(stat -c%s app/rune/target/release/soul-player)
+          before=$(stat -c%s app/target/release/soul-player)
+          strip app/target/release/soul-player
+          after=$(stat -c%s app/target/release/soul-player)
           echo "stripped: $before -> $after bytes"
 
       - name: Package + updater-sign
-        working-directory: app/rune
+        working-directory: app
         run: cargo packager --release -f ${{ matrix.format }}
 
       # Keep the BUILD host at Ubuntu 24.04 LTS (2.39) so the binary never references a
-      # glibc newer than that. The effective RUNTIME floor is lower — 2.35, measured by
-      # installing and running on Ubuntu 22.04, Debian 12 and Ubuntu 24.04 — because the
+      # glibc newer than that. The effective RUNTIME floor is lower, 2.35, measured by
+      # installing and running on Ubuntu 22.04, Debian 12 and Ubuntu 24.04, because the
       # only 2.39 symbols the binary carries (`pidfd_spawnp`, `pidfd_getpid`, from Rust's
       # process spawning) are WEAK, and glibc falls back when they are absent. This gate
       # is therefore a ceiling on the build, not a claim about where it runs.
       #
       # BOTH published releases predate this check and are built
-      # against 2.43 (new libm float symbols — asinf/acosf/atan2f/…), so neither v0.2.0 nor
+      # against 2.43 (new libm float symbols, asinf/acosf/atan2f/…), so neither v0.2.0 nor
       # v0.3.0 starts on 24.04: `libm.so.6: version 'GLIBC_2.43' not found`. That is the
-      # whole reason this gate exists — the e2e's "previous release runs here" leg reports
+      # whole reason this gate exists, the e2e's "previous release runs here" leg reports
       # it as a warning rather than a failure, because a published artifact cannot be fixed
       # retroactively and blocking every future release on it would be worse.
       - name: glibc floor (Linux)
         if: runner.os == 'Linux'
         run: |
-          need=$(objdump -T app/rune/target/release/soul-player | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
+          need=$(objdump -T app/target/release/soul-player | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
           echo "binary needs $need"
           [ "$(printf '%s\nGLIBC_2.39\n' "$need" | sort -V | tail -1)" = "GLIBC_2.39" ] \
             || { echo "::error::binary needs $need, above the GLIBC_2.39 floor (Ubuntu 24.04)"; exit 1; }
@@ -278,15 +278,15 @@ jobs:
       - name: Stage artifact + write updater sidecar
         run: |
           python .github/scripts/write-meta.py \
-            --out-dir app/rune/target/release \
+            --out-dir app/target/release \
             --target-key ${{ matrix.target_key }} \
             --format ${{ matrix.format }} \
             --stage-dir dist \
             --meta-out dist/${{ matrix.target_key }}.meta.json \
             ${{ runner.os == 'macOS' && format('--asset-name Soul-Player_{0}_{1}.app.tar.gz', needs.guard.outputs.version, matrix.asset_arch) || '' }}
           # Without the updater key the sidecar has no signature and the update can never
-          # install — fail here, not after publishing.
-          python -c "import json,sys; m=json.load(open('dist/${{ matrix.target_key }}.meta.json')); sys.exit(0 if m['signature'] else 'empty updater signature — is UPDATER_PRIVATE_KEY set?')"
+          # install, fail here, not after publishing.
+          python -c "import json,sys; m=json.load(open('dist/${{ matrix.target_key }}.meta.json')); sys.exit(0 if m['signature'] else 'empty updater signature, is UPDATER_PRIVATE_KEY set?')"
 
       # Distro-native packages, alongside the AppImage. For a lot of Linux users
       # "not in my package manager" means "not available", so the AppImage alone
@@ -306,7 +306,7 @@ jobs:
           # The updater key is UNSET for this step, not blanked. cargo-packager
           # signs every package it builds, and a second `.sig` under
           # target/release breaks the staging step, which requires exactly one
-          # (the AppImage's — the only artifact the updater verifies). A signed
+          # (the AppImage's, the only artifact the updater verifies). A signed
           # .deb would mean nothing anyway: apt and dnf authenticate through
           # repository signing.
           #
@@ -317,13 +317,13 @@ jobs:
           env -u CARGO_PACKAGER_SIGN_PRIVATE_KEY \
               -u CARGO_PACKAGER_SIGN_PRIVATE_KEY_PASSWORD \
               packaging/build-linux.sh --skip-build
-          cp app/rune/target/release/*.deb dist/
-          cp app/rune/target/generate-rpm/*.rpm dist/
+          cp app/target/release/*.deb dist/
+          cp app/target/generate-rpm/*.rpm dist/
           ls -la dist/
 
       # Building a package is not evidence that it installs, and a dependency
       # list is only right if a package manager agrees. This installs both on
-      # the runner — which is the SAME architecture as the build, so the ARM
+      # the runner, which is the SAME architecture as the build, so the ARM
       # packages get a genuinely native check rather than being shipped on the
       # strength of having compiled.
       #
@@ -345,12 +345,12 @@ jobs:
           # `=> not found`, not a bare `not found`: ldd uses that arrow only for
           # a SONAME it could not resolve. The looser pattern also matches
           # "weak version `GLIBC_2.39' not found", which is NOT a missing
-          # library — it is the documented weak-symbol fallback
+          # library, it is the documented weak-symbol fallback
           # (pidfd_spawnp/pidfd_getpid), and the binary runs without them. That
           # line is absent on this runner (glibc 2.39) and present on anything
           # older, so the loose pattern passes here while being wrong: on
           # Debian 12 the published package reports it and still runs. Verified
-          # by installing v0.4.4 there — 0 missing libraries, 1 weak notice.
+          # by installing v0.4.4 there, 0 missing libraries, 1 weak notice.
           missing=$(ldd "$(command -v soul-player)" | grep -c "=> not found" || true)
           [ "$missing" = "0" ] \
             || { echo "::error::$missing libraries unresolved after install"; \
@@ -400,7 +400,7 @@ jobs:
           # ships rather than leaving two binaries and two desktop entries.
           #
           # An earlier version of this gate asserted the OLD PACKAGE NAME was
-          # installed first, which was never true and failed here — that failure
+          # installed first, which was never true and failed here, that failure
           # is what established the above.
           echo "::group::upgrade from the published release, across the rename"
           old=$(mktemp -d)
@@ -415,8 +415,8 @@ jobs:
             echo "  $prev installs $old_bin"
 
             # `dpkg -i`, not `apt-get install`: whenever the built version
-            # equals the published one — every dry run between a release and
-            # the next version bump — apt answers "already the newest version"
+            # equals the published one, every dry run between a release and
+            # the next version bump, apt answers "already the newest version"
             # and does nothing, so the upgrade silently never happens. dpkg
             # unpacks over regardless of version, which is what exercises the
             # file move, and behaves identically when the version is higher.
@@ -435,7 +435,7 @@ jobs:
 
             # The actual risk: the previous version's binary left behind.
             if [ "$old_bin" != "$new_bin" ] && [ -e "$old_bin" ]; then
-              echo "::error::$old_bin survived the upgrade — two binaries installed"
+              echo "::error::$old_bin survived the upgrade, two binaries installed"
               ls -la /usr/bin/soul-player* || true
               exit 1
             fi
@@ -459,7 +459,7 @@ jobs:
           docker run --rm -v "$PWD/dist:/w:ro" fedora:latest bash -c '
             set -e
             dnf install -y -q /w/*.rpm
-            # `=> not found` only — see the .deb check above for why a bare
+            # `=> not found` only, see the .deb check above for why a bare
             # "not found" also catches the harmless weak-symbol notice.
             m=$(ldd /usr/bin/soul-player | grep -c "=> not found" || true)
             [ "$m" = "0" ] || { ldd /usr/bin/soul-player | grep "=> not found"; exit 1; }
@@ -498,7 +498,7 @@ jobs:
         run: |
           # The release job builds the binary but never RUNS it, so it installs
           # no runtime graphics stack. A headless render needs an X server, an
-          # xauth cookie for xvfb-run, and a Vulkan ICD — Lavapipe, since a
+          # xauth cookie for xvfb-run, and a Vulkan ICD, Lavapipe, since a
           # runner has no GPU. wgpu has no GL fallback compiled in, so without
           # an ICD there is no adapter and nothing renders.
           sudo apt-get install -y -o Acquire::Retries=3 \
@@ -508,7 +508,7 @@ jobs:
             # file, which says nothing about why.
             xvfb-run -a -s "-screen 0 1600x1000x24" \
               env SOUL_PLAYER_FOLDER=testdata SOUL_PLAYER_NO_UPDATE=1 \
-              app/rune/target/release/soul-player \
+              app/target/release/soul-player \
                 --snap "dist/screenshot-$1.png" --size 1400x900 ${2:+--scene "$2"} \
               >"$RUNNER_TEMP/shot-$1.log" 2>&1 || true
           }
@@ -544,7 +544,7 @@ jobs:
         # NO step timeout here, deliberately. This step's duration is dominated
         # by fetching the freedesktop runtime/SDK and the Flathub linter, which
         # is network-bound and wildly variable: observed at 1m18s, 1m28s, 1m42s
-        # and 24m02s — and the 24-minute run SUCCEEDED. A cap tight enough to
+        # and 24m02s, and the 24-minute run SUCCEEDED. A cap tight enough to
         # catch a hang would have killed that working release four minutes from
         # the end, which is worse than the slow run it was meant to catch.
         #
@@ -559,13 +559,13 @@ jobs:
           flatpak install --user -y --noninteractive flathub \
             org.freedesktop.Platform//26.08 org.freedesktop.Sdk//26.08
 
-          stage=app/rune/target/release/linux-stage
+          stage=app/target/release/linux-stage
           cp packaging/flatpak/co.soulaudio.soulplayer.yml "$stage/"
           appstreamcli validate --no-net "$stage/co.soulaudio.soulplayer.metainfo.xml"
 
           # Flathub's OWN linter, which `appstreamcli validate` does not replace:
           # they run different checks. appstreamcli asks "is this valid
-          # AppStream"; flatpak-builder-lint asks "would Flathub accept this" —
+          # AppStream"; flatpak-builder-lint asks "would Flathub accept this",
           # missing release information, absent OARS rating, no developer name,
           # a manifest without `command` or `modules`, network access declared
           # during build. Flathub runs the manifest and repo checks on their
@@ -587,7 +587,7 @@ jobs:
           # `--state-dir` is explicit and next to the target: flatpak-builder
           # refuses to run when its state dir and target dir are on different
           # filesystems, and the state dir otherwise defaults to
-          # `.flatpak-builder` in the CWD — which is the repo checkout, while
+          # `.flatpak-builder` in the CWD, which is the repo checkout, while
           # the target is under RUNNER_TEMP. Those are not guaranteed to be the
           # same mount.
           ( cd "$stage" && flatpak-builder --user --force-clean --install \
@@ -620,7 +620,7 @@ jobs:
               echo "--- console ---"; tail -40 "$RUNNER_TEMP/fp-run.log" 2>/dev/null || echo "(none)"
               echo "--- app log ---"
               find "$HOME/.var/app/co.soulaudio.soulplayer" -name "*.log*" -type f 2>/dev/null \
-                | head -1 | xargs -r tail -40 || echo "(no log written — died before logging started)"
+                | head -1 | xargs -r tail -40 || echo "(no log written, died before logging started)"
               echo "--- names on the bus ---"
               dbus-send --session --dest=org.freedesktop.DBus --print-reply / \
                 org.freedesktop.DBus.ListNames 2>/dev/null | grep -oE "[a-z][A-Za-z0-9_.-]+" | tail -20
@@ -630,7 +630,7 @@ jobs:
             # this very script has that string in its own command line (right
             # here), so pkill matches its parent, SIGTERMs it, and the step
             # fails with 143 having already passed every assertion. That is
-            # exactly how the first run of this gate "failed" — after printing
+            # exactly how the first run of this gate "failed", after printing
             # the MPRIS name it was checking for.
             flatpak kill co.soulaudio.soulplayer || true
           '''
@@ -657,7 +657,7 @@ jobs:
           # Everything above tests the app as `flatpak-builder --install` left
           # it, which is not the artifact anyone downloads. The bundle is a
           # separate file produced by a separate command, and until now it was
-          # uploaded to the release without ever being installed — the only
+          # uploaded to the release without ever being installed, the only
           # Linux format whose shipped bytes were not install-tested.
           echo "::group::the shipped .flatpak installs and runs"
           flatpak uninstall --user -y co.soulaudio.soulplayer >/dev/null 2>&1 || true
@@ -666,7 +666,7 @@ jobs:
 
           # What a user's `flatpak update` can actually do with this app. A
           # bundle is a single file with no repository behind it, so the origin
-          # it records is what decides whether updates are possible at all —
+          # it records is what decides whether updates are possible at all,
           # and the in-app updater is deliberately off under Flatpak
           # (update.rs: `manager_owned`). If this prints no usable remote then
           # the README's "updates via flatpak update" is wrong for the bundle
@@ -713,7 +713,7 @@ jobs:
       # .app.tar.gz above). Same binary, no rebuild.
       - name: Package DMG (macOS)
         if: runner.os == 'macOS'
-        working-directory: app/rune
+        working-directory: app
         run: |
           rm -f target/release/*.dmg
           # create-dmg mounts a scratch image with hdiutil, which now and then
@@ -751,7 +751,7 @@ jobs:
 
   # One DMG for every Mac. Choosing between "aarch64" and "x86_64" is a choice
   # people get wrong, and an Apple silicon Mac running the Intel build works,
-  # just slower, through Rosetta — so nobody notices. The universal DMG is the
+  # just slower, through Rosetta, so nobody notices. The universal DMG is the
   # one the release notes point at; it holds both builds (lipo of the two
   # binaries the build legs made and signed, packaged the same way). The
   # in-app updater still fetches the per-architecture .app.tar.gz, so after the
@@ -768,7 +768,7 @@ jobs:
           persist-credentials: false
 
       - name: Install the pinned toolchain
-        working-directory: app/rune
+        working-directory: app
         run: rustup show
 
       - name: Install cargo-packager
@@ -797,7 +797,7 @@ jobs:
       # taken from their updater archives rather than rebuilt.
       - name: Universal binary
         run: |
-          out=app/rune/target/universal-apple-darwin/release
+          out=app/target/universal-apple-darwin/release
           mkdir -p "$out"
           for a in arm64 x86_64; do
             mkdir -p "ex/$a"
@@ -816,7 +816,7 @@ jobs:
       # updater key: the universal DMG is a first-install download, not an
       # update artifact.
       - name: Package universal DMG
-        working-directory: app/rune
+        working-directory: app
         run: |
           for attempt in 1 2 3; do  # hdiutil flakes on hosted runners: retry
             cargo packager --release -f dmg --target universal-apple-darwin && break
@@ -886,7 +886,7 @@ jobs:
           name: bundle-macos-universal
           path: dist-universal
 
-      # Apple silicon: the Intel DMG as well — the wrong download — to check
+      # Apple silicon: the Intel DMG as well, the wrong download, to check
       # that it notices Rosetta and switches itself to the Apple silicon build.
       - uses: actions/download-artifact@v4.3.0
         if: matrix.target_key == 'macos-aarch64'
@@ -1020,9 +1020,9 @@ jobs:
           cat > notes.md <<'EOF'
           ## Install
 
-          - **macOS** — download **`Soul-Player_<version>_universal.dmg`**: it runs natively on every Mac, Apple silicon and Intel. Open it and drag Soul Player to Applications (if you open it straight from the disk image, it offers to move itself). The smaller `aarch64` (Apple silicon) and `x86_64` (Intel) DMGs hold one build each; on Apple silicon the Intel one offers to switch itself over. The app isn't notarized by Apple yet, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Soul Player.app"`). Later updates install in-app.
-          - **Windows** — run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
-          - **Linux** — `chmod +x` the AppImage and run it.
+          - **macOS**: download **`Soul-Player_<version>_universal.dmg`**: it runs natively on every Mac, Apple silicon and Intel. Open it and drag Soul Player to Applications (if you open it straight from the disk image, it offers to move itself). The smaller `aarch64` (Apple silicon) and `x86_64` (Intel) DMGs hold one build each; on Apple silicon the Intel one offers to switch itself over. The app isn't notarized by Apple yet, so the first launch is blocked: open **System Settings → Privacy & Security** and click **Open Anyway** (or run `xattr -dr com.apple.quarantine "/Applications/Soul Player.app"`). Later updates install in-app.
+          - **Windows**: run the setup `.exe`. SmartScreen may say *unknown publisher*: **More info → Run anyway**.
+          - **Linux**: `chmod +x` the AppImage and run it.
 
           Verify a download with `sha256sum -c SHA256SUMS --ignore-missing`, and that this repository's release workflow built it with `gh attestation verify <file> --repo soulaudio/soul-player-ng`.
           EOF
@@ -1118,7 +1118,7 @@ jobs:
   # `brew install --cask soulaudio/tap/soul-player`: the cask the e2e installed
   # and zapped (gen-cask.py), now pointing at the published universal DMG, pushed
   # to the tap repo. Needs HOMEBREW_TAP_TOKEN (contents: write on
-  # soulaudio/homebrew-tap); without it the step says so and the release stands —
+  # soulaudio/homebrew-tap); without it the step says so and the release stands,
   # the cask is a distribution channel, not the release.
   homebrew:
     needs: [guard, verify]
@@ -1178,7 +1178,7 @@ jobs:
           state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
           case "$state" in
             none)
-              echo "No release for $TAG — nothing to roll back." ;;
+              echo "No release for $TAG, nothing to roll back." ;;
             true)
               gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes
               echo "Deleted the draft $TAG (tag kept)." | tee -a "$GITHUB_STEP_SUMMARY" ;;
