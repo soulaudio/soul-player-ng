@@ -12,6 +12,14 @@
 // carry a doc comment, so a new undocumented `pub` item fails the build.
 #![deny(missing_docs)]
 
+// Install the counting pass-through allocator in the TEST build only, so the data-
+// pipeline profiling run (`bench_data_pipeline_at_scale`) can measure allocations during
+// bake / load / views. Declaring a `#[global_allocator]` is SAFE; only the trait impl
+// (in `alloc-probe`) is `unsafe`, so this crate stays unsafe-free.
+#[cfg(test)]
+#[global_allocator]
+static PROFILE_PROBE: alloc_probe::Counting = alloc_probe::Counting;
+
 // Licensing guard: AAC is a Via LA patent pool and a clean-room decoder doesn't clear it, so
 // soul-audio-core keeps AAC decode behind an opt-in `aac` feature that shipped soul products
 // (this player included) must leave OFF. Cargo unifies features across the whole graph, so

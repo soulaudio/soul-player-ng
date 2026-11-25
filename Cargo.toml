@@ -1,6 +1,12 @@
 [workspace]
 resolver = "3"
 members = ["crates/soul-player-backend", "crates/soul-server"]
+# `alloc-probe` is a standalone leaf crate with its own `[workspace]` (a dev-only
+# allocation probe). The backend dev-depends on it by path for the
+# `bench_data_pipeline_at_scale` profiling run; since it lives inside this
+# workspace's directory, exclude it so cargo treats it as its own root instead of
+# sweeping it in as an implicit member.
+exclude = ["crates/alloc-probe"]
 
 [workspace.package]
 edition = "2024"
