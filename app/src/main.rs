@@ -344,6 +344,13 @@ struct State {
     /// built a million-element index Vec per frame even with no query. Recomputed
     /// only when the library or the query changes.
     visible_tracks_cache: std::cell::RefCell<Option<(u64, String, VisibleTracks)>>,
+    /// The open Genre detail page's filtered track list `(library indices, ids)`,
+    /// memoized by (library fingerprint, genre name, lowercased query). The genre
+    /// detail otherwise re-filtered and re-collected the genre's whole id list EVERY
+    /// frame (and, with a search active, ran `track_matches` over every track in the
+    /// genre each frame, ~most of the library for a genre like "Rock"). Recomputed
+    /// only when the library, the open genre, or the query changes.
+    visible_genre_tracks_cache: std::cell::RefCell<Option<(u64, String, String, VisibleTracks)>>,
     /// The current playlist's resolution against the live library (per-entry
     /// availability, the available play context, total duration), memoized by
     /// (library fingerprint, playlist id, entries fingerprint). Resolving rebuilds a
@@ -917,6 +924,7 @@ impl State {
             library_rc_cache: std::cell::RefCell::new(None),
             track_index_cache: std::cell::RefCell::new(None),
             visible_tracks_cache: std::cell::RefCell::new(None),
+            visible_genre_tracks_cache: std::cell::RefCell::new(None),
             resolved_playlist_cache: std::cell::RefCell::new(None),
             playlist_cover_cache: std::cell::RefCell::new(None),
             playlists,
@@ -1225,6 +1233,48 @@ impl State {
         let vis: std::rc::Rc<[usize]> = visible.into();
         let vt: VisibleTracks = (vis, ids);
         *self.visible_tracks_cache.borrow_mut() = Some((fp, q.to_string(), vt.clone()));
+        vt
+    }
+
+    /// The open Genre detail page's track list as aligned `(library indices, ids)`,
+    /// filtered by the lowercased query `q` and memoized by (library fingerprint,
+    /// genre name, query). Mirrors [`visible_tracks`](Self::visible_tracks) for the
+    /// genre page: filtering a big genre (`track_matches` over every track in it) and
+    /// collecting the index/id vectors runs only when the library, the open genre, or
+    /// the query changes, not every frame, so a genre spanning most of the library is
+    /// a cache hit while scrolling or re-rendering at a fixed query. `ids` is the
+    /// genre's full id list (from the memoized grouping); `q` must already be
+    /// lowercased, matching `track_matches`'s contract.
+    pub(crate) fn visible_genre_tracks(&self, genre: &str, ids: &[u32], q: &str) -> VisibleTracks {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, cg, cq, vt)) = self.visible_genre_tracks_cache.borrow().as_ref()
+            && *cfp == fp
+            && cg == genre
+            && cq == q
+        {
+            return vt.clone();
+        }
+        let positions = self.track_positions();
+        let mut idxs: Vec<usize> = Vec::new();
+        let mut kept: Vec<u32> = Vec::new();
+        for &id in ids {
+            // Skip a non-matching track BEFORE the O(1) position lookup; an empty
+            // query keeps every track (no `track_matches` call at all).
+            if !q.is_empty()
+                && !self
+                    .track(id)
+                    .is_some_and(|t| views::library::track_matches(t, q))
+            {
+                continue;
+            }
+            if let Some(&pos) = positions.get(&id) {
+                idxs.push(pos);
+                kept.push(id);
+            }
+        }
+        let vt: VisibleTracks = (idxs.into(), kept.into());
+        *self.visible_genre_tracks_cache.borrow_mut() =
+            Some((fp, genre.to_string(), q.to_string(), vt.clone()));
         vt
     }
 
