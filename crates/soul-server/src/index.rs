@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::Context;
-use soul_player_backend::{IncrementalBuild, Library, ScanCache};
+use soul_player_backend::{IncrementalBuild, IndexBlob, Library, ScanCache};
 
 use crate::domain::IndexVersion;
 use crate::domain::ports::IndexPort;
@@ -24,8 +24,9 @@ use crate::domain::ports::IndexPort;
 pub struct CoreIndex {
     library: Library,
     /// Baked `.soulidx` bytes, one per root, parallel to `roots` — the
-    /// payload framed by [`index_bytes`](IndexPort::index_bytes).
-    source_bytes: Vec<Vec<u8>>,
+    /// payload framed by [`index_bytes`](IndexPort::index_bytes). Each is a
+    /// shared [`IndexBlob`] carried straight out of the scan, never deep-copied.
+    source_bytes: Vec<IndexBlob>,
     #[allow(dead_code)] // kept for a future `rescan`; not read yet.
     roots: Vec<PathBuf>,
     version: AtomicU64,
@@ -86,10 +87,11 @@ impl IndexPort for CoreIndex {
 /// depending on this crate (see [`deframe_index`], the reference
 /// implementation of the same six lines).
 #[must_use]
-pub fn frame_index(blobs: &[Vec<u8>]) -> Vec<u8> {
+pub fn frame_index<B: AsRef<[u8]>>(blobs: &[B]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(&(blobs.len() as u32).to_le_bytes());
     for blob in blobs {
+        let blob = blob.as_ref();
         out.extend_from_slice(&(blob.len() as u32).to_le_bytes());
         out.extend_from_slice(blob);
     }
@@ -210,7 +212,8 @@ mod tests {
         let blobs = deframe_index(&framed).expect("deframe_index should parse what we framed");
         assert_eq!(blobs.len(), roots.len(), "one blob per root");
 
-        let rebuilt = Library::from_source_bytes(&roots, blobs);
+        let rebuilt =
+            Library::from_source_bytes(&roots, blobs.into_iter().map(IndexBlob::from).collect());
         assert_eq!(rebuilt.len(), direct.len(), "len matches the direct scan");
         assert_eq!(
             rebuilt.source_counts(),
