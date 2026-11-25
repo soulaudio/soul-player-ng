@@ -49,13 +49,21 @@ resource "bunnynet_dns_record" "player" {
   ttl         = 300
 }
 
+# depends_on orders the two operations but cannot wait for the record to be
+# visible, and a first apply tried to issue the certificate two seconds after
+# creating the record: "The domain player.soulaudio.co is not pointing to our
+# servers". A re-run worked, which is the tell. The wait makes one apply
+# enough.
+resource "time_sleep" "dns_propagation" {
+  depends_on      = [bunnynet_dns_record.player]
+  create_duration = "90s"
+}
+
 resource "bunnynet_pullzone_hostname" "player" {
   pullzone    = bunnynet_pullzone.player.id
   name        = var.hostname
   tls_enabled = true
   force_ssl   = true
 
-  # Bunny validates the hostname before it will issue the certificate, so the
-  # record has to resolve first.
-  depends_on = [bunnynet_dns_record.player]
+  depends_on = [time_sleep.dns_propagation]
 }
