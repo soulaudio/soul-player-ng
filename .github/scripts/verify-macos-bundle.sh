@@ -2,7 +2,7 @@
 # Verify a packaged macOS release before it is published. Usage:
 #   verify-macos-bundle.sh <version> <arch: arm64|x86_64|universal> <dmg> [app.tar.gz]
 #
-# The app under test is the one INSIDE the DMG — what users install (packaging the DMG
+# The app under test is the one INSIDE the DMG, what users install (packaging the DMG
 # also removes the standalone .app from target/). Checks: DMG layout (app + /Applications
 # link), intact sealed (ad-hoc) signature, architecture, bundle identity and version,
 # icon, the updater tarball's signature, and a launch smoke test (headless `--snap`

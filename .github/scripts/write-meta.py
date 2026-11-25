@@ -38,7 +38,7 @@ def main() -> int:
     ap.add_argument("--meta-out", required=True, help="path to write <key>.meta.json")
     ap.add_argument(
         "--asset-name",
-        help="stage under this (GitHub-safe) name instead of the artifact's own — needed "
+        help="stage under this (GitHub-safe) name instead of the artifact's own, needed "
         "when two targets produce the same file name (e.g. macOS aarch64 + x86_64 both "
         "emit `Soul Player.app.tar.gz`)",
     )

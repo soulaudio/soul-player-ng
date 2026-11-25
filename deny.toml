@@ -3,7 +3,7 @@
 # license compliance, dependency-source pinning, and ban rules across the full
 # feature graph. The app (Tauri) workspace uses `deny.app.toml` instead.
 #
-# ARCHITECTURE BOUNDARY (see docs/ARCHITECTURE.md): the service is headless —
+# ARCHITECTURE BOUNDARY (see docs/ARCHITECTURE.md): the service is headless,
 # all logic, no visualization. The `[bans]` list below forbids GUI/windowing
 # crates so the layer can never become platform-coupled; if a change pulls
 # `tauri`/`wry`/`tao` into this workspace, `cargo deny check bans` fails in CI.
@@ -35,8 +35,8 @@ private = { ignore = true }
 # Duplicate versions are informational (the UI's tree pulls a few), not fatal.
 multiple-versions = "warn"
 wildcards = "allow"
-# The headless service must never pull in a GUI/windowing stack — that belongs
-# only in the Rune UI head (app/rune). This is the machine-enforced half of the
+# The headless service must never pull in a GUI/windowing stack, that belongs
+# only in the Rune UI head (app). This is the machine-enforced half of the
 # "the UI is just visualization; all logic lives outside it" rule. Mirrors the
 # FORBIDDEN list in crates/soul-player-backend/tests/architecture.rs.
 deny = [

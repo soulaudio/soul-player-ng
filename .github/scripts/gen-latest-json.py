@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Assemble the cargo-packager-updater manifest (`latest.json`) for a release.
 
-The updater (app/rune/src/update.rs) fetches this file from
+The updater (app/src/update.rs) fetches this file from
 `…/releases/latest/download/latest.json` and, if its `version` is newer than the
 running app, downloads the matching platform's `url` and verifies it against the
 `signature` (which must be the exact contents of the `.sig` cargo-packager
@@ -19,7 +19,7 @@ emitted when signing the bundle). Schema per the cargo-packager-updater docs:
     }
 
 Platform keys are `OS-ARCH` (OS ∈ linux|macos|windows; note the updater also
-accepts `darwin`/`windows` the runner reports — we emit exactly what each
+accepts `darwin`/`windows` the runner reports, we emit exactly what each
 package job wrote). Each package job drops a `<key>.meta.json` sidecar next to
 its artifact:
 

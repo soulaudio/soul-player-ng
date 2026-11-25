@@ -1,5 +1,5 @@
 {
-  description = "Soul Player — native all-Rust desktop music player";
+  description = "Soul Player: native all-Rust desktop music player";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -31,7 +31,7 @@
           # Both toolchains come straight from the repo's own pin files, so the
           # shell can never drift from what CI builds.
           stableToolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-          nightlyToolchain = pkgs.rust-bin.fromRustupToolchainFile ./app/rune/rust-toolchain.toml;
+          nightlyToolchain = pkgs.rust-bin.fromRustupToolchainFile ./app/rust-toolchain.toml;
 
           # Native libraries the Rust deps link against. The `-sys` build scripts
           # find these through pkg-config, which mkShell wires up from
@@ -44,7 +44,7 @@
             pkgs.libGL
             pkgs.vulkan-loader      # wgpu
             pkgs.libx11             # winit: X11 backend
-            pkgs.libxcb             # libX11's transport — linked, not just dlopened
+            pkgs.libxcb             # libX11's transport, linked, not just dlopened
             pkgs.libxcursor
             pkgs.libxi
             pkgs.libxrandr
@@ -68,7 +68,7 @@
               LD_LIBRARY_PATH = lib.makeLibraryPath runtimeLibs;
 
               # wgpu needs a Vulkan ICD. On NixOS the system drivers live under
-              # /run/opengl-driver and the loader finds them on its own — leave
+              # /run/opengl-driver and the loader finds them on its own, leave
               # those alone so dev builds run on the real GPU. Only when there's
               # no hardware ICD (containers, CI, headless) fall back to Mesa's
               # Lavapipe software rasteriser, which is what CI's
@@ -78,7 +78,7 @@
                    && ! compgen -G "/run/opengl-driver/share/vulkan/icd.d/*.json" > /dev/null \
                    && ! compgen -G "/usr/share/vulkan/icd.d/*.json" > /dev/null; then
                   export VK_ICD_FILENAMES="${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.${pkgs.stdenv.hostPlatform.linuxArch}.json"
-                  echo "no hardware Vulkan ICD found — using Mesa Lavapipe (software)"
+                  echo "no hardware Vulkan ICD found, using Mesa Lavapipe (software)"
                 fi
               '';
             };
@@ -90,7 +90,7 @@
             toolchain = stableToolchain;
           };
 
-          # The Rune UI head (app/rune) — pinned nightly, plus the packaging and
+          # The Rune UI head (`app/`): pinned nightly, plus the packaging and
           # headless-test tooling.
           rune = mkShell {
             # Developer-facing: this name is what the shell prompt shows, and it

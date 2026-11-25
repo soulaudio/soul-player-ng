@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds a tagged demo library that exercises every format / rate Soul Player plays — handy
+# Builds a tagged demo library that exercises every format / rate Soul Player plays, handy
 # on a machine with no music, for exclusive-mode rate switching, DSD and surround fold-down.
 #
 #   scripts/demo-library/make-demo-library.sh [dest]   (default: ~/Music/Soul Player Demo)
@@ -9,8 +9,8 @@
 #   Hi-Res Ladder          24-bit FLAC at 44.1 / 48 / 88.2 / 96 / 176.4 / 192 / 352.8 / 384 kHz
 #   Lossless Formats       FLAC 16/44.1, ALAC 24/96, WAV 24/96, AIFF 16/44.1, WavPack 24/48, FLAC 24/192
 #   Lossy Formats          MP3 320, Opus 160, Vorbis q6 (no AAC: the player deliberately
-#                          doesn't decode it — patent licensing)
-#   Direct Stream Digital  DSD64 (DSF + DFF), DSD128, DSD256, DSD512 — real 1-bit (dsdgen)
+#                          doesn't decode it, patent licensing)
+#   Direct Stream Digital  DSD64 (DSF + DFF), DSD128, DSD256, DSD512, real 1-bit (dsdgen)
 #   Surround Fold-Down     FLAC 5.1 24/48 + the repo's ALAC / Opus 5.1 fixtures
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"

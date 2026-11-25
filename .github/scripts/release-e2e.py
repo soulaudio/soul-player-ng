@@ -28,7 +28,7 @@ Scenarios
                 own; with "Check for updates automatically" off the app never
                 contacts the server; with "Install updates automatically" on it
                 downloads in the background, installs nothing mid-session, and
-                installs when the user quits — without restarting the app.
+                installs when the user quits, without restarting the app.
   2. upgrade    install the PREVIOUS published release; check that it detects this release
                 as an update (its updater reads the new `latest.json`, served locally).
                 If that release can install updates unattended, let its own updater
@@ -188,7 +188,7 @@ class AppEnv:
     """An isolated user profile for the app: HOME (macOS/Linux) and its log directory.
 
     Windows resolves its folders through the shell (not env vars), so there the runner's
-    own profile is used — the runner is a throwaway VM anyway.
+    own profile is used, the runner is a throwaway VM anyway.
     """
 
     def __init__(self, root: Path, name: str):
@@ -344,7 +344,7 @@ def install(installer: Path, work: Path, current_build: bool = True) -> Install:
 
         # Only the build under test is held to the CURRENT bundle id. The
         # previously published release is installed here as an upgrade source,
-        # and it legitimately carries whatever id it shipped with — asserting
+        # and it legitimately carries whatever id it shipped with, asserting
         # today's id against yesterday's artifact fails every time the
         # identifier changes, which is exactly what happened when it became
         # co.soulaudio.soulplayer.
@@ -364,7 +364,7 @@ def install(installer: Path, work: Path, current_build: bool = True) -> Install:
         # Write beside the target and rename into place, rather than copying
         # over it. Overwriting a file the kernel still holds as a running
         # executable fails with ETXTBSY ("Text file busy"), and a previous
-        # scenario's app can still be exiting — the install-on-quit case
+        # scenario's app can still be exiting, the install-on-quit case
         # especially, where the installer it spawns outlives the quit. A
         # rename swaps the directory entry instead of the bytes, so a lingering
         # process keeps its own inode and the new build lands atomically.
@@ -645,7 +645,7 @@ def stop_pid(pid: int) -> None:
 
 class UpdateServer:
     """Serves a manifest offering `version` → `artifact` (with its real signature) until
-    the artifact has been downloaded, then answers 404 — so the relaunched build, which
+    the artifact has been downloaded, then answers 404, so the relaunched build, which
     still has the endpoint in its environment, sees no update and stays up instead of
     updating in a loop."""
 
@@ -770,7 +770,7 @@ def auto_update(
         """Whether the install really put new files in place.
 
         `is_stale` reads `inst.exe` and reports True when it cannot, to cover
-        the mid-replacement window — but an update that RENAMES the binary
+        the mid-replacement window, but an update that RENAMES the binary
         deletes that path for good, so a missing file would read as "still
         stale" forever. Windows does relaunch correctly across a rename (its
         installer handles the restart, not `relaunch_target`), and without this
@@ -787,7 +787,7 @@ def auto_update(
 
         A rename deletes `inst.exe` as part of a completely successful install,
         and the relaunch is performed by the OLD build using its own
-        `current_exe` — so it starts a path that no longer exists and logs
+        `current_exe`: so it starts a path that no longer exists and logs
         "restarting failed: No such file or directory". That cannot be fixed for
         an upgrade FROM an already-published build: the code doing the relaunch
         already shipped. (`update.rs: relaunch_target` is fixed for future
@@ -813,7 +813,7 @@ def auto_update(
         moved = renamed_binary()
         check(moved is not None, f"no relaunch on replaced files\n{detail()}")
         # The update itself worked; only the restart did not. Verify that much
-        # by hand, then stop — the remaining assertions are about the relaunched
+        # by hand, then stop, the remaining assertions are about the relaunched
         # process, which by definition does not exist here.
         log(f"  note: the update renamed the binary to {moved.name}; the previous build "
             f"relaunched its own (now absent) path, so there is no auto-restart "
@@ -923,7 +923,7 @@ def launch_with_updater(inst: Install, env: AppEnv, library: Path, offer: Update
 
 
 def scheduled_check(inst: Install, env: AppEnv, library: Path, update: tuple, version: str, key: str) -> None:
-    """A release published while the app runs is found by a scheduled re-check — and,
+    """A release published while the app runs is found by a scheduled re-check, and,
     with the default settings, offered but never installed on its own."""
     set_config(env, update_auto_check=True, update_auto_install=False)
     offered = bump_patch(version)
@@ -977,7 +977,7 @@ PROGRESS = re.compile(r"^(\S+)\s.*update download progress percent=(\d+)", re.M)
 
 def check_progress(text: str, min_secs: float) -> None:
     """The log's 10 % download steps: in order, up to 100 %, spread over at
-    least `min_secs` (the throttled server's pace — progress was reported as
+    least `min_secs` (the throttled server's pace, progress was reported as
     the bytes arrived, not all at the end)."""
     steps = [(m.group(1), int(m.group(2))) for m in PROGRESS.finditer(text)]
     pcts = [p for _, p in steps]
@@ -1239,7 +1239,7 @@ def homebrew_cask(dmg: Path, work: Path, library: Path, version: str) -> None:
     """`brew install --cask soul-player` and `brew uninstall --zap`, with the
     cask the release publishes (`gen-cask.py`) pointed at the DMG under test.
     Brew installs it to /Applications quarantined, the app runs, and zap leaves
-    nothing — the cask's zap list matches what the app actually writes."""
+    nothing: the cask's zap list matches what the app actually writes."""
     env = AppEnv(work, "brew")
     # Brew runs with the app's (throwaway) HOME so zap's `~` is where the app wrote.
     benv = dict(env.env, HOMEBREW_NO_AUTO_UPDATE="1", HOMEBREW_NO_INSTALL_FROM_API="1",
@@ -1315,7 +1315,7 @@ def fetch_previous(url: str, target_key: str, work: Path) -> tuple[str, Path] | 
     try:
         with urllib.request.urlopen(url, timeout=60) as r:
             man = json.load(r)
-    except Exception as e:  # noqa: BLE001 — no previous release is a normal state
+    except Exception as e:  # noqa: BLE001, no previous release is a normal state
         log(f"::notice::no previous release manifest at {url} ({e}); upgrade/rollback skipped")
         return None
     plat = man.get("platforms", {}).get(target_key)
@@ -1448,14 +1448,14 @@ def main() -> int:
             section(f"upgrade {prev_version} → {a.version}")
             old = install(prev_installer, work, current_build=False)
             # The previous release is history: if it can't run on today's runner that is
-            # reported, not fatal — but installing over it, and getting back to it, are.
+            # reported, not fatal, but installing over it, and getting back to it, are.
             try:
                 live_run(old, env, prev_version, library, secs=10, require_log=False)
                 prev_runs = True
             except E2EFailure as e:
                 prev_runs = False
                 log(f"::warning::previous release {prev_version} does not run on this runner: {e}")
-                steps.append((f"previous {prev_version} runs here", "WARNING: no — see log"))
+                steps.append((f"previous {prev_version} runs here", "WARNING: no, see log"))
             older = semver(prev_version) < semver(a.version)
             if prev_runs and a.manifest and older:
                 check_update_detected(old, env, a.manifest, a.version, library)
@@ -1518,7 +1518,7 @@ def main() -> int:
 
 
 def write_summary(a, steps) -> None:
-    lines = [f"### Release e2e — {a.target_key} {a.version}", "", "| scenario | result |", "|---|---|"]
+    lines = [f"### Release e2e, {a.target_key} {a.version}", "", "| scenario | result |", "|---|---|"]
     lines += [f"| {s} | {r} |" for s, r in steps]
     text = "\n".join(lines) + "\n"
     log("\n" + text)
