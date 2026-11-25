@@ -312,10 +312,7 @@ fn run_case(case: &Case) {
     // in (one remote block, no local sources) so `open_decoder` streams.
     // Its `DownloadCache` gets its own temp dir and is only there as the
     // fallback; the check below proves streaming never needed it.
-    let remote_server = Arc::new(RemoteServer {
-        url: server.url.clone(),
-        access_token,
-    });
+    let remote_server = Arc::new(RemoteServer::new(server.url.clone(), access_token));
     let blobs = soul_player_host::remote::fetch_index(&remote_server)
         .unwrap_or_else(|e| panic!("{what}: fetch_index failed: {e:#}"));
     let cache_dir = tempfile::tempdir().expect("create download cache dir");

@@ -2069,10 +2069,13 @@ impl PlayerHandle {
         // Authoritative cap check (covers direct callers: tests / relogin), before the fetch.
         self.ensure_room_for_remote(url)?;
         let normalized = url.trim_end_matches('/').to_string();
-        let server = Arc::new(RemoteServer {
-            url: normalized.clone(),
-            access_token: tokens.access,
-        });
+        // Attach the keychain-backed token store so playback can re-mint this
+        // server's access token on a 401 once it expires mid-session (the token
+        // is short-lived; the refresh token in the keychain is durable).
+        let server = Arc::new(
+            RemoteServer::new(normalized.clone(), tokens.access)
+                .with_store(Arc::new(remote::KeyringStore)),
+        );
         let blobs = remote::fetch_index(&server)?;
 
         {
@@ -2644,10 +2647,7 @@ mod tests {
 
         let h = PlayerHandle::offline();
         h.inner.remotes.lock().expect("remotes mutex").push((
-            Arc::new(RemoteServer {
-                url: format!("http://{addr}"),
-                access_token: String::new(),
-            }),
+            Arc::new(RemoteServer::new(format!("http://{addr}"), String::new())),
             Vec::new(),
         ));
 
@@ -2692,10 +2692,7 @@ mod tests {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
             let addr = listener.local_addr().expect("local addr");
             h.inner.remotes.lock().expect("remotes mutex").push((
-                Arc::new(RemoteServer {
-                    url: format!("http://{addr}"),
-                    access_token: String::new(),
-                }),
+                Arc::new(RemoteServer::new(format!("http://{addr}"), String::new())),
                 Vec::new(),
             ));
             let in_flight = Arc::clone(&in_flight);
