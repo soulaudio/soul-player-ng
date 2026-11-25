@@ -525,7 +525,6 @@ mod tests {
 
     #[test]
     fn set_album_cover_then_path_resolves_and_clear_removes_it() {
-        let _iso = config::use_isolated_test_config_dir();
         let a = id("Lantern 19");
         let mut s = CoverStore::load();
         assert!(s.album_cover_path(&a).is_none(), "nothing set yet");
@@ -553,7 +552,6 @@ mod tests {
 
     #[test]
     fn set_artist_cover_then_path_resolves_and_clear_removes_it() {
-        let _iso = config::use_isolated_test_config_dir();
         let mut s = CoverStore::load();
         assert!(s.artist_cover_path("Broke For Free").is_none());
 
@@ -576,7 +574,6 @@ mod tests {
 
     #[test]
     fn rejects_non_image_and_leaves_no_cover() {
-        let _iso = config::use_isolated_test_config_dir();
         let mut s = CoverStore::load();
         assert!(!s.set_album_cover(&id("X"), &write_temp_file("x.txt", b"nope")));
         assert!(s.album_cover_path(&id("X")).is_none());
@@ -584,7 +581,6 @@ mod tests {
 
     #[test]
     fn replacing_a_cover_removes_the_old_extension() {
-        let _iso = config::use_isolated_test_config_dir();
         let mix = id("Mix");
         let mut s = CoverStore::load();
         // First a .png, then replace with a .jpg: only the .jpg must remain
@@ -612,7 +608,6 @@ mod tests {
 
     #[test]
     fn a_set_but_deleted_file_resolves_to_none() {
-        let _iso = config::use_isolated_test_config_dir();
         let gone = id("Gone");
         let mut s = CoverStore::load();
         assert!(s.set_album_cover(&gone, &write_temp_png()));
@@ -648,7 +643,6 @@ mod tests {
 
     #[test]
     fn album_covers_are_keyed_by_identity_not_title() {
-        let _iso = config::use_isolated_test_config_dir();
         let mut s = CoverStore::load();
         let a = id("\u{1f}d:/music/footprints\u{1f}Footprints of the Traveler");
         let b = id("\u{1f}d:/music/footprints cn\u{1f}Footprints of the Traveler");
@@ -673,7 +667,6 @@ mod tests {
 
     #[test]
     fn a_title_keyed_cover_is_adopted_by_every_album_of_that_title_then_retired() {
-        let _iso = config::use_isolated_test_config_dir();
         let legacy = legacy_cover("Footprints of the Traveler");
         let mut s = CoverStore::load();
         assert!(s.has_legacy_album_covers());
@@ -718,7 +711,6 @@ mod tests {
 
     #[test]
     fn a_title_keyed_cover_with_no_current_album_waits_for_one() {
-        let _iso = config::use_isolated_test_config_dir();
         let legacy = legacy_cover("Not Yet Scanned");
         let mut s = CoverStore::load();
         let out = s.adopt_legacy_album_covers([("Something Else", &id("x"))], true);
@@ -736,7 +728,6 @@ mod tests {
 
     #[test]
     fn a_failed_adoption_keeps_the_title_keyed_cover_until_a_retry_succeeds() {
-        let _iso = config::use_isolated_test_config_dir();
         let legacy = legacy_cover("Box");
         let (a, b) = (id("a"), id("b"));
         // Block b's destination: a directory where its cover file would go.
@@ -770,7 +761,6 @@ mod tests {
 
     #[test]
     fn an_identity_cover_is_never_overwritten_by_a_legacy_one() {
-        let _iso = config::use_isolated_test_config_dir();
         let a = id("a");
         let mut s = CoverStore::load();
         assert!(s.set_album_cover(&a, &write_temp_file("mine.jpg", b"\xff\xd8\xff\xe0jpg")));
@@ -808,7 +798,6 @@ mod tests {
     /// failed copy, writes nothing for it, and keeps the legacy file.
     #[test]
     fn a_fallback_identity_never_adopts_and_keeps_the_legacy_file() {
-        let _iso = config::use_isolated_test_config_dir();
         let legacy = legacy_cover("Box");
         let located = id("\u{1f}d:/m/box\u{1f}Box");
         let fallback = id(&soul_player_host::unlocated_album_identity_key("Box"));
@@ -834,7 +823,6 @@ mod tests {
     /// Nothing can be saved under a title-only identity either.
     #[test]
     fn a_cover_cannot_be_set_for_a_fallback_identity() {
-        let _iso = config::use_isolated_test_config_dir();
         let fallback = id(&soul_player_host::unlocated_album_identity_key("Box"));
         let mut s = CoverStore::load();
         assert!(!s.set_album_cover(&fallback, &write_temp_png()));
@@ -846,7 +834,6 @@ mod tests {
     /// carries must still be able to adopt it once it lands.
     #[test]
     fn retirement_waits_until_the_source_set_is_complete() {
-        let _iso = config::use_isolated_test_config_dir();
         let legacy = legacy_cover("Box");
         let (local, remote) = (id("local"), id("remote"));
         let mut s = CoverStore::load();
@@ -878,7 +865,6 @@ mod tests {
     /// retirement, later passes (and a restart) do not copy it back.
     #[test]
     fn a_cleared_adopted_cover_is_not_readopted_while_the_legacy_file_is_pending() {
-        let _iso = config::use_isolated_test_config_dir();
         legacy_cover("Box");
         let a = id("a");
         let mut s = CoverStore::load();
@@ -901,7 +887,6 @@ mod tests {
     /// both adopt it.
     #[test]
     fn two_titles_with_one_slug_both_adopt() {
-        let _iso = config::use_isolated_test_config_dir();
         legacy_cover("AC/DC");
         let (a, b) = (id("a"), id("b"));
         let mut s = CoverStore::load();
@@ -920,7 +905,6 @@ mod tests {
     /// Retiring never overwrites an earlier backup of the same name.
     #[test]
     fn retiring_never_clobbers_an_earlier_backup() {
-        let _iso = config::use_isolated_test_config_dir();
         let legacy = legacy_cover("Box");
         let backup = covers_dir().join(LEGACY_BACKUP_DIR);
         fs::create_dir_all(&backup).unwrap();
@@ -938,7 +922,6 @@ mod tests {
     /// partial is discarded on load and is never a cover.
     #[test]
     fn a_leftover_partial_copy_is_discarded_and_never_a_cover() {
-        let _iso = config::use_isolated_test_config_dir();
         let a = id("a");
         let dir = covers_dir();
         fs::create_dir_all(&dir).unwrap();
@@ -963,7 +946,6 @@ mod tests {
     /// new image is copied first, and only then are the old files removed.
     #[test]
     fn a_failed_replacement_keeps_the_previous_cover() {
-        let _iso = config::use_isolated_test_config_dir();
         let a = id("a");
         let mut s = CoverStore::load();
         assert!(s.set_album_cover(&a, &write_temp_png()));
@@ -983,7 +965,6 @@ mod tests {
     /// the next batch: the append starts on a fresh line.
     #[test]
     fn a_torn_ledger_line_does_not_corrupt_the_next_append() {
-        let _iso = config::use_isolated_test_config_dir();
         legacy_cover("Box");
         let backup = covers_dir().join(LEGACY_BACKUP_DIR);
         fs::create_dir_all(&backup).unwrap();

@@ -24,31 +24,23 @@ use soul_player_host::format::{BandCfg, DspUnitCfg, ProfileCfg};
 
 use crate::views::sidebar::{DEFAULT_WIDTH, MAX_WIDTH, MIN_WIDTH};
 
-/// The throwaway per-process config directory used in test builds, so `cargo
-/// test` can NEVER read or write the user's real settings, regardless of
-/// whether a test opts in. Compiled out of production.
+/// A process-wide lock serialising tests that touch PROCESS-GLOBAL state, e.g.
+/// `update::AUTO_INSTALL` or another static a test flips and asserts. Config
+/// files need no lock: each test thread has its own config dir (see
+/// [`soul_player_dir`]).
 #[cfg(test)]
-static TEST_CONFIG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static PROCESS_GLOBALS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// A process-wide lock serialising EVERY test that persists config. The test
-/// config dir is shared per-process, and `save_*` does a load-modify-write of the
-/// whole `config.toml`, so two config-writing tests running concurrently clobber
-/// each other's fields. Any test that mutates+reads config must hold this for its
-/// duration, which is exactly what [`use_test_config_dir`] now returns.
-#[cfg(test)]
-static CONFIG_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Isolate a test from the shared config file: returns a guard on the process-wide
-/// [`CONFIG_TEST_LOCK`], so config-mutating tests run one at a time (no concurrent
-/// load-modify-write clobbering). Bind it for the test's duration
-/// (`let _g = config::use_test_config_dir();`). Poisoning is ignored (one failing
-/// test must not cascade into the rest). The temp dir itself is always isolated
-/// (see [`soul_player_dir`]); this adds the serialization.
+/// Serialize a test against every other test that touches process-global state
+/// (see [`PROCESS_GLOBALS_TEST_LOCK`]): returns a guard to bind for the test's
+/// duration (`let _g = config::use_test_config_dir();`). Poisoning is ignored
+/// (one failing test must not cascade into the rest). The name predates the
+/// per-thread config dirs; the dir itself needs no opt-in any more.
 #[cfg(test)]
 pub(crate) fn use_test_config_dir() -> std::sync::MutexGuard<'static, ()> {
-    let guard = CONFIG_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = soul_player_dir();
-    guard
+    PROCESS_GLOBALS_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// A process-wide lock serialising every test whose assertions depend on the
@@ -91,75 +83,46 @@ pub(crate) fn holds_test_locale() -> bool {
     HOLDS_TEST_LOCALE.with(|h| h.get())
 }
 
+/// A test thread's own config dir: created lazily on the first
+/// [`soul_player_dir`] call and deleted when the thread exits.
+#[cfg(test)]
+struct ThreadConfigDir(PathBuf);
+
+#[cfg(test)]
+impl Drop for ThreadConfigDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 thread_local! {
-    /// This thread's isolated config dir, when a test holds an [`IsolatedConfigDir`].
-    /// [`soul_player_dir`] returns it instead of the shared per-process dir.
-    static ISOLATED_CONFIG_DIR: std::cell::RefCell<Option<PathBuf>> =
-        const { std::cell::RefCell::new(None) };
+    static THREAD_CONFIG_DIR: ThreadConfigDir = {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "soul-player-test-{}-t{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        ThreadConfigDir(dir)
+    };
 }
 
-/// Guard for [`use_isolated_test_config_dir`]: restores the thread's previous
-/// config dir and deletes the isolated one on drop.
-#[cfg(test)]
-pub(crate) struct IsolatedConfigDir {
-    dir: PathBuf,
-    prev: Option<PathBuf>,
-}
-
-#[cfg(test)]
-impl Drop for IsolatedConfigDir {
-    fn drop(&mut self) {
-        let prev = self.prev.take();
-        ISOLATED_CONFIG_DIR.with(|c| *c.borrow_mut() = prev);
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-/// Give THIS thread a fresh, empty config dir for the guard's lifetime. Every
-/// config/cover/playlist path on this thread resolves under it, so a test that
-/// asserts persisted values sees only its own writes: no order dependence on
-/// what earlier tests left in the shared dir, and no lost update from a
-/// concurrent test. Process-global state (e.g. `update::AUTO_INSTALL`) is NOT
-/// isolated by this; serialize that with [`use_test_config_dir`].
-#[cfg(test)]
-pub(crate) fn use_isolated_test_config_dir() -> IsolatedConfigDir {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let dir = std::env::temp_dir().join(format!(
-        "soul-player-test-{}-iso-{}",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create the isolated test config dir");
-    let prev = ISOLATED_CONFIG_DIR.with(|c| c.replace(Some(dir.clone())));
-    IsolatedConfigDir { dir, prev }
-}
-
-/// The app's config directory. In a **test build this is ALWAYS a throwaway
-/// temp directory** (never the user's real config), tests share it, so a test
-/// that persists a setting must not let another's write leak into its
-/// assertions (set the relevant `State` field explicitly instead of trusting a
-/// loaded value). In production it is `<os-config>/soul-player`.
+/// The app's config directory. In production it is `<os-config>/soul-player`.
 ///
-/// In a test build this is the thread's isolated dir while a test holds
-/// [`use_isolated_test_config_dir`]'s guard, else the shared per-process dir.
+/// In a **test build it is a throwaway temp dir of the calling THREAD** (never
+/// the user's real config): libtest runs each test on its own thread, so every
+/// test starts from an empty config dir and sees only its own writes, with no
+/// opt-in and no lock. The dir is deleted when the thread exits. A thread a test
+/// spawns gets its own dir too, so a test must not expect a spawned thread to
+/// see its settings.
 ///
-/// `pub(crate)`: the playlist store (`playlists::store`) falls back to
-/// `<this>/playlists` when no managed-library root is configured, so it needs
-/// the same test/production split every other per-setting path here gets.
+/// `pub(crate)`: the playlist store (`playlists::store`) and the cover store
+/// (`covers`) live under it, so they get the same test/production split.
 #[cfg(test)]
 pub(crate) fn soul_player_dir() -> Option<PathBuf> {
-    if let Some(dir) = ISOLATED_CONFIG_DIR.with(|c| c.borrow().clone()) {
-        return Some(dir);
-    }
-    Some(
-        TEST_CONFIG_DIR
-            .get_or_init(|| {
-                std::env::temp_dir().join(format!("soul-player-test-{}", std::process::id()))
-            })
-            .clone(),
-    )
+    Some(THREAD_CONFIG_DIR.with(|d| d.0.clone()))
 }
 
 #[cfg(not(test))]
@@ -481,12 +444,34 @@ fn atomic_write(path: &Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
 /// Write the config as pretty TOML (best-effort).
 fn save(cfg: &Config) {
     if let Some(p) = config_path() {
-        if let Some(dir) = p.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        if let Ok(body) = toml::to_string_pretty(cfg) {
-            let _ = atomic_write(&p, body);
-        }
+        save_to(&p, cfg);
+    }
+}
+
+/// Write `cfg` as pretty TOML to `path` (best-effort), atomically: into a
+/// temp file beside it, then renamed over it, so a crash or a concurrent read
+/// never sees a truncated config (a torn file would load as defaults and the
+/// next save would persist them, losing every setting).
+fn save_to(path: &Path, cfg: &Config) {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Ok(body) = toml::to_string_pretty(cfg) else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let tmp = PathBuf::from(tmp);
+    if std::fs::write(&tmp, body)
+        .and_then(|()| std::fs::rename(&tmp, path))
+        .is_err()
+    {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
@@ -1424,6 +1409,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Each test thread resolves its own config dir by default (no opt-in, no
+    /// lock), so a setting one test persists never shows up in another test.
+    #[test]
+    fn each_test_thread_gets_its_own_config_dir() {
+        save_indexing_mode("gentle");
+        assert_eq!(load_indexing_mode(), "gentle");
+        let here = soul_player_dir();
+        let (there, mode) = std::thread::spawn(|| (soul_player_dir(), load_indexing_mode()))
+            .join()
+            .unwrap();
+        assert_ne!(here, there, "another thread resolves another dir");
+        assert_eq!(mode, "auto", "and sees only defaults there");
+    }
+
+    /// `save_to` replaces the file atomically: a reader racing a stream of saves
+    /// reads either the old or the new complete config, never a truncated one.
+    #[test]
+    fn a_concurrent_reader_never_sees_a_torn_config() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "soul-player-atomic-save-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("config.toml");
+        let cfg = Config {
+            nav_hidden: (0..2000).map(|i| format!("entry-{i}")).collect(),
+            ..Config::default()
+        };
+        save_to(&path, &cfg);
+        let done = std::sync::Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (path, cfg, done) = (path.clone(), cfg.clone(), done.clone());
+            std::thread::spawn(move || {
+                for _ in 0..200 {
+                    save_to(&path, &cfg);
+                }
+                done.store(true, Ordering::Release);
+            })
+        };
+        let mut torn = 0usize;
+        while !done.load(Ordering::Acquire) {
+            if let Ok(body) = std::fs::read_to_string(&path) {
+                let complete = toml::from_str::<Config>(&body)
+                    .is_ok_and(|back| back.nav_hidden.len() == cfg.nav_hidden.len());
+                if !complete {
+                    torn += 1;
+                }
+            }
+        }
+        writer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(torn, 0, "a reader saw a partially written config");
+    }
+
     #[test]
     fn config_toml_roundtrips() {
         let cfg = Config {
@@ -1534,7 +1576,6 @@ mod tests {
 
     #[test]
     fn update_prefs_round_trip_and_default_to_check_but_not_install() {
-        let _iso = use_isolated_test_config_dir();
         assert_eq!(
             load_update_prefs(),
             (true, false),
@@ -1545,30 +1586,6 @@ mod tests {
         assert_eq!(load_update_prefs(), (false, true));
         save_update_auto_check(true);
         assert_eq!(load_update_prefs(), (true, true));
-    }
-
-    /// A per-thread isolated config dir starts from defaults whatever the shared
-    /// test dir holds, and dropping it returns this thread to the shared dir.
-    #[test]
-    fn an_isolated_test_config_dir_starts_from_defaults() {
-        let _g = use_test_config_dir();
-        save_update_auto_install(true); // pollute the SHARED dir
-        {
-            let _iso = use_isolated_test_config_dir();
-            assert_eq!(load_update_prefs(), (true, false), "fresh dir, defaults");
-            save_update_auto_install(true);
-            assert_eq!(
-                load_update_prefs(),
-                (true, true),
-                "writes land in the isolated dir"
-            );
-        }
-        assert_eq!(
-            load_update_prefs(),
-            (true, true),
-            "back on the shared dir after the guard drops"
-        );
-        save_update_auto_install(false); // leave the shared dir at its default
     }
 
     #[test]

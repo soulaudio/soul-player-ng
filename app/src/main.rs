@@ -7539,11 +7539,6 @@ mod tests {
     /// running `Runtime`. Shared by the two crop e2e tests.
     fn open_artwork_crop(album_name: &str) -> Runtime<State> {
         let mut s = populated_state();
-        // The per-process test config dir persists across tests in this binary
-        // (the `CONFIG_TEST_LOCK` only serialises them), so clear any cover a
-        // sibling album-cover test left for this same album before we start.
-        let album_id = album_identity_named(&s, album_name);
-        s.covers.clear_album_cover(&album_id);
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(album_name));
         let env = Env {
@@ -7948,7 +7943,6 @@ mod tests {
 
     #[test]
     fn same_title_editions_keep_separate_custom_covers() {
-        let _iso = config::use_isolated_test_config_dir();
         let root = same_title_editions_library("same_title_covers");
         let mut s = State::new(PlayerHandle::offline());
         let up = s.host.add_folder(&root).expect("scan");
@@ -7967,7 +7961,6 @@ mod tests {
 
     #[test]
     fn a_title_keyed_cover_is_adopted_by_both_editions_when_the_library_lands() {
-        let _iso = config::use_isolated_test_config_dir();
         let root = same_title_editions_library("legacy_cover_adoption");
         let covers_dir = config::soul_player_dir().unwrap().join("covers");
         std::fs::create_dir_all(&covers_dir).unwrap();
@@ -8001,7 +7994,6 @@ mod tests {
     /// the remote's album) that album adopts it too and only then is it retired.
     #[test]
     fn a_title_keyed_cover_is_retired_only_once_every_source_has_landed() {
-        let _iso = config::use_isolated_test_config_dir();
         let root = same_title_editions_library("legacy_cover_deferred");
         let later = std::env::temp_dir().join(format!(
             "soul_rune_legacy_cover_deferred_later_{}",
@@ -8085,7 +8077,6 @@ mod tests {
     /// under a key every same-title album shares.
     #[test]
     fn the_album_artwork_editor_is_not_offered_for_an_unlocated_album() {
-        let _iso = config::use_isolated_test_config_dir();
         let mut s = State::new(PlayerHandle::offline()); // no host library: unlocated
         s.library = vec![TrackView {
             id: 1,
@@ -15696,9 +15687,6 @@ mod tests {
         // Serializes the process-global AUTO_CHECK/AUTO_INSTALL flags with the
         // other updater tests that flip them.
         let _g = config::use_test_config_dir();
-        // A fresh per-thread config dir: the shared one carries whatever update
-        // prefs an earlier test left there, which made "defaults" order-dependent.
-        let _iso = config::use_isolated_test_config_dir();
         update::set_auto_check(true);
         update::set_auto_install(false);
         let mut rt = updates_rt(updater::UpdateStatus::Idle, true);
@@ -15724,7 +15712,6 @@ mod tests {
     fn switching_auto_install_off_drops_a_waiting_download() {
         let _locale = config::use_test_locale("en");
         let _g = config::use_test_config_dir();
-        let _iso = config::use_isolated_test_config_dir();
         let mut s = settings_state(&[], &[]);
         s.update.auto_install = true;
         s.update.status = updater::UpdateStatus::Ready(found("9.9.9", None));
