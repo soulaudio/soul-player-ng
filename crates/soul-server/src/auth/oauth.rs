@@ -47,6 +47,16 @@ impl CodeStore {
         }
     }
 
+    /// The number of codes currently retained (for tests asserting the store stays
+    /// bounded as expired / abandoned codes are swept).
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.codes
+            .lock()
+            .expect("auth-code store mutex poisoned")
+            .len()
+    }
+
     /// Issues a fresh, random authorization code bound to `user`, the PKCE
     /// `code_challenge`, and the `redirect_uri` the eventual `/token`
     /// redemption must match. Expires at `now + ttl` (unix seconds).
@@ -66,10 +76,14 @@ impl CodeStore {
             redirect_uri,
             expires_at: now.saturating_add(ttl),
         };
-        self.codes
-            .lock()
-            .expect("auth-code store mutex poisoned")
-            .push(record);
+        let mut codes = self.codes.lock().expect("auth-code store mutex poisoned");
+        // Sweep expired codes before adding the new one. `consume` only removes a code on
+        // a SUCCESSFUL redemption, so without this an abandoned login (issued, never
+        // redeemed) or an expired/failed attempt would leak forever and lengthen the
+        // linear `consume` scan. This keeps the store bounded by the codes still live in
+        // one TTL window.
+        codes.retain(|c| now < c.expires_at);
+        codes.push(record);
         code
     }
 
@@ -218,6 +232,42 @@ mod tests {
     #[test]
     fn pkce_s256_matches_rfc7636_vector() {
         assert!(verify_pkce_s256(RFC7636_VERIFIER, RFC7636_CHALLENGE));
+    }
+
+    /// Constraint: the authorization-code store must stay BOUNDED. `consume` only
+    /// removes a code on a SUCCESSFUL redemption, so every abandoned login (the user
+    /// authenticates, gets the redirect, but the client never completes `/token`) or
+    /// expired/failed attempt would otherwise leak a record forever and lengthen the
+    /// linear `consume` scan. Issuing a code must sweep the expired ones first.
+    #[test]
+    fn issuing_a_code_prunes_expired_ones_so_the_store_stays_bounded() {
+        let store = CodeStore::new();
+        // Five abandoned logins: codes issued at t=0, each expiring at t=100.
+        for _ in 0..5 {
+            store.issue(
+                1,
+                RFC7636_CHALLENGE.to_string(),
+                "http://127.0.0.1/cb".to_string(),
+                0,
+                100,
+            );
+        }
+        assert_eq!(store.len(), 5, "all five are in flight");
+
+        // Time passes beyond their expiry; issuing another sweeps the stale ones, so the
+        // store can't grow without bound as abandoned/expired codes accumulate.
+        store.issue(
+            1,
+            RFC7636_CHALLENGE.to_string(),
+            "http://127.0.0.1/cb".to_string(),
+            200,
+            100,
+        );
+        assert_eq!(
+            store.len(),
+            1,
+            "the five expired codes were pruned on issue; only the fresh one remains"
+        );
     }
 
     #[test]
