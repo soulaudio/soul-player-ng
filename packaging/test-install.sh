@@ -33,6 +33,22 @@ fail() {
 }
 ok() { printf 'ok: %s\n' "$*"; }
 
+# The installed binary answers --version without a display. Proves the thing
+# that is installed actually runs, which package metadata alone does not.
+#
+# Needs a release that HAS the flag: before it was fixed, --version fell
+# through to the event loop and panicked on any headless machine. Testing
+# 0.4.6 or older will fail here, correctly.
+check_runs() {
+	reported=$(soul-player --version 2>/dev/null) || fail "--version exited non-zero"
+	case "$reported" in
+		"soul-player "*) ok "it runs: $reported" ;;
+		*) fail "--version printed: $reported" ;;
+	esac
+	[ -z "$WANT" ] || [ "$reported" = "soul-player $WANT" ] ||
+		fail "--version said '$reported', expected 'soul-player $WANT'"
+}
+
 check_version() {
 	[ -n "$WANT" ] || return 0
 	[ "$1" = "$WANT" ] || fail "installed $1, expected $WANT"
@@ -58,12 +74,14 @@ case "$MODE" in
 		dpkg -s soul-player >/dev/null 2>&1 || fail "no soul-player package"
 		check_version "$(dpkg-query -W -f='${Version}' soul-player)"
 		command -v soul-player >/dev/null || fail "soul-player is not on PATH"
+		check_runs
 		ok "deb installed, binary at $(command -v soul-player)"
 		;;
 	rpm)
 		rpm -q soul-player >/dev/null 2>&1 || fail "no soul-player package"
 		check_version "$(rpm -q --qf '%{VERSION}' soul-player)"
 		command -v soul-player >/dev/null || fail "soul-player is not on PATH"
+		check_runs
 		ok "rpm installed, binary at $(command -v soul-player)"
 		;;
 	appimage)
