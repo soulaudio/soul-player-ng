@@ -582,10 +582,17 @@ jobs:
           # org.flatpak.Builder, so they match what Flathub runs whatever the
           # runner's Ubuntu: 22.04's own appstreamcli 0.15 rejects the
           # <developer> tag and vcs-browser URL Flathub requires. The BUILD uses
-          # the distro's flatpak-builder: the sandboxed one cannot see the SDK
-          # installed into the user installation ("Unable to find sdk").
+          # a host flatpak-builder (the sandboxed one cannot see the SDK in the
+          # user installation: "Unable to find sdk"), and on 22.04 that has to
+          # come from the Flatpak project's PPA: 22.04's own 1.2 still calls
+          # appstream-compose, which current SDKs no longer ship.
+          if [ "$(. /etc/os-release && echo "$VERSION_ID")" = "22.04" ]; then
+            sudo add-apt-repository -y ppa:flatpak/stable
+            sudo apt-get update -o Acquire::Retries=3
+          fi
           sudo apt-get install -y -o Acquire::Retries=3 \
             flatpak flatpak-builder xvfb dbus-x11
+          flatpak-builder --version
           flatpak remote-add --user --if-not-exists flathub \
             https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y --noninteractive flathub \
