@@ -327,6 +327,21 @@ struct State {
     albums_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::albums::Album]>)>>,
     artists_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::artists::Artist]>)>>,
     genres_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[views::genres::Genre]>)>>,
+    /// The open Artist detail page's discography (its tracks grouped into albums,
+    /// chronologically sorted), memoized by (library fingerprint, artist name,
+    /// album-year source). The artist detail otherwise CLONED every one of the
+    /// artist's `TrackView`s into a scratch Vec and re-grouped them into albums EVERY
+    /// frame (a prolific artist = thousands of clones + a regroup per frame).
+    /// Recomputed only when the library, the open artist, or the year source changes.
+    #[allow(clippy::type_complexity)]
+    artist_discography_cache: std::cell::RefCell<
+        Option<(
+            u64,
+            String,
+            crate::config::AlbumYearSource,
+            std::rc::Rc<[views::albums::Album]>,
+        )>,
+    >,
     /// A shared `Rc` snapshot of the library for the virtualized Tracks list, so its
     /// per-row closures index the track data by `Rc` instead of CLONING every
     /// visible track every frame, a million clones/frame otherwise. Rebuilt only
@@ -921,6 +936,7 @@ impl State {
             albums_cache: std::cell::RefCell::new(None),
             artists_cache: std::cell::RefCell::new(None),
             genres_cache: std::cell::RefCell::new(None),
+            artist_discography_cache: std::cell::RefCell::new(None),
             library_rc_cache: std::cell::RefCell::new(None),
             track_index_cache: std::cell::RefCell::new(None),
             visible_tracks_cache: std::cell::RefCell::new(None),
@@ -1138,6 +1154,38 @@ impl State {
             views::albums::group_albums(&self.library).into();
         *self.albums_cache.borrow_mut() = Some((fp, grouped.clone()));
         grouped
+    }
+
+    /// The open Artist detail page's discography: the artist's own tracks grouped into
+    /// albums and sorted chronologically (via [`views::albums::discography_of`]),
+    /// memoized by (library fingerprint, artist name, album-year source). Building it
+    /// clones the artist's tracks and re-groups them, which the detail page otherwise
+    /// paid EVERY frame; this recomputes only when the library, the open artist, or
+    /// the year source changes, and the page reads a cheap `Rc` clone.
+    pub(crate) fn artist_discography(
+        &self,
+        artist: &str,
+        ids: &[u32],
+        src: crate::config::AlbumYearSource,
+    ) -> std::rc::Rc<[views::albums::Album]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, ca, cs, d)) = self.artist_discography_cache.borrow().as_ref()
+            && *cfp == fp
+            && ca == artist
+            && *cs == src
+        {
+            return d.clone();
+        }
+        // The artist's resolved tracks (O(1) id lookups), folded into the discography.
+        let subset: Vec<TrackView> = ids
+            .iter()
+            .filter_map(|id| self.track(*id).cloned())
+            .collect();
+        let disc: std::rc::Rc<[views::albums::Album]> =
+            views::albums::discography_of(&subset, src).into();
+        *self.artist_discography_cache.borrow_mut() =
+            Some((fp, artist.to_string(), src, disc.clone()));
+        disc
     }
 
     /// The library grouped into artists, memoized like [`grouped_albums`].
