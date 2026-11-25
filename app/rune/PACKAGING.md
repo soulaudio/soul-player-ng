@@ -189,9 +189,13 @@ compiler needs is a checksummed source:
 
 * **`cargo-sources.json`** — ~1500 entries generated from `app/rune/Cargo.lock`
   by `flatpak-cargo-generator`, with both git dependencies (`rune`,
-  `soul-audio-core`) resolved to the commits the lockfile pins. Regenerate with
-  `packaging/flathub/generate-sources.sh`; `--check` is what CI runs, because a
-  stale list fails on *their* builders, offline, after review.
+  `soul-audio-core`) resolved to the commits the lockfile pins. **Not
+  committed**: it is derived entirely from the lockfile, so a committed copy
+  only created a second thing to keep in sync — and with Dependabot watching
+  `app/rune`, that meant every dependency bump failed CI until someone
+  regenerated 440 KB. CI generates it; run
+  `packaging/flathub/generate-sources.sh` before submitting, since Flathub's own
+  repository does need the file.
 * **The toolchain** — the dated nightly tarball from `static.rust-lang.org` per
   architecture, by sha256. Installing it directly rather than via rustup is what
   makes it reproducible: with no rustup shim, `rust-toolchain.toml` is inert and
@@ -200,6 +204,29 @@ compiler needs is a checksummed source:
 
 `cargo` runs from the build root, not `app/rune`: the generated vendor config
 says `directory = "cargo/vendor"`, relative to the working directory.
+
+### What is pinned, and what fails if you move it
+
+The packaging tools are pinned to exact versions, and tests fail if a pin and
+the thing it is supposed to match drift apart. `cargo install --locked` does
+**not** pin a version — it only respects the installed crate's own lockfile — so
+before this the release floated across cargo-packager releases while the tests
+described one version's behaviour.
+
+| Pin | Where | Guard |
+|---|---|---|
+| `cargo-packager 0.11.8` | `release.yml` (two places) | `the_pinned_packager_version_matches_what_the_tests_assume` |
+| `cargo-generate-rpm 0.21.1` | `release.yml` | — |
+| `nightly-2026-11-10` | `rust-toolchain.toml` **and** the Flathub manifest's archive URLs | `the_flathub_toolchain_matches_the_pinned_nightly` |
+| app id, runtime, `finish-args` | both Flatpak manifests | `the_two_flatpak_manifests_agree` |
+| desktop entry name/comment | `packaging/flathub/*.desktop` vs `Cargo.toml` | `the_flathub_desktop_entry_matches_the_packaged_one` |
+| shipped version | `Cargo.toml` vs the metainfo's `<releases>` | `the_metainfo_lists_the_version_being_shipped` |
+
+Bumping cargo-packager is deliberate work, not a version bump: it decides the
+`.deb`'s filename and `Package:` field, which config keys are accepted, and the
+NSIS template our preinstall hook depends on. Change `PACKAGER_VERSION` in
+`app/rune/tests/packaging_metadata.rs` and re-read those assumptions against the
+new source.
 
 The `.github/workflows/flathub.yml` job builds it offline with
 `org.flatpak.Builder` (the same tool Flathub uses, carrying the matching

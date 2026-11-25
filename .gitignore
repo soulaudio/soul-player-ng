@@ -29,3 +29,10 @@ __pycache__/
 
 .superpowers/
 packaging/deb/generated/
+
+# Generated from app/rune/Cargo.lock by packaging/flathub/generate-sources.sh.
+# NOT committed: it is a 440 KB build artifact that would need regenerating on
+# every dependency bump, which turned every Dependabot PR into a CI failure.
+# It is deterministic from the lockfile (verified: an independent regeneration
+# matched byte-for-byte), so generating it when needed loses nothing.
+packaging/flathub/cargo-sources.json

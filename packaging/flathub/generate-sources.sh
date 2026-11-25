@@ -6,11 +6,15 @@
 # — ~1500 entries, including both git dependencies resolved to the commits the
 # lockfile pins.
 #
-# Run this whenever app/rune/Cargo.lock changes. `--check` reports whether the
-# committed file is still in sync without writing anything, which is what CI
-# runs: a stale cargo-sources.json does not fail our build (we never build it
-# offline outside CI) but fails Flathub's, after review, which is the worst
-# place to find out.
+# The output is NOT committed — it is derived entirely from the lockfile, and a
+# committed copy meant every dependency bump needed a regeneration commit or CI
+# failed. CI generates it fresh; run this before submitting to Flathub, whose
+# repository does need the file.
+#
+# `--check` compares against an existing copy without writing. Nothing calls it
+# now that the file is generated rather than committed; it stays because it is
+# the right check to run against the copy in Flathub's own repo, where the file
+# IS committed and can go stale.
 #
 # The generator itself is fetched at a pinned commit rather than "master": it is
 # a third-party script that rewrites our entire dependency manifest, and an
