@@ -216,9 +216,7 @@ impl PlaylistStore {
             playlists.insert(e.id, Loaded { folder, playlist });
             order.push(e.id);
         }
-        let next_id = manifest
-            .next_id
-            .max(order.iter().copied().max().map_or(0, |m| m + 1));
+        let next_id = next_id_for(order.iter().copied(), manifest.next_id);
         Some(Self {
             playlists,
             order,
@@ -253,7 +251,7 @@ impl PlaylistStore {
             order.push(playlist.id);
             playlists.insert(playlist.id, Loaded { folder, playlist });
         }
-        let next_id = order.iter().copied().max().map_or(0, |m| m + 1);
+        let next_id = next_id_for(order.iter().copied(), 0);
         Self {
             playlists,
             order,
@@ -296,7 +294,7 @@ impl PlaylistStore {
     /// freshly-assigned id.
     pub fn create(&mut self, name: &str) -> PlaylistId {
         let id = self.next_id;
-        self.next_id += 1;
+        self.next_id = self.next_id.saturating_add(1);
         let folder = folder_name(&slugify(name), id);
         let playlist = Playlist {
             id,
@@ -319,7 +317,7 @@ impl PlaylistStore {
         let mut store = Self::default();
         for (name, entries) in playlists {
             let id = store.next_id;
-            store.next_id += 1;
+            store.next_id = store.next_id.saturating_add(1);
             let folder = folder_name(&slugify(name), id);
             let playlist = Playlist {
                 id,
@@ -473,10 +471,32 @@ impl PlaylistStore {
     }
 }
 
+/// The next playlist id to assign: one past the highest id present, floored at `floor`
+/// (the manifest's own stored `next_id`). SATURATING, because `ids` comes from the
+/// durable store on disk: a hand-corrupted `u64::MAX` id would otherwise overflow
+/// (`+ 1` panics in debug, wraps to 0 in release, letting a later `create` re-issue
+/// id 0 and collide).
+fn next_id_for(ids: impl Iterator<Item = PlaylistId>, floor: PlaylistId) -> PlaylistId {
+    floor.max(ids.max().map_or(0, |m| m.saturating_add(1)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use soul_player_host::TrackSnapshot;
+
+    #[test]
+    fn next_id_for_saturates_past_a_corrupt_max_id() {
+        // One past the highest id, floored at the manifest's stored next_id.
+        assert_eq!(next_id_for([1u64, 5, 3].into_iter(), 0), 6);
+        assert_eq!(next_id_for([1u64, 5, 3].into_iter(), 100), 100); // floor wins
+        assert_eq!(next_id_for(std::iter::empty::<PlaylistId>(), 4), 4); // no ids: floor
+        assert_eq!(next_id_for(std::iter::empty::<PlaylistId>(), 0), 0);
+        // A hand-corrupted `u64::MAX` id on disk must NOT overflow (debug panic) or wrap
+        // to 0 (which would let `create` re-issue id 0, colliding with an existing one).
+        assert_eq!(next_id_for([u64::MAX].into_iter(), 0), u64::MAX);
+        assert_eq!(next_id_for([2u64, u64::MAX, 7].into_iter(), 0), u64::MAX);
+    }
 
     fn entry(title: &str) -> PlaylistEntry {
         entry_with_album(title, "Album")
