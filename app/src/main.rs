@@ -4427,6 +4427,19 @@ fn scene_grid(s: &mut State) {
     seed_demo_library(s);
     s.route = Route::Albums;
 }
+/// The seeded Albums grid with playback running: a track part-way through, a
+/// populated Up Next, and the transport lit. The app at rest shows an empty
+/// queue and "Nothing playing", which is the one state nobody uses it in, so
+/// this is what the README screenshot captures.
+fn scene_grid_playing(s: &mut State) {
+    scene_grid(s);
+    scene_queue(s);
+    // Short enough that the sidebar list ends on a whole row instead of a
+    // half-cut one: a screenshot should not look like it was taken mid-scroll.
+    s.context_ids.truncate(3);
+    s.position_secs = 71.0;
+    s.duration_secs = 214.0;
+}
 fn scene_grid_z150(s: &mut State) {
     scene_grid(s);
     s.ui_zoom = 1.5;
@@ -4913,6 +4926,7 @@ fn main() -> anyhow::Result<()> {
             ("artist-detail", scene_artist_detail),
             ("genres", scene_genres),
             ("grid", scene_grid),
+            ("grid-playing", scene_grid_playing),
             ("grid-z150", scene_grid_z150),
             ("grid-z200", scene_grid_z200),
             ("albums-z150", scene_albums_z150),

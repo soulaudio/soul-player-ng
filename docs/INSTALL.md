@@ -19,7 +19,7 @@ disk image it offers to move itself.
 
 Four formats, for x86_64 and aarch64:
 
-| | | updates via |
+| Format | Works on | Updates via |
 |---|---|---|
 | `.deb` | Debian 12+, Ubuntu 22.04+ | `apt upgrade` |
 | `.rpm` | Fedora, openSUSE, RHEL 10+ | `dnf upgrade` |

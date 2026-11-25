@@ -31,7 +31,7 @@ db = "/var/lib/soul-server/users.json"
 # public_url = "https://music.example.com"
 ```
 
-| Key | |
+| Key | Meaning |
 |---|---|
 | `bind` | Address to listen on. `127.0.0.1` is local-only, which is what you want when a reverse proxy sits in front. `0.0.0.0` accepts connections from the network. |
 | `roots` | Library directories to index and serve. Read-only. |
@@ -158,7 +158,7 @@ your local folders.
 Useful if you want to write another client. `/v0/*` requires
 `Authorization: Bearer <access token>`; the auth endpoints are unauthenticated.
 
-| Method & path | |
+| Method & path | What it does |
 |---|---|
 | `GET /v0/ping` | Health, server version, library version/etag. Unauthenticated. |
 | `GET /v0/index` | The library `.soulidx`. Sends `ETag`; honours `If-None-Match` with `304`. |

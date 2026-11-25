@@ -93,9 +93,10 @@ the UI reference shots are produced:
 ```sh
 cd app
 cargo build --release
-./target/release/soul-player --snap out.png --size 1440x900 --scene grid --theme dark
+./target/release/soul-player --snap out.png --size 1440x900 --scene grid-playing --theme dark
 ```
 
-`--scene grid` seeds a synthetic 20-album library (no files needed). Point
-`SOUL_PLAYER_FOLDER` at a real library and use `--scene albums` to shoot real covers. The
-scene table is in `app/src/main.rs`.
+`grid-playing` is the one the README uses: a synthetic 20-album library (no files
+needed) with playback running and a populated queue. `grid` is the same library at
+rest. Point `SOUL_PLAYER_FOLDER` at a real library and use `--scene albums` to shoot
+real covers. The scene table is in `app/src/main.rs`.
