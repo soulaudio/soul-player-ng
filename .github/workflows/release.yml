@@ -743,7 +743,7 @@ jobs:
           done > ${{ matrix.target_key }}.sha256
           cat ${{ matrix.target_key }}.sha256
 
-      - uses: actions/upload-artifact@v4.6.2
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: bundle-${{ matrix.target_key }}
           path: dist/*
@@ -783,12 +783,12 @@ jobs:
         # the test's expectations are revisited too.
         run: cargo install cargo-packager --version 0.11.8 --locked
 
-      - uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@v8.0.2
         with:
           name: bundle-macos-aarch64
           path: in/arm64
 
-      - uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@v8.0.2
         with:
           name: bundle-macos-x86_64
           path: in/x86_64
@@ -835,7 +835,7 @@ jobs:
         working-directory: dist
         run: shasum -a 256 *.dmg > macos-universal.sha256 && cat macos-universal.sha256
 
-      - uses: actions/upload-artifact@v4.6.2
+      - uses: actions/upload-artifact@v7.0.2
         with:
           name: bundle-macos-universal
           path: dist/*
@@ -874,13 +874,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@v8.0.2
         with:
           name: bundle-${{ matrix.target_key }}
           path: dist
 
       # macOS: the universal DMG is installed and updated on both Macs too.
-      - uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@v8.0.2
         if: runner.os == 'macOS'
         with:
           name: bundle-macos-universal
@@ -888,7 +888,7 @@ jobs:
 
       # Apple silicon: the Intel DMG as well, the wrong download, to check
       # that it notices Rosetta and switches itself to the Apple silicon build.
-      - uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@v8.0.2
         if: matrix.target_key == 'macos-aarch64'
         with:
           name: bundle-macos-x86_64
@@ -945,7 +945,7 @@ jobs:
             python "${args[@]}"
           fi
 
-      - uses: actions/upload-artifact@v4.6.2
+      - uses: actions/upload-artifact@v7.0.2
         if: always()
         with:
           name: e2e-${{ matrix.target_key }}
@@ -971,7 +971,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0 # the release notes walk the commits since the previous tag
 
-      - uses: actions/download-artifact@v4.3.0
+      - uses: actions/download-artifact@v8.0.2
         with:
           pattern: bundle-*
           path: dist
