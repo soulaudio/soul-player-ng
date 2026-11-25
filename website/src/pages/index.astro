@@ -1,0 +1,210 @@
+---
+import release from '../data/release.json';
+
+const { version, downloads, releaseUrl, checksums } = release;
+
+const find = (id: string) => downloads.find((d) => d.id === id);
+const mb = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+
+const INSTALL = 'curl -fsSL https://player.soulaudio.co/install.sh | sh';
+const REPO = 'https://github.com/soulaudio/soul-player-ng';
+
+const exe = find('windows-x86_64');
+const dmg = find('macos-universal');
+
+// Secondary links under the Linux one-liner, for people who would rather take
+// the package themselves.
+// Joined into one string rather than mapped into elements: multi-line JSX puts
+// a newline between each link, which the browser renders as " , " before the
+// comma and the full stop.
+const linuxLinks = [
+  find('linux-deb-x86_64'),
+  find('linux-rpm-x86_64'),
+  find('linux-appimage-x86_64'),
+  find('linux-flatpak-x86_64'),
+]
+  .filter(Boolean)
+  .map((d) => `<a href="${d.url}">${d.label}</a>`)
+  .join(', ');
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Soul Player</title>
+    <meta
+      name="description"
+      content="A desktop music player for people who still keep their own files. Gapless, bit-perfect, no account, no cloud."
+    />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <script src="/switch.js" defer is:inline></script>
+    <link rel="canonical" href="https://player.soulaudio.co/" />
+    <meta property="og:title" content="Soul Player" />
+    <meta property="og:description" content="Your music. Your way. Your privacy." />
+    <meta property="og:image" content="https://player.soulaudio.co/screenshot.png" />
+    <meta property="og:url" content="https://player.soulaudio.co/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <style>
+      :root {
+        color-scheme: dark light;
+        --bg: #0d0d12;
+        --fg: #f2f2f5;
+        --muted: #a0a0ac;
+        --line: #26262e;
+        --card: #16161d;
+        --accent: #b9a3f2;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --bg: #fbfbfd;
+          --fg: #16161d;
+          --muted: #5c5c68;
+          --line: #e2e2e8;
+          --card: #ffffff;
+          --accent: #6845c9;
+        }
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      main { max-width: 52rem; margin: 0 auto; padding: 4rem 1.25rem 3rem; }
+      h1 {
+        font-size: clamp(2.25rem, 7vw, 3.5rem);
+        line-height: 1.1; margin: 0 0 .5rem; letter-spacing: -.02em;
+      }
+      .motto { font-size: 1.125rem; color: var(--accent); margin: 0 0 2.5rem; font-weight: 600; }
+      img.shot {
+        width: 100%; height: auto; display: block;
+        border-radius: 12px; border: 1px solid var(--line);
+      }
+      .install { margin-top: 3rem; }
+      .install-head {
+        display: flex; flex-wrap: wrap; align-items: baseline;
+        justify-content: space-between; gap: .75rem; margin-bottom: .75rem;
+      }
+      h2 { font-size: 1.125rem; margin: 0; letter-spacing: -.01em; }
+      label { color: var(--muted); font-size: .875rem; }
+      select {
+        font: inherit; font-size: .875rem; color: var(--fg);
+        background: var(--card); border: 1px solid var(--line);
+        border-radius: 6px; padding: .3rem .5rem;
+      }
+      pre {
+        background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+        padding: .9rem 1rem; overflow-x: auto; margin: 0;
+        font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .note { color: var(--muted); font-size: .875rem; margin: .75rem 0 0; }
+      .btn {
+        display: inline-block; font-weight: 600; text-decoration: none;
+        background: var(--accent); color: var(--bg);
+        border-radius: 8px; padding: .65rem 1.1rem;
+      }
+      .btn:hover { filter: brightness(1.08); }
+      a { color: inherit; text-underline-offset: 3px; }
+      /* Every panel is rendered; the switcher shows one. Without JavaScript all
+         three stay visible, each under its own heading, which is a worse page
+         but not a broken one. */
+      .panel + .panel { margin-top: 2rem; }
+      .panel h3 { font-size: .9375rem; color: var(--muted); margin: 0 0 .5rem; font-weight: 600; }
+      .js .panel { display: none; }
+      .js .panel[data-active] { display: block; }
+      .js .panel h3 { display: none; }
+      .js-only { display: none; }
+      .js .js-only { display: flex; align-items: baseline; gap: .5rem; }
+      footer {
+        border-top: 1px solid var(--line); margin-top: 4rem; padding-top: 1.5rem;
+        color: var(--muted); font-size: .875rem;
+      }
+      footer a { color: var(--muted); }
+      footer p { margin: .35rem 0; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Soul Player</h1>
+      <p class="motto">Your music. Your way. Your privacy.</p>
+
+      <img
+        class="shot"
+        src="/screenshot.png"
+        width="2880"
+        height="1800"
+        alt="The Soul Player Albums view: a grid of album covers, a queue in the sidebar, and a track playing."
+      />
+
+      <section class="install">
+        <div class="install-head">
+          <h2>Install</h2>
+          <div class="js-only">
+            <label for="os">Platform</label>
+            <select id="os">
+              <option value="linux">Linux</option>
+              <option value="macos">macOS</option>
+              <option value="windows">Windows</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="panel" data-os="linux" data-active>
+          <h3>Linux</h3>
+          <pre><code>{INSTALL}</code></pre>
+          <p class="note">
+            Picks the right package for your system, verifies it against the release
+            checksums, and installs it. Read it first if you prefer:
+            <a href="/install.sh">install.sh</a>. Needs glibc 2.35 or newer.
+          </p>
+          <p class="note">
+            Or take the package yourself: <Fragment set:html={linuxLinks} />. Other
+            architectures are on the <a href={releaseUrl}>release page</a>.
+          </p>
+        </div>
+
+        <div class="panel" data-os="macos">
+          <h3>macOS</h3>
+          <pre><code>{INSTALL}</code></pre>
+          <p class="note">
+            Downloads the universal build, verifies it, and moves it to Applications.
+            Read it first if you prefer: <a href="/install.sh">install.sh</a>.
+          </p>
+          {dmg && (
+            <p class="note">
+              Or download <a href={dmg.url}>{dmg.name}</a> ({mb(dmg.size)}) and drag it
+              to Applications. One download runs natively on Apple silicon and Intel.
+            </p>
+          )}
+        </div>
+
+        <div class="panel" data-os="windows">
+          <h3>Windows</h3>
+          {exe && <p><a class="btn" href={exe.url}>Download the installer</a></p>}
+          {exe && <p class="note">{exe.name}, {mb(exe.size)}, x86_64.</p>}
+        </div>
+
+        <p class="note">
+          Version {version}. <a href={releaseUrl}>Release notes</a>{
+            checksums && <> and <a href={checksums}>SHA256SUMS</a></>
+          }.
+        </p>
+      </section>
+
+      <footer>
+        <p>
+          <a href={REPO}>Source</a> &middot;
+          <a href={`${REPO}/blob/main/docs/SERVER.md`}>Self-hosting</a> &middot;
+          <a href={`${REPO}/blob/main/docs/INSTALL.md`}>Install notes</a> &middot;
+          <a href={`${REPO}/issues`}>Report a bug</a>
+        </p>
+        <p>Apache 2.0. Copyright &copy; 2026 datadir s. r. o.</p>
+      </footer>
+    </main>
+
+  </body>
+</html>

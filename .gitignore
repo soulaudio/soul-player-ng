@@ -52,3 +52,15 @@ packaging/flathub/cargo-sources.json
 # A local soul-server config (library paths, bind address, db location). The
 # committed template is soul-server.example.toml.
 /soul-server.toml
+
+# website/: dependencies, build output, and the generated files. The three
+# under public/ are copied in at build time from their source of truth
+# elsewhere in the repo (packaging/install.sh, docs/screenshots/, app/icons/),
+# so committing them would just create a second copy that can go stale.
+/website/node_modules/
+/website/dist/
+/website/.astro/
+/website/src/data/release.json
+/website/public/install.sh
+/website/public/screenshot.png
+/website/public/favicon.png
