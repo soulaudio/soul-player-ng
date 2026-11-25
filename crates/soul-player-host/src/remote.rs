@@ -440,9 +440,12 @@ pub struct HttpRangeReader {
     /// never touches the network; the next `read` refetches at `pos`.
     window: Option<Window>,
     /// An in-flight read-ahead of the next window, if one has been started for
-    /// the current sequential run (see [`Prefetch`]). At most one runs at a
-    /// time. Dropped when the reader drops: the worker owns its own HTTP client
-    /// and finishes on its own (bounded by the request timeout), so no join is
+    /// the current sequential run (see [`Prefetch`]). At most one is TRACKED here at a
+    /// time. A seek away from a pending prefetch abandons its handle (`take_prefetched`
+    /// drops it); since a blocking `reqwest` request can't be cancelled, that worker
+    /// detaches and runs to completion (bounded by the request timeout) rather than
+    /// being joined, so rapid seeking can transiently leave a few detached workers
+    /// finishing in the background. Dropped when the reader drops, same way: no join is
     /// forced on the dropping thread (which may be the pump or loader).
     prefetch: Option<Prefetch>,
 }
@@ -525,14 +528,18 @@ impl HttpRangeReader {
         let url = self.url.clone();
         let access_token = self.access_token.clone();
         let track_id = self.track_id;
-        let handle = std::thread::Builder::new()
+        // A spawn failure (thread / resource exhaustion) must NOT panic the consuming
+        // thread (the audio pump or the loader): skip the read-ahead this time and let
+        // the next `read` fetch this window synchronously.
+        if let Ok(handle) = std::thread::Builder::new()
             .name("remote-prefetch".into())
             .spawn(move || fetch_range(&client, &url, track_id, &access_token, next_start))
-            .expect("spawn remote read-ahead worker");
-        self.prefetch = Some(Prefetch {
-            start: next_start,
-            handle,
-        });
+        {
+            self.prefetch = Some(Prefetch {
+                start: next_start,
+                handle,
+            });
+        }
     }
 
     /// Test hook: the absolute start offset of the in-flight read-ahead, if any.
@@ -595,23 +602,38 @@ fn fetch_range(
         )));
     }
 
-    let total_len = response
+    let (range_start, total_len) = response
         .headers()
         .get(reqwest::header::CONTENT_RANGE)
         .and_then(|v| v.to_str().ok())
-        .and_then(parse_content_range_total)
+        .and_then(parse_content_range)
         .ok_or_else(|| {
             io::Error::other("206 Partial Content response had no parsable Content-Range header")
         })?;
+    // Reject a 206 that answered a DIFFERENT range than we asked for. A caching or
+    // reverse proxy in front of the server can coalesce/normalize ranges and return
+    // the wrong window's bytes with a 206; installing those at `start` would silently
+    // corrupt the decoded stream, so fail the fetch instead of trusting it.
+    if range_start != start {
+        return Err(io::Error::other(format!(
+            "GET {endpoint} (Range: bytes={start}-{end}) answered with a window starting at \
+             {range_start}, not the requested {start}"
+        )));
+    }
 
     let bytes = response.bytes().map_err(io::Error::other)?;
     Ok((bytes.to_vec(), total_len))
 }
 
-/// Parses the `TOTAL` out of a `Content-Range: bytes START-END/TOTAL` header
-/// value.
-fn parse_content_range_total(value: &str) -> Option<u64> {
-    value.rsplit_once('/')?.1.parse().ok()
+/// Parses `(START, TOTAL)` out of a `Content-Range: bytes START-END/TOTAL` header
+/// value. Returns `None` unless the unit is `bytes` and both the range START and the
+/// TOTAL are concrete numbers (a `*` range or `*` total, or a missing part, yields
+/// `None`), so a 206 whose offset can't be read back is rejected rather than trusted.
+fn parse_content_range(value: &str) -> Option<(u64, u64)> {
+    let (range, total) = value.trim().strip_prefix("bytes ")?.split_once('/')?;
+    let start = range.split('-').next()?.trim().parse().ok()?;
+    let total = total.trim().parse().ok()?;
+    Some((start, total))
 }
 
 impl Read for HttpRangeReader {
@@ -632,6 +654,18 @@ impl Read for HttpRangeReader {
                 Some(result) => result?,
                 None => self.fetch_chunk(self.pos)?,
             };
+            // We only reach here with `pos < total_len`, so a window with no bytes means
+            // the server contradicted the length it advertised (a mid-track 416, an empty
+            // 206 body, or a too-large total_len learned at open). Fail loudly instead of
+            // installing an empty window, which would make `read` return Ok(0) below EOF:
+            // a silent truncation for most decoders, and a spin (each retry re-arming a
+            // prefetch) for any caller that retries on Ok(0).
+            if bytes.is_empty() {
+                return Err(io::Error::other(format!(
+                    "remote returned no bytes for offset {} below the advertised length {}",
+                    self.pos, self.total_len
+                )));
+            }
             self.window = Some(Window {
                 start: self.pos,
                 bytes,
@@ -1103,6 +1137,15 @@ pub fn refresh(url: &str, refresh: &str) -> anyhow::Result<Tokens> {
 /// distracted human) but finite, so [`login`] can never hang forever.
 const CALLBACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// Per-connection read budget for an accepted loopback callback connection. Bounds the
+/// READ the same way [`CALLBACK_TIMEOUT`] bounds `accept()`: a browser can open a
+/// speculative preconnect to this loopback origin and hold it open without ever sending
+/// a request line, which a blocking `read_line` would otherwise wait on forever,
+/// stranding the real callback in the accept backlog. A connection that sends nothing
+/// within this window is treated like any other non-callback probe (answered and
+/// ignored), so the loop moves on to the next connection.
+const CALLBACK_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Accepts exactly one connection on `listener` (polling with a timeout
 /// rather than blocking forever, so a browser that never shows up can't hang
 /// the caller), reads its HTTP request line, and pulls `code`/`state` out of
@@ -1139,6 +1182,9 @@ fn accept_callback(listener: &std::net::TcpListener) -> anyhow::Result<(String, 
         stream
             .set_nonblocking(false)
             .context("setting the accepted OAuth callback connection blocking")?;
+        // Bound the per-connection read, not just `accept()` (see CALLBACK_READ_TIMEOUT):
+        // a dataless preconnect that is accepted must not block `read_line` forever.
+        let _ = stream.set_read_timeout(Some(CALLBACK_READ_TIMEOUT));
 
         // Read the request line ("GET /callback?code=..&state=.. HTTP/1.1").
         // A broken/empty probe connection is ignored, not fatal.
@@ -1720,19 +1766,61 @@ mod tests {
     }
 
     #[test]
-    fn parse_content_range_total_reads_the_total_after_the_slash() {
-        // The streamed track's length is learned by parsing the server's
-        // `Content-Range: bytes START-END/TOTAL` header, the denominator `len()` keys
-        // off. Valid forms yield the total; a malformed / unknown (`*`) / absent total
-        // yields None, so `fetch_chunk` errors rather than guessing a size.
-        assert_eq!(parse_content_range_total("bytes 0-1023/4096"), Some(4096));
-        assert_eq!(parse_content_range_total("bytes 0-0/1"), Some(1));
-        // The unknown-RANGE `*` form still carries a concrete total.
-        assert_eq!(parse_content_range_total("bytes */1234"), Some(1234));
-        // No slash, an unknown (`*`) total, or an empty value -> None.
-        assert_eq!(parse_content_range_total("bytes 0-1023"), None);
-        assert_eq!(parse_content_range_total("bytes 0-10/*"), None);
-        assert_eq!(parse_content_range_total(""), None);
+    fn parse_content_range_reads_the_start_and_total() {
+        // The streamed window's START (used to reject a proxy that answered the wrong
+        // range) and the track's TOTAL (what `len()` keys off) are both read from the
+        // server's `Content-Range: bytes START-END/TOTAL`. Valid forms yield both; a
+        // malformed / unknown (`*`) / absent part yields None, so `fetch_range` errors
+        // rather than trusting or guessing.
+        assert_eq!(parse_content_range("bytes 0-1023/4096"), Some((0, 4096)));
+        assert_eq!(parse_content_range("bytes 0-0/1"), Some((0, 1)));
+        assert_eq!(
+            parse_content_range("bytes 524288-1048575/2000000"),
+            Some((524288, 2000000))
+        );
+        // An unknown (`*`) range has no readable start -> None (a 416 anyway, handled
+        // before this parse runs).
+        assert_eq!(parse_content_range("bytes */1234"), None);
+        // No slash, an unknown (`*`) total, a missing `bytes` unit, or empty -> None.
+        assert_eq!(parse_content_range("bytes 0-1023"), None);
+        assert_eq!(parse_content_range("bytes 0-10/*"), None);
+        assert_eq!(parse_content_range("0-1023/4096"), None);
+        assert_eq!(parse_content_range(""), None);
+    }
+
+    /// A 206 whose `Content-Range` starts at a DIFFERENT offset than requested (a
+    /// caching/reverse proxy coalescing or normalizing ranges) must be REJECTED, not
+    /// installed as the window's bytes, which would silently corrupt the decoded
+    /// stream. Opening a reader issues the first range request at offset 0; a server
+    /// answering with a window at offset 999 must make `new` error.
+    #[test]
+    fn http_range_reader_rejects_a_206_for_the_wrong_range() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
+        let addr = listener.local_addr().expect("local addr");
+        std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = listener.accept() {
+                let mut buf = [0u8; 512];
+                let _ = sock.read(&mut buf); // best-effort drain of the request
+                // 206, but for `bytes 999-1008` when the reader asked for `0-...`.
+                let body = b"wrongbytes";
+                let resp = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 999-1008/1000000\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes());
+                let _ = sock.write_all(body);
+            }
+        });
+        let remote = RemoteServer {
+            url: format!("http://{addr}"),
+            access_token: "t".into(),
+        };
+        assert!(
+            HttpRangeReader::new(&remote, 0).is_err(),
+            "a 206 answering a different range than requested must be rejected, not trusted"
+        );
     }
 
     #[test]
