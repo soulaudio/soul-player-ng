@@ -44,6 +44,12 @@ jobs:
   terraform:
     name: plan + apply
     runs-on: ubuntu-latest
+    # Credentials live in this environment rather than at repository level, so
+    # a run that is not from main cannot reach them. The practical effect on a
+    # pull request is that fmt and validate run and the plan does not, which is
+    # the right trade: a PR gets static checks, and the plan runs on main in
+    # the same job as the apply, where it is a record of what was applied.
+    environment: production
     env:
       # Bunny account key: the provider authenticates with it.
       BUNNYNET_API_KEY: ${{ secrets.BUNNYNET_API_KEY }}

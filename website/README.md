@@ -66,10 +66,11 @@ withdraws a failed release and restores the previous one as latest, which the
 published while the credentials are missing (the workflow says so and does not
 fail).
 
-It needs three repository secrets and one repository variable, and nothing
-has to be copied out of a terraform output by hand: the deploy reads the zone
-name, its write password, and the pull zone id straight from the state that
-created them.
+It needs three secrets and one variable, set on the **`production`
+environment** (Settings -> Environments -> production), not at repository
+level: a pull request then cannot reach them. Nothing has to be copied out of
+a terraform output by hand, because the deploy reads the zone name, its write
+password, and the pull zone id straight from the state that created them.
 
 | Setting | Kind | What it is |
 |---|---|---|
