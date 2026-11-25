@@ -79,6 +79,7 @@ jobs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
       previous: ${{ steps.v.outputs.previous }}
+      update_from: ${{ steps.v.outputs.update_from }}
       # The release the draft job creates: the tag, or a throwaway one for a rehearsal.
       release_tag: ${{ steps.v.outputs.release_tag }}
     steps:
@@ -136,6 +137,12 @@ jobs:
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$ver" >> "$GITHUB_OUTPUT"
           echo "previous=$prev" >> "$GITHUB_OUTPUT"
+          # What the installer tests update FROM: the newest published release
+          # that is not this version (a rehearsal of an already-released version
+          # would otherwise have nothing to update from).
+          from=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases -L 20 \
+                   --json tagName --jq '.[].tagName' | grep -vx "v$ver" | head -1 || true)
+          echo "update_from=$from" >> "$GITHUB_OUTPUT"
           if [ "$REHEARSAL" = "true" ]; then
             echo "release_tag=$tag-rehearsal.$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
           else
@@ -167,12 +174,12 @@ jobs:
           # GitHub-hosted runner (free on public repos), so this is a native
           # build rather than a cross-compile, which matters for a project that
           # links ALSA, D-Bus, OpenSSL and a GPU stack through `-sys` crates.
-          - os: ubuntu-24.04
+          - os: ubuntu-22.04
             target_key: linux-x86_64
             format: appimage
             deb_arch: amd64
             rpm_arch: x86_64
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             target_key: linux-aarch64
             format: appimage
             deb_arch: arm64
@@ -215,13 +222,16 @@ jobs:
       - name: Linux build + packaging dependencies
         if: runner.os == 'Linux'
         run: |
+          # Ubuntu 24.04 renamed libfuse2 for the 64-bit time_t transition.
+          fuse=libfuse2t64
+          [ "$(. /etc/os-release && echo "$VERSION_ID")" != "22.04" ] || fuse=libfuse2
           # Retry so a transient apt-mirror stall (actions/runner-images#14823) self-heals.
           for attempt in 1 2 3 4 5; do
             if sudo apt-get update \
               && sudo apt-get install -y -o Acquire::Retries=3 \
                    pkg-config libssl-dev \
                    libasound2-dev libdbus-1-dev libgtk-3-dev libxdo-dev librsvg2-dev \
-                   libayatana-appindicator3-dev libfuse2t64; then
+                   libayatana-appindicator3-dev "$fuse"; then
               exit 0
             fi
             echo "::warning::apt attempt $attempt failed, retrying in $((attempt * 5))s"
@@ -252,26 +262,42 @@ jobs:
         working-directory: app
         run: cargo packager --release -f ${{ matrix.format }}
 
-      # Keep the BUILD host at Ubuntu 24.04 LTS (2.39) so the binary never references a
-      # glibc newer than that. The effective RUNTIME floor is lower, 2.35, measured by
-      # installing and running on Ubuntu 22.04, Debian 12 and Ubuntu 24.04, because the
-      # only 2.39 symbols the binary carries (`pidfd_spawnp`, `pidfd_getpid`, from Rust's
-      # process spawning) are WEAK, and glibc falls back when they are absent. This gate
-      # is therefore a ceiling on the build, not a claim about where it runs.
+      # The promise is glibc 2.35 (Ubuntu 22.04, Debian 12; install.sh refuses
+      # anything older). Linux therefore BUILDS on Ubuntu 22.04: the AppImage
+      # carries copies of the build host's libraries (libdbus, libcrypto,
+      # libsystemd, ...), and those copies need whatever glibc the host had. Built
+      # on 24.04, 0.4.7's AppImage needed 2.38 and did not start on Ubuntu 22.04
+      # or Debian 12, which the installer test caught after the fact.
       #
-      # BOTH published releases predate this check and are built
-      # against 2.43 (new libm float symbols, asinf/acosf/atan2f/…), so neither v0.2.0 nor
-      # v0.3.0 starts on 24.04: `libm.so.6: version 'GLIBC_2.43' not found`. That is the
-      # whole reason this gate exists, the e2e's "previous release runs here" leg reports
-      # it as a warning rather than a failure, because a published artifact cannot be fixed
-      # retroactively and blocking every future release on it would be worse.
+      # So the gate is every ELF the AppImage ships, not only the main binary.
+      #
+      # History: v0.2.0 and v0.3.0 were built against 2.43 (libm float symbols)
+      # and start on nothing older; the e2e's "previous release runs here" leg
+      # reports old releases as a warning, since a published artifact cannot be
+      # fixed retroactively.
       - name: glibc floor (Linux)
         if: runner.os == 'Linux'
         run: |
-          need=$(objdump -T app/target/release/soul-player | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)
-          echo "binary needs $need"
-          [ "$(printf '%s\nGLIBC_2.39\n' "$need" | sort -V | tail -1)" = "GLIBC_2.39" ] \
-            || { echo "::error::binary needs $need, above the GLIBC_2.39 floor (Ubuntu 24.04)"; exit 1; }
+          set -euo pipefail
+          floor=GLIBC_2.35
+          appimage=$(find app/target -maxdepth 3 -name '*.AppImage' | head -1)
+          [ -n "$appimage" ] || { echo "::error::no AppImage built"; exit 1; }
+          x="$RUNNER_TEMP/appimage-x"
+          rm -rf "$x" && mkdir -p "$x"
+          (cd "$x" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract >/dev/null)
+          worst=$floor
+          while IFS= read -r f; do
+            file -b "$f" | grep -q '^ELF' || continue
+            need=$(objdump -T "$f" 2>/dev/null | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1 || true)
+            [ -n "$need" ] || continue
+            if [ "$(printf '%s\n%s\n' "$need" "$floor" | sort -V | tail -1)" != "$floor" ]; then
+              echo "::error::${f#"$x"/} needs $need, above the $floor floor"
+              worst=$need
+            fi
+          done < <(find "$x/squashfs-root" -type f)
+          echo "binary: $(objdump -T app/target/release/soul-player | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
+          [ "$worst" = "$floor" ] || exit 1
+          echo "ok: nothing in the AppImage needs more than $floor"
 
       # Stage under a GitHub-safe name (so the manifest URL matches the uploaded asset)
       # and write the updater sidecar for latest.json.
@@ -1050,6 +1076,26 @@ jobs:
             [ -f "check/${url##*/}" ] || { echo "::error::manifest names ${url##*/}, not uploaded"; exit 1; }
           done
           jq -e --argjson n "$PLATFORMS" '.platforms | length == $n' check/latest.json >/dev/null
+          # The installer gate (install-candidate) serves these exact bytes.
+          mkdir -p candidate/linux candidate/macos
+          cp check/latest.json check/SHA256SUMS candidate/linux/
+          cp check/latest.json check/SHA256SUMS candidate/macos/
+          cp check/*.deb check/*.rpm check/*.AppImage candidate/linux/
+          cp check/*_universal.dmg candidate/macos/
+
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: release-candidate-linux
+          path: candidate/linux
+          retention-days: 3
+          compression-level: 0
+
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: release-candidate-macos
+          path: candidate/macos
+          retention-days: 3
+          compression-level: 0
 
       - name: Delete the rehearsal draft
         if: always() && env.REHEARSAL == 'true'
@@ -1058,8 +1104,21 @@ jobs:
           ! git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/$TAG" \
             || { echo "::error::rehearsal left a tag $TAG"; exit 1; }
 
-  publish:
+  # The installer (packaging/install.sh, what player.soulaudio.co serves) run
+  # against this exact candidate BEFORE anything is published: on every system
+  # it supports, install the previous release, update to this one, uninstall,
+  # reinstall, purge. A failure stops the release here and deletes the draft.
+  install-candidate:
     needs: [guard, draft]
+    if: github.event.inputs.dry_run != 'true'
+    uses: ./.github/workflows/installer.yml
+    with:
+      version: ${{ needs.guard.outputs.version }}
+      previous: ${{ needs.guard.outputs.update_from }}
+      candidate: true
+
+  publish:
+    needs: [guard, draft, install-candidate]
     if: github.event.inputs.rehearsal != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -1126,47 +1185,25 @@ jobs:
     uses: ./.github/workflows/site.yml
     secrets: inherit
 
-  # The release e2e above installs the build ARTIFACT. This installs the way a
-  # user actually does: by piping the installer that player.soulaudio.co is
-  # serving into a shell, letting it resolve the latest release by itself.
-  #
-  # Same workflow that can be dispatched by hand against any published
-  # release, so the wiring here is exercised outside a release rather than
-  # being first run when it matters. Runs after `site`, so it tests this
-  # release and not the previous one.
+  # The same lifecycle as install-candidate, now through what users actually
+  # run: the installer player.soulaudio.co serves, resolving the latest release
+  # by itself from GitHub. Runs after `site`, so it tests this release and not
+  # the previous one. A failure rolls the release back (see rollback).
   install-script:
     needs: [guard, site]
     if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
     uses: ./.github/workflows/installer.yml
     with:
       version: ${{ needs.guard.outputs.version }}
-
-  install-script-macos:
-    name: installer (macOS dmg)
-    needs: [guard, site]
-    if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
-    runs-on: macos-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7.0.1
-
-      # No container: the installer mounts a dmg and copies into /Applications,
-      # which only means anything on a real macOS.
-      - name: Install through the published script
-        run: sh packaging/test-install.sh macos "${{ needs.guard.outputs.version }}"
-
-      - name: Remove it again
-        if: always()
-        run: sudo rm -rf "/Applications/Soul Player.app"
+      previous: ${{ needs.guard.outputs.update_from }}
 
   # Homebrew (homebrew.yml): PR the new cask to soulaudio/homebrew-tap, merge only
   # when the tap's cask-ci passes, install from the live tap as a user would, and
   # revert the same way if that fails. A Homebrew failure fails this run but never
   # demotes the release: the release itself was verified, the cask is one channel.
+  # After install-script, so a release that gets rolled back never reaches the tap.
   homebrew:
-    # After the install tests, not beside them: pushing a cask for a release
-    # that is about to be rolled back would leave brew users on it.
-    needs: [guard, verify, install-script, install-script-macos]
+    needs: [guard, verify, install-script]
     if: github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true'
     uses: ./.github/workflows/homebrew.yml
     with:
@@ -1195,17 +1232,17 @@ jobs:
     uses: ./.github/workflows/site.yml
     secrets: inherit
 
+  # Withdraws the release when any gate fails: the draft, publishing, the
+  # verification, or the installer before (install-candidate) or after
+  # (install-script) publishing. A release whose installer does not install is
+  # a broken release.
   rollback:
-    needs: [guard, draft, publish, verify, install-script, install-script-macos]
-    # A release whose published installer does not install is a broken
-    # release, so the install matrix joins the stages that undo one. It runs
-    # after publish, so the remedy is the same as a failed verify: demote it,
-    # make the previous release latest again, keep the tag.
+    needs: [guard, draft, install-candidate, publish, verify, install-script]
     if: >-
       always() && github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true' &&
-      (needs.draft.result == 'failure' || needs.publish.result == 'failure' ||
-       needs.verify.result == 'failure' || needs.install-script.result == 'failure' ||
-       needs.install-script-macos.result == 'failure')
+      (needs.draft.result == 'failure' || needs.install-candidate.result == 'failure' ||
+       needs.publish.result == 'failure' || needs.verify.result == 'failure' ||
+       needs.install-script.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
