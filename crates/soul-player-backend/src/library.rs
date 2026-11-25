@@ -54,8 +54,9 @@ pub struct IncrementalBuild {
     /// The baked `.soulidx` bytes per root, **parallel to the `roots`** passed in.
     /// Each root bakes independently, so these can be cached and later fed back to
     /// [`Library::from_source_bytes`] to rebuild an unaffected root without
-    /// re-scanning it, the basis for the watcher's scoped rescan.
-    pub bytes: Vec<Vec<u8>>,
+    /// re-scanning it, the basis for the watcher's scoped rescan. Each is a shared
+    /// [`IndexBlob`], so carrying it back and caching it costs no blob copy.
+    pub bytes: Vec<IndexBlob>,
 }
 
 /// The result of [`Library::locate`]: which source a track belongs to and its
@@ -71,10 +72,19 @@ pub struct Located {
     pub rel: PathBuf,
 }
 
-/// A `.soulidx` reader over an **owning** in-memory source: `Cursor` owns the
-/// baked bytes, so the reader is `'static` with no leak and no on-disk cache, and
-/// drops cleanly when the `Library` is swapped out on rescan.
-type MemReader = IndexReader<FromStd<Cursor<Vec<u8>>>>;
+/// A baked `.soulidx` blob, shared behind an `Arc` rather than deep-copied. A
+/// baked index is immutable after `write_index`, so the reader that parses it and
+/// the per-root cache that keeps it for a scoped rescan (and every remote-aggregate
+/// rebuild) can share ONE allocation: cloning an `IndexBlob` is a refcount bump,
+/// not an O(size) copy of a potentially multi-MB index. The underlying `Cursor`
+/// only ever reads, so `Arc<[u8]>` (which is `AsRef<[u8]>`) backs it directly.
+pub type IndexBlob = Arc<[u8]>;
+
+/// A `.soulidx` reader over an **owning** in-memory source: `Cursor` owns a shared
+/// [`IndexBlob`] handle, so the reader is `'static` with no leak and no on-disk
+/// cache, and drops cleanly (releasing its share of the blob) when the `Library` is
+/// swapped out on rescan.
+type MemReader = IndexReader<FromStd<Cursor<IndexBlob>>>;
 
 /// The desktop library: the baked catalog (one source per watched folder,
 /// aggregated by [`MultiCatalog`]) plus each source's physical root, needed to
@@ -111,7 +121,7 @@ impl Library {
         let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(roots.len());
         let mut counts = Vec::with_capacity(roots.len());
         for root in roots {
-            let bytes = soul_audio_import::bake(root)?;
+            let bytes: IndexBlob = soul_audio_import::bake(root)?.into();
             let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(bytes)));
             counts.push(reader.track_count() as usize);
             members.push(Box::new(reader));
@@ -177,9 +187,10 @@ impl Library {
                     }
                 }
             }
-            let bytes = soul_audio_index::build::write_index(&outcome.input);
+            let bytes: IndexBlob = soul_audio_index::build::write_index(&outcome.input).into();
             // Keep the baked bytes so an unaffected root can be reused verbatim on a
-            // scoped rescan; the reader reads a clone, the original is carried back.
+            // scoped rescan; the reader and the carried-back copy SHARE one allocation
+            // (cloning the `IndexBlob` is a refcount bump, not a copy of the index).
             let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(bytes.clone())));
             counts.push(reader.track_count() as usize);
             members.push(Box::new(reader));
@@ -215,7 +226,7 @@ impl Library {
     /// what re-scanning it would, so the watcher can re-scan only the roots that
     /// changed and reuse the rest. `roots.len()` must equal `bytes.len()`.
     #[must_use]
-    pub fn from_source_bytes(roots: &[PathBuf], bytes: Vec<Vec<u8>>) -> Library {
+    pub fn from_source_bytes(roots: &[PathBuf], bytes: Vec<IndexBlob>) -> Library {
         debug_assert_eq!(roots.len(), bytes.len(), "one baked index per root");
         let mut members: Vec<Box<dyn Catalog + Send>> = Vec::with_capacity(bytes.len());
         let mut counts = Vec::with_capacity(bytes.len());
