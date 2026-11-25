@@ -2438,25 +2438,67 @@ settings.organizeConfirmSummary:
   cs: '%{copy} ke kopírování, %{moved} k přesunu, %{dup} duplikátů, %{conflict} konfliktů'
   ja: 'コピー %{copy} 件、移動 %{moved} 件、重複 %{dup} 件、競合 %{conflict} 件'
 settings.organizeConfirmFiles:
-  en: '%{audio} audio files + %{side} side files'
-  de: '%{audio} Audiodateien + %{side} Begleitdateien'
-  es: '%{audio} archivos de audio + %{side} archivos adjuntos'
-  zh: '%{audio} 个音频文件 + %{side} 个附属文件'
-  cs: '%{audio} zvukových souborů + %{side} doprovodných souborů'
-  ja: '音声ファイル %{audio} 件 + 付属ファイル %{side} 件'
-settings.organizeDiscWarning:
+  en: '%{audio} + %{side}'
+  de: '%{audio} + %{side}'
+  es: '%{audio} + %{side}'
+  zh: '%{audio} + %{side}'
+  cs: '%{audio} + %{side}'
+  ja: '%{audio} + %{side}'
+settings.organizeAudioFiles.one:
+  en: '%{n} audio file'
+  de: '%{n} Audiodatei'
+  es: '%{n} archivo de audio'
+  cs: '%{n} zvukový soubor'
+settings.organizeAudioFiles.few:
+  cs: '%{n} zvukové soubory'
+settings.organizeAudioFiles.other:
+  en: '%{n} audio files'
+  de: '%{n} Audiodateien'
+  es: '%{n} archivos de audio'
+  zh: '%{n} 个音频文件'
+  cs: '%{n} zvukových souborů'
+  ja: '音声ファイル %{n} 件'
+settings.organizeSideFiles.one:
+  en: '%{n} side file'
+  de: '%{n} Begleitdatei'
+  es: '%{n} archivo adjunto'
+  cs: '%{n} doprovodný soubor'
+settings.organizeSideFiles.few:
+  cs: '%{n} doprovodné soubory'
+settings.organizeSideFiles.other:
+  en: '%{n} side files'
+  de: '%{n} Begleitdateien'
+  es: '%{n} archivos adjuntos'
+  zh: '%{n} 个附属文件'
+  cs: '%{n} doprovodných souborů'
+  ja: '付属ファイル %{n} 件'
+settings.organizeDiscWarning.one:
+  en: '%{n} album takes its disc numbers only from folder names; the one-folder layout will lose them. Choose Disc sub-folders.'
+  de: '%{n} Album bezieht seine CD-Nummern nur aus Ordnernamen; die Option Ein Ordner verliert sie. Wähle Unterordner je CD.'
+  es: '%{n} álbum toma sus números de disco solo de los nombres de carpeta; el diseño de una sola carpeta los perderá. Elige subcarpetas por disco.'
+  cs: '%{n} album bere čísla disků jen z názvů složek; volba Jedna složka je ztratí. Zvolte Podsložky podle disků.'
+settings.organizeDiscWarning.few:
+  cs: '%{n} alba berou čísla disků jen z názvů složek; volba Jedna složka je ztratí. Zvolte Podsložky podle disků.'
+settings.organizeDiscWarning.other:
   en: '%{n} albums take their disc numbers only from folder names; the one-folder layout will lose them. Choose Disc sub-folders.'
   de: '%{n} Alben beziehen ihre CD-Nummern nur aus Ordnernamen; die Option Ein Ordner verliert sie. Wähle Unterordner je CD.'
   es: '%{n} álbumes toman sus números de disco solo de los nombres de carpeta; el diseño de una sola carpeta los perderá. Elige subcarpetas por disco.'
   zh: '%{n} 张专辑的碟号仅来自文件夹名称；单文件夹布局会丢失碟号。请选择按碟分子文件夹。'
-  cs: 'Alba (%{n}) berou čísla disků jen z názvů složek; volba Jedna složka je ztratí. Zvolte Podsložky podle disků.'
+  cs: '%{n} alb bere čísla disků jen z názvů složek; volba Jedna složka je ztratí. Zvolte Podsložky podle disků.'
   ja: '%{n} 件のアルバムはディスク番号をフォルダ名からのみ取得しています。1 フォルダのレイアウトでは失われます。ディスクごとのサブフォルダを選んでください。'
-settings.organizeDiscWarningFlat:
+settings.organizeDiscWarningFlat.one:
+  en: '%{n} album takes its disc numbers only from folder names, which this layout will lose. Tag the discs, or pick an album layout with Disc sub-folders.'
+  de: '%{n} Album bezieht seine CD-Nummern nur aus Ordnernamen, die bei dieser Struktur verloren gehen. Tagge die CDs oder wähle eine Album-Struktur mit Unterordnern je CD.'
+  es: '%{n} álbum toma sus números de disco solo de los nombres de carpeta, que esta estructura perderá. Etiqueta los discos o elige una estructura por álbum con subcarpetas por disco.'
+  cs: '%{n} album bere čísla disků jen z názvů složek, která tato struktura ztratí. Otagujte disky, nebo zvolte strukturu alb s podsložkami podle disků.'
+settings.organizeDiscWarningFlat.few:
+  cs: '%{n} alba berou čísla disků jen z názvů složek, která tato struktura ztratí. Otagujte disky, nebo zvolte strukturu alb s podsložkami podle disků.'
+settings.organizeDiscWarningFlat.other:
   en: '%{n} albums take their disc numbers only from folder names, which this layout will lose. Tag the discs, or pick an album layout with Disc sub-folders.'
   de: '%{n} Alben beziehen ihre CD-Nummern nur aus Ordnernamen, die bei dieser Struktur verloren gehen. Tagge die CDs oder wähle eine Album-Struktur mit Unterordnern je CD.'
   es: '%{n} álbumes toman sus números de disco solo de los nombres de carpeta, que esta estructura perderá. Etiqueta los discos o elige una estructura por álbum con subcarpetas por disco.'
   zh: '%{n} 张专辑的碟号仅来自文件夹名称，此布局会丢失碟号。请为各碟添加标签，或选择带按碟分子文件夹的专辑布局。'
-  cs: 'Alba (%{n}) berou čísla disků jen z názvů složek, která tato struktura ztratí. Otagujte disky, nebo zvolte strukturu alb s podsložkami podle disků.'
+  cs: '%{n} alb bere čísla disků jen z názvů složek, která tato struktura ztratí. Otagujte disky, nebo zvolte strukturu alb s podsložkami podle disků.'
   ja: '%{n} 件のアルバムはディスク番号をフォルダ名からのみ取得しており、このレイアウトでは失われます。ディスクにタグを付けるか、ディスクごとのサブフォルダがあるアルバムのレイアウトを選んでください。'
 settings.organizeLeftTitle:
   en: 'Side files left in place'
@@ -2466,13 +2508,34 @@ settings.organizeLeftTitle:
   cs: 'Doprovodné soubory ponechané na místě'
   ja: '元の場所に残す付属ファイル'
 settings.organizeLeftRow:
-  en: '%{folder}: %{files} files (%{reason})'
-  de: '%{folder}: %{files} Dateien (%{reason})'
-  es: '%{folder}: %{files} archivos (%{reason})'
-  zh: '%{folder}：%{files} 个文件（%{reason}）'
-  cs: '%{folder}: %{files} souborů (%{reason})'
-  ja: '%{folder}：%{files} 件（%{reason}）'
-settings.organizeLeftMore:
+  en: '%{folder}: %{files} (%{reason})'
+  de: '%{folder}: %{files} (%{reason})'
+  es: '%{folder}: %{files} (%{reason})'
+  zh: '%{folder}：%{files}（%{reason}）'
+  cs: '%{folder}: %{files} (%{reason})'
+  ja: '%{folder}：%{files}（%{reason}）'
+settings.organizeFileCount.one:
+  en: '%{n} file'
+  de: '%{n} Datei'
+  es: '%{n} archivo'
+  cs: '%{n} soubor'
+settings.organizeFileCount.few:
+  cs: '%{n} soubory'
+settings.organizeFileCount.other:
+  en: '%{n} files'
+  de: '%{n} Dateien'
+  es: '%{n} archivos'
+  zh: '%{n} 个文件'
+  cs: '%{n} souborů'
+  ja: '%{n} 件'
+settings.organizeLeftMore.one:
+  en: 'and %{n} more'
+  de: 'und %{n} weitere'
+  es: 'y %{n} más'
+  cs: 'a %{n} další'
+settings.organizeLeftMore.few:
+  cs: 'a %{n} další'
+settings.organizeLeftMore.other:
   en: 'and %{n} more'
   de: 'und %{n} weitere'
   es: 'y %{n} más'
@@ -2521,12 +2584,19 @@ settings.organizeLeftOther:
   zh: '保留在原处'
   cs: 'ponechány na místě'
   ja: '元の場所に保持'
-settings.organizePruned:
+settings.organizePruned.one:
+  en: '%{n} emptied folder removed'
+  de: '%{n} geleerter Ordner entfernt'
+  es: '%{n} carpeta vacía eliminada'
+  cs: 'Odstraněna %{n} prázdná složka'
+settings.organizePruned.few:
+  cs: 'Odstraněny %{n} prázdné složky'
+settings.organizePruned.other:
   en: '%{n} emptied folders removed'
   de: '%{n} geleerte Ordner entfernt'
   es: '%{n} carpetas vacías eliminadas'
   zh: '已删除 %{n} 个空文件夹'
-  cs: 'Odstraněno prázdných složek: %{n}'
+  cs: 'Odstraněno %{n} prázdných složek'
   ja: '空になったフォルダを %{n} 件削除'
 settings.organizeApplying:
   en: 'Organizing…'
@@ -2543,12 +2613,68 @@ settings.organizeDoneTitle:
   cs: 'Organizace dokončena'
   ja: '整理が完了'
 settings.organizeDoneSummary:
-  en: '%{copied} copied, %{moved} moved, %{skipped} skipped, %{failed} failed'
-  de: '%{copied} kopiert, %{moved} verschoben, %{skipped} übersprungen, %{failed} fehlgeschlagen'
-  es: '%{copied} copiados, %{moved} movidos, %{skipped} omitidos, %{failed} fallidos'
-  zh: '已复制 %{copied} 项，已移动 %{moved} 项，已跳过 %{skipped} 项，失败 %{failed} 项'
-  cs: '%{copied} zkopírováno, %{moved} přesunuto, %{skipped} přeskočeno, %{failed} selhalo'
-  ja: 'コピー %{copied} 件、移動 %{moved} 件、スキップ %{skipped} 件、失敗 %{failed} 件'
+  en: '%{copied}, %{moved}, %{skipped}, %{failed}'
+  de: '%{copied}, %{moved}, %{skipped}, %{failed}'
+  es: '%{copied}, %{moved}, %{skipped}, %{failed}'
+  zh: '%{copied}，%{moved}，%{skipped}，%{failed}'
+  cs: '%{copied}, %{moved}, %{skipped}, %{failed}'
+  ja: '%{copied}、%{moved}、%{skipped}、%{failed}'
+settings.organizeDoneCopied.one:
+  en: '%{n} copied'
+  de: '%{n} kopiert'
+  es: '%{n} copiado'
+  cs: '%{n} zkopírován'
+settings.organizeDoneCopied.few:
+  cs: '%{n} zkopírovány'
+settings.organizeDoneCopied.other:
+  en: '%{n} copied'
+  de: '%{n} kopiert'
+  es: '%{n} copiados'
+  zh: '已复制 %{n} 项'
+  cs: '%{n} zkopírováno'
+  ja: 'コピー %{n} 件'
+settings.organizeDoneMoved.one:
+  en: '%{n} moved'
+  de: '%{n} verschoben'
+  es: '%{n} movido'
+  cs: '%{n} přesunut'
+settings.organizeDoneMoved.few:
+  cs: '%{n} přesunuty'
+settings.organizeDoneMoved.other:
+  en: '%{n} moved'
+  de: '%{n} verschoben'
+  es: '%{n} movidos'
+  zh: '已移动 %{n} 项'
+  cs: '%{n} přesunuto'
+  ja: '移動 %{n} 件'
+settings.organizeDoneSkipped.one:
+  en: '%{n} skipped'
+  de: '%{n} übersprungen'
+  es: '%{n} omitido'
+  cs: '%{n} přeskočen'
+settings.organizeDoneSkipped.few:
+  cs: '%{n} přeskočeny'
+settings.organizeDoneSkipped.other:
+  en: '%{n} skipped'
+  de: '%{n} übersprungen'
+  es: '%{n} omitidos'
+  zh: '已跳过 %{n} 项'
+  cs: '%{n} přeskočeno'
+  ja: 'スキップ %{n} 件'
+settings.organizeDoneFailed.one:
+  en: '%{n} failed'
+  de: '%{n} fehlgeschlagen'
+  es: '%{n} fallido'
+  cs: '%{n} selhal'
+settings.organizeDoneFailed.few:
+  cs: '%{n} selhaly'
+settings.organizeDoneFailed.other:
+  en: '%{n} failed'
+  de: '%{n} fehlgeschlagen'
+  es: '%{n} fallidos'
+  zh: '失败 %{n} 项'
+  cs: '%{n} selhalo'
+  ja: '失敗 %{n} 件'
 settings.organizeFailedTitle:
   en: 'Not organized'
   de: 'Nicht organisiert'

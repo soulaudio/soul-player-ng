@@ -72,8 +72,23 @@ static LOCALE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 pub(crate) fn use_test_locale(locale: &str) -> std::sync::MutexGuard<'static, ()> {
     let guard = LOCALE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    HOLDS_TEST_LOCALE.with(|h| h.set(true));
     rust_i18n::set_locale(locale);
     guard
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether this test thread ever took [`use_test_locale`] (each test runs on its own thread).
+    static HOLDS_TEST_LOCALE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this test thread uses [`use_test_locale`]. A test that does not must
+/// not reset the global locale to `en` (`apply_locale("en")` housekeeping), or it
+/// clobbers a concurrent test that holds the lock in another locale.
+#[cfg(test)]
+pub(crate) fn holds_test_locale() -> bool {
+    HOLDS_TEST_LOCALE.with(|h| h.get())
 }
 
 #[cfg(test)]

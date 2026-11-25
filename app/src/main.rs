@@ -57,6 +57,7 @@ mod notify;
 mod open_files;
 mod organize_job;
 mod playlists;
+mod plural;
 mod report;
 #[cfg(test)]
 mod test_fixtures;
@@ -92,7 +93,14 @@ fn resolve_locale(pref: &str) -> &'static str {
 /// Point the global `rust_i18n` locale at `pref`'s resolved code, so the next
 /// render's `t!` calls translate against it.
 fn apply_locale(pref: &str) {
-    rust_i18n::set_locale(resolve_locale(pref));
+    let code = resolve_locale(pref);
+    // Tests: an unguarded test's `apply_locale("en")` reset must not flip the
+    // locale under a concurrent test that holds `config::use_test_locale`.
+    #[cfg(test)]
+    if code == "en" && !config::holds_test_locale() {
+        return;
+    }
+    rust_i18n::set_locale(code);
 }
 
 /// Switch the UI language (Settings → Language): remember the pref, apply it, and
@@ -12037,13 +12045,18 @@ mod tests {
     /// Build a frame with the organize modal in a given phase, settled so its
     /// controls are present + hit-testable.
     fn organize_frame(phase: OrganizePhase) -> Runtime<State> {
+        organize_frame_in(phase, "en")
+    }
+
+    /// [`organize_frame`] in `locale` (the caller holds `config::use_test_locale`).
+    fn organize_frame_in(phase: OrganizePhase, locale: &str) -> Runtime<State> {
         let env = Env {
             system_dark: true,
             scale: 2.0,
         };
         let mut s = State::new(PlayerHandle::offline());
         s.organize = Some(phase);
-        apply_locale("en");
+        apply_locale(locale);
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         rt.settle_all();
@@ -12082,6 +12095,7 @@ mod tests {
     /// The organize modal renders the right keyed controls for each phase.
     #[test]
     fn organize_overlay_renders_each_phase() {
+        let _locale = config::use_test_locale("en");
         // Confirm: title/summary + the Confirm and Cancel buttons.
         let rt = organize_frame(OrganizePhase::confirm(sample_plan(), "artist-album"));
         for k in ["organize-confirm", "organize-confirm-go", "organize-cancel"] {
@@ -12128,7 +12142,7 @@ mod tests {
         let rt = organize_frame(OrganizePhase::confirm(plan, "artist-album"));
         assert_eq!(
             el_info(&rt, "organize-confirm-files").text.as_deref(),
-            Some("2 audio files + 1 side files")
+            Some("2 audio files + 1 side file")
         );
         assert_eq!(
             el_info(&rt, "organize-disc-warning").text.as_deref(),
@@ -12163,7 +12177,7 @@ mod tests {
         let row = |k: &str| el_info(&rt, k).text;
         assert_eq!(
             row("organize-left-0").as_deref(),
-            Some("Album 0: 1 files (folder shared with another album)")
+            Some("Album 0: 1 file (folder shared with another album)")
         );
         assert_eq!(
             row("organize-left-0-names").as_deref(),
@@ -12218,7 +12232,7 @@ mod tests {
         assert_eq!(
             el_info(&rt, "organize-disc-warning").text.as_deref(),
             Some(
-                "1 albums take their disc numbers only from folder names, which this \
+                "1 album takes its disc numbers only from folder names, which this \
                  layout will lose. Tag the discs, or pick an album layout with Disc \
                  sub-folders."
             )
@@ -12256,10 +12270,90 @@ mod tests {
         assert!(rt.find("organize-failed").is_none(), "no failures: no list");
     }
 
+    /// Counted organize strings agree with their count: singular in English,
+    /// one/few/other in Czech.
+    #[test]
+    fn organize_counts_use_the_locales_plural_forms() {
+        let _locale = config::use_test_locale("en");
+        let mut summary = organize_job::summarize(&sample_plan(), "artist-album");
+        summary.audio = 1;
+        summary.side = 1;
+        summary.folder_inferred = 1;
+        summary.disc_folders_available = true;
+        summary.left = vec![organize_job::LeftAlbum {
+            folder: "Album 0".into(),
+            reason: organize::SideFilesLeft::SharedAlbumRoot,
+            files: 1,
+            names: vec![],
+        }];
+        let rt = organize_frame(OrganizePhase::Confirm {
+            plan: sample_plan(),
+            summary,
+        });
+        let text = |rt: &Runtime<State>, k: &str| el_info(rt, k).text;
+        assert_eq!(
+            text(&rt, "organize-confirm-files").as_deref(),
+            Some("1 audio file + 1 side file")
+        );
+        assert_eq!(
+            text(&rt, "organize-left-0").as_deref(),
+            Some("Album 0: 1 file (folder shared with another album)")
+        );
+        assert_eq!(
+            text(&rt, "organize-disc-warning").as_deref(),
+            Some(
+                "1 album takes its disc numbers only from folder names; the one-folder \
+                 layout will lose them. Choose Disc sub-folders."
+            )
+        );
+        let failed = (0..6)
+            .map(|i| (PathBuf::from(format!("{i}.flac")), "x".to_string()))
+            .collect();
+        let rt = organize_frame(OrganizePhase::done(organize::Summary {
+            copied: 1,
+            pruned_dirs: 1,
+            failed,
+            ..Default::default()
+        }));
+        assert_eq!(
+            text(&rt, "organize-pruned").as_deref(),
+            Some("1 emptied folder removed")
+        );
+        assert_eq!(
+            text(&rt, "organize-failed-more").as_deref(),
+            Some("and 1 more")
+        );
+        assert_eq!(
+            text(&rt, "organize-done").as_deref(),
+            Some("1 copied, 0 moved, 0 skipped, 6 failed")
+        );
+
+        for (n, want) in [
+            (1, "Odstraněna 1 prázdná složka"),
+            (3, "Odstraněny 3 prázdné složky"),
+            (5, "Odstraněno 5 prázdných složek"),
+        ] {
+            let rt = organize_frame_in(
+                OrganizePhase::done(organize::Summary {
+                    pruned_dirs: n,
+                    ..Default::default()
+                }),
+                "cs",
+            );
+            assert_eq!(
+                text(&rt, "organize-pruned").as_deref(),
+                Some(want),
+                "cs {n}"
+            );
+        }
+        apply_locale("en");
+    }
+
     /// Confirming the plan advances the flow from Confirm to Applying (pressing
     /// the Confirm button drives `organize_confirm`).
     #[test]
     fn confirm_advances_to_applying() {
+        let _locale = config::use_test_locale("en");
         let mut rt = organize_frame(OrganizePhase::confirm(sample_plan(), "artist-album"));
         click_key(&mut rt, "organize-confirm-go");
         assert!(
@@ -12272,6 +12366,7 @@ mod tests {
     /// Closing a finished run dismisses the modal (clears `State::organize`).
     #[test]
     fn dismiss_clears() {
+        let _locale = config::use_test_locale("en");
         let mut rt = organize_frame(OrganizePhase::done(organize::Summary::default()));
         click_key(&mut rt, "organize-close");
         assert!(

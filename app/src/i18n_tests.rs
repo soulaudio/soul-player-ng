@@ -47,6 +47,9 @@ fn every_key_is_translated_in_all_shipped_locales() {
 
     let mut missing = Vec::new();
     for (key, present) in &map {
+        if plural_leaf(key).is_some() {
+            continue;
+        }
         for &locale in crate::LOCALES {
             if !present.iter().any(|l| l == locale) {
                 missing.push(format!("  {key} → {locale}"));
@@ -58,6 +61,82 @@ fn every_key_is_translated_in_all_shipped_locales() {
         "{} missing translation(s) in locales/app.yml:\n{}",
         missing.len(),
         missing.join("\n"),
+    );
+}
+
+const PLURAL_SUFFIXES: [&str; 3] = [".one", ".few", ".other"];
+
+/// `(family base, category)` when `key` is a plural leaf (`<base>.one` etc.).
+fn plural_leaf(key: &str) -> Option<(&str, &str)> {
+    PLURAL_SUFFIXES
+        .iter()
+        .find_map(|s| key.strip_suffix(s).map(|base| (base, &s[1..])))
+}
+
+/// Every plural family defines EXACTLY the categories each shipped locale uses
+/// (en/de/es: one, other; cs: one, few, other; zh/ja: other), so a missing form
+/// and a stray one both fail, and no key is both a plain key and a family.
+#[test]
+fn plural_families_define_exactly_each_locales_categories() {
+    use std::collections::BTreeSet;
+    let map = parse_locales(include_str!("../locales/app.yml"));
+    let mut families: BTreeMap<&str, Vec<(&str, &Vec<String>)>> = BTreeMap::new();
+    for (key, locales) in &map {
+        if let Some((base, cat)) = plural_leaf(key) {
+            families.entry(base).or_default().push((cat, locales));
+        }
+    }
+    assert!(
+        families.len() >= 11,
+        "expected the organize plural families, found {}",
+        families.len()
+    );
+    let mut bad = Vec::new();
+    for (base, leaves) in &families {
+        if map.contains_key(*base) {
+            bad.push(format!("  {base} is both a plain key and a plural family"));
+        }
+        for &loc in crate::LOCALES {
+            let have: BTreeSet<&str> = leaves
+                .iter()
+                .filter(|(_, ls)| ls.iter().any(|l| l == loc))
+                .map(|(c, _)| *c)
+                .collect();
+            let want: BTreeSet<&str> = crate::plural::required_categories(loc)
+                .iter()
+                .map(|c| c.suffix())
+                .collect();
+            if have != want {
+                bad.push(format!("  {base} [{loc}]: has {have:?}, needs {want:?}"));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} plural family problem(s):\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+/// Every family a view asks for (`tn("..."` / `plural_key("..."`) exists.
+#[test]
+fn plural_families_used_in_views_exist() {
+    let map = parse_locales(include_str!("../locales/app.yml"));
+    let src = include_str!("views/settings.rs");
+    let mut missing = Vec::new();
+    for pat in ["tn(\"", "plural_key(\""] {
+        for (i, _) in src.match_indices(pat) {
+            let base = src[i + pat.len()..].split('"').next().unwrap();
+            if !map.contains_key(&format!("{base}.other")) {
+                missing.push(format!("  {base}"));
+            }
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "plural families used but not defined:\n{}",
+        missing.join("\n")
     );
 }
 

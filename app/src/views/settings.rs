@@ -28,6 +28,7 @@ use crate::config::AlbumYearSource;
 use crate::organize_job::{
     self, has_disc_folder_variant, layout_presets, plan_import, split_template_id,
 };
+use crate::plural::tn;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::dropdown;
@@ -4332,7 +4333,7 @@ fn organize_left_list(left: &[organize_job::LeftAlbum], p: &Palette) -> Option<E
         let row_text = t!(
             "settings.organizeLeftRow",
             folder => l.folder,
-            files => l.files,
+            files => tn("settings.organizeFileCount", l.files),
             reason => left_reason(l.reason)
         );
         c = c.child(
@@ -4354,7 +4355,7 @@ fn organize_left_list(left: &[organize_job::LeftAlbum], p: &Palette) -> Option<E
     }
     if left.len() > LEFT_SHOWN {
         c = c.child(
-            text(t!("settings.organizeLeftMore", n => left.len() - LEFT_SHOWN).to_string())
+            text(tn("settings.organizeLeftMore", left.len() - LEFT_SHOWN))
                 .key("organize-left-more")
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
@@ -4387,7 +4388,7 @@ fn organize_failed_list(failed: &organize_job::FailedPreview, p: &Palette) -> Op
     }
     if failed.more > 0 {
         c = c.child(
-            text(t!("settings.organizeLeftMore", n => failed.more).to_string())
+            text(tn("settings.organizeLeftMore", failed.more))
                 .key("organize-failed-more")
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
@@ -4417,8 +4418,8 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
             .to_string();
             let files = t!(
                 "settings.organizeConfirmFiles",
-                audio => summary.audio,
-                side => summary.side
+                audio => tn("settings.organizeAudioFiles", summary.audio),
+                side => tn("settings.organizeSideFiles", summary.side)
             )
             .to_string();
             let mut card = organize_card(p)
@@ -4449,12 +4450,12 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
             if summary.folder_inferred > 0 {
                 let n = summary.folder_inferred;
                 let warning = if summary.disc_folders_available {
-                    t!("settings.organizeDiscWarning", n => n)
+                    tn("settings.organizeDiscWarning", n)
                 } else {
-                    t!("settings.organizeDiscWarningFlat", n => n)
+                    tn("settings.organizeDiscWarningFlat", n)
                 };
                 card = card.child(
-                    text(warning.to_string())
+                    text(warning)
                         .key("organize-disc-warning")
                         .font(type_::CAPTION)
                         .color(p.warning)
@@ -4508,10 +4509,10 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
         OrganizePhase::Done { summary, failed } => {
             let line = t!(
                 "settings.organizeDoneSummary",
-                copied => summary.copied,
-                moved => summary.moved,
-                skipped => summary.skipped,
-                failed => summary.failed.len()
+                copied => tn("settings.organizeDoneCopied", summary.copied),
+                moved => tn("settings.organizeDoneMoved", summary.moved),
+                skipped => tn("settings.organizeDoneSkipped", summary.skipped),
+                failed => tn("settings.organizeDoneFailed", summary.failed.len())
             )
             .to_string();
             let mut card = organize_card(p)
@@ -4528,7 +4529,7 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                 );
             if summary.pruned_dirs > 0 {
                 card = card.child(
-                    text(t!("settings.organizePruned", n => summary.pruned_dirs).to_string())
+                    text(tn("settings.organizePruned", summary.pruned_dirs))
                         .key("organize-pruned")
                         .font(type_::CAPTION)
                         .color(p.text_secondary)
