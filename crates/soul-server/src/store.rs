@@ -2,7 +2,7 @@
 //! [`RefreshStore`](crate::auth::refresh::RefreshStore)) adapter.
 //!
 //! Stores user credentials (Argon2id-hashed passwords) and rotating refresh
-//! tokens (SHA-256 hashed — never the raw secret) as a small JSON file.
+//! tokens (SHA-256 hashed, never the raw secret) as a small JSON file.
 //! Access tokens are stateless, self-verifying JWTs minted by
 //! [`Signer`](crate::auth::signer::Signer); this store never issues or
 //! tracks one, so there's nothing bearer-token-shaped to persist or
@@ -11,7 +11,7 @@
 //! This replaces a previous SQLite-backed store: the bundled C SQLite was
 //! the subject of a security advisory with no patched `rusqlite` release
 //! yet, and this project forbids `unsafe` and favors the smallest safe
-//! dependency that does the job — for two users' worth of data, that's a
+//! dependency that does the job, for two users' worth of data, that's a
 //! JSON file, not an embedded database.
 
 use std::fs;
@@ -44,8 +44,8 @@ struct UserRec {
 }
 
 /// The store's full persisted state: `users` and `refresh` tokens. `refresh`
-/// carries only SHA-256 hashes (see [`RefreshRecord`]), so it's safe — and
-/// required for OAuth 2.1 rotation to survive a restart — to persist
+/// carries only SHA-256 hashes (see [`RefreshRecord`]), so it's safe, and
+/// required for OAuth 2.1 rotation to survive a restart, to persist
 /// durably. `#[serde(default)]` lets a store file written before refresh
 /// tokens existed still load, with an empty refresh list.
 #[derive(Default, Serialize, Deserialize)]
@@ -59,7 +59,7 @@ struct Store {
 ///
 /// Concurrency note: the `Mutex` below only serializes access *within one
 /// process*. Running the `soul-server user add` CLI against the same store
-/// file while a server process has it open is an unsupported edge — add
+/// file while a server process has it open is an unsupported edge, add
 /// users with the server stopped, then (re)start it to pick up the file.
 pub struct FileUsers {
     path: PathBuf,
@@ -68,7 +68,7 @@ pub struct FileUsers {
 
 impl FileUsers {
     /// Opens the JSON user store at `path`, loading it if present. Does NOT
-    /// create the file — it's only written on the first `add_user` — so
+    /// create the file, it's only written on the first `add_user`, so
     /// pointing a fresh config at a path with no users yet doesn't leave an
     /// empty file sitting there until there's something to persist.
     pub fn open(path: &Path) -> Result<Self> {

@@ -8,8 +8,8 @@
 //! [`crate::store`]) implements it durably, on top of the same JSON file +
 //! atomic-rename persistence it already uses for user credentials.
 //!
-//! Only a SHA-256 hex digest of each token is ever persisted — never the
-//! raw token — so a stolen store file cannot be replayed as a bearer
+//! Only a SHA-256 hex digest of each token is ever persisted, never the
+//! raw token, so a stolen store file cannot be replayed as a bearer
 //! credential (the same posture Argon2id gives user passwords).
 
 use serde::{Deserialize, Serialize};
@@ -44,7 +44,7 @@ pub trait RefreshStore: Send + Sync {
 
     /// Verifies `raw` against the store, atomically deletes its record, and
     /// issues a fresh replacement token for the same user. Returns `None`
-    /// if `raw` is unknown — never issued, already rotated away, or
+    /// if `raw` is unknown, never issued, already rotated away, or
     /// revoked.
     fn consume_rotate(&self, raw: &str, now: u64) -> Option<(UserId, String)>;
 
@@ -54,7 +54,7 @@ pub trait RefreshStore: Send + Sync {
     fn revoke(&self, raw: &str) -> bool;
 }
 
-/// SHA-256 hex digest of `raw` — the only form of a refresh token that is
+/// SHA-256 hex digest of `raw`, the only form of a refresh token that is
 /// ever written to disk.
 pub(crate) fn sha256_hex(raw: &str) -> String {
     use sha2::{Digest, Sha256};

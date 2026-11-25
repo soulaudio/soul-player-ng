@@ -1,0 +1,24 @@
+# soul-server configuration. Copy to soul-server.toml and edit.
+#
+#   soul-server --config soul-server.toml user add <name>
+#   soul-server --config soul-server.toml serve
+#
+# See docs/SERVER.md for the full guide.
+
+# Address to listen on. 127.0.0.1 is local-only. Use it when a reverse proxy
+# in front terminates TLS. 0.0.0.0 accepts connections from the network.
+bind = "127.0.0.1:8080"
+
+# Library roots to index and serve. Read-only: the server never writes here.
+roots = ["/srv/music"]
+
+# User credentials, refresh tokens, and (alongside it) the JWT signing key.
+# Keep this private: it is the server's identity.
+db = "/var/lib/soul-server/users.json"
+
+# The base URL clients actually reach this server on. Required whenever that
+# differs from `bind`, i.e. behind any reverse proxy. Every OAuth endpoint the
+# discovery document advertises is built from this, so leaving it unset behind a
+# proxy hands clients an unreachable internal address. Changing it invalidates
+# tokens already issued.
+# public_url = "https://music.example.com"

@@ -1,5 +1,5 @@
 //! `FsMedia`: the [`MediaStore`](crate::domain::ports::MediaStore) adapter over
-//! the local filesystem — opens track files directly by the path the
+//! the local filesystem, opens track files directly by the path the
 //! [`IndexPort`](crate::domain::ports::IndexPort) resolves them to.
 
 use std::fs::File;

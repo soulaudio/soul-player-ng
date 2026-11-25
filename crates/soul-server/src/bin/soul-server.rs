@@ -70,8 +70,8 @@ async fn run_serve(config_path: &std::path::Path) -> anyhow::Result<()> {
         users,
     });
 
-    let issuer = format!("http://{}", cfg.bind);
-    // The signing key lives next to the user db — both are the server's
+    let issuer = cfg.issuer();
+    // The signing key lives next to the user db: both are the server's
     // persisted identity, and neither needs its own config knob yet.
     let signer_dir = cfg
         .db

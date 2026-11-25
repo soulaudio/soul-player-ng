@@ -2,7 +2,7 @@
 //! a single-use authorization-code store, and loopback redirect-URI
 //! validation (RFC 8252 §7.3, native-app clients).
 //!
-//! This module is intentionally HTTP-free — no `/authorize` or `/token`
+//! This module is intentionally HTTP-free, no `/authorize` or `/token`
 //! wiring lives here (that is the next task). Everything here is pure logic
 //! so it can be pinned against exact spec vectors without standing up a
 //! server.
@@ -90,9 +90,9 @@ impl CodeStore {
     /// Redeems `code`: verifies PKCE (`S256(code_verifier) ==
     /// code_challenge`), that `redirect_uri` matches the one the code was
     /// issued with, and that the code has not expired. On success, deletes
-    /// the code (single-use) and returns the bound user. On any failure —
+    /// the code (single-use) and returns the bound user. On any failure,
     /// unknown code, verifier mismatch, redirect mismatch, or
-    /// expiry — returns `None` without granting access; the code is only
+    /// expiry, returns `None` without granting access; the code is only
     /// ever removed on a successful redemption.
     pub fn consume(
         &self,
@@ -148,17 +148,17 @@ pub fn verify_pkce_s256(code_verifier: &str, code_challenge: &str) -> bool {
 /// Validates a redirect URI against the loopback-interface rule of RFC 8252
 /// §7.3 for native-app clients: the scheme MUST be `http`, and the host MUST
 /// be exactly the IPv4 loopback literal `127.0.0.1` or the IPv6 loopback
-/// literal `[::1]` — any port is allowed (including none, i.e. the implicit
+/// literal `[::1]`, any port is allowed (including none, i.e. the implicit
 /// default port).
 ///
 /// This is deliberately strict and hand-parses the authority component
 /// rather than doing any substring match, specifically to reject:
-/// - `http://localhost/...` — RFC 8252 prefers the loopback literal over the
+/// - `http://localhost/...`, RFC 8252 prefers the loopback literal over the
 ///   `localhost` name (which can be remapped by local DNS/hosts-file
 ///   configuration on some systems).
-/// - `http://127.0.0.1.evil.com/...` — a suffix trick: the host is the full
+/// - `http://127.0.0.1.evil.com/...`: a suffix trick: the host is the full
 ///   label `127.0.0.1.evil.com`, not `127.0.0.1`.
-/// - `http://127.0.0.1@evil.com/...` — a userinfo trick: everything before
+/// - `http://127.0.0.1@evil.com/...`: a userinfo trick: everything before
 ///   the (last) `@` is userinfo, so the actual host is `evil.com`.
 pub fn is_loopback_redirect(uri: &str) -> bool {
     let Some((scheme, rest)) = uri.split_once("://") else {
@@ -350,7 +350,7 @@ mod tests {
             store.consume(&code, RFC7636_VERIFIER, &redirect(), 1_010),
             Some(42)
         );
-        // Replay of the same code must fail — it was deleted on success.
+        // Replay of the same code must fail, it was deleted on success.
         assert_eq!(
             store.consume(&code, RFC7636_VERIFIER, &redirect(), 1_010),
             None
