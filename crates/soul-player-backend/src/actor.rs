@@ -60,6 +60,32 @@ fn deck_error_is_unsupported(e: &DeckError) -> bool {
     )
 }
 
+/// What a [`PumpFailure::TrackFailed`] should do, given how long the current track has
+/// been failing continuously. The deck re-attempts each pump, so a transient remote read
+/// blip recovers within the grace window; a failure that persists past `giveup` means the
+/// track is dead. Pulled out so the time-bounded policy is unit-testable.
+#[derive(Debug, PartialEq, Eq)]
+enum TrackFailureAction {
+    /// First failure of a run: start the grace clock.
+    StartClock,
+    /// Failing continuously past the grace window: give up (stop + report).
+    GiveUp,
+    /// Inside the grace window: keep retrying (a blip may recover on the next pump).
+    Retry,
+}
+
+fn track_failure_action(
+    failing_since: Option<Instant>,
+    now: Instant,
+    giveup: Duration,
+) -> TrackFailureAction {
+    match failing_since {
+        None => TrackFailureAction::StartClock,
+        Some(since) if now.saturating_duration_since(since) >= giveup => TrackFailureAction::GiveUp,
+        Some(_) => TrackFailureAction::Retry,
+    }
+}
+
 /// Classify a loader open failure (an `anyhow::Error` from [`TrackSource::open_decoder`])
 /// for the `unsupported` flag on [`Event::PlaybackFailed`]: true only when the error
 /// chain carries a decode "unsupported" (a gated-off codec like AAC), so it reads as
@@ -307,6 +333,13 @@ fn pump_thread<K, Mk, Pk, Ev>(
     const OUTPUT_RETRY_EVERY: Duration = Duration::from_millis(1000);
     let mut last_output_retry = Instant::now();
 
+    // A run of consecutive decode failures on the CURRENT track (corrupt data, or a
+    // remote read error): `None` between runs. The deck re-attempts each pump, so a
+    // transient blip inside the grace window still recovers; a failure persisting past
+    // it means the track is dead, so stop + report rather than spin silently forever.
+    const TRACK_FAILURE_GIVEUP: Duration = Duration::from_secs(5);
+    let mut track_failing_since: Option<Instant> = None;
+
     // --- ReplayGain state ---
     // Config, updated by `Command::SetReplayGain` (the host sends the persisted
     // choice right after spawn, so a session starts already normalized).
@@ -534,7 +567,11 @@ fn pump_thread<K, Mk, Pk, Ev>(
         //    position until the device recovers; the loop paces itself via the Idle sleep.
         let progress = if output_live {
             match player.pump() {
-                Ok(p) => p,
+                Ok(p) => {
+                    // A successful pump ends any decode-failure run on the current track.
+                    track_failing_since = None;
+                    p
+                }
                 Err(e) => match classify_pump_error(&e) {
                     PumpFailure::DeviceLost => {
                         // The device vanished (unplugged DAC / dead exclusive stream):
@@ -547,10 +584,43 @@ fn pump_thread<K, Mk, Pk, Ev>(
                         }
                         output_live = false;
                         last_output_retry = Instant::now();
+                        track_failing_since = None;
                         changed = true;
                         Progress::Idle
                     }
+                    PumpFailure::TrackFailed => {
+                        match track_failure_action(
+                            track_failing_since,
+                            Instant::now(),
+                            TRACK_FAILURE_GIVEUP,
+                        ) {
+                            // First failure of a run: start the grace clock, logged once.
+                            TrackFailureAction::StartClock => {
+                                tracing::warn!(error = ?e, "track decode error; retrying briefly");
+                                track_failing_since = Some(Instant::now());
+                            }
+                            // Still failing past the grace window: the track is dead
+                            // (corrupt data, a gone source). Stop so the deck stops
+                            // re-attempting (and spinning / flooding the log), and tell
+                            // the app why.
+                            TrackFailureAction::GiveUp => {
+                                tracing::warn!(error = ?e, "track decode kept failing; stopping playback");
+                                on_event(Event::PlaybackFailed {
+                                    unsupported: deck_error_is_unsupported(&e),
+                                });
+                                player.stop();
+                                track_failing_since = None;
+                                changed = true;
+                            }
+                            // Inside the grace window: keep retrying quietly, a transient
+                            // remote read blip may recover on the next pump (the reader
+                            // re-fetches it).
+                            TrackFailureAction::Retry => {}
+                        }
+                        Progress::Idle
+                    }
                     PumpFailure::Transient => {
+                        track_failing_since = None;
                         tracing::error!(error = ?e, "pump error");
                         Progress::Idle
                     }
@@ -827,6 +897,31 @@ mod tests {
         assert!(!deck_error_is_unsupported(&DeckError::Decode(
             DecodeError::Io
         )));
+    }
+
+    #[test]
+    fn track_failure_action_retries_within_the_grace_window_then_gives_up() {
+        let giveup = Duration::from_secs(5);
+        let now = Instant::now();
+        // No run in progress: start the grace clock on this first failure.
+        assert_eq!(
+            track_failure_action(None, now, giveup),
+            TrackFailureAction::StartClock
+        );
+        // Inside the window: keep retrying (a transient remote blip may recover).
+        assert_eq!(
+            track_failure_action(Some(now - Duration::from_secs(1)), now, giveup),
+            TrackFailureAction::Retry
+        );
+        // At or past the window: give up (stop + report), the track is dead.
+        assert_eq!(
+            track_failure_action(Some(now - Duration::from_secs(5)), now, giveup),
+            TrackFailureAction::GiveUp
+        );
+        assert_eq!(
+            track_failure_action(Some(now - Duration::from_secs(9)), now, giveup),
+            TrackFailureAction::GiveUp
+        );
     }
 
     fn wav(rate: u32, frames: u32) -> Vec<u8> {
