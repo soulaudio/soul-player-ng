@@ -10,4 +10,7 @@ export default defineConfig({
   // Bunny serves a storage zone as plain files: a trailing-slash redirect would
   // be an extra round trip, and `file` keeps the output as /index.html.
   trailingSlash: 'never',
+  // The floating dev toolbar overlays the page, which gets in the way when
+  // reviewing layout at phone widths.
+  devToolbar: { enabled: false },
 });
