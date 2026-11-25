@@ -53,3 +53,7 @@ base64 = "0.22"
 
 [dev-dependencies]
 serde_json = "1"
+# The counting pass-through allocator, for the `#[ignore]`d data-pipeline profiling run
+# (bench_data_pipeline_at_scale): measures allocations during bake / load / views. A
+# SAFE `#[global_allocator]` declaration, so the crate stays `forbid(unsafe_code)`.
+alloc-probe = { path = "../alloc-probe" }
