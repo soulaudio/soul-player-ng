@@ -57,7 +57,7 @@ notify-debouncer-mini = "0.4"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 # Blocking HTTP client for the remote-source client: auth, index fetch, and
 # track download all happen synchronously on the loader's thread.
-reqwest = { version = "0.12", features = ["blocking", "json"] }
+reqwest = { version = "0.13", features = ["blocking", "json"] }
 # JSON bodies for the remote-source `/v0/auth` request/response (via
 # `serde_json::json!`/`Value`, no derive macros needed for two string fields).
 serde_json = "1"
