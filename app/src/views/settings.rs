@@ -598,7 +598,7 @@ fn add_music_row(s: &State, p: &Palette) -> El {
                             std::thread::spawn(move || {
                                 let plan = plan_import(&src_dir, &dest, &template_id, strategy);
                                 handle.update(move |s: &mut State, _tx| {
-                                    organize_ready(s, plan);
+                                    organize_ready(s, plan, &template_id);
                                 });
                             });
                         }
@@ -4359,6 +4359,39 @@ fn organize_left_list(left: &[organize_job::LeftAlbum], p: &Palette) -> Option<E
     Some(c)
 }
 
+/// The Done screen's list of files that failed (`None` when none): the first few
+/// as "name: error" (selected and truncated by `organize_job::failed_preview`),
+/// then "and N more".
+fn organize_failed_list(failed: &organize_job::FailedPreview, p: &Palette) -> Option<El> {
+    if failed.rows.is_empty() {
+        return None;
+    }
+    let mut c = col().key("organize-failed").w_full().gap(space::XXS).child(
+        text(t!("settings.organizeFailedTitle").to_string())
+            .key("organize-failed-title")
+            .font(type_::CAPTION)
+            .color(p.text_secondary),
+    );
+    for (i, (name, error)) in failed.rows.iter().enumerate() {
+        c = c.child(
+            text(t!("settings.organizeFailedRow", name => name, error => error).to_string())
+                .key(format!("organize-failed-{i}"))
+                .font(type_::CAPTION)
+                .color(p.fg)
+                .truncate(),
+        );
+    }
+    if failed.more > 0 {
+        c = c.child(
+            text(t!("settings.organizeLeftMore", n => failed.more).to_string())
+                .key("organize-failed-more")
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        );
+    }
+    Some(c)
+}
+
 /// The per-phase card content (without the scrim / modal wrapper).
 fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
     match phase {
@@ -4410,15 +4443,18 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                         ),
                 );
             if summary.folder_inferred > 0 {
+                let n = summary.folder_inferred;
+                let warning = if summary.disc_folders_available {
+                    t!("settings.organizeDiscWarning", n => n)
+                } else {
+                    t!("settings.organizeDiscWarningFlat", n => n)
+                };
                 card = card.child(
-                    text(
-                        t!("settings.organizeDiscWarning", n => summary.folder_inferred)
-                            .to_string(),
-                    )
-                    .key("organize-disc-warning")
-                    .font(type_::CAPTION)
-                    .color(p.warning)
-                    .wrap(),
+                    text(warning.to_string())
+                        .key("organize-disc-warning")
+                        .font(type_::CAPTION)
+                        .color(p.warning)
+                        .wrap(),
                 );
             }
             if let Some(list) = organize_left_list(&summary.left, p) {
@@ -4465,7 +4501,7 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                     .color(p.text_secondary)
                     .truncate(),
             ),
-        OrganizePhase::Done(summary) => {
+        OrganizePhase::Done { summary, failed } => {
             let line = t!(
                 "settings.organizeDoneSummary",
                 copied => summary.copied,
@@ -4494,6 +4530,9 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                         .color(p.text_secondary)
                         .wrap(),
                 );
+            }
+            if let Some(list) = organize_failed_list(failed, p) {
+                card = card.child(list);
             }
             card.child(row().child(organize_button(
                 "organize-close",

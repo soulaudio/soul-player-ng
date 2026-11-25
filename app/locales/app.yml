@@ -2451,6 +2451,13 @@ settings.organizeDiscWarning:
   zh: '%{n} 张专辑的碟号仅来自文件夹名称；单文件夹布局会丢失碟号。请选择按碟分子文件夹。'
   cs: 'Alba (%{n}) berou čísla disků jen z názvů složek; volba Jedna složka je ztratí. Zvolte Podsložky podle disků.'
   ja: '%{n} 件のアルバムはディスク番号をフォルダ名からのみ取得しています。1 フォルダのレイアウトでは失われます。ディスクごとのサブフォルダを選んでください。'
+settings.organizeDiscWarningFlat:
+  en: '%{n} albums take their disc numbers only from folder names, which this layout will lose. Tag the discs, or pick an album layout with Disc sub-folders.'
+  de: '%{n} Alben beziehen ihre CD-Nummern nur aus Ordnernamen, die bei dieser Struktur verloren gehen. Tagge die CDs oder wähle eine Album-Struktur mit Unterordnern je CD.'
+  es: '%{n} álbumes toman sus números de disco solo de los nombres de carpeta, que esta estructura perderá. Etiqueta los discos o elige una estructura por álbum con subcarpetas por disco.'
+  zh: '%{n} 张专辑的碟号仅来自文件夹名称，此布局会丢失碟号。请为各碟添加标签，或选择带按碟分子文件夹的专辑布局。'
+  cs: 'Alba (%{n}) berou čísla disků jen z názvů složek, která tato struktura ztratí. Otagujte disky, nebo zvolte strukturu alb s podsložkami podle disků.'
+  ja: '%{n} 件のアルバムはディスク番号をフォルダ名からのみ取得しており、このレイアウトでは失われます。ディスクにタグを付けるか、ディスクごとのサブフォルダがあるアルバムのレイアウトを選んでください。'
 settings.organizeLeftTitle:
   en: 'Side files left in place'
   de: 'Begleitdateien bleiben am Ort'
@@ -2542,6 +2549,20 @@ settings.organizeDoneSummary:
   zh: '已复制 %{copied} 项，已移动 %{moved} 项，已跳过 %{skipped} 项，失败 %{failed} 项'
   cs: '%{copied} zkopírováno, %{moved} přesunuto, %{skipped} přeskočeno, %{failed} selhalo'
   ja: 'コピー %{copied} 件、移動 %{moved} 件、スキップ %{skipped} 件、失敗 %{failed} 件'
+settings.organizeFailedTitle:
+  en: 'Not organized'
+  de: 'Nicht organisiert'
+  es: 'Sin organizar'
+  zh: '未整理'
+  cs: 'Neuspořádáno'
+  ja: '整理できなかったファイル'
+settings.organizeFailedRow:
+  en: '%{name}: %{error}'
+  de: '%{name}: %{error}'
+  es: '%{name}: %{error}'
+  zh: '%{name}：%{error}'
+  cs: '%{name}: %{error}'
+  ja: '%{name}：%{error}'
 settings.confirm:
   en: 'Confirm'
   de: 'Bestätigen'

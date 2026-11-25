@@ -125,14 +125,21 @@ pub(crate) struct PlanSummary {
     /// Albums whose side files stay in place, with the reason.
     pub left: Vec<LeftAlbum>,
     /// Albums whose disc numbers come only from `CD1/`-style folder names, which
-    /// the chosen one-folder layout loses ([`organize::OrganizePlan::folder_inferred_discs`]).
+    /// the chosen layout loses ([`organize::OrganizePlan::folder_inferred_discs`]).
     pub folder_inferred: usize,
+    /// Whether the planned layout has a Disc sub-folders variant to suggest for
+    /// [`folder_inferred`](Self::folder_inferred) albums (`flat` has none).
+    pub disc_folders_available: bool,
 }
 
-/// Tally a plan by kind and action, and list the albums that keep side files in place.
-pub(crate) fn summarize(plan: &organize::OrganizePlan) -> PlanSummary {
+/// Tally a plan by kind and action, and list the albums that keep side files in
+/// place. `template_id` is the stored id the plan was made with.
+pub(crate) fn summarize(plan: &organize::OrganizePlan, template_id: &str) -> PlanSummary {
     use organize::{Action, EntryKind};
-    let mut s = PlanSummary::default();
+    let mut s = PlanSummary {
+        disc_folders_available: has_disc_folder_variant(split_template_id(template_id).0),
+        ..PlanSummary::default()
+    };
     for e in &plan.entries {
         // `EntryKind` is non-exhaustive: an unknown future kind is neither.
         match e.kind {
@@ -150,6 +157,41 @@ pub(crate) fn summarize(plan: &organize::OrganizePlan) -> PlanSummary {
     s.left = plan.side_files_left.iter().map(left_album).collect();
     s.folder_inferred = plan.folder_inferred_discs.len();
     s
+}
+
+/// How many failed files the Done screen lists before "and N more".
+pub(crate) const FAILED_SHOWN: usize = 5;
+
+/// How many characters of a failure's error message the Done screen keeps.
+pub(crate) const FAILED_ERROR_CHARS: usize = 80;
+
+/// The Done screen's failure list: the first [`FAILED_SHOWN`] failed files as
+/// `(file name, error cut to FAILED_ERROR_CHARS)`, and how many more failed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FailedPreview {
+    pub rows: Vec<(String, String)>,
+    pub more: usize,
+}
+
+/// Select and truncate an apply's `(source, error)` failures for the Done screen.
+pub(crate) fn failed_preview(failed: &[(PathBuf, String)]) -> FailedPreview {
+    let row = |(path, error): &(PathBuf, String)| {
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        );
+        let error = if error.chars().count() > FAILED_ERROR_CHARS {
+            let cut: String = error.chars().take(FAILED_ERROR_CHARS).collect();
+            format!("{cut}…")
+        } else {
+            error.clone()
+        };
+        (name, error)
+    };
+    FailedPreview {
+        rows: failed.iter().take(FAILED_SHOWN).map(row).collect(),
+        more: failed.len().saturating_sub(FAILED_SHOWN),
+    }
 }
 
 /// One [`organize::LeftInPlace`] as the modal lists it.
@@ -325,7 +367,7 @@ mod tests {
     fn plan_import_uses_the_picked_folder_as_source_root() {
         let (root, src, dst) = album_fixture("plan_copy");
         let plan = plan_import(&src, &dst, "artist-album", organize::Strategy::Copy);
-        let s = summarize(&plan);
+        let s = summarize(&plan, "artist-album");
         assert_eq!(
             (s.audio, s.side),
             (2, 1),
@@ -352,7 +394,7 @@ mod tests {
     fn move_prunes_emptied_album_folders() {
         let (root, src, dst) = album_fixture("plan_move");
         let plan = plan_import(&src, &dst, "artist-album", organize::Strategy::Move);
-        let s = summarize(&plan);
+        let s = summarize(&plan, "artist-album");
         assert_eq!((s.copy, s.moved), (0, 3));
         let mut ticks = 0;
         let summary = run_apply(&plan, |_| ticks += 1);
@@ -377,15 +419,92 @@ mod tests {
         }
         let dst = root.join("dst");
         let one = plan_import(&src, &dst, "artist-album", organize::Strategy::Copy);
-        assert_eq!(summarize(&one).folder_inferred, 1);
+        assert_eq!(summarize(&one, "artist-album").folder_inferred, 1);
         let sub = plan_import(
             &src,
             &dst,
             "artist-album+disc-folders",
             organize::Strategy::Copy,
         );
-        assert_eq!(summarize(&sub).folder_inferred, 0);
+        assert_eq!(
+            summarize(&sub, "artist-album+disc-folders").folder_inferred,
+            0
+        );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The plan summary carries whether the chosen layout offers Disc sub-folders,
+    /// so the Confirm modal can word the folder-inferred-discs warning: `flat`
+    /// loses them too, but has no Disc sub-folders option to suggest.
+    #[test]
+    fn summary_knows_whether_the_layout_offers_disc_folders() {
+        let root = fresh_dir("discs_flat");
+        let src = root.join("src");
+        for cd in ["CD1", "CD2"] {
+            let d = src.join("Box").join(cd);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("01.flac"), cd.as_bytes()).unwrap();
+        }
+        let dst = root.join("dst");
+        let flat = plan_import(&src, &dst, "flat", organize::Strategy::Copy);
+        let s = summarize(&flat, "flat");
+        assert_eq!(s.folder_inferred, 1, "flat loses folder-inferred discs too");
+        assert!(!s.disc_folders_available, "flat has no Disc sub-folders");
+        let one = plan_import(&src, &dst, "artist-album", organize::Strategy::Copy);
+        assert!(summarize(&one, "artist-album").disc_folders_available);
+        assert!(
+            summarize(&one, "artist-album+disc-folders").disc_folders_available,
+            "a disc-folder id still names a layout with the option"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A destination parent blocked by a file makes the apply fail per entry; the
+    /// Done screen's preview names the failed source files with their errors.
+    #[test]
+    fn failed_preview_names_the_failed_files() {
+        let (root, src, dst) = album_fixture("plan_fail");
+        let plan = plan_import(&src, &dst, "artist-album", organize::Strategy::Copy);
+        let audio = plan
+            .entries
+            .iter()
+            .find(|e| e.kind == organize::EntryKind::Audio)
+            .unwrap();
+        // Block the entry's destination folder with a plain file.
+        let blocked = audio.dst.parent().unwrap();
+        std::fs::create_dir_all(blocked.parent().unwrap()).unwrap();
+        std::fs::write(blocked, b"not a folder").unwrap();
+        let summary = run_apply(&plan, |_| {});
+        assert!(!summary.failed.is_empty(), "the blocked entry fails");
+        let preview = failed_preview(&summary.failed);
+        let (name, error) = &preview.rows[0];
+        assert_eq!(
+            Some(name.as_str()),
+            summary.failed[0].0.file_name().and_then(|n| n.to_str())
+        );
+        assert!(!error.is_empty(), "the error is shown");
+        assert_eq!(preview.more, summary.failed.len() - preview.rows.len());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// At most [`FAILED_SHOWN`] failures are listed (the rest counted as "more"),
+    /// each error cut to [`FAILED_ERROR_CHARS`] characters plus an ellipsis.
+    #[test]
+    fn failed_preview_is_capped_and_truncates_long_errors() {
+        let long = "x".repeat(FAILED_ERROR_CHARS + 20);
+        let failed: Vec<(PathBuf, String)> = (0..FAILED_SHOWN + 2)
+            .map(|i| (PathBuf::from(format!("a/b/{i}.flac")), long.clone()))
+            .collect();
+        let preview = failed_preview(&failed);
+        assert_eq!(preview.rows.len(), FAILED_SHOWN);
+        assert_eq!(preview.more, 2);
+        assert_eq!(preview.rows[0].0, "0.flac");
+        let want = format!("{}…", "x".repeat(FAILED_ERROR_CHARS));
+        assert_eq!(preview.rows[0].1, want);
+        let short = failed_preview(&[(PathBuf::from("c.flac"), "denied".into())]);
+        assert_eq!(short.rows, [("c.flac".to_owned(), "denied".to_owned())]);
+        assert_eq!(short.more, 0);
+        assert_eq!(failed_preview(&[]), FailedPreview::default());
     }
 
     /// At most [`LEFT_NAMES`] file names are kept per album (the count stays exact).
@@ -399,7 +518,7 @@ mod tests {
             std::fs::write(src.join(n), b"t").unwrap();
         }
         let plan = plan_import(&src, &root.join("dst"), "flat", organize::Strategy::Copy);
-        let s = summarize(&plan);
+        let s = summarize(&plan, "flat");
         assert_eq!(s.left.len(), 1);
         assert_eq!(s.left[0].files, 5);
         assert_eq!(s.left[0].names, ["a.txt", "b.txt", "c.txt"]);
@@ -726,6 +845,34 @@ mod e2e {
         snapshot(root).0
     }
 
+    /// `got` holds exactly `want`'s files (same paths), byte for byte; a mismatch
+    /// names the first differing file instead of dumping both byte maps.
+    fn assert_same_files(
+        got: &BTreeMap<String, Vec<u8>>,
+        want: &BTreeMap<String, Vec<u8>>,
+        what: &str,
+    ) {
+        assert_eq!(
+            got.keys().collect::<Vec<_>>(),
+            want.keys().collect::<Vec<_>>(),
+            "{what}: file paths"
+        );
+        if let Some(path) = want.keys().find(|k| got[*k] != want[*k]) {
+            panic!("{what}: {path} differs from its expected bytes");
+        }
+    }
+
+    /// `root`'s files and folders are exactly the `before` snapshot.
+    fn assert_same_tree(
+        root: &Path,
+        before: &(BTreeMap<String, Vec<u8>>, BTreeSet<String>),
+        what: &str,
+    ) {
+        let (files, dirs) = snapshot(root);
+        assert_same_files(&files, &before.0, what);
+        assert_eq!(dirs, before.1, "{what}: folders");
+    }
+
     fn run(strategy: Strategy, template: &str) {
         let disc_folders = template.ends_with(super::DISC_FOLDERS);
         let tag = format!("{strategy:?}_{}", template.replace('+', "_"));
@@ -753,7 +900,7 @@ mod e2e {
 
         // Plan exactly as the "Add music" worker does, with the picked folder as root.
         let plan = plan_import(&src, &dest, template, strategy);
-        let s = summarize(&plan);
+        let s = summarize(&plan, template);
         assert_eq!((s.audio, s.side), (9, 8), "{tag}: 9 tracks + 8 side files");
         assert_eq!((s.dup, s.conflict), (0, 0), "{tag}: a fresh destination");
         assert!(
@@ -769,28 +916,17 @@ mod e2e {
 
         let summary = run_apply(&plan, |_| {});
         assert!(summary.failed.is_empty(), "{tag}: {:?}", summary.failed);
-        let after = files(&dest);
-        assert_eq!(
-            after.keys().collect::<Vec<_>>(),
-            want.keys().collect::<Vec<_>>(),
-            "{tag}: dest tree"
-        );
-        assert!(
-            after == want,
-            "{tag}: every file byte-identical to its source"
-        );
+        // The exact tree, every file byte-identical to its source.
+        assert_same_files(&files(&dest), &want, &format!("{tag}: dest tree"));
 
         match strategy {
             Strategy::Copy => {
                 assert_eq!((summary.copied, summary.moved), (17, 0), "{tag}");
                 assert_eq!(summary.pruned_dirs, 0, "{tag}: Copy never prunes");
-                assert!(
-                    snapshot(&src) == src_before,
-                    "{tag}: Copy leaves the source as is"
-                );
+                assert_same_tree(&src, &src_before, &format!("{tag}: Copy leaves the source"));
                 // Re-run: everything is already there, byte for byte.
                 let plan2 = plan_import(&src, &dest, template, strategy);
-                let again = summarize(&plan2);
+                let again = summarize(&plan2, template);
                 assert_eq!(
                     (again.copy, again.dup, again.conflict),
                     (0, 17, 0),
@@ -799,8 +935,8 @@ mod e2e {
                 let s2 = run_apply(&plan2, |_| {});
                 assert!(s2.failed.is_empty(), "{tag}: {:?}", s2.failed);
                 assert_eq!((s2.copied, s2.skipped, s2.pruned_dirs), (0, 17, 0), "{tag}");
-                assert!(files(&dest) == want, "{tag}: the re-run changes nothing");
-                assert!(snapshot(&src) == src_before, "{tag}: nor the source");
+                assert_same_files(&files(&dest), &want, &format!("{tag}: re-run dest"));
+                assert_same_tree(&src, &src_before, &format!("{tag}: re-run source"));
             }
             Strategy::Move => {
                 assert_eq!((summary.copied, summary.moved), (0, 17), "{tag}");
@@ -831,7 +967,7 @@ mod e2e {
                 let s2 = run_apply(&plan2, |_| {});
                 assert!(s2.failed.is_empty(), "{tag}: {:?}", s2.failed);
                 assert_eq!((s2.moved, s2.skipped, s2.pruned_dirs), (0, 0, 0), "{tag}");
-                assert!(files(&dest) == want, "{tag}: the re-run changes nothing");
+                assert_same_files(&files(&dest), &want, &format!("{tag}: re-run dest"));
                 assert_eq!(files(&src).len(), 1, "{tag}: the junk stays");
             }
         }
