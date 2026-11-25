@@ -29,6 +29,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "alloc-probe"
+version = "0.1.0"
+
+[[package]]
 name = "alsa"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2948,6 +2952,7 @@ dependencies = [
 name = "soul-player-host"
 version = "0.1.0"
 dependencies = [
+ "alloc-probe",
  "anyhow",
  "axum",
  "base64 0.22.1",
