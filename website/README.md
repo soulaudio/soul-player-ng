@@ -4,8 +4,16 @@
 Player is and where to download it, plus the `install.sh` the page tells people
 to pipe into a shell.
 
-Astro, static output, no client-side JavaScript. Hosted on Bunny (a storage zone
-behind a pull zone), deployed by `.github/workflows/site.yml`.
+Astro, static output, one small script for the platform switcher. Hosted on
+Bunny, deployed by `.github/workflows/site.yml`.
+
+```
+website/
+  src/              the page
+  public/           fonts, and the generated copies of install.sh + screenshot
+  scripts/          build-time release lookup, asset copy, Bunny deploy
+  infrastructure/   terraform: storage zone, pull zone, DNS record, edge rules
+```
 
 ## Local
 
@@ -70,25 +78,11 @@ It needs five repository secrets:
 
 ### Bunny configuration
 
-Set up once, in the dashboard:
+Not configured by hand: `infrastructure/` is terraform for the storage zone,
+the pull zone, the `player` DNS record, and every edge rule (what is cached,
+how long, the `install.sh` content type, the security headers). Its README
+covers applying it and where the five secrets above come from.
 
-- A **storage zone** holding the built site, and a **pull zone** with that zone
-  as its origin, with `player.soulaudio.co` as a custom hostname, a Let's
-  Encrypt certificate, Force SSL, HTTP/3, and Brotli.
-- **Edge rules** for caching, because `/_astro/*` is immutable but the HTML and
-  the installer must never be stale:
-
-  | Path | Edge cache | Browser cache |
-  |---|---|---|
-  | `/_astro/*` | 1 year | 1 year, immutable |
-  | `/install.sh` | 5 minutes | 0 |
-  | everything else | 1 hour | 0 |
-
-  The deploy purges the zone anyway, so the short TTLs are a backstop. Browser
-  cache 0 on the HTML is what stops a visitor seeing a stale version number out
-  of their own cache, which purging the edge cannot fix.
-- An edge rule serving `/install.sh` as `text/plain` so it is readable in a
-  browser, which is what people do before piping it to a shell.
-- Security headers: HSTS, `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: strict-origin-when-cross-origin`, and a strict CSP. The page
-  is static with no third-party resources, so nothing needs loosening.
+The DNS *zone* is not here. It belongs to the infrastructure repo's
+`dns/soulaudio.co` slice; only the `player` record is created from this
+project, which is the same split `datadir.co` and `osakiseiichi.com` use.
