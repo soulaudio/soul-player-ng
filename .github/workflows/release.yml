@@ -725,7 +725,7 @@ jobs:
             rm -f target/release/*.dmg target/release/rw.*.dmg
             sleep 10
           done
-          cp target/release/*.dmg "../../dist/Soul-Player_${VERSION}_${{ matrix.asset_arch }}.dmg"
+          cp target/release/*.dmg "../dist/Soul-Player_${VERSION}_${{ matrix.asset_arch }}.dmg"
 
       - name: Static bundle checks (macOS)
         if: runner.os == 'macOS'
@@ -825,8 +825,8 @@ jobs:
             rm -f target/universal-apple-darwin/release/*.dmg target/universal-apple-darwin/release/rw.*.dmg
             sleep 10
           done
-          mkdir -p ../../dist
-          cp target/universal-apple-darwin/release/*.dmg "../../dist/Soul-Player_${VERSION}_universal.dmg"
+          mkdir -p ../dist
+          cp target/universal-apple-darwin/release/*.dmg "../dist/Soul-Player_${VERSION}_universal.dmg"
 
       - name: Static bundle checks
         run: .github/scripts/verify-macos-bundle.sh "$VERSION" universal "dist/Soul-Player_${VERSION}_universal.dmg"
