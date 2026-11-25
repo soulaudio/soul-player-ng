@@ -65,3 +65,11 @@ packaging/flathub/cargo-sources.json
 /website/public/screenshot.png
 /website/public/favicon.png
 /website/public/version.json
+
+# Terraform working dirs and state. The .terraform.lock.hcl IS committed (it
+# pins the provider hashes), matching the infrastructure repo.
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
