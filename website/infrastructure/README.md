@@ -28,12 +28,26 @@ pull request that touches this directory and applies when it lands on main, so
 the state in the shared bucket always matches what the repo says, and the
 credentials live in one place instead of in whoever applied last.
 
+Both this workflow and the site deploy take their credentials from the
+**`production` environment** (Settings -> Environments -> production):
+
 | Setting | Kind | What it is |
 |---|---|---|
 | `BUNNYNET_API_KEY` | secret | Bunny account key |
 | `SCW_STATE_ACCESS_KEY` | secret | Scaleway Object Storage key id, for the state backend |
 | `SCW_STATE_SECRET_KEY` | secret | Its secret |
 | `SOULAUDIO_ZONE_ID` | variable | `soulaudio.co` zone id, from `terraform -chdir=dns/soulaudio.co output zone_id` in the infrastructure repo |
+
+An environment rather than repository secrets, so a pull request run cannot
+reach them. The consequence to know about: a PR gets fmt and validate but no
+plan, because it has no credentials to plan with. The plan still runs on main,
+in the same job as the apply, where it is the record of what was applied.
+
+Adding required reviewers to the environment would gate an apply on approval.
+Note that the approval happens before the job starts, so the reviewer would be
+approving without having seen the plan; getting plan-then-approve means
+splitting plan and apply into two jobs with the plan passed between them as an
+artifact. Worth it for a team, probably not for one person.
 
 `terraform fmt -check` and `validate` run on every trigger, credentials or
 not, so a malformed change fails before it reaches a plan. Until the
