@@ -349,10 +349,20 @@ jobs:
           echo "cargo test exited $status"
           exit "$status"
 
+  prose:
+    name: prose style
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # The pre-commit hook runs this too, but hooks are opt-in per clone and
+      # a PR can be authored in the GitHub UI, so the gate lives here as well.
+      - name: No em dashes
+        run: sh scripts/check-em-dashes.sh
+
   ci-success:
     name: CI success
     runs-on: ubuntu-latest
-    needs: [rust, rune, rune-wayland]
+    needs: [rust, rune, rune-wayland, prose]
     if: always()
     steps:
       - name: Require all checks to pass
@@ -372,7 +382,8 @@ jobs:
         # it cost three separate diagnoses in one afternoon to learn that.
         run: |
           bad=0
-          for pair in "rust=${{ needs.rust.result }}" \
+          for pair in "prose=${{ needs.prose.result }}" \
+                      "rust=${{ needs.rust.result }}" \
                       "rune=${{ needs.rune.result }}" \
                       "rune-wayland=${{ needs.rune-wayland.result }}"; do
             job=${pair%%=*}
