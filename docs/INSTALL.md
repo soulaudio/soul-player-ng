@@ -2,6 +2,22 @@
 
 Downloads are on the [releases page](https://github.com/soulaudio/soul-player-ng/releases/latest).
 
+On Linux and macOS, one command picks the right package for your system,
+verifies its checksum and installs it; run it again to update:
+
+```sh
+curl -fsSL https://player.soulaudio.co/install.sh | sh
+curl -fsSL https://player.soulaudio.co/install.sh | sh -s -- --version 0.4.7      # a specific release
+curl -fsSL https://player.soulaudio.co/install.sh | sh -s -- --uninstall          # keeps your settings
+curl -fsSL https://player.soulaudio.co/install.sh | sh -s -- --uninstall --purge  # removes everything
+```
+
+Every release runs that script through install, update, uninstall and purge on
+Ubuntu, Debian, Fedora, openSUSE, Arch and macOS (Apple silicon and Intel)
+before it is published, and again through the live site after.
+
+Or download a package yourself:
+
 ```sh
 sudo apt install ./soul-player_*_amd64.deb              # Debian / Ubuntu (arm64 for ARM)
 sudo dnf install ./soul-player-*.x86_64.rpm             # Fedora (aarch64 for ARM)
