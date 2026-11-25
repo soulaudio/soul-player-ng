@@ -338,6 +338,44 @@ pub struct RemoteHealth {
     pub last_checked_unix: Option<u64>,
 }
 
+/// A remote server whose `.soulidx` library index is not the format this build
+/// reads: its tracks are missing (read as empty) until the two agree. Says
+/// which side needs updating when the server's version is readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexSkew {
+    /// The server's index is an older format: update the server.
+    ServerOlder {
+        /// The server index's `.soulidx` format version.
+        server: u16,
+        /// The format version this build reads.
+        ours: u16,
+    },
+    /// The server's index is a newer format: update this app.
+    ServerNewer {
+        /// The server index's `.soulidx` format version.
+        server: u16,
+        /// The format version this build reads.
+        ours: u16,
+    },
+    /// The server's index has no readable header.
+    Unreadable,
+}
+
+impl IndexSkew {
+    /// The skew for a server index of `server` format version (`None`: no
+    /// readable header); `None` when it is the version this build reads.
+    #[must_use]
+    pub fn of(server: Option<u16>) -> Option<Self> {
+        let ours = soul_player_backend::library::INDEX_FORMAT_VERSION;
+        match server {
+            Some(v) if v == ours => None,
+            Some(v) if v < ours => Some(Self::ServerOlder { server: v, ours }),
+            Some(v) => Some(Self::ServerNewer { server: v, ours }),
+            None => Some(Self::Unreadable),
+        }
+    }
+}
+
 /// The per-source status of one configured folder or remote server, as of
 /// the last scan / health probe.
 ///
@@ -375,6 +413,10 @@ pub struct SourceStatus {
     /// (never probed yet is still `Some`, with every field but the timestamp
     /// `None`), always `None` for a [`SourceKind::Local`].
     pub remote: Option<RemoteHealth>,
+    /// For a remote whose index is another `.soulidx` format version, which side
+    /// needs updating ([`IndexSkew`]); `None` for a current remote and for every
+    /// local source.
+    pub index_skew: Option<IndexSkew>,
 }
 
 /// The result of changing the configured-source set: the aggregated track views
@@ -1036,6 +1078,7 @@ impl PlayerHandle {
                         path: f.path.clone(),
                     },
                     remote: None,
+                    index_skew: None,
                 }
             })
             .collect();
@@ -1316,6 +1359,7 @@ impl PlayerHandle {
                         path: f.path.clone(),
                     },
                     remote: None,
+                    index_skew: None,
                 })
                 .collect()
         };
@@ -1345,13 +1389,20 @@ impl PlayerHandle {
         if servers.is_empty() {
             return Vec::new();
         }
-        let source_counts = self
-            .inner
-            .remote_library
-            .lock()
-            .expect("remote_library mutex")
-            .as_ref()
-            .map(|lib| lib.library().source_counts());
+        let (source_counts, stale) = {
+            let guard = self
+                .inner
+                .remote_library
+                .lock()
+                .expect("remote_library mutex");
+            (
+                guard.as_ref().map(|lib| lib.library().source_counts()),
+                guard
+                    .as_ref()
+                    .map(|lib| lib.stale_remotes().to_vec())
+                    .unwrap_or_default(),
+            )
+        };
         let health_cache = self
             .inner
             .remote_health
@@ -1393,6 +1444,7 @@ impl PlayerHandle {
                         url: server.url.clone(),
                     },
                     remote: Some(health),
+                    index_skew: stale.iter().find(|s| s.url == server.url).map(|s| s.skew),
                 }
             })
             .collect()
@@ -2444,6 +2496,27 @@ static TEST_ALLOC_PROBE: alloc_probe::Counting = alloc_probe::Counting;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_skew_names_which_side_needs_the_update() {
+        let ours = soul_player_backend::library::INDEX_FORMAT_VERSION;
+        assert_eq!(IndexSkew::of(Some(ours)), None);
+        assert_eq!(
+            IndexSkew::of(Some(ours - 1)),
+            Some(IndexSkew::ServerOlder {
+                server: ours - 1,
+                ours
+            })
+        );
+        assert_eq!(
+            IndexSkew::of(Some(ours + 1)),
+            Some(IndexSkew::ServerNewer {
+                server: ours + 1,
+                ours
+            })
+        );
+        assert_eq!(IndexSkew::of(None), Some(IndexSkew::Unreadable));
+    }
 
     #[test]
     fn fan_out_isolates_a_panicking_subscriber_and_never_poisons() {

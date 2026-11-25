@@ -679,6 +679,7 @@ mod tests {
                 index_version: None,
                 last_checked_unix: None,
             }),
+            index_skew: None,
         }
     }
 
@@ -692,6 +693,7 @@ mod tests {
                 path: PathBuf::from("/music"),
             },
             remote: None,
+            index_skew: None,
         }
     }
 

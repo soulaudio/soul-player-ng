@@ -1061,6 +1061,17 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                 .child(health_dot(index, health.online, p))
                 .child(line),
         );
+        // The server's index is another format version: its tracks are missing
+        // until one side updates, so say which.
+        if let Some(skew) = status.index_skew {
+            identity = identity.child(
+                text(index_skew_text(skew))
+                    .key(format!("source-index-skew-{index}"))
+                    .font(type_::CAPTION)
+                    .color(p.warning)
+                    .wrap(),
+            );
+        }
         if let SourceKind::Remote { url } = &status.kind
             && health.online
             && remote_update_available(s, url, health)
@@ -1205,6 +1216,21 @@ fn offline_remote_row(s: &State, p: &Palette, url: &str, index: usize) -> El {
         ))
         .child(remote_relogin_button(index, url, reconnecting, p))
         .child(remote_remove_button(index, url, p))
+}
+
+/// The localized notice for a remote whose index is another format version.
+fn index_skew_text(skew: soul_player_host::IndexSkew) -> String {
+    use soul_player_host::IndexSkew::{ServerNewer, ServerOlder, Unreadable};
+    match skew {
+        ServerOlder { server, ours } => {
+            t!("settings.indexSkewServerOlder", server => server, ours => ours)
+        }
+        ServerNewer { server, ours } => {
+            t!("settings.indexSkewServerNewer", server => server, ours => ours)
+        }
+        Unreadable => t!("settings.indexSkewUnreadable"),
+    }
+    .to_string()
 }
 
 /// Whether a connected remote's row should show the "update available" cue:

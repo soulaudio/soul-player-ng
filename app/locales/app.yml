@@ -1333,6 +1333,27 @@ settings.updateAvailable:
   zh: '有可用更新'
   cs: 'K dispozici je aktualizace'
   ja: 'アップデートがあります'
+settings.indexSkewServerOlder:
+  en: 'Server needs an update: its library index is format v%{server}, this app reads v%{ours}.'
+  de: 'Der Server braucht ein Update: sein Bibliotheksindex hat Format v%{server}, diese App liest v%{ours}.'
+  es: 'El servidor necesita una actualización: su índice de biblioteca tiene el formato v%{server} y esta app lee v%{ours}.'
+  zh: '服务器需要更新：其媒体库索引格式为 v%{server}，本应用读取 v%{ours}。'
+  cs: 'Server potřebuje aktualizaci: jeho index knihovny má formát v%{server}, tato aplikace čte v%{ours}.'
+  ja: 'サーバーの更新が必要です: ライブラリ索引の形式は v%{server}、このアプリは v%{ours} を読み込みます。'
+settings.indexSkewServerNewer:
+  en: 'This app needs an update: the server library index is format v%{server}, this app reads v%{ours}.'
+  de: 'Diese App braucht ein Update: der Bibliotheksindex des Servers hat Format v%{server}, diese App liest v%{ours}.'
+  es: 'Esta app necesita una actualización: el índice de biblioteca del servidor tiene el formato v%{server} y esta app lee v%{ours}.'
+  zh: '本应用需要更新：服务器的媒体库索引格式为 v%{server}，本应用读取 v%{ours}。'
+  cs: 'Tato aplikace potřebuje aktualizaci: index knihovny serveru má formát v%{server}, aplikace čte v%{ours}.'
+  ja: 'このアプリの更新が必要です: サーバーのライブラリ索引の形式は v%{server}、このアプリは v%{ours} を読み込みます。'
+settings.indexSkewUnreadable:
+  en: 'The server library index could not be read. Update the server or this app.'
+  de: 'Der Bibliotheksindex des Servers ist nicht lesbar. Aktualisiere den Server oder diese App.'
+  es: 'No se pudo leer el índice de biblioteca del servidor. Actualiza el servidor o esta app.'
+  zh: '无法读取服务器的媒体库索引。请更新服务器或本应用。'
+  cs: 'Index knihovny serveru nelze přečíst. Aktualizujte server nebo tuto aplikaci.'
+  ja: 'サーバーのライブラリ索引を読み込めません。サーバーまたはこのアプリを更新してください。'
 settings.syncNow:
   en: 'Sync now'
   de: 'Jetzt synchronisieren'

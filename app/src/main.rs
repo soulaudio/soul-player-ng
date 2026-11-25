@@ -5225,6 +5225,7 @@ fn scene_remote_health_open(s: &mut State) {
             index_version: Some(7),
             last_checked_unix: Some(1_700_000_000),
         }),
+        index_skew: None,
     });
     s.remote_health_open = true;
 }
@@ -12940,6 +12941,7 @@ mod tests {
                 index_version: Some(3),
                 last_checked_unix: Some(test_now_unix()),
             }),
+            index_skew: None,
         }
     }
 
@@ -12963,7 +12965,49 @@ mod tests {
                 index_version: None,
                 last_checked_unix: Some(test_now_unix()),
             }),
+            index_skew: None,
         }
+    }
+
+    /// A remote whose index is another format version says which side needs an
+    /// update on its own Sources row; a current remote shows nothing.
+    #[test]
+    fn a_stale_remote_row_says_which_side_needs_an_update() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut old = online_remote_status("http://old.test:8080");
+        old.index_skew = Some(soul_player_host::IndexSkew::ServerOlder { server: 7, ours: 8 });
+        let mut new = online_remote_status("http://new.test:8080");
+        new.index_skew = Some(soul_player_host::IndexSkew::ServerNewer { server: 9, ours: 8 });
+        let mut odd = online_remote_status("http://odd.test:8080");
+        odd.index_skew = Some(soul_player_host::IndexSkew::Unreadable);
+        s.sources = vec![old, new, odd, online_remote_status("http://ok.test:8080")];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let text = |k: &str| el_info(&rt, k).text;
+        assert_eq!(
+            text("source-index-skew-0").as_deref(),
+            Some("Server needs an update: its library index is format v7, this app reads v8.")
+        );
+        assert_eq!(
+            text("source-index-skew-1").as_deref(),
+            Some(
+                "This app needs an update: the server library index is format v9, this app reads v8."
+            )
+        );
+        assert_eq!(
+            text("source-index-skew-2").as_deref(),
+            Some("The server library index could not be read. Update the server or this app.")
+        );
+        assert!(
+            rt.find("source-index-skew-3").is_none(),
+            "a current remote: no notice"
+        );
     }
 
     /// Inc 2: a Remote source's row renders a Remote badge plus its health
@@ -13042,6 +13086,7 @@ mod tests {
                 index_version: None,
                 last_checked_unix: Some(test_now_unix()),
             }),
+            index_skew: None,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
@@ -13092,6 +13137,7 @@ mod tests {
                 index_version: None,
                 last_checked_unix: None, // never probed
             }),
+            index_skew: None,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
@@ -13322,6 +13368,7 @@ mod tests {
                         path: PathBuf::from("local-root"),
                     },
                     remote: None,
+                    index_skew: None,
                 },
                 online_remote_status("http://127.0.0.1:8080"),
             ],
@@ -13777,6 +13824,7 @@ mod tests {
                 path: PathBuf::from("/music"),
             },
             remote: None,
+            index_skew: None,
         });
         assert_eq!(enabled_remote_urls(&s), vec![on.to_string()]);
     }
@@ -13858,6 +13906,7 @@ mod tests {
                 path: PathBuf::from("/music"),
             },
             remote: None,
+            index_skew: None,
         });
         assert!(enabled_remote_urls(&s).is_empty());
     }

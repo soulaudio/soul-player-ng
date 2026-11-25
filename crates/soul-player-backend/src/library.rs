@@ -95,6 +95,17 @@ pub fn index_is_current(blob: &IndexBlob) -> bool {
     reader.is_current()
 }
 
+/// The `.soulidx` format version this build reads.
+pub const INDEX_FORMAT_VERSION: u16 = soul_audio_index::FORMAT_VERSION;
+
+/// The `format_version` in `blob`'s `.soulidx` header (another version reads as
+/// an empty catalog), `None` when it has no readable header at all.
+#[must_use]
+pub fn index_format_version(blob: &IndexBlob) -> Option<u16> {
+    let reader: MemReader = IndexReader::new(FromStd::new(Cursor::new(blob.clone())));
+    reader.format_version()
+}
+
 /// The desktop library: the baked catalog (one source per watched folder,
 /// aggregated by [`MultiCatalog`]) plus each source's physical root, needed to
 /// turn a track's `/`-separated folder path + file name back into an absolute
@@ -728,6 +739,18 @@ mod tests {
         stale[4..6].copy_from_slice(&(soul_audio_index::FORMAT_VERSION - 1).to_le_bytes());
         assert!(!index_is_current(&stale.into()), "another format version");
         assert!(!index_is_current(&Arc::from(&b"junk"[..])), "no header");
+    }
+
+    #[test]
+    fn index_format_version_reads_the_header() {
+        let empty: IndexBlob =
+            soul_audio_index::build::write_index(&soul_audio_index::build::CatalogInput::default())
+                .into();
+        assert_eq!(index_format_version(&empty), Some(INDEX_FORMAT_VERSION));
+        let mut v7 = empty.to_vec();
+        v7[4..6].copy_from_slice(&7u16.to_le_bytes());
+        assert_eq!(index_format_version(&v7.into()), Some(7));
+        assert_eq!(index_format_version(&Arc::from(&b"junk"[..])), None);
     }
 
     /// Quantifies the memory the `Arc<str>` interning of `TrackView`'s
