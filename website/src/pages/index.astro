@@ -148,13 +148,15 @@ const TABS = [
       :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
       .cmd { position: relative; }
-      /* The UA gives <code> its own monospace default, so it has to be named
-         here too or the command renders in the browser default, not Plex. */
-      pre, pre code {
+      pre {
         background: var(--raised); border: 1px solid var(--line); border-radius: 10px;
         padding: 1rem 5rem 1rem 1.125rem; overflow-x: auto; margin: 0;
         font: 400 13.5px/1.55 "Plex Mono", ui-monospace, SFMono-Regular, monospace;
       }
+      /* The UA gives <code> its own monospace default, so without this the
+         command renders in the browser default rather than Plex. Inheriting
+         only the font keeps the box on the <pre> where it belongs. */
+      pre code { font: inherit; }
       .copy {
         position: absolute; top: .5rem; right: .5rem;
         font: inherit; font-size: .8125rem; font-weight: 500;
