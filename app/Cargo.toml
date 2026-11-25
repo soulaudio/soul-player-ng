@@ -133,7 +133,7 @@ alloc-probe = { path = "../crates/alloc-probe" }
 # the test silently pass. Version 5 matches what `souvlaki`'s `use_zbus`
 # backend already compiles, so this adds no second D-Bus stack.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-zbus = "5"
+zbus = "6"
 tempfile = "3"
 # Reading the compositor's window tree (`swaymsg -t get_tree`) in the session
 # E2E. Already a normal dependency, so this costs no extra build.
