@@ -4853,6 +4853,18 @@ fn main() -> anyhow::Result<()> {
     if std::env::args().skip(1).any(|a| a == "--uninstall") {
         std::process::exit(uninstall::cli());
     }
+    // `--version` answers and exits before anything opens a window. It used to
+    // fall through to the event loop and panic with "neither WAYLAND_DISPLAY
+    // nor WAYLAND_SOCKET nor DISPLAY is set" on any headless machine, which is
+    // every packaging check and every CI box: the one place a version flag is
+    // actually useful.
+    if std::env::args()
+        .skip(1)
+        .any(|a| a == "--version" || a == "-V")
+    {
+        println!("soul-player {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
     // Start file logging before anything else, so startup, every subsystem, and
     // any panic are recorded. The guard must outlive the process, binding it to
     // a named local keeps the non-blocking writer thread alive until `main` ends.
