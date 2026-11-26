@@ -2915,7 +2915,11 @@ fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 }
                 rune::Phase::Up => {
                     if let Some((from, to)) = st.dsp_drag.take() {
-                        reorder_dsp_units(st, from, to);
+                        // Abort on Escape / a cancelled gesture; the reorder persists the
+                        // profile + re-pushes the chain, so a cancel must not commit it.
+                        if !d.cancelled() {
+                            reorder_dsp_units(st, from, to);
+                        }
                     }
                 }
             },

@@ -17069,6 +17069,45 @@ mod tests {
         );
     }
 
+    /// Pressing Escape mid-drag CANCELS a queue reorder rather than committing it: Rune
+    /// delivers `Phase::Up { cancelled: true }`, and the handler must abort, not move.
+    #[test]
+    fn escape_mid_drag_cancels_a_queue_reorder_instead_of_committing() {
+        use crate::views::queue::QUEUE_ROW_H;
+        let mut rt = Runtime::new(
+            recording_queue_state(&[10, 20, 30], &[]),
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        let (gx, gy) = rt.find("grip-0").expect("manual row grip");
+        rt.pointer_move(gx, gy);
+        rt.pointer_down(gx, gy);
+        rt.pointer_move(gx, gy - QUEUE_ROW_H);
+        rt.frame(0.0);
+        assert!(rt.state.queue_drag.is_some(), "the drag is in progress");
+
+        // Escape cancels the in-flight gesture.
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+
+        assert_eq!(
+            rt.state.queue_drag, None,
+            "the cancelled gesture ends the drag"
+        );
+        assert!(
+            rt.state.host.recorded_commands().is_empty(),
+            "a cancelled reorder must NOT dispatch a MoveInQueue"
+        );
+    }
+
     /// Dragging a track that appears twice in the manual queue moves the row the
     /// user actually grabbed, not the first copy. Rows and grips are keyed by
     /// position, and the drag reads the row's own index, so grabbing the second
