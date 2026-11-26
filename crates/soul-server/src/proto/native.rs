@@ -355,6 +355,11 @@ fn now_unix() -> u64 {
 /// server's login form back to the client's loopback listener.
 const AUTH_CODE_TTL_SECS: u64 = 60;
 
+/// The one OAuth client this server recognizes (the desktop app). Both
+/// `/authorize` and `/token` bind to it, so a code can only be redeemed by the
+/// same client it was issued to.
+const EXPECTED_CLIENT_ID: &str = "soul-player";
+
 /// `Some(s)` form of `opt` with empty strings treated as absent, a client
 /// that sends `redirect_uri=` is, for validation purposes, the same as one
 /// that omits `redirect_uri` entirely.
@@ -438,7 +443,7 @@ fn validate_authorize(params: &AuthorizeParams) -> Result<ValidAuthorize, &'stat
     if params.response_type.as_deref() != Some("code") {
         return Err("unsupported response_type: expected \"code\"");
     }
-    if params.client_id.as_deref() != Some("soul-player") {
+    if params.client_id.as_deref() != Some(EXPECTED_CLIENT_ID) {
         return Err("unknown client_id");
     }
     let redirect_uri = match non_empty(&params.redirect_uri) {
@@ -559,10 +564,21 @@ async fn authorize_post(
         Err(message) => return bad_request(message),
     };
 
-    let username = params.username.as_deref().unwrap_or_default();
-    let password = params.password.as_deref().unwrap_or_default();
+    let username = params.username.as_deref().unwrap_or_default().to_string();
+    let password = params.password.as_deref().unwrap_or_default().to_string();
 
-    match state.verify_credentials(username, password) {
+    // Argon2id verification is CPU-heavy (tens of ms, ~19 MB) and the store
+    // takes a lock across a file read: running it inline would block a Tokio
+    // worker (a burst of login attempts could starve every other request).
+    // Hand it to the blocking pool so the async workers stay free.
+    let verify_state = state.clone();
+    let verified =
+        tokio::task::spawn_blocking(move || verify_state.verify_credentials(&username, &password))
+            .await
+            .ok()
+            .flatten();
+
+    match verified {
         Some(user) => {
             let now = now_unix();
             let code = state.code_store.issue(
@@ -578,11 +594,19 @@ async fn authorize_post(
                 percent_encode(&code),
                 percent_encode(&valid.state),
             );
-            Response::builder()
+            // `location` embeds the client-supplied redirect_uri, so it is NOT
+            // guaranteed header-safe (e.g. a loopback URI whose path carries
+            // CRLF passes the open-redirect check but is an illegal header
+            // value). Build fallibly and reject a bad target rather than
+            // panicking the request task.
+            match Response::builder()
                 .status(StatusCode::FOUND)
                 .header(header::LOCATION, location)
                 .body(Body::empty())
-                .expect("static headers + empty body always build")
+            {
+                Ok(response) => response,
+                Err(_) => bad_request("invalid redirect_uri"),
+            }
         }
         None => render_login_form(&valid, Some("Incorrect username or password.")),
     }
@@ -640,7 +664,7 @@ async fn token(State(state): State<AppState>, Form(params): Form<TokenParams>) -
 
     match params.grant_type.as_deref() {
         Some("authorization_code") => {
-            let (Some(code), Some(verifier), Some(redirect_uri), Some(_client_id)) = (
+            let (Some(code), Some(verifier), Some(redirect_uri), Some(client_id)) = (
                 non_empty(&params.code),
                 non_empty(&params.code_verifier),
                 non_empty(&params.redirect_uri),
@@ -648,6 +672,12 @@ async fn token(State(state): State<AppState>, Form(params): Form<TokenParams>) -
             ) else {
                 return oauth_error(StatusCode::BAD_REQUEST, "invalid_request");
             };
+            // Bind the grant to the client the code was issued to (`/authorize`
+            // requires the same id). A code must not be redeemable by a
+            // different client.
+            if client_id != EXPECTED_CLIENT_ID {
+                return oauth_error(StatusCode::BAD_REQUEST, "invalid_client");
+            }
 
             let Some(user) = state.code_store.consume(code, verifier, redirect_uri, now) else {
                 return oauth_error(StatusCode::BAD_REQUEST, "invalid_grant");
