@@ -16,6 +16,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::UserId;
 
+/// Maximum idle lifetime of a refresh token, in seconds. A token not redeemed
+/// (rotated) within this window is treated as expired: it no longer rotates and
+/// is pruned from the store. Rotation resets the clock (each rotation records the
+/// replacement stamped with the current time), so an actively used session never
+/// expires, only an abandoned token does. This both enforces a session timeout
+/// and bounds the store's growth: abandoned tokens cannot accumulate forever.
+pub const REFRESH_MAX_IDLE_SECS: u64 = 90 * 24 * 60 * 60; // 90 days
+
 /// One persisted refresh-token record.
 ///
 /// `token_sha256` is the SHA-256 hex digest of the raw token; the raw token
