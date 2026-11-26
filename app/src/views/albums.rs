@@ -405,8 +405,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
 const ALBUM_CAPTION_H: f32 = space::SM
     + crate::views::media_card::TITLE_LINES as f32 * type_::CARD_TITLE.line_height
     + space::XXS
-    // `ITEM` has no explicit line height: rune derives 1.25 x its size.
-    + type_::ITEM.size * 1.25;
+    + type_::CARD_SUBTITLE.line_height;
 
 /// The Albums page: an always-visible search box above a responsive grid of
 /// album cards, scrolled vertically. Mirrors the original soul-player's
@@ -1455,8 +1454,8 @@ mod tests {
             .rect[3];
         let caption = a - cover_h;
         assert!(
-            caption <= ALBUM_CAPTION_H + 1.0,
-            "the row-stride caption ({ALBUM_CAPTION_H}) covers the tile's text block ({caption})"
+            (caption - ALBUM_CAPTION_H).abs() < 1.0,
+            "the row-stride caption ({ALBUM_CAPTION_H}) matches the tile's text block ({caption})"
         );
     }
 

@@ -240,7 +240,7 @@ pub(crate) fn media_card(
     if let Some(sub) = spec.subtitle {
         text_col = text_col.child(
             text(sub)
-                .font(type_::ITEM)
+                .font(type_::CARD_SUBTITLE)
                 .color(p.text_secondary)
                 .truncate()
                 .align(text_align),
