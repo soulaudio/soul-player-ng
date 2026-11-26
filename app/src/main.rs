@@ -1481,8 +1481,18 @@ impl State {
     fn apply(&mut self, ev: &Event) {
         match ev {
             Event::Tick(t) => {
+                // A track change (next / prev / auto-advance) makes any held seek
+                // preview stale: it points into the previous track, so the new
+                // track's seek bar would freeze at the old position until live
+                // playback happened to converge (or stay pinned if the new track is
+                // shorter). Drop it on the change, unless the user is actively
+                // dragging the seek knob (then the live preview is theirs to keep).
+                let track_changed = self.now_playing_id != t.now_playing_id;
                 self.now_playing_id = t.now_playing_id;
                 self.position_secs = t.position_secs;
+                if track_changed && self.dragging_slider.as_deref() != Some("seek") {
+                    self.scrub_secs = None;
+                }
                 // Hold a committed seek's preview until playback reaches it (and
                 // keep the live preview while still dragging), so the knob doesn't
                 // flick to this stale position and back.
@@ -12076,6 +12086,59 @@ mod tests {
         assert_eq!(settle_scrub(Some(50.0), false, 50.2), None);
         // Still dragging: always keep the live preview, even at the target.
         assert_eq!(settle_scrub(Some(50.0), true, 50.0), Some(50.0));
+    }
+
+    /// A track change (next / prev / auto-advance) retires a held seek preview.
+    /// If the user drags the knob near the end of A and releases, `scrub_secs`
+    /// holds that position until playback converges. When B then advances in at
+    /// position 0, the held preview is stale (it points into A); dropping it lets
+    /// B's seek bar track from 0 instead of freezing at A's duration.
+    #[test]
+    fn a_track_change_drops_a_held_seek_preview() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.now_playing_id = Some(1);
+        s.scrub_secs = Some(180.0); // end of A; live playback hasn't reached it
+        s.apply(&Event::Tick(soul_player_host::Tick {
+            now_playing_id: Some(2), // B advances in
+            position_secs: 0.0,
+            duration_secs: Some(200.0),
+            state: PlayState::Playing,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            volume: 1.0,
+            muted: false,
+            analysis_pending: 0,
+        }));
+        assert_eq!(
+            s.scrub_secs, None,
+            "the stale preview from the previous track is dropped, not frozen onto B"
+        );
+        assert_eq!(s.now_playing_id, Some(2));
+    }
+
+    /// The track-change reset does not over-clear: an in-flight seek preview on
+    /// the SAME track is still held until playback converges (the settle path).
+    #[test]
+    fn a_held_seek_preview_survives_ticks_on_the_same_track() {
+        let mut s = State::new(PlayerHandle::offline());
+        s.now_playing_id = Some(1);
+        s.scrub_secs = Some(180.0);
+        s.apply(&Event::Tick(soul_player_host::Tick {
+            now_playing_id: Some(1), // same track, playback far from the target
+            position_secs: 10.0,
+            duration_secs: Some(200.0),
+            state: PlayState::Playing,
+            shuffle: false,
+            repeat: RepeatMode::Off,
+            volume: 1.0,
+            muted: false,
+            analysis_pending: 0,
+        }));
+        assert_eq!(
+            s.scrub_secs,
+            Some(180.0),
+            "the in-flight seek preview is held while still on the same track"
+        );
     }
 
     #[test]
