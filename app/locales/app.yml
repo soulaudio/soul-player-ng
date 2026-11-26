@@ -161,6 +161,13 @@ albums.filters:
   zh: '筛选'
   cs: 'Filtry'
   ja: 'フィルター'
+albums.clearFilters:
+  en: 'Clear filters'
+  de: 'Filter zurücksetzen'
+  es: 'Borrar filtros'
+  zh: '清除筛选'
+  cs: 'Zrušit filtry'
+  ja: 'フィルターをクリア'
 artist.eyebrow:
   en: 'Artist'
   de: 'Künstler'
