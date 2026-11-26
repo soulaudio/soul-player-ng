@@ -71,10 +71,17 @@ pub fn album_tracklist(tracks: &[&TrackView]) -> Vec<DiscSection> {
 
 /// A durable album identity for a playlist entry: the importer's album-root rule
 /// (the file's folder, or its parent when the folder is a `CD1`/`Disc 02 - x`
-/// disc folder) plus the album title, prefixed by the remote server for a remote
-/// locator (its scheme and host lowercased, so URL casing never splits one
-/// server in two). Case and separator normalized like [`TrackLocator::key`]. Two
-/// editions with one title in two folders differ; `CD1`/`CD2` of one album agree.
+/// disc folder) plus the album title. Case and separator normalized like
+/// [`TrackLocator::key`]. Two editions with one title in two folders differ;
+/// `CD1`/`CD2` of one album agree.
+///
+/// For a [`TrackLocator::Remote`] the key is prefixed by the server with its
+/// scheme and host lowercased (so URL casing never splits one server in two).
+/// Note that the app's album covers do not take that path today: the aggregate
+/// library hands remote tracks a `Local` locator under the placeholder root
+/// `remote:{url}#{i}` (`i` = the server's index blob), so a remote album's cover
+/// key includes that verbatim URL and blob index, and the server normalization
+/// here does not apply to it.
 #[must_use]
 pub fn album_identity_key(locator: &TrackLocator, album: &str) -> String {
     let (server, path) = match locator {

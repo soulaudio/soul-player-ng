@@ -1096,8 +1096,8 @@ impl State {
             remote_connecting: false,
             // Seeded by `reconnect_remotes_on_startup` at real launch (which
             // reads `config::load_remotes()` there, not here, so an ordinary
-            // `State::new()` in a unit test never touches the shared config
-            // file unless the test calls that function itself).
+            // `State::new()` in a unit test never reads the remote list unless
+            // the test calls that function itself).
             remote_urls: Vec::new(),
             remote_reconnecting: Vec::new(),
             remote_synced_index: std::collections::HashMap::new(),
@@ -7222,7 +7222,7 @@ mod tests {
     /// playlist's detail page. A fresh on-disk playlist is seeded through the
     /// real `PlaylistStore` (two of the testdata library's own tracks, so the
     /// hero's "{n} tracks · {duration}" string and a resolved track row both
-    /// render, not just the empty state) under the shared test config dir.
+    /// render, not just the empty state) under the test thread's config dir.
     #[test]
     fn playlists_layout_contains_itself_in_every_locale() {
         // This test cycles the process-GLOBAL i18n locale over every locale, so it must
@@ -7584,9 +7584,6 @@ mod tests {
             .filter(|a| !a.is_empty())
             .expect("the testdata library has at least one named album");
         let album_id = album_identity_named(&s, &album_name);
-        // Isolation: a sibling album-cover test shares this per-process config
-        // dir, so clear any cover it left for this same album first.
-        s.covers.clear_album_cover(&album_id);
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(&album_name));
         let env = Env {
@@ -9696,8 +9693,7 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        // Start from a known-off state (the shared test config dir may carry an
-        // `enabled` flag from another test's persisted EQ).
+        // Start from a known-off state (explicit, not the loaded default).
         active_eq_mut(&mut s).enabled = false;
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
@@ -10394,8 +10390,7 @@ mod tests {
     fn profile_mutators_switch_create_duplicate_delete_and_autosave() {
         let _g = config::use_test_config_dir();
         let mut s = State::new(PlayerHandle::offline());
-        // The shared test config dir may carry another test's profiles, so set a known
-        // starting state explicitly (per the config-test convention).
+        // Set a known starting state explicitly (per the config-test convention).
         s.profile_set = ProfileSet::new(
             vec![Profile::new(
                 "Default",
@@ -10491,7 +10486,7 @@ mod tests {
         // State-level: importing a file appends + switches; a clashing name is suffixed.
         let _g = config::use_test_config_dir();
         let mut s = State::new(PlayerHandle::offline());
-        // Known starting state (the shared test config dir may carry other tests' data).
+        // Known starting state, set explicitly.
         s.profile_set = ProfileSet::new(
             vec![Profile::new(
                 "Default",
@@ -12160,9 +12155,8 @@ mod tests {
     /// persists it to config.
     #[test]
     fn selecting_a_template_preset_persists() {
-        // Picking flows through `set_managed_template`, which writes config,
-        // isolate it from the user's real settings, and serialise with every other
-        // config writer (shared per-process test config dir).
+        // Picking flows through `set_managed_template`, which writes config (to
+        // this test thread's own config dir, never the user's real settings).
         let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -12269,9 +12263,8 @@ mod tests {
     /// Toggling the strategy to Move commits it to state and persists `"move"`.
     #[test]
     fn toggling_strategy_persists() {
-        // The toggle writes config, isolate it from the user's real settings, and
-        // serialise with every other config writer (shared per-process test
-        // config dir).
+        // The toggle writes config (to this test thread's own config dir, never
+        // the user's real settings).
         let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -14851,8 +14844,8 @@ mod tests {
 
     /// Opening a playlist's detail page sets `route` + `open_playlist`; `go_back`
     /// returns to the Playlists list. The playlist comes from a real on-disk
-    /// store (via `State::new`'s `PlaylistStore::load`), guarded by the shared
-    /// per-process test config dir so this doesn't race another config test.
+    /// store (via `State::new`'s `PlaylistStore::load`) in the test thread's
+    /// own config dir.
     #[test]
     fn opening_a_playlist_sets_open_playlist_and_back_returns() {
         let _guard = config::use_test_config_dir();
@@ -15232,8 +15225,7 @@ mod tests {
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.route = Route::Settings;
-        // Start from a known nav state, the shared test config may carry a leaked
-        // `nav_hidden` from another test (we assert the default, then the toggle).
+        // Start from a known nav state (we assert the default, then the toggle).
         s.nav_hidden.clear();
         let mut rt = Runtime::new(
             s,
@@ -16234,10 +16226,7 @@ mod tests {
         assert_eq!(rt.state.theme_pref, ThemePref::Dark);
         click_key(&mut rt, "theme-light");
         assert_eq!(rt.state.theme_pref, ThemePref::Light);
-        // Don't assert the INITIAL loaded album_year here, it reads the shared
-        // per-process test config file, which a concurrently-running config test
-        // may have just written (see `config::use_test_config_dir`'s doc). Only
-        // assert the click-driven transition, like the theme buttons above.
+        // Assert only the click-driven transition, like the theme buttons above.
         click_key(&mut rt, "album-year-release");
         assert_eq!(rt.state.album_year, config::AlbumYearSource::Release);
         click_key(&mut rt, "album-year-original");
@@ -17015,9 +17004,7 @@ mod tests {
     fn booted(w: f32, h: f32, mutate: impl FnOnce(&mut State)) -> Runtime<State> {
         let mut s = State::new(PlayerHandle::recording());
         s.sidebar_collapsed = false;
-        // Pin the nav visible explicitly, `State::new` loads `nav_hidden` from
-        // the (process-shared) test config, which another test's toggle may have
-        // written, so don't depend on it here.
+        // Pin the nav visible explicitly rather than relying on the loaded default.
         s.nav_hidden = Vec::new();
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         mutate(&mut s);
