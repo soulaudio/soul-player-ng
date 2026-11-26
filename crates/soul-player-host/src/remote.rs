@@ -2747,12 +2747,7 @@ mod tests {
         let mut stale = vec![0u8; 76];
         stale[..4].copy_from_slice(b"SIDX");
         stale[4..6].copy_from_slice(&7u16.to_le_bytes());
-        let server = |url: &str| {
-            Arc::new(RemoteServer {
-                url: url.to_owned(),
-                access_token: String::new(),
-            })
-        };
+        let server = |url: &str| Arc::new(RemoteServer::new(url.to_owned(), String::new()));
         let cache_dir = tempfile::tempdir().expect("download cache dir");
         let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
             dir: cache_dir.path().to_path_buf(),
