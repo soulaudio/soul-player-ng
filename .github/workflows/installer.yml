@@ -34,6 +34,10 @@ on:
         description: "Skip `soul-player --version`, for releases older than the one that fixed it"
         default: false
         type: boolean
+      inject-failure:
+        description: "Rollback drill: expect a version that cannot be installed, so every leg fails for real"
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       version:
@@ -54,6 +58,11 @@ permissions:
 
 env:
   VERSION: ${{ inputs.version }}
+  # What the tests expect to end up installed. A rollback drill expects a
+  # version nobody can install, so the real install of the real candidate is
+  # what fails (rather than some setup step), and the release's rollback job
+  # is exercised by a genuine gate failure.
+  EXPECT: ${{ inputs.inject-failure && '0.0.0-rollback-drill' || inputs.version }}
   PREVIOUS: ${{ inputs.previous }}
   SOUL_PLAYER_SKIP_RUN_CHECK: ${{ inputs.skip-run-check && '1' || '' }}
 
@@ -160,7 +169,7 @@ jobs:
             -e SOUL_PLAYER_SKIP_RUN_CHECK -e SOUL_PLAYER_INSTALL_URL -e SOUL_PLAYER_RELEASES_URL \
             -v "$PWD/packaging/test-install.sh:/test-install.sh:ro" \
             "${{ matrix.image }}" \
-            sh -c '${{ matrix.prep }} >/dev/null 2>&1 || true; sh /test-install.sh ${{ matrix.mode }} "$0" "$1"' "$VERSION" "${PREVIOUS#v}"
+            sh -c '${{ matrix.prep }} >/dev/null 2>&1 || true; sh /test-install.sh ${{ matrix.mode }} "$0" "$1"' "$EXPECT" "${PREVIOUS#v}"
 
   # No container: the installer mounts a dmg and copies into /Applications,
   # which only means anything on a real Mac. Both architectures, since the one
@@ -198,8 +207,89 @@ jobs:
       - name: Install, update, uninstall through the installer
         run: |
           [ "$(uname -m)" = "${{ matrix.arch }}" ] || { echo "::error::runner is $(uname -m), expected ${{ matrix.arch }}"; exit 1; }
-          sh packaging/test-install.sh macos "$VERSION" "${PREVIOUS#v}"
+          sh packaging/test-install.sh macos "$EXPECT" "${PREVIOUS#v}"
 
       - name: Leave the runner clean
         if: always()
         run: sudo rm -rf "/Applications/Soul Player.app" "/Applications/.Soul Player.app.installing"
+
+  # The Windows setup .exe, the way a user gets it: downloaded (from the
+  # candidate before publishing, from the published release after), checked
+  # against SHA256SUMS, then packaging/test-install-windows.ps1: install the
+  # previous release, update over it WHILE IT RUNS, run it, reinstall,
+  # uninstall (settings kept), reinstall, full uninstall (everything gone), with
+  # the Add/Remove Programs entry and the shortcuts checked at every step.
+  # Three Windows: the 2025 and 2022 server builds (Windows 11 and 10 era),
+  # and Windows 11 on ARM, which runs the x64 build under emulation.
+  windows:
+    name: Windows setup.exe (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            name: Server 2025, x64
+          - runner: windows-2022
+            name: Server 2022, x64
+          - runner: windows-11-arm
+            name: Windows 11, arm64
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4.3.0
+        if: inputs.candidate
+        with:
+          name: release-candidate-windows
+          path: setup/new
+
+      - name: Download the installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = $env:GITHUB_REPOSITORY
+          function Get-Release([string]$v, [string]$dir) {
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            $base = "https://github.com/$repo/releases/download/v$v"
+            Invoke-WebRequest "$base/SHA256SUMS" -OutFile "$dir/SHA256SUMS" -MaximumRetryCount 3 -RetryIntervalSec 5
+            $name = (Get-Content "$dir/SHA256SUMS" | ForEach-Object { ($_ -split '\s+')[1] } | Where-Object { $_ -like '*-setup.exe' } | Select-Object -First 1).TrimStart('*')
+            if (-not $name) { throw "no setup .exe in v$v's SHA256SUMS" }
+            Invoke-WebRequest "$base/$name" -OutFile "$dir/$name" -MaximumRetryCount 3 -RetryIntervalSec 5
+          }
+          $want = $env:VERSION
+          if ($env:CANDIDATE -ne 'true') {
+            # Published: what "latest" resolves to, the way the download page does.
+            $latest = (Invoke-RestMethod "https://github.com/$repo/releases/latest/download/latest.json").version.TrimStart('v')
+            if ($want -and $latest -ne $want) { throw "latest is $latest, expected $want" }
+            Get-Release $latest 'setup/new'
+            "VERSION=$latest" >> $env:GITHUB_ENV
+          }
+          $prev = $env:PREVIOUS.TrimStart('v')
+          if ($prev -and $prev -ne $want) { Get-Release $prev 'setup/prev' }
+          # Every installer must match the checksums its release published.
+          foreach ($d in Get-ChildItem setup -Directory) {
+            foreach ($line in Get-Content "$($d.FullName)/SHA256SUMS") {
+              $sum, $name = $line -split '\s+', 2
+              $name = $name.TrimStart('*')
+              $f = Join-Path $d.FullName $name
+              if (-not (Test-Path $f) -or $name -notlike '*-setup.exe') { continue }
+              $got = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+              if ($got -ne $sum) { throw "${name}: sha256 $got, SHA256SUMS says $sum" }
+              Write-Host "ok: $($d.Name)/$name matches SHA256SUMS"
+            }
+          }
+
+      - name: Install, update, uninstall the setup.exe
+        run: |
+          $new = (Get-ChildItem setup/new -Filter '*-setup.exe').FullName
+          $prev = (Get-ChildItem setup/prev -Filter '*-setup.exe' -ErrorAction SilentlyContinue).FullName
+          $expect = if ('${{ inputs.inject-failure }}' -eq 'true') { $env:EXPECT } else { $env:VERSION }
+          ./packaging/test-install-windows.ps1 -New $new -Version $expect -Prev "$prev" -PrevVersion $env:PREVIOUS.TrimStart('v')

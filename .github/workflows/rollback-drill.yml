@@ -1,0 +1,158 @@
+name: Rollback drill
+
+# Proves the release rollback on the real thing: the CURRENT release is rolled
+# back exactly as release.yml's `rollback` job would (same script), the site is
+# rebuilt as `site-after-rollback` would, and everything users resolve is
+# checked: the latest release, the latest.json the in-app updater and
+# install.sh read, the download page. Then it is all restored and checked
+# again.
+#
+# Why the real release and not a throwaway one: a throwaway release has to be
+# PUBLISHED to be rolled back, and publishing notifies everyone who watches
+# the repository. Demoting the current release for a few minutes notifies
+# nobody, and the window is harmless: "latest" is the previous release, which
+# was good when it shipped. Updaters never downgrade, so nobody on the current
+# version is offered the older one.
+#
+# The other path, a failure BEFORE publishing (draft deleted, nothing
+# released), is drilled by a release rehearsal with drill_rollback.
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "roll back latest" to demote the current release for a few minutes'
+        required: true
+        type: string
+
+# The same group as release.yml: never while a release is running.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  roll-back:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      current: ${{ steps.pick.outputs.current }}
+      previous: ${{ steps.pick.outputs.previous }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Confirmed?
+        if: inputs.confirm != 'roll back latest'
+        run: |
+          echo '::error::type "roll back latest" into confirm to run the drill'
+          exit 1
+
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: pick
+        name: The release to roll back, and the one before it
+        run: |
+          set -euo pipefail
+          current=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          previous=$(gh release list --repo "$GITHUB_REPOSITORY" --exclude-drafts --exclude-pre-releases -L 20 \
+                       --json tagName --jq '.[].tagName' | grep -vx "$current" | head -1)
+          [ -n "$previous" ] || { echo "::error::no release before $current to fall back to"; exit 1; }
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          echo "Rolling back $current; $previous becomes latest." | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Roll back (release.yml's own script)
+        run: bash .github/scripts/rollback-release.sh "${{ steps.pick.outputs.current }}" "${{ steps.pick.outputs.previous }}"
+
+      - name: What users get now
+        env:
+          PREV: ${{ steps.pick.outputs.previous }}
+        run: |
+          set -euo pipefail
+          # The in-app updater and install.sh both resolve "latest" through this file.
+          v=$(curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/latest.json" | jq -r .version)
+          [ "v${v#v}" = "$PREV" ] || { echo "::error::latest.json says $v, expected $PREV"; exit 1; }
+          echo "ok: the updater and install.sh now resolve $v"
+
+  # What release.yml's site-after-rollback does.
+  site-after-rollback:
+    needs: [roll-back]
+    uses: ./.github/workflows/site.yml
+    secrets: inherit
+
+  site-follows:
+    needs: [roll-back, site-after-rollback]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: The download page offers the previous release
+        env:
+          PREV: ${{ needs.roll-back.outputs.previous }}
+        run: |
+          set -euo pipefail
+          live=$(curl -fsS --max-time 20 "https://player.soulaudio.co/version.json?t=$RANDOM" | jq -r .version)
+          [ "v${live#v}" = "$PREV" ] || { echo "::error::the page serves $live, expected $PREV"; exit 1; }
+          echo "ok: player.soulaudio.co serves $live"
+
+  # Always, even when a check above failed: the drill must not leave the real
+  # release rolled back.
+  restore:
+    needs: [roll-back, site-after-rollback, site-follows]
+    if: always() && needs.roll-back.outputs.current != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CURRENT: ${{ needs.roll-back.outputs.current }}
+    steps:
+      - name: Make the release latest again
+        run: |
+          set -euo pipefail
+          gh release edit "$CURRENT" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          [ "$latest" = "$CURRENT" ] || { echo "::error::latest is $latest, expected $CURRENT"; exit 1; }
+          for _ in $(seq 1 30); do
+            v=$(curl -fsSL "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/latest.json" | jq -r .version) || v=
+            [ "v${v#v}" = "$CURRENT" ] && break
+            sleep 5
+          done
+          [ "v${v#v}" = "$CURRENT" ] || { echo "::error::latest.json says ${v:-nothing}, expected $CURRENT"; exit 1; }
+          echo "Restored: $CURRENT is latest again and latest.json serves it." | tee -a "$GITHUB_STEP_SUMMARY"
+
+  site-restore:
+    needs: [restore]
+    if: always() && needs.restore.result == 'success'
+    uses: ./.github/workflows/site.yml
+    secrets: inherit
+
+  verdict:
+    needs: [roll-back, site-follows, restore, site-restore]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      ROLLBACK: ${{ needs.roll-back.result }}
+      SITE: ${{ needs.site-follows.result }}
+      RESTORE: ${{ needs.restore.result }}
+      SITE_RESTORE: ${{ needs.site-restore.result }}
+      CURRENT: ${{ needs.roll-back.outputs.current }}
+      PREV: ${{ needs.roll-back.outputs.previous }}
+    steps:
+      - name: Verdict
+        run: |
+          set -euo pipefail
+          echo "roll-back=$ROLLBACK site-follows=$SITE restore=$RESTORE site-restore=$SITE_RESTORE"
+          live=$(curl -fsS --max-time 20 "https://player.soulaudio.co/version.json?t=$RANDOM" | jq -r .version)
+          [ "v${live#v}" = "$CURRENT" ] || { echo "::error::the page serves $live after the restore, expected $CURRENT"; exit 1; }
+          for r in "$ROLLBACK" "$SITE" "$RESTORE" "$SITE_RESTORE"; do
+            [ "$r" = success ] || { echo "::error::the drill did not pass"; exit 1; }
+          done
+          echo "ROLLBACK DRILL PASSED: $CURRENT rolled back to $PREV (latest, latest.json, download page), then restored" \
+            | tee -a "$GITHUB_STEP_SUMMARY"

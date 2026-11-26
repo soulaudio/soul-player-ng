@@ -43,6 +43,10 @@ on:
         description: "Dry run + a real DRAFT release under a throwaway tag (uploaded and verified, then deleted). Never published."
         type: boolean
         default: false
+      drill_rollback:
+        description: "Rehearsal only: make the installer gate fail on purpose, and check the rollback job withdraws the draft (the run ends red by design; rollback-drill is the verdict)"
+        type: boolean
+        default: false
 
 # One release at a time, and never cancel one half-way through publishing.
 concurrency:
@@ -1100,11 +1104,11 @@ jobs:
           done
           jq -e --argjson n "$PLATFORMS" '.platforms | length == $n' check/latest.json >/dev/null
           # The installer gate (install-candidate) serves these exact bytes.
-          mkdir -p candidate/linux candidate/macos
-          cp check/latest.json check/SHA256SUMS candidate/linux/
-          cp check/latest.json check/SHA256SUMS candidate/macos/
+          mkdir -p candidate/linux candidate/macos candidate/windows
+          for d in linux macos windows; do cp check/latest.json check/SHA256SUMS "candidate/$d/"; done
           cp check/*.deb check/*.rpm check/*.AppImage candidate/linux/
           cp check/*_universal.dmg candidate/macos/
+          cp check/*-setup.exe candidate/windows/
 
       - uses: actions/upload-artifact@v4.6.2
         with:
@@ -1120,8 +1124,16 @@ jobs:
           retention-days: 3
           compression-level: 0
 
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: release-candidate-windows
+          path: candidate/windows
+          retention-days: 3
+          compression-level: 0
+
       - name: Delete the rehearsal draft
-        if: always() && env.REHEARSAL == 'true'
+        # Kept in a rollback drill: withdrawing it is the rollback job's job.
+        if: always() && env.REHEARSAL == 'true' && github.event.inputs.drill_rollback != 'true'
         run: |
           gh release delete "$TAG" --yes 2>/dev/null && echo "rehearsal draft $TAG deleted" || true
           ! git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/$TAG" \
@@ -1139,6 +1151,7 @@ jobs:
       version: ${{ needs.guard.outputs.version }}
       previous: ${{ needs.guard.outputs.update_from }}
       candidate: true
+      inject-failure: ${{ github.event.inputs.drill_rollback == 'true' }}
 
   publish:
     needs: [guard, draft, install-candidate]
@@ -1281,7 +1294,9 @@ jobs:
   # download page would keep offering a withdrawn version.
   site-after-rollback:
     needs: [rollback]
-    if: always() && needs.rollback.result != 'skipped'
+    # Not for a rehearsal's rollback drill: that withdraws a draft, and the page
+    # never showed it. (rollback-drill.yml exercises this path on its own.)
+    if: always() && needs.rollback.result != 'skipped' && github.event.inputs.rehearsal != 'true'
     uses: ./.github/workflows/site.yml
     secrets: inherit
 
@@ -1291,8 +1306,12 @@ jobs:
   # a broken release.
   rollback:
     needs: [guard, draft, install-candidate, publish, verify, install-script]
+    # A rehearsal never publishes, so it has nothing to withdraw, except in a
+    # rollback drill, where the gate fails on purpose and the draft is left for
+    # this job to delete.
     if: >-
-      always() && github.event.inputs.dry_run != 'true' && github.event.inputs.rehearsal != 'true' &&
+      always() && github.event.inputs.dry_run != 'true' &&
+      (github.event.inputs.rehearsal != 'true' || github.event.inputs.drill_rollback == 'true') &&
       (needs.draft.result == 'failure' || needs.install-candidate.result == 'failure' ||
        needs.publish.result == 'failure' || needs.verify.result == 'failure' ||
        needs.install-script.result == 'failure')
@@ -1302,26 +1321,54 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ needs.guard.outputs.tag }}
+      # release_tag, not tag: the same for a release, the throwaway tag for a
+      # rehearsal (the draft a rollback drill leaves behind).
+      TAG: ${{ needs.guard.outputs.release_tag }}
       PREV: ${{ needs.guard.outputs.previous }}
     steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      # .github/scripts/rollback-release.sh: deletes a draft, or demotes a
+      # published release and makes the previous one latest again, then checks
+      # what users now resolve. rollback-drill.yml runs the same script against
+      # a real published release, so this path is proven before it is needed.
       - name: Withdraw the release
         run: |
-          set -euo pipefail
-          state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo none)
-          case "$state" in
-            none)
-              echo "No release for $TAG, nothing to roll back." ;;
-            true)
-              gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes
-              echo "Deleted the draft $TAG (tag kept)." | tee -a "$GITHUB_STEP_SUMMARY" ;;
-            false)
-              # Keep the assets for diagnosis but take it out of `latest`, so in-app
-              # updaters (which read latest/download/latest.json) stop offering it.
-              gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false
-              if [ -n "$PREV" ] && [ "$PREV" != "$TAG" ]; then
-                gh release edit "$PREV" --repo "$GITHUB_REPOSITORY" --latest
-              fi
-              echo "Demoted $TAG to pre-release; latest is ${PREV:-unset} again." | tee -a "$GITHUB_STEP_SUMMARY" ;;
-          esac
+          bash .github/scripts/rollback-release.sh "$TAG" "$PREV"
           exit 1 # the release failed; keep the run red
+
+  # The verdict of a rollback drill (rehearsal + drill_rollback): the gate
+  # failed, so nothing was published, the rollback job ran, and the draft it
+  # was handed is gone, with "latest" untouched. The run as a whole is red by
+  # design; this job is the one that has to be green.
+  rollback-drill:
+    needs: [guard, install-candidate, publish, rollback]
+    if: always() && github.event.inputs.rehearsal == 'true' && github.event.inputs.drill_rollback == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.guard.outputs.release_tag }}
+      PREV: ${{ needs.guard.outputs.previous }}
+      GATE: ${{ needs.install-candidate.result }}
+      PUBLISH: ${{ needs.publish.result }}
+      ROLLBACK: ${{ needs.rollback.result }}
+    steps:
+      - name: Check the rollback withdrew the release
+        run: |
+          set -euo pipefail
+          echo "install-candidate=$GATE publish=$PUBLISH rollback=$ROLLBACK"
+          [ "$GATE" = failure ] || { echo "::error::the injected failure did not fail the installer gate ($GATE)"; exit 1; }
+          [ "$PUBLISH" = skipped ] || { echo "::error::publish ran ($PUBLISH) after the gate failed"; exit 1; }
+          # The rollback job ends red on purpose; skipped would mean it never ran.
+          [ "$ROLLBACK" = failure ] || { echo "::error::the rollback job did not run ($ROLLBACK)"; exit 1; }
+          ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || { echo "::error::the draft $TAG is still there"; exit 1; }
+          ! git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY" "refs/tags/$TAG" \
+            || { echo "::error::a tag $TAG was left behind"; exit 1; }
+          latest=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)
+          [ "$latest" = "$PREV" ] || { echo "::error::latest moved: $latest, was $PREV"; exit 1; }
+          echo "ROLLBACK DRILL PASSED: the gate failed, nothing was published, the draft $TAG is gone, latest is still $PREV" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
