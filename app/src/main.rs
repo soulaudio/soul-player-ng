@@ -48,9 +48,8 @@ mod logging;
 mod signal_quit;
 mod uninstall;
 mod updater;
-// macOS-only at runtime; still compiled for tests everywhere so its pure mapping is
-// unit-tested on Linux/Windows CI too.
-#[cfg(any(target_os = "macos", test))]
+// Installed on macOS only; compiled everywhere, so its pure item behaviour is
+// unit-tested on Linux/Windows CI too and `State` can name its types.
 mod macos_menu;
 mod media_session;
 mod notify;
@@ -115,6 +114,9 @@ pub(crate) fn set_locale_pref(s: &mut State, pref: &str) {
     s.locale_pref = pref.to_string();
     apply_locale(pref);
     config::save_locale(pref);
+    // The menu bar is native, not re-rendered: rebuild it in the new language.
+    #[cfg(target_os = "macos")]
+    macos_menu::sync(s);
 }
 
 /// Which page the main area shows. The sidebar switches it; `view` dispatches on it.
@@ -910,6 +912,9 @@ struct State {
     /// back onto the main thread via `AppHandle::update`. `None` in headless tests
     /// (and until `main` sets it), where the organize transitions stay pure.
     app_handle: Option<rune::AppHandle<State>>,
+    /// What the installed macOS menu bar shows (checkmarks, language), so
+    /// `macos_menu::sync` only re-installs it when that changes.
+    menu_shown: Option<(macos_menu::Shown, String)>,
     /// Channel to the OS media-session thread (`media_session::spawn`), set once
     /// the window is ready (`main`'s `on_ready`). `None` in headless tests / where
     /// the OS session couldn't start; feeding it is then a no-op.
@@ -1180,6 +1185,7 @@ impl State {
             organize: None,
             // Set once in `main` (a self-posting update); stays `None` in tests.
             app_handle: None,
+            menu_shown: None,
             media_tx: None,
             media_last_id: None,
             media_last_playing: false,
@@ -1739,6 +1745,9 @@ impl State {
                 self.muted = t.muted;
                 self.shuffle = t.shuffle;
                 self.repeat = t.repeat;
+                // The menu bar's Shuffle / Repeat / Mute checkmarks follow.
+                #[cfg(target_os = "macos")]
+                macos_menu::sync(self);
                 // Background loudness sweep progress, for the Settings "Analyzing N" line.
                 self.analysis_pending = t.analysis_pending;
                 // Fresh loudness analysis arrived since the last tick: re-fetch the library
@@ -4784,14 +4793,14 @@ fn sane_zoom(z: f32) -> f32 {
 
 /// The zoom one step `dir` (+1 in / −1 out) from `current`, snapped to the
 /// `ZOOM_STEP` grid and clamped to the legal range. Pure, so view and test agree.
-fn stepped_zoom(current: f32, dir: i32) -> f32 {
+pub(crate) fn stepped_zoom(current: f32, dir: i32) -> f32 {
     let steps = (current / ZOOM_STEP).round() + dir as f32;
     let next = (steps * ZOOM_STEP * 100.0).round() / 100.0;
     next.clamp(MIN_ZOOM, MAX_ZOOM)
 }
 
 /// Set the content-pane zoom and persist it (a no-op when unchanged).
-fn set_zoom(s: &mut State, zoom: f32) {
+pub(crate) fn set_zoom(s: &mut State, zoom: f32) {
     let zoom = sane_zoom(zoom);
     if (s.ui_zoom - zoom).abs() > f32::EPSILON {
         s.ui_zoom = zoom;
@@ -5805,11 +5814,17 @@ fn main() -> anyhow::Result<()> {
         };
         builder = builder.configured_options(wo.into()).maximized(g.maximized);
     }
-    // macOS: native Controls menu (menu bar) + Dock menu transport. Rune's native
-    // menus are macOS-only; Windows/Linux expose the same controls via the tray.
+    // macOS: the menu bar (app menu, View, Controls, Help, plus Rune's Edit and
+    // Window) and the Dock menu (#66), with Rune's own labels in the app's language.
+    // Rune's native menus are macOS-only; Windows/Linux keep the tray and the
+    // in-window controls. `macos_menu::sync` keeps the checkmarks current.
     #[cfg(target_os = "macos")]
     {
-        for item in macos_menu::items() {
+        // The saved language first, so the menus start out in it (`init` applies
+        // it again for the UI; `sync` on the first frame relabels Rune's items).
+        apply_locale(&config::load_locale());
+        rune::set_labels(macos_menu::label);
+        for item in macos_menu::items(macos_menu::Shown::default()) {
             builder = builder.menu_item(item);
         }
     }
@@ -5968,6 +5983,10 @@ fn main() -> anyhow::Result<()> {
         let h = ah.clone();
         ah.update(move |s: &mut State, _tx: &mut Tx| {
             s.app_handle = Some(h);
+            // The event loop runs now: install the menus with the current language
+            // and state; that also gives AppKit's app-menu items their labels.
+            #[cfg(target_os = "macos")]
+            macos_menu::sync(s);
             // Now that the window is up (first frame painted on the count-0 Sources
             // list + empty library), run the restored library's first scan OFF the
             // main thread. Results fold in via `apply_and_save` and the title-bar
