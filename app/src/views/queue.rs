@@ -369,14 +369,15 @@ pub fn queue_section(s: &State, p: &Palette, scale: f32) -> El {
         // the now-playing cover.
         .pt(space::SM)
         .pb(space::SM)
-        // Pack the bands to the BOTTOM of the scroll viewport, so a short queue
-        // hugs the now-playing panel below it (growing upward toward the nav) and
-        // never floats at the top with a gap above now playing. `stick_bottom`
-        // governs only the scroll OFFSET (the overflowing case); on its own it
-        // leaves a sub-viewport queue sitting at the top. `justify_end` is what the
-        // scroll-bottom layout keys on to hold short rows on the bottom edge, then
-        // hand them to the scroll the moment the content outgrows the viewport.
-        .justify_end();
+        // A leading flex-grow spacer pushes the bands to the BOTTOM of the scroll
+        // viewport, so a short queue hugs the now-playing panel below it and grows
+        // upward toward the nav instead of floating at the top. When the bands
+        // overflow it collapses to zero, the content flows top-down as usual, and the
+        // `stick_bottom` scroll takes over, so the overflow is still measured the
+        // normal (downward) way. A `justify_end` on the viewport would bottom-align
+        // too, but it flips the overflow upward, which the scroll reads as "nothing to
+        // scroll" and zeroes the scrollbar; the spacer sidesteps that.
+        .child(el().key("queue-top-spacer").grow(1.0).min_h(0.0));
 
     // The queue reads BOTTOM-UP into the now-playing panel below it: the very next
     // track sits at the bottom (adjacent to now playing) and later tracks stack
