@@ -460,8 +460,19 @@ fn save(cfg: &Config) {
 /// Write `cfg` as pretty TOML to `path` (best-effort), atomically: into a
 /// temp file beside it, then renamed over it, so a crash or a concurrent read
 /// never sees a truncated config (a torn file would load as defaults and the
-/// next save would persist them, losing every setting).
+/// next save would persist them, losing every setting). If the rename fails
+/// (on Windows a scanner or another instance may hold the file open), it
+/// falls back to writing `path` in place, so a save is never silently lost.
 fn save_to(path: &Path, cfg: &Config) {
+    save_to_with(path, cfg, |from, to| std::fs::rename(from, to));
+}
+
+/// [`save_to`] with the rename step injected, so a test can make it fail.
+fn save_to_with(
+    path: &Path,
+    cfg: &Config,
+    rename: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let Ok(body) = toml::to_string_pretty(cfg) else {
         return;
@@ -476,11 +487,15 @@ fn save_to(path: &Path, cfg: &Config) {
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let tmp = PathBuf::from(tmp);
-    if std::fs::write(&tmp, body)
-        .and_then(|()| std::fs::rename(&tmp, path))
-        .is_err()
-    {
+    let atomic = std::fs::write(&tmp, &body).and_then(|()| rename(&tmp, path));
+    if let Err(err) = atomic {
+        // Never lose the save: write in place instead (not atomic, but the
+        // settings land), and drop the temp file.
         let _ = std::fs::remove_file(&tmp);
+        tracing::warn!(error = %err, "atomic config save failed; writing config.toml in place");
+        if let Err(err) = std::fs::write(path, &body) {
+            tracing::warn!(error = %err, "could not save config.toml");
+        }
     }
 }
 
@@ -843,7 +858,7 @@ pub fn save_locale(locale: &str) {
 /// Extract the managed-library tuple `(destination, template-preset-id, strategy)`
 /// from a `Config`, an empty stored path maps to `None` (unset). The read core of
 /// [`load_managed_library`], split out so the roundtrip test can exercise it on an
-/// isolated `Config` (never the shared per-process test config file).
+/// in-memory `Config` without touching any config file.
 fn managed_from(cfg: &Config) -> (Option<PathBuf>, String, String) {
     let dest = if cfg.managed_library_path.is_empty() {
         None
@@ -1432,6 +1447,35 @@ mod tests {
         assert_eq!(mode, "auto", "and sees only defaults there");
     }
 
+    /// When the atomic rename fails (on Windows a scanner or a second instance
+    /// can hold `config.toml` open), the save falls back to writing the file in
+    /// place: never silently lost, and no stray temp file is left behind.
+    #[test]
+    fn a_failed_rename_falls_back_to_a_direct_write() {
+        let dir = soul_player_dir().unwrap().join("rename-fails");
+        let path = dir.join("config.toml");
+        save_to(&path, &Config::default());
+        let cfg = Config {
+            indexing_mode: "gentle".to_string(),
+            ..Config::default()
+        };
+        save_to_with(&path, &cfg, |_, _| {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "held open",
+            ))
+        });
+        let back: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(back.indexing_mode, "gentle", "the save landed anyway");
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .filter(|n| n != "config.toml")
+            .collect();
+        assert!(leftovers.is_empty(), "no stray temp file: {leftovers:?}");
+    }
+
     /// `save_to` replaces the file atomically: a reader racing a stream of saves
     /// reads either the old or the new complete config, never a truncated one.
     #[test]
@@ -1745,10 +1789,8 @@ mod tests {
     #[test]
     fn managed_library_roundtrips_and_empty_path_is_unset() {
         // Round-trip the real write (`apply_managed`) + read (`managed_from`) cores
-        // through serde on an ISOLATED temp file, like the output-device /
-        // replaygain tests, so this never contends with the many other tests that
-        // write the shared per-process test config.toml (a concurrent lost-update
-        // would otherwise reset these fields to default).
+        // through serde on a dedicated temp file, like the output-device /
+        // replaygain tests.
         let dir = std::env::temp_dir().join(format!("soul_rune_managed_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1896,8 +1938,8 @@ mod tests {
         let _g = use_test_config_dir();
         let dir = soul_player_dir().unwrap();
         std::fs::create_dir_all(&dir).unwrap();
-        // Start clean (the test config dir is shared per-process), then drop in the
-        // plain-text files an older build left behind, and NO config.toml.
+        // This thread's config dir starts empty; make sure there is NO config.toml,
+        // then drop in the plain-text files an older build left behind.
         let _ = std::fs::remove_file(dir.join("config.toml"));
         std::fs::write(dir.join("sources.txt"), "/music/a\n/music/b\n").unwrap();
         std::fs::write(dir.join("theme.txt"), "dark\n").unwrap();
