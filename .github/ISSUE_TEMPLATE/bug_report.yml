@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a problem with Soul Player
+title: "Bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug.
+
+        **If you can reach the app, the fastest path is Settings → About → "Report a
+        problem".** It fills most of this in for you (version, OS, a home-dir-redacted
+        recent log) and opens a pre-filled issue. This form is the same thing by hand.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Describe the problem
+      description: What happened, what you expected instead, and the steps to reproduce it if you can.
+      placeholder: When I ..., Soul Player ...; I expected ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Soul Player version
+      description: Settings → About shows the version.
+      placeholder: e.g. 0.4.8
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: e.g. Windows 11, macOS 15, Ubuntu 24.04
+    validations:
+      required: true
+  - type: input
+    id: audio-output
+    attributes:
+      label: Audio output device
+      description: The selected output in Settings → Audio, if the problem is about playback.
+      placeholder: e.g. built-in speakers, a USB DAC, HDMI
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Recent log
+      description: |
+        Settings → About → "Open logs folder" reveals the full log file; drag it in or
+        paste the relevant lines. Logs stay on your machine until you attach them.
+      render: text
+    validations:
+      required: false
