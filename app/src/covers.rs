@@ -15,10 +15,11 @@
 //! (`artist-<slug>`). An album is keyed by its [`AlbumIdentity`] (album root
 //! folder + title) hashed with FNV-1a 64 using the specification's constants
 //! (`albumid-<16 hex>`), so two same-title editions in two folders keep
-//! separate covers and the stem never changes across Rust versions. Mirrors the proven playlist custom-cover
-//! feature (`playlists::store::set_custom_cover`): same accepted extensions,
-//! same 16 MiB cap, same remove-old-then-copy replace, same path-resolves-to-
-//! `None`-when-the-file-vanished semantics.
+//! separate covers and the stem never changes across Rust versions. Mirrors
+//! the proven playlist custom-cover feature
+//! (`playlists::store::set_custom_cover`): same accepted extensions, same
+//! 16 MiB cap, same remove-old-then-copy replace, same path-resolves-to-`None`-
+//! when-the-file-vanished semantics.
 #![forbid(unsafe_code)]
 
 use std::collections::{HashMap, HashSet};
@@ -553,8 +554,8 @@ mod tests {
 
     /// A temp directory unique to this call (process id + atomic counter), so
     /// parallel tests never collide. Holds only the *source* image a test
-    /// copies from; never the cover store itself (that lives under the shared
-    /// test config dir). Mirrors `playlists::store`'s own helper.
+    /// copies from; never the cover store itself (that lives under the test
+    /// thread's own config dir). Mirrors `playlists::store`'s own helper.
     fn temp_source_dir() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
