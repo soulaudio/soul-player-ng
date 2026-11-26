@@ -420,18 +420,11 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // thousands of) albums per frame. An album matches a genre filter when any of
     // its tracks is in a selected genre (its `genres` set, resolved at group time).
     let grouped = s.grouped_albums();
-    let genre_filter = &s.album_genre_filter;
-    let visible: Vec<usize> = grouped
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| {
-            (genre_filter.is_empty() || a.genres.iter().any(|g| genre_filter.contains(g)))
-                && (q.is_empty()
-                    || a.name.to_lowercase().contains(&q)
-                    || a.artist.to_lowercase().contains(&q))
-        })
-        .map(|(i, _)| i)
-        .collect();
+    // The visible-album filter (genre chips + search) is MEMOIZED on the State by
+    // (library fingerprint, query, genre filter): see `State::visible_albums`. It
+    // otherwise allocated a lowercased `String` per album every frame over the whole
+    // grouping (hundreds of thousands at scale).
+    let visible: Rc<[usize]> = s.visible_albums(&q);
     // Responsive grid (the old app's `grid-cols-2 sm:3 md:4 lg:5 xl:6 2xl:8`). Read
     // the page's laid-out width; the first frame has no prior layout, so fall back
     // to a sensible desktop width.
@@ -486,21 +479,16 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     let filters_open = s.albums_filters_open;
     let chips_progress = s.albums_filters_reveal;
     let chips = (filters_open || chips_progress > 0.0).then(|| {
-        let mut genres: Vec<&str> = s
-            .library
-            .iter()
-            .filter_map(|t| t.genre.as_deref())
-            .filter(|g| !g.is_empty())
-            .collect();
-        genres.sort_unstable();
-        genres.dedup();
+        // Memoized by library fingerprint (see `State::album_genre_set`): scanning
+        // the whole library for its genre set ran every frame while the panel was open.
+        let genres = s.album_genre_set();
         let mut chip_row = row()
             .key("albums-genre-chips")
             .px(space::PANE)
             .pt(space::SM)
             .gaps(space::SM, space::SM)
             .flex_wrap();
-        for (i, g) in genres.into_iter().enumerate() {
+        for (i, g) in genres.iter().enumerate() {
             let selected = s.album_genre_filter.contains(g);
             let g_owned = g.to_string();
             chip_row = chip_row.child(
@@ -540,7 +528,6 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // on-screen window is ever built. The build closure captures the memoized
     // grouping + the visible index list by `Rc`, so it borrows nothing from `s`.
     let grouped_cards = grouped.clone();
-    let visible: Rc<[usize]> = visible.into();
     let count = visible.len();
     let vis_cards = visible.clone();
     let pal = *p;
@@ -558,7 +545,7 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // instead of a blank page. This also recovers the stranded case: a genre filter
     // whose genre has since left the library has no chip left to deselect, so the
     // lit Filters button would otherwise be a dead end (empty grid, no way back).
-    let filtering = !genre_filter.is_empty() || !q.is_empty();
+    let filtering = !s.album_genre_filter.is_empty() || !q.is_empty();
     let body: El = if count == 0 && filtering {
         col()
             .key("albums-empty")
@@ -1108,6 +1095,42 @@ mod tests {
             album_key: crate::views::albums::test_album_key(Some(album)),
             ..Default::default()
         }
+    }
+
+    /// The Albums page's per-frame filter and genre-chip scan are memoized on the
+    /// State: repeated calls at unchanged inputs return the SAME `Rc` (a cache hit,
+    /// not a recompute), and a changed input busts the cache.
+    #[test]
+    fn visible_albums_and_genre_set_are_memoized_across_frames() {
+        use std::rc::Rc;
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        let mut rock = atv(1, "Pavement", "Crooked Rain");
+        rock.genre = Some("Rock".into());
+        let mut jazz = atv(2, "Can", "Tago Mago");
+        jazz.genre = Some("Jazz".into());
+        s.library = vec![rock, jazz];
+
+        let v1 = s.visible_albums("");
+        let v2 = s.visible_albums("");
+        assert!(
+            Rc::ptr_eq(&v1, &v2),
+            "visible_albums returns the cached Rc at unchanged inputs"
+        );
+        assert_eq!(v1.len(), 2, "both albums are visible with no filter");
+
+        let g1 = s.album_genre_set();
+        let g2 = s.album_genre_set();
+        assert!(
+            Rc::ptr_eq(&g1, &g2),
+            "album_genre_set returns the cached Rc at unchanged library"
+        );
+        assert_eq!(&*g1, &["Jazz".to_string(), "Rock".to_string()]);
+
+        // A changed query busts the cache and narrows the result.
+        let v3 = s.visible_albums("tago");
+        assert!(!Rc::ptr_eq(&v1, &v3), "a changed query recomputes");
+        assert_eq!(v3.len(), 1, "only the matching album is visible");
     }
 
     /// A realistic library of `n` tracks: ~12 tracks per album, ~8 albums per

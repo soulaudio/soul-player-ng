@@ -360,6 +360,16 @@ type TrackIndexMap = std::rc::Rc<std::collections::HashMap<u32, usize>>;
 /// (see [`State::visible_tracks`]).
 type VisibleTracks = (std::rc::Rc<[usize]>, std::rc::Rc<[u32]>);
 
+/// The Albums grid's memoized visible-index cache keyed by
+/// `(library fingerprint, lowercased query, genre filter)` (see
+/// [`State::visible_albums`]).
+type VisibleAlbumsCache = Option<(
+    u64,
+    String,
+    std::collections::BTreeSet<String>,
+    std::rc::Rc<[usize]>,
+)>;
+
 /// Memoized playlist resolution: `(library_fp, playlist_id, entries_fp, resolved)`
 /// (see [`State::resolved_playlist`]).
 type ResolvedPlaylistCache = std::cell::RefCell<
@@ -443,6 +453,16 @@ struct State {
     /// genre each frame, ~most of the library for a genre like "Rock"). Recomputed
     /// only when the library, the open genre, or the query changes.
     visible_genre_tracks_cache: std::cell::RefCell<Option<(u64, String, String, VisibleTracks)>>,
+    /// The Albums grid's visible album indices, memoized by (library fingerprint,
+    /// lowercased query, genre filter). The genre/search filter otherwise rebuilt
+    /// its index Vec, allocating a lowercased `String` per album, EVERY frame over
+    /// the (up to hundreds of thousands) grouped albums. Recomputed only when the
+    /// library, the query, or the genre filter changes.
+    visible_albums_cache: std::cell::RefCell<VisibleAlbumsCache>,
+    /// The Albums Filters panel's genre-chip set, memoized by the library
+    /// fingerprint. The chip row otherwise re-scanned the WHOLE library (every
+    /// track's genre, sorted + deduped) every frame while the panel was open.
+    album_genre_set_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[String]>)>>,
     /// The current playlist's resolution against the live library (per-entry
     /// availability, the available play context, total duration), memoized by
     /// (library fingerprint, playlist id, entries fingerprint). Resolving rebuilds a
@@ -1027,6 +1047,8 @@ impl State {
             track_index_cache: std::cell::RefCell::new(None),
             visible_tracks_cache: std::cell::RefCell::new(None),
             visible_genre_tracks_cache: std::cell::RefCell::new(None),
+            visible_albums_cache: std::cell::RefCell::new(None),
+            album_genre_set_cache: std::cell::RefCell::new(None),
             resolved_playlist_cache: std::cell::RefCell::new(None),
             playlist_cover_cache: std::cell::RefCell::new(None),
             playlists,
@@ -1473,6 +1495,62 @@ impl State {
         *self.visible_genre_tracks_cache.borrow_mut() =
             Some((fp, genre.to_string(), q.to_string(), vt.clone()));
         vt
+    }
+
+    /// The Albums grid's visible album indices (into the memoized `grouped_albums`),
+    /// narrowed by the active genre filter and the lowercased query `q`, memoized by
+    /// (library fingerprint, query, genre filter). The filter otherwise allocated a
+    /// lowercased `String` per album EVERY frame over the whole grouping; this makes
+    /// it a cache hit while scrolling or re-rendering at a fixed query/filter. `q`
+    /// must already be lowercased, matching the caller's `album_search`.
+    pub(crate) fn visible_albums(&self, q: &str) -> std::rc::Rc<[usize]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, cq, cfilter, vis)) = self.visible_albums_cache.borrow().as_ref()
+            && *cfp == fp
+            && cq == q
+            && *cfilter == self.album_genre_filter
+        {
+            return vis.clone();
+        }
+        let grouped = self.grouped_albums();
+        let genre_filter = &self.album_genre_filter;
+        let visible: std::rc::Rc<[usize]> = grouped
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| {
+                (genre_filter.is_empty() || a.genres.iter().any(|g| genre_filter.contains(g)))
+                    && (q.is_empty()
+                        || a.name.to_lowercase().contains(q)
+                        || a.artist.to_lowercase().contains(q))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        *self.visible_albums_cache.borrow_mut() =
+            Some((fp, q.to_string(), genre_filter.clone(), visible.clone()));
+        visible
+    }
+
+    /// The sorted, deduped set of non-empty genres across the library, for the
+    /// Albums Filters chip row. Memoized by the library fingerprint so the panel
+    /// doesn't re-scan the WHOLE library every frame while it is open.
+    pub(crate) fn album_genre_set(&self) -> std::rc::Rc<[String]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, set)) = self.album_genre_set_cache.borrow().as_ref()
+            && *cfp == fp
+        {
+            return set.clone();
+        }
+        let mut genres: Vec<&str> = self
+            .library
+            .iter()
+            .filter_map(|t| t.genre.as_deref())
+            .filter(|g| !g.is_empty())
+            .collect();
+        genres.sort_unstable();
+        genres.dedup();
+        let set: std::rc::Rc<[String]> = genres.into_iter().map(String::from).collect();
+        *self.album_genre_set_cache.borrow_mut() = Some((fp, set.clone()));
+        set
     }
 
     /// The current playlist's resolution against the live library, per-entry
