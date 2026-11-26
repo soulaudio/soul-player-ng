@@ -42,9 +42,9 @@ use crate::{
     commit_eq_edit, commit_profile_rename, connect_remote_source, cycle_eq_band_kind,
     delete_profile, disconnect_remote_source, duplicate_profile, eq_edit_start, eq_num_drag_end,
     eq_num_drag_move, eq_num_drag_start, eq_num_scroll, export_eq, export_profile, import_eq,
-    import_profile, new_profile, open_remote_form, organize_begin, organize_confirm,
-    organize_dismiss, organize_ready, reconnect_remote_now, remove_dsp_unit, remove_eq_band,
-    reorder_dsp_units, scan_in_background, set_album_year, set_dsp_unit_enabled,
+    import_profile, log_scan_error, new_profile, open_remote_form, organize_begin,
+    organize_confirm, organize_dismiss, organize_ready, reconnect_remote_now, remove_dsp_unit,
+    remove_eq_band, reorder_dsp_units, scan_in_background, set_album_year, set_dsp_unit_enabled,
     set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict, set_indexing_mode,
     set_locale_pref, set_loudness_analysis_mode, set_managed_dest, set_managed_disc_folders,
     set_managed_layout, set_managed_strategy, set_nav_visible, set_output_device,
@@ -309,7 +309,12 @@ fn add_source_menu(s: &State, p: &Palette) -> El {
                 },
                 |s: &mut State, result, _tx| {
                     if let Ok(Some(path)) = result {
-                        scan_in_background(s, move |h| h.add_folder(&path), apply_and_save);
+                        scan_in_background(
+                            s,
+                            move |h| h.add_folder(&path),
+                            apply_and_save,
+                            log_scan_error,
+                        );
                     }
                 },
             );
@@ -651,7 +656,12 @@ fn rescan_button(p: &Palette) -> El {
             // Off the UI thread: a reconcile of a big library must not freeze the
             // window, and running it in the background lets the title-bar activity
             // widget animate while it scans.
-            scan_in_background(s, move |h| h.set_folders(&roots), apply_watch);
+            scan_in_background(
+                s,
+                move |h| h.set_folders(&roots),
+                apply_watch,
+                log_scan_error,
+            );
             // A Rescan should also pull fresh from every connected remote, not
             // just re-aggregate local roots (set_folders rebuilds remote tracks
             // from already-fetched blobs and would miss server-side additions).
@@ -992,6 +1002,7 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                     st,
                     move |h| h.set_folder_enabled(&toggle_for, !enabled),
                     apply_and_save,
+                    log_scan_error,
                 );
             })
         }
@@ -1145,6 +1156,7 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                             st,
                             move |h| h.remove_folder(&remove_for),
                             apply_and_save,
+                            log_scan_error,
                         );
                     }),
             )
