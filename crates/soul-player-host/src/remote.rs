@@ -28,7 +28,7 @@
 //! download-then-play only if the stream can't be opened.
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
@@ -265,6 +265,18 @@ impl DownloadCache {
     }
 }
 
+/// A process-unique temp path for an in-flight download of `track_id` under
+/// `dir`. The suffix MUST be unique per download: two concurrent downloads of
+/// the same track (e.g. the loader's ReplayGain warm-up and the pump's loudness
+/// key both resolving a just-started remote track) would otherwise share one
+/// `{track_id}.part` file, and their interleaved, truncating writes could leave a
+/// corrupt file that the rename then commits into the cache as a "hit".
+fn temp_download_path(dir: &Path, track_id: u32) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    dir.join(format!("{track_id}.{seq}.part"))
+}
+
 impl MediaFetch for DownloadCache {
     fn fetch(&self, server: &RemoteServer, track_id: u32) -> anyhow::Result<PathBuf> {
         let dir = self.server_dir(server);
@@ -297,7 +309,7 @@ impl MediaFetch for DownloadCache {
         // Download to a sibling temp file and rename into place, so a
         // crash mid-download can never leave a short/corrupt file sitting
         // at `path` masquerading as a cache hit.
-        let tmp = dir.join(format!("{track_id}.part"));
+        let tmp = temp_download_path(&dir, track_id);
         {
             let mut file =
                 fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
@@ -1460,6 +1472,22 @@ mod tests {
     use soul_server::store::FileUsers;
 
     use super::*;
+
+    #[test]
+    fn concurrent_downloads_of_one_track_use_distinct_temp_files() {
+        // Two in-flight downloads of the same (server, track_id) must not share a
+        // `.part` temp file: their interleaved writes would otherwise corrupt it,
+        // and the rename would commit the corrupt file into the cache. Distinct
+        // temp paths keep each download's write isolated (last rename wins, each
+        // is a complete copy of the identical body).
+        let dir = PathBuf::from("/cache/server-x");
+        let a = temp_download_path(&dir, 42);
+        let b = temp_download_path(&dir, 42);
+        assert_ne!(
+            a, b,
+            "concurrent downloads of the same track must use distinct temp files"
+        );
+    }
 
     #[test]
     fn token_store_round_trips_save_load_delete() {
