@@ -407,7 +407,8 @@ impl RemoteLibrary {
                     server = %server.url,
                     stale = skews.len(),
                     ?skew,
-                    "remote index is another .soulidx format version, read as empty:                      update the server or this app"
+                    "remote index is another .soulidx format version, read as empty: \
+                     update the server or this app"
                 );
                 stale_remotes.push(StaleRemote {
                     url: server.url.clone(),
