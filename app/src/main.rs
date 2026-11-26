@@ -12622,6 +12622,7 @@ mod tests {
             Some("1 copied, 0 moved, 0 skipped, 6 failed")
         );
 
+        summary_counts_read_as_plurals(&text);
         for (n, want) in [
             (1, "Odstraněna 1 prázdná složka"),
             (3, "Odstraněny 3 prázdné složky"),
@@ -12641,6 +12642,23 @@ mod tests {
             );
         }
         apply_locale("en");
+    }
+
+    /// The Confirm modal's action tally uses each locale's plural forms
+    /// ("1 duplicate", not "1 duplicates"). The caller holds the locale lock.
+    fn summary_counts_read_as_plurals(text: &dyn Fn(&Runtime<State>, &str) -> Option<String>) {
+        for (dup, conflict, want) in [
+            (1, 1, "0 to copy, 0 to move, 1 duplicate, 1 conflict"),
+            (2, 3, "0 to copy, 0 to move, 2 duplicates, 3 conflicts"),
+        ] {
+            let mut summary = organize_job::summarize(&sample_plan(), "artist-album");
+            (summary.copy, summary.moved, summary.dup, summary.conflict) = (0, 0, dup, conflict);
+            let rt = organize_frame(OrganizePhase::Confirm {
+                plan: sample_plan(),
+                summary,
+            });
+            assert_eq!(text(&rt, "organize-confirm-actions").as_deref(), Some(want));
+        }
     }
 
     /// Confirming the plan advances the flow from Confirm to Applying (pressing

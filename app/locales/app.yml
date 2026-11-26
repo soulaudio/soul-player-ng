@@ -2452,12 +2452,40 @@ settings.organizeConfirmTitle:
   cs: 'Uspořádat do knihovny'
   ja: 'ライブラリに整理'
 settings.organizeConfirmSummary:
-  en: '%{copy} to copy, %{moved} to move, %{dup} duplicates, %{conflict} conflicts'
-  de: '%{copy} zu kopieren, %{moved} zu verschieben, %{dup} Duplikate, %{conflict} Konflikte'
-  es: '%{copy} para copiar, %{moved} para mover, %{dup} duplicados, %{conflict} conflictos'
-  zh: '复制 %{copy} 项，移动 %{moved} 项，重复 %{dup} 项，冲突 %{conflict} 项'
-  cs: '%{copy} ke kopírování, %{moved} k přesunu, %{dup} duplikátů, %{conflict} konfliktů'
-  ja: 'コピー %{copy} 件、移動 %{moved} 件、重複 %{dup} 件、競合 %{conflict} 件'
+  en: '%{copy} to copy, %{moved} to move, %{dup}, %{conflict}'
+  de: '%{copy} zu kopieren, %{moved} zu verschieben, %{dup}, %{conflict}'
+  es: '%{copy} para copiar, %{moved} para mover, %{dup}, %{conflict}'
+  zh: '复制 %{copy} 项，移动 %{moved} 项，%{dup}，%{conflict}'
+  cs: '%{copy} ke kopírování, %{moved} k přesunu, %{dup}, %{conflict}'
+  ja: 'コピー %{copy} 件、移動 %{moved} 件、%{dup}、%{conflict}'
+settings.organizeDuplicates.one:
+  en: '%{n} duplicate'
+  de: '%{n} Duplikat'
+  es: '%{n} duplicado'
+  cs: '%{n} duplikát'
+settings.organizeDuplicates.few:
+  cs: '%{n} duplikáty'
+settings.organizeDuplicates.other:
+  en: '%{n} duplicates'
+  de: '%{n} Duplikate'
+  es: '%{n} duplicados'
+  zh: '重复 %{n} 项'
+  cs: '%{n} duplikátů'
+  ja: '重複 %{n} 件'
+settings.organizeConflicts.one:
+  en: '%{n} conflict'
+  de: '%{n} Konflikt'
+  es: '%{n} conflicto'
+  cs: '%{n} konflikt'
+settings.organizeConflicts.few:
+  cs: '%{n} konflikty'
+settings.organizeConflicts.other:
+  en: '%{n} conflicts'
+  de: '%{n} Konflikte'
+  es: '%{n} conflictos'
+  zh: '冲突 %{n} 项'
+  cs: '%{n} konfliktů'
+  ja: '競合 %{n} 件'
 settings.organizeConfirmFiles:
   en: '%{audio} + %{side}'
   de: '%{audio} + %{side}'

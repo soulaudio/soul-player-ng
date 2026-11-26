@@ -119,20 +119,51 @@ fn plural_families_define_exactly_each_locales_categories() {
     );
 }
 
-/// Every family a view asks for (`tn("..."` / `plural_key("..."`) exists.
+/// Every `.rs` file under `dir`, recursively, as `(path, source)`.
+fn rust_sources(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+    for entry in std::fs::read_dir(dir)
+        .expect("read the source dir")
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_sources(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let src = std::fs::read_to_string(&path).expect("read a source file");
+            out.push((path, src));
+        }
+    }
+}
+
+/// Every family the app asks for by a literal base (a `tn` or `plural_key` call) anywhere
+/// under `src/` exists.
 #[test]
 fn plural_families_used_in_views_exist() {
     let map = parse_locales(include_str!("../locales/app.yml"));
-    let src = include_str!("views/settings.rs");
+    let mut sources = Vec::new();
+    rust_sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut sources,
+    );
+    assert!(
+        sources.len() > 20,
+        "found only {} source files",
+        sources.len()
+    );
     let mut missing = Vec::new();
-    for pat in ["tn(\"", "plural_key(\""] {
-        for (i, _) in src.match_indices(pat) {
-            let base = src[i + pat.len()..].split('"').next().unwrap();
-            if !map.contains_key(&format!("{base}.other")) {
-                missing.push(format!("  {base}"));
+    let mut used = 0;
+    for (path, src) in &sources {
+        for pat in ["tn(\"", "plural_key(\""] {
+            for (i, _) in src.match_indices(pat) {
+                used += 1;
+                let base = src[i + pat.len()..].split('"').next().unwrap();
+                if !map.contains_key(&format!("{base}.other")) {
+                    missing.push(format!("  {base} ({})", path.display()));
+                }
             }
         }
     }
+    assert!(used > 0, "no plural family use found");
     assert!(
         missing.is_empty(),
         "plural families used but not defined:\n{}",

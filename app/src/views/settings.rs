@@ -4438,8 +4438,8 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                 "settings.organizeConfirmSummary",
                 copy => summary.copy,
                 moved => summary.moved,
-                dup => summary.dup,
-                conflict => summary.conflict
+                dup => tn("settings.organizeDuplicates", summary.dup),
+                conflict => tn("settings.organizeConflicts", summary.conflict)
             )
             .to_string();
             let files = t!(
@@ -4465,7 +4465,13 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                                 .color(p.fg)
                                 .wrap(),
                         )
-                        .child(text(actions).font(type_::BODY).color(p.fg).wrap())
+                        .child(
+                            text(actions)
+                                .key("organize-confirm-actions")
+                                .font(type_::BODY)
+                                .color(p.fg)
+                                .wrap(),
+                        )
                         .child(
                             text(plan.dest_root.to_string_lossy().into_owned())
                                 .font(type_::CAPTION)
