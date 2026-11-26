@@ -118,6 +118,9 @@ pub mod type_ {
     /// 16 / 500 / 24, an album/media-card title (the old app's `text-base
     /// font-medium` card heading).
     pub const CARD_TITLE: TextStyle = TextStyle::new(16.0, 500.0).lh(24.0);
+    /// 14 / 400 / 18, a media-card subtitle (explicit so the grid row stride can
+    /// share the exact line height instead of mirroring rune's derived default).
+    pub const CARD_SUBTITLE: TextStyle = TextStyle::new(14.0, 400.0).lh(18.0);
     /// 14 / 600: the now-playing panel title.
     pub const TITLE: TextStyle = TextStyle::new(14.0, 600.0);
     /// 20 / 600: a page / section heading (the old app's settings `h2`).

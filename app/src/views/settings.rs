@@ -4342,7 +4342,8 @@ const LEFT_SHOWN: usize = 5;
 /// The localized reason an album's side files stay in place.
 fn left_reason(r: organize::SideFilesLeft) -> String {
     use organize::SideFilesLeft::{
-        AtSourceRoot, AudioConflict, NoAlbumFolder, NoSourceRoot, SharedAlbumRoot,
+        AtSourceRoot, AudioConflict, NoAlbumFolder, NoSourceRoot, PartialSelection,
+        SharedAlbumRoot, SplitAlbumFolders,
     };
     match r {
         SharedAlbumRoot => t!("settings.organizeLeftShared"),
@@ -4350,6 +4351,8 @@ fn left_reason(r: organize::SideFilesLeft) -> String {
         AtSourceRoot => t!("settings.organizeLeftAtSourceRoot"),
         NoSourceRoot => t!("settings.organizeLeftNoSourceRoot"),
         AudioConflict => t!("settings.organizeLeftAudioConflict"),
+        PartialSelection => t!("settings.organizeLeftPartialSelection"),
+        SplitAlbumFolders => t!("settings.organizeLeftSplitAlbumFolders"),
         // `SideFilesLeft` is non-exhaustive: a newer core reason reads generically.
         _ => t!("settings.organizeLeftOther"),
     }
@@ -4504,6 +4507,18 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                         .font(type_::CAPTION)
                         .color(p.warning)
                         .wrap(),
+                );
+            }
+            if summary.cues_not_rewritten > 0 {
+                card = card.child(
+                    text(tn(
+                        "settings.organizeCuesUnchanged",
+                        summary.cues_not_rewritten,
+                    ))
+                    .key("organize-cues-unchanged")
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary)
+                    .wrap(),
                 );
             }
             if let Some(list) = organize_left_list(&summary.left, p) {
