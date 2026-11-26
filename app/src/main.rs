@@ -3386,7 +3386,8 @@ pub(crate) fn organize_dismiss(s: &mut State) {
 /// `app_handle` is present (a real run), spawn a worker that applies the plan,
 /// streaming progress back per entry and finishing with the summary. The worker
 /// also registers the destination as a watched source so the organized files
-/// appear in the library. With no handle (headless tests) it stays the pure
+/// appear in the library, and the albums' custom covers follow them to their
+/// new identities ([`organize_cover_carry`], [`carry_album_covers`]). With no handle (headless tests) it stays the pure
 /// Confirm → Applying transition, writing nothing to disk.
 pub(crate) fn organize_confirm(s: &mut State) {
     // Only act from Confirm; take the plan so the worker owns it. Anything else is
@@ -3405,6 +3406,8 @@ pub(crate) fn organize_confirm(s: &mut State) {
     };
     let host = s.host.clone();
     let dest = plan.dest_root.clone();
+    // Read while the source files are still in the library (they move next).
+    let carry = organize_cover_carry(s, &plan);
     std::thread::spawn(move || {
         // The progress callback clones the handle per entry and posts an update,
         // that stream drives the Applying modal's `done / total` + current line.
@@ -3418,12 +3421,100 @@ pub(crate) fn organize_confirm(s: &mut State) {
         // then post the final summary (both on the main thread, in one update).
         let watch = host.add_folder(&dest).ok();
         handle.update(move |s: &mut State, _tx: &mut Tx| {
+            // Before the library refresh, so the moved albums show their covers
+            // (and legacy adoption sees them) on the first frame.
+            carry_album_covers(s, &carry);
             if let Some(up) = watch {
                 apply_and_save(s, up);
             }
             organize_finish(s, summary);
         });
     });
+}
+
+/// One custom album cover an organize run carries to the album's new identity
+/// (its files land in a new album root, so its identity key changes).
+pub(crate) struct CoverCarry {
+    old: covers::AlbumIdentity,
+    new: covers::AlbumIdentity,
+    /// Where the album's identity track lands; the cover is carried only once
+    /// it is there.
+    landed: PathBuf,
+    /// Move re-keys the cover; Copy copies it (the source album stays).
+    moved: bool,
+}
+
+/// The library track locator of local file `path` (as the host builds it).
+fn local_locator(path: &std::path::Path) -> soul_player_host::TrackLocator {
+    soul_player_host::TrackLocator::Local {
+        path: path.to_string_lossy().replace('\\', "/"),
+    }
+}
+
+/// The custom album covers `plan` must carry: for each library album with a
+/// cover whose identity track ([`identity_rep`]) the plan copies or moves, its
+/// identity now and the identity it will have at the destination (the same
+/// album-root rule, [`soul_player_host::album_identity_key`], over the planned
+/// destination path). Computed before the plan runs, while the source files are
+/// still in the library.
+pub(crate) fn organize_cover_carry(s: &State, plan: &organize::OrganizePlan) -> Vec<CoverCarry> {
+    let placing: Vec<&organize::PlanEntry> = plan
+        .entries
+        .iter()
+        .filter(|e| {
+            e.kind == organize::EntryKind::Audio
+                && matches!(e.action, organize::Action::Copy | organize::Action::Move)
+        })
+        .collect();
+    if placing.is_empty() {
+        return Vec::new();
+    }
+    let locs: Vec<soul_player_host::TrackLocator> =
+        placing.iter().map(|e| local_locator(&e.src)).collect();
+    let by_id: std::collections::HashMap<u32, &organize::PlanEntry> = s
+        .host
+        .resolve_locators(&locs)
+        .into_iter()
+        .zip(&placing)
+        .filter_map(|(id, e)| Some((id?, *e)))
+        .collect();
+    let albums = s.grouped_albums();
+    albums
+        .iter()
+        .filter(|a| s.covers.album_cover_path(&a.identity).is_some())
+        .filter_map(|a| {
+            let rep = identity_rep(a);
+            let entry = by_id.get(&rep)?;
+            let key = soul_player_host::album_identity_key(
+                &local_locator(&entry.dst),
+                s.identity_title(rep),
+            );
+            Some(CoverCarry {
+                old: a.identity.clone(),
+                new: covers::AlbumIdentity::new(key),
+                landed: entry.dst.clone(),
+                moved: entry.action == organize::Action::Move,
+            })
+        })
+        .collect()
+}
+
+/// Carry each cover in `carry` whose album's identity track landed: a Move
+/// re-keys the cover (`CoverStore::rekey_album_cover`), a Copy copies it, and
+/// neither ever overwrites a cover the new identity already has.
+pub(crate) fn carry_album_covers(s: &mut State, carry: &[CoverCarry]) {
+    for c in carry.iter().filter(|c| c.landed.is_file()) {
+        let carried = if c.moved {
+            s.covers.rekey_album_cover(&c.old, &c.new)
+        } else {
+            s.covers.copy_album_cover(&c.old, &c.new)
+        };
+        tracing::debug!(
+            carried,
+            moved = c.moved,
+            "carried a custom album cover after organizing"
+        );
+    }
 }
 
 /// Switch the library's sort order, re-fetches the current library's views in
@@ -8028,6 +8119,100 @@ mod tests {
             "the same identity in the reversed order"
         );
         assert!(before.is_located());
+    }
+
+    /// Organize `src` (one album, "Carried", with a custom cover) into a fresh
+    /// destination with `strategy`, carrying the covers as the Apply worker
+    /// does, then rescan. Returns the state and the album's old identity.
+    fn organize_an_album_with_a_cover(
+        tag: &str,
+        strategy: organize::Strategy,
+        template: &str,
+    ) -> (State, covers::AlbumIdentity) {
+        let base = std::env::temp_dir().join(format!(
+            "soul_rune_organize_cover_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, dest) = (base.join("src"), base.join("dest"));
+        for n in ["1", "2"] {
+            let track_tag = format!("TRACKNUMBER={n}");
+            let disc_tag = format!("DISCNUMBER={n}");
+            let title_tag = format!("TITLE=Track {n}");
+            test_fixtures::put(
+                &src,
+                &format!("Some Folder/0{n}.flac"),
+                &test_fixtures::flac_with_comments(&[
+                    "ALBUM=Carried",
+                    "ARTIST=Mover",
+                    "DISCTOTAL=2",
+                    track_tag.as_str(),
+                    disc_tag.as_str(),
+                    title_tag.as_str(),
+                ]),
+            );
+        }
+        let mut s = State::new(PlayerHandle::offline());
+        let up = s.host.add_folder(&src).expect("scan the source");
+        apply_watch(&mut s, up);
+        let old = album_identity_named(&s, "Carried");
+        assert!(s.covers.set_album_cover(&old, &write_temp_real_png()));
+
+        let plan = organize_job::plan_import(&src, &dest, template, strategy);
+        let carry = organize_cover_carry(&s, &plan);
+        let summary = organize_job::run_apply(&plan, |_| {});
+        assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+        carry_album_covers(&mut s, &carry);
+        let up = s.host.add_folder(&dest).expect("scan the destination");
+        apply_watch(&mut s, up);
+        (s, old)
+    }
+
+    /// After an organize Move, the moved two-disc album (a new album root, so a
+    /// new identity) still shows the custom cover after the rescan, in either
+    /// layout (one folder, or a sub-folder per disc).
+    #[test]
+    fn an_organize_move_carries_the_custom_album_cover() {
+        for template in ["artist-album", "artist-album+disc-folders"] {
+            let tag = format!("move_{}", template.replace('+', "_"));
+            let (s, old) = organize_an_album_with_a_cover(&tag, organize::Strategy::Move, template);
+            assert_moved_cover(&s, &old, template);
+        }
+    }
+
+    fn assert_moved_cover(s: &State, old: &covers::AlbumIdentity, template: &str) {
+        let albums = s.grouped_albums();
+        let carried: Vec<_> = albums.iter().filter(|a| a.name == "Carried").collect();
+        assert_eq!(carried.len(), 1, "{template}: the album moved");
+        assert_ne!(
+            &carried[0].identity, old,
+            "{template}: its album root changed"
+        );
+        assert!(
+            s.covers.album_cover_path(&carried[0].identity).is_some(),
+            "{template}: the moved album keeps its cover"
+        );
+        assert!(
+            s.covers.album_cover_path(old).is_none(),
+            "{template}: moved, not copied"
+        );
+    }
+
+    /// After an organize Copy, both the source album and the copy show it.
+    #[test]
+    fn an_organize_copy_gives_the_copy_the_custom_album_cover_too() {
+        let (s, old) =
+            organize_an_album_with_a_cover("copy", organize::Strategy::Copy, "artist-album");
+        let albums = s.grouped_albums();
+        let carried: Vec<_> = albums.iter().filter(|a| a.name == "Carried").collect();
+        assert_eq!(carried.len(), 2, "the source and the copy");
+        assert!(carried.iter().any(|a| a.identity == old));
+        assert!(
+            carried
+                .iter()
+                .all(|a| s.covers.album_cover_path(&a.identity).is_some()),
+            "both show the cover"
+        );
     }
 
     #[test]

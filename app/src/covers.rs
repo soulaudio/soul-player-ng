@@ -371,6 +371,62 @@ impl CoverStore {
         self.cover_path(&album_identity_stem(id))
     }
 
+    /// Move the album's custom cover from identity `old` to `new` (an organize
+    /// Move gave the album a new album root). Never overwrites: when `new`
+    /// already has a cover, `old`'s stays where it is. The rename stays inside
+    /// the covers directory, so it is atomic: the cover exists under exactly one
+    /// stem at every moment. `true` iff the cover moved.
+    pub(crate) fn rekey_album_cover(&mut self, old: &AlbumIdentity, new: &AlbumIdentity) -> bool {
+        let Some((src, dst_stem, dst)) = self.carry_target(old, new) else {
+            return false;
+        };
+        if let Err(err) = fs::rename(&src, &dst) {
+            tracing::warn!(error = %err, "could not move an album cover to its new identity");
+            return false;
+        }
+        self.known.remove(&album_identity_stem(old));
+        self.known.insert(dst_stem, dst);
+        true
+    }
+
+    /// Copy the album's custom cover from identity `old` to `new` (an organize
+    /// Copy made a second album), keeping `old`'s. Never overwrites an existing
+    /// cover under `new`; written crash-safely ([`copy_into_place`]). `true` iff
+    /// copied.
+    pub(crate) fn copy_album_cover(&mut self, old: &AlbumIdentity, new: &AlbumIdentity) -> bool {
+        let Some((src, dst_stem, dst)) = self.carry_target(old, new) else {
+            return false;
+        };
+        if let Err(err) = copy_into_place(&src, &dst) {
+            tracing::warn!(error = %err, "could not copy an album cover to a new identity");
+            return false;
+        }
+        self.known.insert(dst_stem, dst);
+        true
+    }
+
+    /// For carrying `old`'s cover to `new`: its current file, the new stem and
+    /// the new file (same extension). `None` when there is nothing to carry
+    /// (no cover, a title-only identity, the same key) or `new` already has a
+    /// cover, which is never overwritten.
+    fn carry_target(
+        &self,
+        old: &AlbumIdentity,
+        new: &AlbumIdentity,
+    ) -> Option<(PathBuf, String, PathBuf)> {
+        if old == new || !old.is_located() || !new.is_located() {
+            return None;
+        }
+        let src = self.album_cover_path(old)?;
+        let dst_stem = album_identity_stem(new);
+        if self.known.contains_key(&dst_stem) {
+            return None;
+        }
+        let ext = src.extension()?.to_str()?.to_string();
+        let dst = self.dir.join(format!("{dst_stem}.{ext}"));
+        (!dst.exists()).then_some((src, dst_stem, dst))
+    }
+
     /// Delete the stored cover for `stem` (best-effort) and forget it.
     fn clear_cover(&mut self, stem: &str) {
         remove_by_stem(&self.dir, stem);
@@ -559,6 +615,62 @@ mod tests {
             "one adoption pass lists the dir at most once"
         );
         drop(s);
+    }
+
+    /// Re-keying moves an album's cover to its new identity, on disk too.
+    #[test]
+    fn rekeying_moves_an_album_cover_to_the_new_identity() {
+        let (old, new) = (id("Old Home"), id("New Home"));
+        let mut s = CoverStore::load();
+        assert!(s.set_album_cover(&old, &write_temp_png()));
+        assert!(s.rekey_album_cover(&old, &new));
+        assert!(s.album_cover_path(&old).is_none(), "gone from the old key");
+        assert!(s.album_cover_path(&new).is_some(), "under the new key");
+        let reloaded = CoverStore::load();
+        assert!(reloaded.album_cover_path(&old).is_none());
+        assert!(reloaded.album_cover_path(&new).is_some());
+    }
+
+    /// A cover already stored under the new identity is never overwritten; the
+    /// moved album's own cover stays where it was (kept, not lost).
+    #[test]
+    fn rekeying_never_overwrites_an_existing_cover() {
+        let (old, new) = (id("Old Home"), id("New Home"));
+        let mut s = CoverStore::load();
+        assert!(s.set_album_cover(&old, &write_temp_png()));
+        let theirs = write_temp_file("theirs.jpg", b"not-the-same-bytes");
+        assert!(s.set_album_cover(&new, &theirs));
+        assert!(!s.rekey_album_cover(&old, &new));
+        let new_path = s.album_cover_path(&new).expect("the existing cover stays");
+        assert_eq!(fs::read(new_path).unwrap(), fs::read(&theirs).unwrap());
+        assert!(s.album_cover_path(&old).is_some(), "the old cover is kept");
+        assert!(!s.copy_album_cover(&old, &new), "nor does a copy overwrite");
+    }
+
+    /// Copying gives the new identity the cover and keeps the original.
+    #[test]
+    fn copying_an_album_cover_keeps_the_original() {
+        let (old, new) = (id("Source"), id("Copy"));
+        let mut s = CoverStore::load();
+        assert!(s.set_album_cover(&old, &write_temp_png()));
+        assert!(s.copy_album_cover(&old, &new));
+        assert!(s.album_cover_path(&old).is_some());
+        assert!(s.album_cover_path(&new).is_some());
+        assert_ne!(s.album_cover_path(&old), s.album_cover_path(&new));
+    }
+
+    /// Nothing to carry (no cover, a title-only identity, or the same key) is
+    /// a no-op.
+    #[test]
+    fn rekeying_without_a_cover_or_to_a_fallback_identity_does_nothing() {
+        let (old, new) = (id("Old Home"), id("New Home"));
+        let mut s = CoverStore::load();
+        assert!(!s.rekey_album_cover(&old, &new), "no cover to move");
+        assert!(s.set_album_cover(&old, &write_temp_png()));
+        let fallback = AlbumIdentity::new(soul_player_host::unlocated_album_identity_key("X"));
+        assert!(!s.rekey_album_cover(&old, &fallback));
+        assert!(!s.rekey_album_cover(&old, &old));
+        assert!(s.album_cover_path(&old).is_some());
     }
 
     #[test]
