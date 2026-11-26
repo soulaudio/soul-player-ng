@@ -33,6 +33,9 @@ pub(crate) fn card_play_command(now_playing: Option<u32>, ids: &[u32]) -> Comman
     }
 }
 
+/// How many lines a square (album) card's title may wrap to before it is clamped.
+pub(crate) const TITLE_LINES: usize = 2;
+
 /// What a card renders: identity, artwork, and the ids its play-overlay acts on.
 pub(crate) struct CardSpec {
     /// The card body's element key (e.g. `"album-0"`), unique within its grid.
@@ -203,9 +206,18 @@ pub(crate) fn media_card(
     let title_el = text(spec.title)
         .font(type_::CARD_TITLE)
         .color(p.fg)
-        .truncate()
         .align(text_align)
         .group_opacity(1.0, 0.8);
+    // An album title wraps to [`TITLE_LINES`] lines (a shared prefix like
+    // "Genshin Impact - ..." must stay distinguishable) and reserves both so a
+    // one-line title does not leave its row ragged. An artist name stays one line.
+    let title_el = if spec.circular {
+        title_el.truncate()
+    } else {
+        title_el
+            .max_lines(TITLE_LINES)
+            .min_h(TITLE_LINES as f32 * type_::CARD_TITLE.line_height)
+    };
     // A local/mixed-source card (the common case) keeps the plain title; only a
     // card whose tracks all stream from one remote host gains the badge, same
     // "local is unremarked" rule as the track-row badge.
@@ -228,7 +240,7 @@ pub(crate) fn media_card(
     if let Some(sub) = spec.subtitle {
         text_col = text_col.child(
             text(sub)
-                .font(type_::ITEM)
+                .font(type_::CARD_SUBTITLE)
                 .color(p.text_secondary)
                 .truncate()
                 .align(text_align),
