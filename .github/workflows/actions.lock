@@ -23,6 +23,8 @@ workflows:
         - 'actions/checkout@v7.0.1'
         - 'actions/download-artifact@v4.3.0'
         - 'actions/upload-artifact@v4.6.2'
+    '.github/workflows/rollback-drill.yml':
+        - 'actions/checkout@v7.0.1'
     '.github/workflows/security.yml':
         - 'actions/checkout@v7.0.1'
         - 'anchore/sbom-action@v0.24.3'
