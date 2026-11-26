@@ -2822,10 +2822,10 @@ mod tests {
         stale[..4].copy_from_slice(b"SIDX");
         stale[4..6].copy_from_slice(&7u16.to_le_bytes());
         handle.inner.remotes.lock().unwrap().push((
-            Arc::new(RemoteServer {
-                url: "http://old.invalid".to_owned(),
-                access_token: String::new(),
-            }),
+            Arc::new(RemoteServer::new(
+                "http://old.invalid".to_owned(),
+                String::new(),
+            )),
             vec![stale.into()],
         ));
         handle.rebuild_remote_library();
