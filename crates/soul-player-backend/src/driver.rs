@@ -602,16 +602,24 @@ pub enum PumpFailure {
     /// The output device is gone (an unplugged DAC, a dead exclusive stream): park and
     /// pause, then recover the output the same way a failed open does.
     DeviceLost,
-    /// Anything else (a decode hiccup, an unsupported channel layout): log and carry on.
+    /// The CURRENT track failed to decode (corrupt data, or a remote read error). The
+    /// deck re-attempts on the next pump, so a transient remote blip can still recover;
+    /// but if it keeps failing, the track is dead, so give up (stop + report) rather
+    /// than spin silently forever. See the actor's bounded-retry handling.
+    TrackFailed,
+    /// Anything else (an unsupported channel layout, a non-device sink hiccup): log and
+    /// carry on.
     Transient,
 }
 
-/// Classify a pump error. Only [`SinkError::Closed`](soul_audio_core::SinkError::Closed)
-/// means the device itself is gone, a sink reports it when its device stopped being
-/// alive, instead of blocking forever on a buffer nobody drains.
+/// Classify a pump error. [`SinkError::Closed`](soul_audio_core::SinkError::Closed) means
+/// the device itself is gone (a sink reports it when its device stopped being alive,
+/// instead of blocking forever on a buffer nobody drains). A [`DeckError::Decode`] means
+/// the current track can't produce audio at this position; everything else is transient.
 pub fn classify_pump_error(e: &DeckError) -> PumpFailure {
     match e {
         DeckError::Sink(soul_audio_core::SinkError::Closed) => PumpFailure::DeviceLost,
+        DeckError::Decode(_) => PumpFailure::TrackFailed,
         _ => PumpFailure::Transient,
     }
 }
@@ -1716,6 +1724,19 @@ mod tests {
         assert_eq!(
             classify_pump_error(&DeckError::ChannelMismatch),
             PumpFailure::Transient
+        );
+        // A decode failure (corrupt data, or a remote read/io error mid-stream) is the
+        // current TRACK failing, distinct from a transient hiccup, so the actor can give
+        // up on it (stop + report) after a bounded retry rather than spin forever.
+        assert_eq!(
+            classify_pump_error(&DeckError::Decode(soul_audio_core::DecodeError::Io)),
+            PumpFailure::TrackFailed
+        );
+        assert_eq!(
+            classify_pump_error(&DeckError::Decode(
+                soul_audio_core::DecodeError::Unsupported
+            )),
+            PumpFailure::TrackFailed
         );
     }
 
