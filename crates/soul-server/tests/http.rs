@@ -596,3 +596,76 @@ async fn authorize_rejects_open_redirect_to_non_loopback_uri() {
         "an open-redirect rejection must not render the login form, got {body}"
     );
 }
+
+/// `/token` must bind the authorization_code grant to the same client the code
+/// was issued to. Redeeming a code with a different `client_id` than the one
+/// `/authorize` required must be rejected, not silently honored.
+#[tokio::test]
+async fn token_rejects_a_mismatched_client_id() {
+    let (router, _dir, _services, _signer) = test_router();
+
+    let verifier = "fixed-test-code-verifier-0123456789abcdefghijk";
+    let challenge = pkce_challenge(verifier);
+    let redirect_uri = "http://127.0.0.1:12345/callback";
+    let login_form = format!(
+        "username=u&password=p&response_type=code&client_id=soul-player\
+         &redirect_uri={redirect_uri}&code_challenge={challenge}\
+         &code_challenge_method=S256&state=xyz"
+    );
+    let response = router
+        .clone()
+        .oneshot(post_form("/authorize", login_form))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND);
+    let location = response
+        .headers()
+        .get(header::LOCATION)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let code = query_param(&location, "code").to_string();
+
+    let token_form = format!(
+        "grant_type=authorization_code&code={code}&code_verifier={verifier}\
+         &redirect_uri={redirect_uri}&client_id=some-other-client"
+    );
+    let response = router
+        .oneshot(post_form("/token", token_form))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a /token request whose client_id does not match the code's client must be rejected"
+    );
+}
+
+/// A `redirect_uri` whose authority is loopback (so it passes the open-redirect
+/// check) but whose path carries CRLF bytes (illegal in an HTTP header value)
+/// must not panic the handler when it builds the `Location` header. The server
+/// returns a clean error response instead of a panicked, reset request.
+#[tokio::test]
+async fn authorize_does_not_panic_on_a_redirect_uri_with_control_bytes() {
+    let (router, _dir, _services, _signer) = test_router();
+
+    let verifier = "fixed-test-code-verifier-0123456789abcdefghijk";
+    let challenge = pkce_challenge(verifier);
+    // `%0D%0A` decodes (via the Form extractor) to a real CR LF in the path.
+    let redirect_uri = "http://127.0.0.1:12345/%0D%0AInjected";
+    let login_form = format!(
+        "username=u&password=p&response_type=code&client_id=soul-player\
+         &redirect_uri={redirect_uri}&code_challenge={challenge}\
+         &code_challenge_method=S256&state=xyz"
+    );
+    let response = router
+        .oneshot(post_form("/authorize", login_form))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a redirect_uri with header-illegal bytes is rejected cleanly, not via a panic"
+    );
+}
