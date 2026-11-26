@@ -95,6 +95,30 @@
   </screenshots>
 
   <releases>
+    <release version="0.4.9" date="2026-11-26">
+      <description>
+        <p>New</p>
+        <ul>
+          <li>Album follow-ups: identity-keyed covers, album page cache, plural forms, stale server notice</li>
+          <li>Multi-disc albums and side files (Phase 2, -ng)</li>
+          <li>Theme-inverting taskbar/tray icon, new brand mark</li>
+          <li>Refresh an expired access token mid-stream in the Range reader</li>
+          <li>Refresh an expired access token on a 401 and retry the open</li>
+        </ul>
+        <p>Fixed</p>
+        <ul>
+          <li>Expire idle refresh tokens and bound the store's growth</li>
+          <li>Harden the OAuth handlers (no runtime block, no panic, bind client_id)</li>
+          <li>Offer a Clear button when a filter empties the grid</li>
+          <li>Handle a failed background scan instead of dropping it silently</li>
+          <li>Reset the seek preview on a track change</li>
+          <li>Commit an inline profile rename on blur, not just on Enter</li>
+          <li>Abort a reorder on a cancelled drag (Escape mid-drag) instead of committing</li>
+          <li>Build the test server through RemoteServer::new, main does not compile</li>
+          <li>Give up on a persistently-failing track instead of spinning silently</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.4.8" date="2026-11-25">
       <description>
         <p>New</p>
