@@ -400,9 +400,13 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
     })
 }
 
-/// An album card's non-cover height (title + "Artist · year" subtitle): the
+/// An album card's non-cover height (two title lines + "Artist · year" subtitle): the
 /// `virtual_grid` row stride is a `card_w`-square cover plus this.
-const ALBUM_CAPTION_H: f32 = 48.0;
+const ALBUM_CAPTION_H: f32 = space::SM
+    + crate::views::media_card::TITLE_LINES as f32 * type_::CARD_TITLE.line_height
+    + space::XXS
+    // `ITEM` has no explicit line height: rune derives 1.25 x its size.
+    + type_::ITEM.size * 1.25;
 
 /// The Albums page: an always-visible search box above a responsive grid of
 /// album cards, scrolled vertically. Mirrors the original soul-player's
@@ -1391,6 +1395,68 @@ mod tests {
         assert!(
             !texts.iter().any(|t| t.contains("· 0")),
             "never render a bare zero year; got {texts:?}"
+        );
+    }
+
+    /// A long album title wraps to two lines (clamped with an ellipsis, never one
+    /// truncated line), and a short title still sits in a tile exactly as tall as
+    /// its neighbour's: the two title lines are reserved so the row stays even.
+    #[test]
+    fn album_card_wraps_a_long_title_to_two_lines_and_keeps_tiles_uniform() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            albums_page(s, &p, cx, scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let long = "Genshin Impact - Forest of Jnana and Vidya (Original Game Soundtrack)";
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        s.library = vec![atv(1, "HOYO-MiX", long), atv(2, "Solo", "Short")];
+        s.route = crate::Route::Albums;
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let els = rt.elements();
+        let title_h = |name: &str| {
+            els.iter()
+                .find(|e| e.text.as_deref() == Some(name))
+                .unwrap_or_else(|| panic!("title {name:?} not rendered"))
+                .rect[3]
+        };
+        let line = type_::CARD_TITLE.line_height;
+        assert!(
+            (title_h(long) - 2.0 * line).abs() < 1.0,
+            "the long title measures two lines tall ({}), got {}",
+            2.0 * line,
+            title_h(long)
+        );
+        let card_h = |key: &str| {
+            els.iter()
+                .find(|e| e.key.as_deref() == Some(key))
+                .unwrap_or_else(|| panic!("card {key:?} missing"))
+                .rect[3]
+        };
+        let (a, b) = (card_h("album-0"), card_h("album-1"));
+        assert!(
+            (a - b).abs() < 0.5,
+            "a one-line title keeps its tile as tall as its neighbour: {a} vs {b}"
+        );
+        let cover_h = els
+            .iter()
+            .find(|e| e.key.as_deref() == Some("cover-area"))
+            .expect("cover area")
+            .rect[3];
+        let caption = a - cover_h;
+        assert!(
+            caption <= ALBUM_CAPTION_H + 1.0,
+            "the row-stride caption ({ALBUM_CAPTION_H}) covers the tile's text block ({caption})"
         );
     }
 
