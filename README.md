@@ -1,3 +1,11 @@
+<!-- Theme-aware mark: the dark-bodied logo on GitHub's light theme, the
+     white-bodied one on dark, so it stays legible either way (the same pair the
+     app ships as its icon). -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="app/icons/icon.png">
+  <img alt="Soul Player" src="app/icons/icon-light.png" width="84" height="84">
+</picture>
+
 # Soul Player
 
 A desktop music player for people who still keep their own files.

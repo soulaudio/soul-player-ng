@@ -1,0 +1,9 @@
+# Keep blank issues ENABLED: the in-app "Report a problem" (app/src/report.rs)
+# deep-links to `issues/new?title=Bug:&labels=bug&body=<prefilled diagnostics>`,
+# which only lands on a pre-filled editor while blank issues are allowed.
+# Disabling this would silently break the desktop reporter.
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/soulaudio/soul-player-ng/blob/main/SECURITY.md
+    about: Please report security issues privately, following SECURITY.md, not as a public issue.
