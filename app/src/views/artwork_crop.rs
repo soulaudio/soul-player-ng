@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn min_scale_fills_the_frame_from_the_shorter_side() {
         let c = crop(
-            ArtworkTarget::Album("A".into()),
+            ArtworkTarget::Album(crate::covers::AlbumIdentity::new("A".into())),
             PathBuf::from("x"),
             400,
             300,
@@ -629,7 +629,7 @@ mod tests {
     #[test]
     fn offset_is_clamped_so_the_image_always_covers_the_frame() {
         let mut c = crop(
-            ArtworkTarget::Album("A".into()),
+            ArtworkTarget::Album(crate::covers::AlbumIdentity::new("A".into())),
             PathBuf::from("x"),
             400,
             300,
@@ -648,7 +648,7 @@ mod tests {
     #[test]
     fn zoom_slider_maps_0_to_the_cover_scale_and_1_to_the_ceiling() {
         let mut c = crop(
-            ArtworkTarget::Album("A".into()),
+            ArtworkTarget::Album(crate::covers::AlbumIdentity::new("A".into())),
             PathBuf::from("x"),
             400,
             300,

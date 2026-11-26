@@ -28,6 +28,7 @@ use crate::config::AlbumYearSource;
 use crate::organize_job::{
     self, has_disc_folder_variant, layout_presets, plan_import, split_template_id,
 };
+use crate::plural::tn;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::dropdown;
@@ -881,7 +882,7 @@ enum SourceRow<'a> {
 /// `add_remote_source_with_tokens`/`remove_remote_source`). Mirrors that
 /// host-side `trim_end_matches('/')` so a persisted `http://h:8080` and a
 /// live `http://h:8080/` are recognized as the same source here too.
-fn normalize_remote_url(url: &str) -> &str {
+pub(crate) fn normalize_remote_url(url: &str) -> &str {
     url.trim_end_matches('/')
 }
 
@@ -1071,6 +1072,17 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                 .child(health_dot(index, health.online, p))
                 .child(line),
         );
+        // The server's index is another format version: its tracks are missing
+        // until one side updates, so say which.
+        if let Some(skew) = status.index_skew {
+            identity = identity.child(
+                text(index_skew_text(skew))
+                    .key(format!("source-index-skew-{index}"))
+                    .font(type_::CAPTION)
+                    .color(p.warning)
+                    .wrap(),
+            );
+        }
         if let SourceKind::Remote { url } = &status.kind
             && health.online
             && remote_update_available(s, url, health)
@@ -1082,7 +1094,7 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                     .gap(space::SM)
                     .center_y()
                     .child(
-                        text(t!("settings.updateAvailable").to_string())
+                        text(t!("settings.remoteUpdateAvailable").to_string())
                             .font(type_::CAPTION)
                             .color(p.accent),
                     )
@@ -1216,6 +1228,21 @@ fn offline_remote_row(s: &State, p: &Palette, url: &str, index: usize) -> El {
         ))
         .child(remote_relogin_button(index, url, reconnecting, p))
         .child(remote_remove_button(index, url, p))
+}
+
+/// The localized notice for a remote whose index is another format version.
+fn index_skew_text(skew: soul_player_host::IndexSkew) -> String {
+    use soul_player_host::IndexSkew::{ServerNewer, ServerOlder, Unreadable};
+    match skew {
+        ServerOlder { server, ours } => {
+            t!("settings.indexSkewServerOlder", server => server, ours => ours)
+        }
+        ServerNewer { server, ours } => {
+            t!("settings.indexSkewServerNewer", server => server, ours => ours)
+        }
+        Unreadable => t!("settings.indexSkewUnreadable"),
+    }
+    .to_string()
 }
 
 /// Whether a connected remote's row should show the "update available" cue:
@@ -3011,7 +3038,11 @@ fn dsp_card(i: usize, s: &State, p: &Palette, cx: &Cx<State>) -> El {
                 }
                 rune::Phase::Up => {
                     if let Some((from, to)) = st.dsp_drag.take() {
-                        reorder_dsp_units(st, from, to);
+                        // Abort on Escape / a cancelled gesture; the reorder persists the
+                        // profile + re-pushes the chain, so a cancel must not commit it.
+                        if !d.cancelled() {
+                            reorder_dsp_units(st, from, to);
+                        }
                     }
                 }
             },
@@ -4340,7 +4371,7 @@ fn organize_left_list(left: &[organize_job::LeftAlbum], p: &Palette) -> Option<E
         let row_text = t!(
             "settings.organizeLeftRow",
             folder => l.folder,
-            files => l.files,
+            files => tn("settings.organizeFileCount", l.files),
             reason => left_reason(l.reason)
         );
         c = c.child(
@@ -4362,7 +4393,7 @@ fn organize_left_list(left: &[organize_job::LeftAlbum], p: &Palette) -> Option<E
     }
     if left.len() > LEFT_SHOWN {
         c = c.child(
-            text(t!("settings.organizeLeftMore", n => left.len() - LEFT_SHOWN).to_string())
+            text(tn("settings.organizeLeftMore", left.len() - LEFT_SHOWN))
                 .key("organize-left-more")
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
@@ -4395,7 +4426,7 @@ fn organize_failed_list(failed: &organize_job::FailedPreview, p: &Palette) -> Op
     }
     if failed.more > 0 {
         c = c.child(
-            text(t!("settings.organizeLeftMore", n => failed.more).to_string())
+            text(tn("settings.organizeLeftMore", failed.more))
                 .key("organize-failed-more")
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
@@ -4419,14 +4450,14 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                 "settings.organizeConfirmSummary",
                 copy => summary.copy,
                 moved => summary.moved,
-                dup => summary.dup,
-                conflict => summary.conflict
+                dup => tn("settings.organizeDuplicates", summary.dup),
+                conflict => tn("settings.organizeConflicts", summary.conflict)
             )
             .to_string();
             let files = t!(
                 "settings.organizeConfirmFiles",
-                audio => summary.audio,
-                side => summary.side
+                audio => tn("settings.organizeAudioFiles", summary.audio),
+                side => tn("settings.organizeSideFiles", summary.side)
             )
             .to_string();
             let mut card = organize_card(p)
@@ -4446,7 +4477,13 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                                 .color(p.fg)
                                 .wrap(),
                         )
-                        .child(text(actions).font(type_::BODY).color(p.fg).wrap())
+                        .child(
+                            text(actions)
+                                .key("organize-confirm-actions")
+                                .font(type_::BODY)
+                                .color(p.fg)
+                                .wrap(),
+                        )
                         .child(
                             text(plan.dest_root.to_string_lossy().into_owned())
                                 .font(type_::CAPTION)
@@ -4457,12 +4494,12 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
             if summary.folder_inferred > 0 {
                 let n = summary.folder_inferred;
                 let warning = if summary.disc_folders_available {
-                    t!("settings.organizeDiscWarning", n => n)
+                    tn("settings.organizeDiscWarning", n)
                 } else {
-                    t!("settings.organizeDiscWarningFlat", n => n)
+                    tn("settings.organizeDiscWarningFlat", n)
                 };
                 card = card.child(
-                    text(warning.to_string())
+                    text(warning)
                         .key("organize-disc-warning")
                         .font(type_::CAPTION)
                         .color(p.warning)
@@ -4516,10 +4553,10 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
         OrganizePhase::Done { summary, failed } => {
             let line = t!(
                 "settings.organizeDoneSummary",
-                copied => summary.copied,
-                moved => summary.moved,
-                skipped => summary.skipped,
-                failed => summary.failed.len()
+                copied => tn("settings.organizeDoneCopied", summary.copied),
+                moved => tn("settings.organizeDoneMoved", summary.moved),
+                skipped => tn("settings.organizeDoneSkipped", summary.skipped),
+                failed => tn("settings.organizeDoneFailed", summary.failed.len())
             )
             .to_string();
             let mut card = organize_card(p)
@@ -4536,7 +4573,7 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                 );
             if summary.pruned_dirs > 0 {
                 card = card.child(
-                    text(t!("settings.organizePruned", n => summary.pruned_dirs).to_string())
+                    text(tn("settings.organizePruned", summary.pruned_dirs))
                         .key("organize-pruned")
                         .font(type_::CAPTION)
                         .color(p.text_secondary)

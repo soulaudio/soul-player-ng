@@ -300,13 +300,13 @@ pub(crate) fn detail_actions(play_key: &str, ids: Vec<u32>, p: &Palette) -> El {
 /// [`ENQUEUE_ALL_BTN`] so they sit evenly beside it in the hero actions row).
 const ARTWORK_BTN: f32 = ENQUEUE_ALL_BTN;
 
-/// Which entity an "Edit Artwork" control sets a custom cover for. Covers are
-/// keyed by name in [`crate::covers::CoverStore`] (an album or artist name, so
-/// they survive the volatile track-id re-mint every rescan does), so the target
-/// just carries the name plus which kind it is.
+/// Which entity an "Edit Artwork" control sets a custom cover for: an album by
+/// its durable identity ([`crate::covers::AlbumIdentity`], so two same-title
+/// editions keep separate covers), an artist by name. Both survive the track-id
+/// re-mint every rescan does.
 #[derive(Clone)]
 pub(crate) enum ArtworkTarget {
-    Album(String),
+    Album(crate::covers::AlbumIdentity),
     Artist(String),
 }
 
@@ -318,7 +318,7 @@ impl ArtworkTarget {
     /// old/new paths this control does.
     pub(crate) fn cover_path(&self, s: &State) -> Option<PathBuf> {
         match self {
-            ArtworkTarget::Album(name) => s.covers.album_cover_path(name),
+            ArtworkTarget::Album(id) => s.covers.album_cover_path(id),
             ArtworkTarget::Artist(name) => s.covers.artist_cover_path(name),
         }
     }
@@ -328,7 +328,7 @@ impl ArtworkTarget {
     /// (`views::artwork_crop`) can store the CROPPED temp PNG the same way.
     pub(crate) fn set_cover(&self, s: &mut State, src: &Path) -> bool {
         match self {
-            ArtworkTarget::Album(name) => s.covers.set_album_cover(name, src),
+            ArtworkTarget::Album(id) => s.covers.set_album_cover(id, src),
             ArtworkTarget::Artist(name) => s.covers.set_artist_cover(name, src),
         }
     }
@@ -336,7 +336,7 @@ impl ArtworkTarget {
     /// Clear this target's custom cover.
     pub(crate) fn clear_cover(&self, s: &mut State) {
         match self {
-            ArtworkTarget::Album(name) => s.covers.clear_album_cover(name),
+            ArtworkTarget::Album(id) => s.covers.clear_album_cover(id),
             ArtworkTarget::Artist(name) => s.covers.clear_artist_cover(name),
         }
     }

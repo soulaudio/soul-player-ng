@@ -414,9 +414,8 @@ mod tests {
         }
     }
 
-    /// A playlist store is a per-process shared temp directory across the
-    /// whole test binary (see `config::use_test_config_dir`), so every test
-    /// that touches it starts by clearing it rather than trusting it's empty.
+    /// Start from an empty playlist store. The test thread's config dir already
+    /// starts empty (see `config::soul_player_dir`); this keeps a test explicit.
     fn reset_store() {
         let _ = std::fs::remove_dir_all(crate::playlists::playlist_store_path());
     }

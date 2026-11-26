@@ -562,10 +562,8 @@ mod tests {
             .into_owned()
     }
 
-    /// Start from an empty store. The per-process test config dir (behind
-    /// `CONFIG_TEST_LOCK`) persists for the whole test binary run, so unlike
-    /// a `config.toml` field a mutation here overwrites, a playlist folder
-    /// created by an earlier test would otherwise still be sitting there.
+    /// Start from an empty store. The test thread's config dir already starts
+    /// empty (see `config::soul_player_dir`); this keeps a test explicit about it.
     fn reset() {
         let _ = fs::remove_dir_all(playlist_store_path());
     }

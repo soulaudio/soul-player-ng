@@ -47,6 +47,9 @@ fn every_key_is_translated_in_all_shipped_locales() {
 
     let mut missing = Vec::new();
     for (key, present) in &map {
+        if plural_leaf(key).is_some() {
+            continue;
+        }
         for &locale in crate::LOCALES {
             if !present.iter().any(|l| l == locale) {
                 missing.push(format!("  {key} → {locale}"));
@@ -58,6 +61,113 @@ fn every_key_is_translated_in_all_shipped_locales() {
         "{} missing translation(s) in locales/app.yml:\n{}",
         missing.len(),
         missing.join("\n"),
+    );
+}
+
+const PLURAL_SUFFIXES: [&str; 3] = [".one", ".few", ".other"];
+
+/// `(family base, category)` when `key` is a plural leaf (`<base>.one` etc.).
+fn plural_leaf(key: &str) -> Option<(&str, &str)> {
+    PLURAL_SUFFIXES
+        .iter()
+        .find_map(|s| key.strip_suffix(s).map(|base| (base, &s[1..])))
+}
+
+/// Every plural family defines EXACTLY the categories each shipped locale uses
+/// (en/de/es: one, other; cs: one, few, other; zh/ja: other), so a missing form
+/// and a stray one both fail, and no key is both a plain key and a family.
+#[test]
+fn plural_families_define_exactly_each_locales_categories() {
+    use std::collections::BTreeSet;
+    let map = parse_locales(include_str!("../locales/app.yml"));
+    let mut families: BTreeMap<&str, Vec<(&str, &Vec<String>)>> = BTreeMap::new();
+    for (key, locales) in &map {
+        if let Some((base, cat)) = plural_leaf(key) {
+            families.entry(base).or_default().push((cat, locales));
+        }
+    }
+    assert!(
+        families.len() >= 11,
+        "expected the organize plural families, found {}",
+        families.len()
+    );
+    let mut bad = Vec::new();
+    for (base, leaves) in &families {
+        if map.contains_key(*base) {
+            bad.push(format!("  {base} is both a plain key and a plural family"));
+        }
+        for &loc in crate::LOCALES {
+            let have: BTreeSet<&str> = leaves
+                .iter()
+                .filter(|(_, ls)| ls.iter().any(|l| l == loc))
+                .map(|(c, _)| *c)
+                .collect();
+            let want: BTreeSet<&str> = crate::plural::required_categories(loc)
+                .iter()
+                .map(|c| c.suffix())
+                .collect();
+            if have != want {
+                bad.push(format!("  {base} [{loc}]: has {have:?}, needs {want:?}"));
+            }
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "{} plural family problem(s):\n{}",
+        bad.len(),
+        bad.join("\n")
+    );
+}
+
+/// Every `.rs` file under `dir`, recursively, as `(path, source)`.
+fn rust_sources(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
+    for entry in std::fs::read_dir(dir)
+        .expect("read the source dir")
+        .flatten()
+    {
+        let path = entry.path();
+        if path.is_dir() {
+            rust_sources(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            let src = std::fs::read_to_string(&path).expect("read a source file");
+            out.push((path, src));
+        }
+    }
+}
+
+/// Every family the app asks for by a literal base (a `tn` or `plural_key` call) anywhere
+/// under `src/` exists.
+#[test]
+fn plural_families_used_in_views_exist() {
+    let map = parse_locales(include_str!("../locales/app.yml"));
+    let mut sources = Vec::new();
+    rust_sources(
+        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut sources,
+    );
+    assert!(
+        sources.len() > 20,
+        "found only {} source files",
+        sources.len()
+    );
+    let mut missing = Vec::new();
+    let mut used = 0;
+    for (path, src) in &sources {
+        for pat in ["tn(\"", "plural_key(\""] {
+            for (i, _) in src.match_indices(pat) {
+                used += 1;
+                let base = src[i + pat.len()..].split('"').next().unwrap();
+                if !map.contains_key(&format!("{base}.other")) {
+                    missing.push(format!("  {base} ({})", path.display()));
+                }
+            }
+        }
+    }
+    assert!(used > 0, "no plural family use found");
+    assert!(
+        missing.is_empty(),
+        "plural families used but not defined:\n{}",
+        missing.join("\n")
     );
 }
 
@@ -178,4 +288,27 @@ fn views_have_no_hardcoded_ui_strings() {
         offenders.len(),
         offenders.join("\n"),
     );
+}
+
+/// No key is defined twice in `app.yml`: the loader silently keeps one of the
+/// two values, so a duplicate shows the wrong string somewhere.
+#[test]
+fn no_key_is_defined_twice() {
+    let yaml = include_str!("../locales/app.yml");
+    let mut seen = std::collections::BTreeSet::new();
+    let dups: Vec<&str> = yaml
+        .lines()
+        .filter(|l| !l.starts_with(' ') && !l.starts_with('#') && !l.starts_with('_'))
+        .filter_map(|l| l.trim_end().strip_suffix(':'))
+        .filter(|k| !seen.insert(*k))
+        .collect();
+    assert!(dups.is_empty(), "keys defined twice in app.yml: {dups:?}");
+}
+
+/// The remote row's "Update available" badge has its own key, not the app
+/// updater's "Version %{version} is available." line.
+#[test]
+fn the_remote_update_badge_reads_update_available() {
+    let _locale = crate::config::use_test_locale("en");
+    assert_eq!(t!("settings.remoteUpdateAvailable"), "Update available");
 }
