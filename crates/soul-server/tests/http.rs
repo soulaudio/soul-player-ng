@@ -3,12 +3,14 @@
 //! a `CoreIndex` scanning the repo's `testdata/` fixtures, the real
 //! `FsMedia`, and a temp-file `FileUsers` with one seeded user.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Body;
+use axum::extract::ConnectInfo;
 use axum::http::{Request, StatusCode, header};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -764,5 +766,66 @@ async fn track_streams_a_multi_chunk_range_byte_identical() {
         body,
         &file_bytes[start as usize..=end as usize],
         "the streamed slice matches the file window exactly"
+    );
+}
+
+/// A POST /authorize carrying a peer address, as the real server supplies via
+/// `into_make_service_with_connect_info`. Tests insert it manually since
+/// `oneshot` has no connection behind it.
+fn post_authorize_from_ip(body: String, ip: &str) -> Request<Body> {
+    let mut req = post_form("/authorize", body);
+    let addr: SocketAddr = format!("{ip}:54321").parse().unwrap();
+    req.extensions_mut().insert(ConnectInfo(addr));
+    req
+}
+
+/// Repeated failed logins from one IP are throttled (429) once past the cap,
+/// while a different IP is unaffected (no cross-IP lockout).
+#[tokio::test]
+async fn authorize_throttles_repeated_failed_logins_from_one_ip() {
+    let (router, _dir, _services, _signer) = test_router();
+
+    let challenge = pkce_challenge("irrelevant-verifier");
+    // A well-formed authorize request (passes validation) with a WRONG password.
+    let wrong = format!(
+        "username=u&password=WRONG&response_type=code&client_id=soul-player\
+         &redirect_uri=http://127.0.0.1:12345/callback&code_challenge={challenge}\
+         &code_challenge_method=S256&state=xyz"
+    );
+
+    // The throttle cap is 10 failures per IP; the first 10 return the login form.
+    for i in 0..10 {
+        let resp = router
+            .clone()
+            .oneshot(post_authorize_from_ip(wrong.clone(), "203.0.113.7"))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "failed attempt {i} under the cap re-renders the login form"
+        );
+    }
+    // The next attempt from that IP is throttled without a verify.
+    let throttled = router
+        .clone()
+        .oneshot(post_authorize_from_ip(wrong.clone(), "203.0.113.7"))
+        .await
+        .unwrap();
+    assert_eq!(
+        throttled.status(),
+        StatusCode::TOO_MANY_REQUESTS,
+        "over the failure cap, the IP is throttled"
+    );
+
+    // A different IP is independent and still gets a normal response.
+    let other = router
+        .oneshot(post_authorize_from_ip(wrong, "203.0.113.8"))
+        .await
+        .unwrap();
+    assert_eq!(
+        other.status(),
+        StatusCode::OK,
+        "a different IP is not affected by the first IP's throttle"
     );
 }
