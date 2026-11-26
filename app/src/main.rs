@@ -5223,30 +5223,30 @@ fn scene_organize_confirm(s: &mut State) {
         organize::OrganizePlan {
             dest_root: dest.clone(),
             entries: vec![
-                organize::PlanEntry {
-                    src: PathBuf::from("Daft Punk - One More Time.flac"),
-                    dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
-                    action: organize::Action::Copy,
-                    kind: organize::EntryKind::Audio,
-                },
-                organize::PlanEntry {
-                    src: PathBuf::from("Daft Punk - Aerodynamic.flac"),
-                    dst: dest.join("Daft Punk/Discovery/02 - Aerodynamic.flac"),
-                    action: organize::Action::Copy,
-                    kind: organize::EntryKind::Audio,
-                },
-                organize::PlanEntry {
-                    src: PathBuf::from("already-there.flac"),
-                    dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
-                    action: organize::Action::SkipDuplicate,
-                    kind: organize::EntryKind::Audio,
-                },
-                organize::PlanEntry {
-                    src: PathBuf::from("Discovery/Discovery.log"),
-                    dst: dest.join("Daft Punk/Discovery/Discovery.log"),
-                    action: organize::Action::Copy,
-                    kind: organize::EntryKind::SideFile,
-                },
+                organize::PlanEntry::new(
+                    PathBuf::from("Daft Punk - One More Time.flac"),
+                    dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
+                    organize::Action::Copy,
+                    organize::EntryKind::Audio,
+                ),
+                organize::PlanEntry::new(
+                    PathBuf::from("Daft Punk - Aerodynamic.flac"),
+                    dest.join("Daft Punk/Discovery/02 - Aerodynamic.flac"),
+                    organize::Action::Copy,
+                    organize::EntryKind::Audio,
+                ),
+                organize::PlanEntry::new(
+                    PathBuf::from("already-there.flac"),
+                    dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
+                    organize::Action::SkipDuplicate,
+                    organize::EntryKind::Audio,
+                ),
+                organize::PlanEntry::new(
+                    PathBuf::from("Discovery/Discovery.log"),
+                    dest.join("Daft Punk/Discovery/Discovery.log"),
+                    organize::Action::Copy,
+                    organize::EntryKind::SideFile,
+                ),
             ],
             folder_inferred_discs: vec![PathBuf::from("Alive 2007")],
             ..Default::default()
@@ -12419,18 +12419,18 @@ mod tests {
         organize::OrganizePlan {
             dest_root: testdata_dir(),
             entries: vec![
-                organize::PlanEntry {
-                    src: PathBuf::from("a.flac"),
-                    dst: testdata_dir().join("A/a.flac"),
-                    action: organize::Action::Copy,
-                    kind: organize::EntryKind::Audio,
-                },
-                organize::PlanEntry {
-                    src: PathBuf::from("b.flac"),
-                    dst: testdata_dir().join("B/b.flac"),
-                    action: organize::Action::SkipDuplicate,
-                    kind: organize::EntryKind::Audio,
-                },
+                organize::PlanEntry::new(
+                    PathBuf::from("a.flac"),
+                    testdata_dir().join("A/a.flac"),
+                    organize::Action::Copy,
+                    organize::EntryKind::Audio,
+                ),
+                organize::PlanEntry::new(
+                    PathBuf::from("b.flac"),
+                    testdata_dir().join("B/b.flac"),
+                    organize::Action::SkipDuplicate,
+                    organize::EntryKind::Audio,
+                ),
             ],
             ..Default::default()
         }
@@ -12524,12 +12524,12 @@ mod tests {
     fn organize_modal_shows_side_files_left_albums_and_pruned_folders() {
         let _locale = config::use_test_locale("en");
         let mut plan = sample_plan();
-        plan.entries.push(organize::PlanEntry {
-            src: PathBuf::from("A/a.log"),
-            dst: testdata_dir().join("A/a.log"),
-            action: organize::Action::Copy,
-            kind: organize::EntryKind::SideFile,
-        });
+        plan.entries.push(organize::PlanEntry::new(
+            PathBuf::from("A/a.log"),
+            testdata_dir().join("A/a.log"),
+            organize::Action::Copy,
+            organize::EntryKind::SideFile,
+        ));
         plan.folder_inferred_discs = vec![PathBuf::from("S/Box"), PathBuf::from("S/Set")];
         let rt = organize_frame(OrganizePhase::confirm(plan, "artist-album"));
         assert_eq!(
