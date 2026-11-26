@@ -765,6 +765,9 @@ struct State {
     /// `pending_open` (their track ids would be resolved against a library that's about to
     /// be replaced) and are opened when it lands (`apply_startup_scan`).
     startup_scan_pending: bool,
+    /// The incomplete sources last logged as deferring the retirement of legacy
+    /// title-keyed covers (see [`deferral_changed`]); empty when nothing waits.
+    cover_retirement_waiting: Vec<String>,
     /// Whether **exclusive** (bit-perfect) output is requested (persisted), rendered
     /// as a toggle in Settings → Output. Applies to the next playback session; the
     /// device may fall back to shared if it can't open exclusive (reflected live in
@@ -1112,6 +1115,7 @@ impl State {
             output_transports: Default::default(),
             pending_open: Vec::new(),
             startup_scan_pending: false,
+            cover_retirement_waiting: Vec::new(),
             exclusive: config::load_output_exclusive(),
             exclusive_strict: config::load_output_exclusive_strict(),
             replaygain_mode,
@@ -1730,6 +1734,21 @@ fn incomplete_sources(s: &State) -> Vec<String> {
     out
 }
 
+/// Record `now`, the sources a legacy-cover retirement waits for (empty when
+/// none), in `last`; `true` when a non-empty set differs from the one recorded,
+/// i.e. when the deferral is worth logging.
+fn deferral_changed(last: &mut Vec<String>, now: &[String]) -> bool {
+    if now.is_empty() {
+        last.clear();
+        return false;
+    }
+    if last.as_slice() == now {
+        return false;
+    }
+    *last = now.to_vec();
+    true
+}
+
 /// Adopt any legacy title-keyed album covers for the albums now in the library
 /// (see `CoverStore::adopt_legacy_album_covers`). A cheap no-op once none remain
 /// or while the library is empty, so every library replacement calls it.
@@ -1743,13 +1762,14 @@ pub(crate) fn adopt_legacy_album_covers(s: &mut State) {
         albums.iter().map(|a| (a.name.as_str(), &a.identity)),
         incomplete.is_empty(),
     );
-    if out.kept > 0 && !incomplete.is_empty() {
+    let waiting: &[String] = if out.kept > 0 { &incomplete } else { &[] };
+    if deferral_changed(&mut s.cover_retirement_waiting, waiting) {
         tracing::info!(
             incomplete = %incomplete.join(", "),
             "deferring retirement of title-keyed album covers until every source has landed"
         );
     }
-    if out != covers::LegacyCoverAdoption::default() {
+    if out.adopted > 0 || out.retired > 0 {
         tracing::info!(
             adopted = out.adopted,
             retired = out.retired,
@@ -8156,6 +8176,23 @@ mod tests {
             "the startup scan's editions adopted the cover too"
         );
         assert!(!legacy.exists(), "retired once the startup scan landed");
+    }
+
+    /// A deferred legacy-cover retirement is logged once per distinct set of
+    /// incomplete sources, not on every library change while it waits.
+    #[test]
+    fn the_retirement_deferral_is_logged_only_when_the_waiting_set_changes() {
+        let mut last = Vec::new();
+        let a = vec!["http://a.test (reconnecting)".to_string()];
+        assert!(deferral_changed(&mut last, &a), "first deferral");
+        assert!(!deferral_changed(&mut last, &a), "same set again");
+        let b = vec!["http://b.test (unreachable)".to_string()];
+        assert!(deferral_changed(&mut last, &b), "another set");
+        assert!(!deferral_changed(&mut last, &[]), "nothing waiting");
+        assert!(
+            deferral_changed(&mut last, &b),
+            "waiting again after a clear"
+        );
     }
 
     /// A scan in progress keeps the source set incomplete: its albums may be

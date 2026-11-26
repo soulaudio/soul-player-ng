@@ -21,7 +21,7 @@
 //! `None`-when-the-file-vanished semantics.
 #![forbid(unsafe_code)]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -100,15 +100,13 @@ fn is_legacy_album_stem(stem: &str) -> bool {
     stem.starts_with("album-")
 }
 
-/// The loaded custom-cover store: the `<config>/covers` directory plus the set
-/// of stored file stems (`artist-<slug>` / `albumid-<fnv64>`, plus any legacy
-/// `album-<slug>` awaiting adoption), so a path lookup
-/// can skip the directory scan entirely for an entity that was never given a
-/// custom cover (the overwhelmingly common case, a lookup runs per card, per
-/// frame).
+/// The loaded custom-cover store: the `<config>/covers` directory plus each
+/// stored file stem (`artist-<slug>` / `albumid-<fnv64>`, plus any legacy
+/// `album-<slug>` awaiting adoption) mapped to its file (with its extension),
+/// so a path lookup never lists the directory: it runs per card, per frame.
 pub(crate) struct CoverStore {
     dir: PathBuf,
-    known: HashSet<String>,
+    known: HashMap<String, PathBuf>,
 }
 
 /// The `<config>/covers` directory. Falls back to `./covers` only if the
@@ -226,23 +224,30 @@ fn append_ledger(dir: &Path, pairs: &[(String, String)]) -> std::io::Result<()> 
     f.write_all(batch.as_bytes())
 }
 
-/// The path of the file in `dir` whose stem is exactly `stem`, if one exists
-/// on disk right now (any accepted extension). `None` if the file is gone.
-fn find_by_stem(dir: &Path, stem: &str) -> Option<PathBuf> {
-    for entry in fs::read_dir(dir).ok()?.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.file_stem().and_then(|s| s.to_str()) == Some(stem) {
-            return Some(path);
-        }
-    }
-    None
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread listed a covers directory (see [`list_dir`]).
+    static DIR_LISTINGS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `fs::read_dir`, counted per thread in test builds so a test can assert how
+/// often the store lists its directory.
+fn list_dir(dir: &Path) -> std::io::Result<fs::ReadDir> {
+    #[cfg(test)]
+    DIR_LISTINGS.with(|n| n.set(n.get() + 1));
+    fs::read_dir(dir)
+}
+
+/// `path`'s modification time, `None` when unreadable.
+fn modified(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
 }
 
 /// Remove every file in `dir` whose stem is exactly `stem` (best-effort;
 /// ignores I/O errors). Clearing a cover removes every extension it was
 /// saved under.
 fn remove_by_stem(dir: &Path, stem: &str) {
-    let Ok(read) = fs::read_dir(dir) else {
+    let Ok(read) = list_dir(dir) else {
         return;
     };
     for entry in read.flatten() {
@@ -256,7 +261,7 @@ fn remove_by_stem(dir: &Path, stem: &str) {
 /// Remove every file in `dir` whose stem is `stem`, except `keep` (the cover
 /// just written). Best-effort, like [`remove_by_stem`].
 fn remove_by_stem_except(dir: &Path, stem: &str, keep: &Path) {
-    let Ok(read) = fs::read_dir(dir) else {
+    let Ok(read) = list_dir(dir) else {
         return;
     };
     for entry in read.flatten() {
@@ -269,15 +274,17 @@ fn remove_by_stem_except(dir: &Path, stem: &str, keep: &Path) {
 }
 
 impl CoverStore {
-    /// Load the store: ensure `<config>/covers` exists, then scan it and record
-    /// every file's stem, discarding any `.partial` copy a crash left behind.
+    /// Load the store: ensure `<config>/covers` exists, then scan it once and
+    /// record every file under its stem, discarding any `.partial` copy a crash
+    /// left behind. Two files under one stem (a crash between writing a new
+    /// cover and removing the old extension) resolve to the newer one.
     /// Best-effort: a missing/unreadable directory just yields an empty `known`
-    /// set (nothing has a custom cover yet). Never panics.
+    /// map (nothing has a custom cover yet). Never panics.
     pub(crate) fn load() -> Self {
         let dir = covers_dir();
         let _ = fs::create_dir_all(&dir);
-        let mut known = HashSet::new();
-        if let Ok(read) = fs::read_dir(&dir) {
+        let mut known: HashMap<String, PathBuf> = HashMap::new();
+        if let Ok(read) = list_dir(&dir) {
             for entry in read.flatten() {
                 let path = entry.path();
                 if !path.is_file() {
@@ -286,7 +293,12 @@ impl CoverStore {
                 if path.extension().is_some_and(|e| e == PARTIAL_EXT) {
                     let _ = fs::remove_file(&path);
                 } else if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    known.insert(stem.to_string());
+                    let newer = known
+                        .get(stem)
+                        .is_none_or(|old| modified(&path) > modified(old));
+                    if newer {
+                        known.insert(stem.to_string(), path);
+                    }
                 }
             }
         }
@@ -326,7 +338,7 @@ impl CoverStore {
             return false;
         }
         remove_by_stem_except(&self.dir, &stem, &dst);
-        self.known.insert(stem);
+        self.known.insert(stem, dst);
         true
     }
 
@@ -343,12 +355,10 @@ impl CoverStore {
 
     /// The absolute path to the stored cover for `stem`, if one was recorded
     /// AND the file still exists on disk (a set-but-missing file, e.g. deleted
-    /// out-of-band, resolves to `None`).
+    /// out-of-band, resolves to `None`). One map lookup plus, for a stem that
+    /// has a cover, one metadata call; never a directory listing.
     fn cover_path(&self, stem: &str) -> Option<PathBuf> {
-        if !self.known.contains(stem) {
-            return None;
-        }
-        find_by_stem(&self.dir, stem)
+        self.known.get(stem).filter(|p| p.is_file()).cloned()
     }
 
     /// Artist `name`'s custom avatar path, or `None` if unset/missing.
@@ -381,7 +391,7 @@ impl CoverStore {
     /// Cheap (a scan of the known stems), so callers can check it on every
     /// library change.
     pub(crate) fn has_legacy_album_covers(&self) -> bool {
-        self.known.iter().any(|s| is_legacy_album_stem(s))
+        self.known.keys().any(|s| is_legacy_album_stem(s))
     }
 
     /// Adopt legacy title-keyed album covers for `albums` (display title,
@@ -401,11 +411,11 @@ impl CoverStore {
         may_retire: bool,
     ) -> LegacyCoverAdoption {
         let mut out = LegacyCoverAdoption::default();
-        let legacy: Vec<String> = self
+        let legacy: Vec<(String, PathBuf)> = self
             .known
             .iter()
-            .filter(|s| is_legacy_album_stem(s))
-            .cloned()
+            .filter(|(s, _)| is_legacy_album_stem(s))
+            .map(|(s, p)| (s.clone(), p.clone()))
             .collect();
         if legacy.is_empty() {
             return out;
@@ -419,11 +429,11 @@ impl CoverStore {
             }
         }
         let ledger = read_ledger(&self.dir);
-        for stem in legacy {
-            let Some(src) = find_by_stem(&self.dir, &stem) else {
+        for (stem, src) in legacy {
+            if !src.is_file() {
                 self.known.remove(&stem); // vanished out-of-band
                 continue;
-            };
+            }
             let Some(ids) = by_stem.get(&stem) else {
                 out.kept += 1;
                 continue;
@@ -440,14 +450,15 @@ impl CoverStore {
                     continue;
                 }
                 let dst_stem = album_identity_stem(id);
-                if self.known.contains(&dst_stem)
+                if self.known.contains_key(&dst_stem)
                     || ledger.contains(&(stem.clone(), dst_stem.clone()))
                 {
                     continue;
                 }
-                match copy_into_place(&src, &self.dir.join(format!("{dst_stem}.{ext}"))) {
+                let dst = self.dir.join(format!("{dst_stem}.{ext}"));
+                match copy_into_place(&src, &dst) {
                     Ok(()) => {
-                        self.known.insert(dst_stem.clone());
+                        self.known.insert(dst_stem.clone(), dst);
                         adopted.push((stem.clone(), dst_stem));
                         out.adopted += 1;
                     }
@@ -513,6 +524,41 @@ mod tests {
         let path = temp_source_dir().join(name);
         fs::write(&path, bytes).unwrap();
         path
+    }
+
+    /// How many times this thread has listed a covers directory so far.
+    fn dir_listings() -> usize {
+        DIR_LISTINGS.with(std::cell::Cell::get)
+    }
+
+    /// Looking a cover up never lists the covers directory (it runs per card,
+    /// per frame), and one adoption pass lists it at most once.
+    #[test]
+    fn cover_lookups_and_an_adoption_pass_do_not_rescan_the_directory() {
+        let a = id("Lantern 19");
+        let mut s = CoverStore::load();
+        assert!(s.set_album_cover(&a, &write_temp_png()));
+        assert!(s.set_artist_cover("Broke For Free", &write_temp_png()));
+        for title in ["One", "Two", "Three"] {
+            legacy_cover(title);
+        }
+        let mut s2 = CoverStore::load();
+        let before = dir_listings();
+        for _ in 0..100 {
+            assert!(s2.album_cover_path(&a).is_some());
+            assert!(s2.artist_cover_path("Broke For Free").is_some());
+            assert!(s2.album_cover_path(&id("Never Set")).is_none());
+        }
+        assert_eq!(dir_listings(), before, "lookups never list the dir");
+        let (one, two, three) = (id("One"), id("Two"), id("Three"));
+        let out =
+            s2.adopt_legacy_album_covers([("One", &one), ("Two", &two), ("Three", &three)], true);
+        assert_eq!((out.adopted, out.retired), (3, 3));
+        assert!(
+            dir_listings() - before <= 1,
+            "one adoption pass lists the dir at most once"
+        );
+        drop(s);
     }
 
     #[test]
