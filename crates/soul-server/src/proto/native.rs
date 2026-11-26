@@ -231,7 +231,7 @@ async fn track(
     _auth: Authed,
     headers: HeaderMap,
 ) -> Response {
-    let (mut reader, len) = match services.open_track(id) {
+    let (reader, len) = match services.open_track(id) {
         Ok(ok) => ok,
         Err(error) => return error_status(&error).into_response(),
     };
@@ -241,48 +241,89 @@ async fn track(
         .and_then(|value| value.to_str().ok())
         .and_then(parse_range);
 
-    match range {
+    // Resolve the window to serve: a 206 slice for a Range request, else the
+    // whole file as a 200.
+    let (status, start, body_len, content_range) = match range {
         Some((start, end_requested)) => {
             let last_byte = len.saturating_sub(1);
             let end = end_requested.unwrap_or(last_byte).min(last_byte);
             if len == 0 || start > end {
                 return StatusCode::RANGE_NOT_SATISFIABLE.into_response();
             }
-
-            let slice_len = (end - start + 1) as usize;
-            let mut buf = vec![0u8; slice_len];
-            if let Err(error) = reader
-                .seek(SeekFrom::Start(start))
-                .and_then(|_| reader.read_exact(&mut buf))
-            {
-                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
-            }
-
-            Response::builder()
-                .status(StatusCode::PARTIAL_CONTENT)
-                .header(header::CONTENT_TYPE, "application/octet-stream")
-                .header(header::ACCEPT_RANGES, "bytes")
-                .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))
-                .header(header::CONTENT_LENGTH, slice_len)
-                .body(Body::from(buf))
-                .expect("static headers + known body always build")
+            let slice_len = end - start + 1;
+            (
+                StatusCode::PARTIAL_CONTENT,
+                start,
+                slice_len,
+                Some(format!("bytes {start}-{end}/{len}")),
+            )
         }
-        None => {
-            let mut buf = Vec::new();
-            if let Err(error) = reader.read_to_end(&mut buf) {
-                return (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()).into_response();
-            }
-            let content_length = buf.len();
+        None => (StatusCode::OK, 0, len, None),
+    };
 
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/octet-stream")
-                .header(header::ACCEPT_RANGES, "bytes")
-                .header(header::CONTENT_LENGTH, content_length)
-                .body(Body::from(buf))
-                .expect("static headers + known body always build")
-        }
+    // Seek to the window start on the blocking pool: a seek failure then becomes
+    // a clean error BEFORE any status/headers are committed, and the blocking
+    // file I/O never runs on an async worker. The body is streamed in bounded
+    // chunks (see `stream_track_body`), so the server never holds a whole
+    // (potentially multi-hundred-MB hi-res) file in memory at once.
+    let positioned = tokio::task::spawn_blocking(move || {
+        let mut reader = reader;
+        reader.seek(SeekFrom::Start(start)).map(|_| reader)
+    })
+    .await;
+    let reader = match positioned {
+        Ok(Ok(reader)) => reader,
+        // A join or seek failure: opaque 500, no internal detail leaked.
+        _ => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let mut builder = Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_LENGTH, body_len);
+    if let Some(content_range) = content_range {
+        builder = builder.header(header::CONTENT_RANGE, content_range);
     }
+    builder
+        .body(stream_track_body(reader, body_len))
+        .expect("static headers + a streamed body always build")
+}
+
+/// Chunk size for a streamed track body. Bounds the server's per-request read
+/// buffer to this, instead of materializing the whole file.
+const STREAM_CHUNK: usize = 64 * 1024;
+
+/// Stream `len` bytes from `reader` (already positioned at the window start) as
+/// an HTTP body, reading in [`STREAM_CHUNK`]-sized blocks on the blocking pool.
+/// A large (hi-res) track is never held in memory all at once; at most one
+/// chunk is buffered at a time. A mid-stream read error ends the body early
+/// (the status line is already sent, so it cannot become a 500); a short read
+/// before `len` (a truncated file) likewise just ends the body.
+fn stream_track_body(reader: Box<dyn crate::domain::ports::ReadSeek>, len: u64) -> Body {
+    let stream = futures_util::stream::unfold((reader, len), |(reader, remaining)| async move {
+        if remaining == 0 {
+            return None;
+        }
+        let (reader, result) = tokio::task::spawn_blocking(move || {
+            let mut reader = reader;
+            let want = remaining.min(STREAM_CHUNK as u64) as usize;
+            let mut buf = vec![0u8; want];
+            let read = reader.read(&mut buf);
+            (reader, read.map(|n| (buf, n)))
+        })
+        .await
+        .expect("blocking track-read task panicked");
+        match result {
+            Ok((_, 0)) => None, // EOF before `len` (e.g. a truncated file)
+            Ok((mut buf, n)) => {
+                buf.truncate(n);
+                Some((Ok(buf), (reader, remaining - n as u64)))
+            }
+            Err(error) => Some((Err(error), (reader, 0))),
+        }
+    });
+    Body::from_stream(stream)
 }
 
 // ---------------------------------------------------------------------------
