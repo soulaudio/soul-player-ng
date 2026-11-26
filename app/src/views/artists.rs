@@ -330,13 +330,15 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 .font(type_::HEADING)
                 .color(p.fg),
         );
+    // One shared play context for every top-song row (built once per frame).
+    let top_ids: std::rc::Rc<[u32]> = artist.ids.as_slice().into();
     for (i, &id) in artist.ids.iter().take(shown).enumerate() {
         if let Some(t) = s.track(id) {
             top = top.child(detail_track_row(
                 s.now_playing_id,
                 s.playing,
                 p,
-                &artist.ids,
+                &top_ids,
                 i,
                 None,
                 t,
@@ -439,7 +441,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                         title: alb.name.clone(),
                         subtitle: None,
                         cover_id: alb.cover_id,
-                        cover_override: s.covers.album_cover_path(&alb.name),
+                        cover_override: s.covers.album_cover_path(&alb.identity),
                         circular: false,
                         play_ids: alb.ids.clone(),
                         remote_source: alb.remote_source.clone(),
@@ -509,7 +511,7 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
         .cursor(Cursor::Pointer)
         .hover(p.fg.alpha(fx::HOVER))
         .press(p.fg.alpha(fx::PRESS))
-        .child(match s.covers.album_cover_path(&alb.name) {
+        .child(match s.covers.album_cover_path(&alb.identity) {
             // A custom cover wins here too, so the discography list thumbnail
             // matches the album's grid card and detail hero.
             Some(path) => cover_from_path(s, &path, 48.0, radius::SM, p, scale),
