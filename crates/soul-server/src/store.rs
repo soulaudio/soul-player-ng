@@ -16,7 +16,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::{Context, Result};
 use argon2::Argon2;
@@ -125,15 +125,44 @@ fn prune_expired_refresh(store: &mut Store, now: u64) -> bool {
     store.refresh.len() != before
 }
 
+/// A fixed, valid Argon2id PHC hash used only to equalize [`FileUsers::verify`]'s
+/// timing for an unknown username. Computed once on first use; the password it
+/// hashes is irrelevant (a real login's verify against it always fails), only its
+/// cost matters, which matches a genuine wrong-password verify.
+fn dummy_password_hash() -> &'static str {
+    static DUMMY: OnceLock<String> = OnceLock::new();
+    DUMMY.get_or_init(|| {
+        let salt = SaltString::generate(&mut OsRng);
+        Argon2::default()
+            .hash_password(b"unused-dummy-password", &salt)
+            .expect("hashing a constant password with default params and a fresh salt never fails")
+            .to_string()
+    })
+}
+
 impl UserStore for FileUsers {
     fn verify(&self, user: &str, pass: &str) -> Option<UserId> {
         let store = self.lock().ok()?;
-        let rec = store.users.iter().find(|u| u.name == user)?;
-        let parsed = PasswordHash::new(&rec.pass_hash).ok()?;
-        Argon2::default()
-            .verify_password(pass.as_bytes(), &parsed)
-            .ok()?;
-        Some(rec.id)
+        match store.users.iter().find(|u| u.name == user) {
+            Some(rec) => {
+                let parsed = PasswordHash::new(&rec.pass_hash).ok()?;
+                Argon2::default()
+                    .verify_password(pass.as_bytes(), &parsed)
+                    .ok()?;
+                Some(rec.id)
+            }
+            None => {
+                // Unknown user: still run a verify against a fixed dummy hash so
+                // the response takes the same time as a wrong-password attempt
+                // on a real user. Returning early here (no Argon2 work) would be
+                // a timing oracle that reveals which usernames exist (CWE-204
+                // username enumeration).
+                if let Ok(parsed) = PasswordHash::new(dummy_password_hash()) {
+                    let _ = Argon2::default().verify_password(pass.as_bytes(), &parsed);
+                }
+                None
+            }
+        }
     }
 
     fn add_user(&self, user: &str, pass: &str) -> Result<UserId> {
@@ -305,6 +334,22 @@ mod tests {
         assert_eq!(s.verify("alice", "hunter2"), Some(id));
         assert_eq!(s.verify("alice", "wrong"), None);
         assert_eq!(s.verify("nobody", "x"), None);
+    }
+
+    #[test]
+    fn an_unknown_user_verify_runs_the_timing_equalizing_dummy_hash() {
+        let dir = tempfile::tempdir().unwrap();
+        let s = FileUsers::open(&dir.path().join("u.json")).unwrap();
+        s.add_user("alice", "hunter2").unwrap();
+        // Behaviour is unchanged: an unknown user is rejected.
+        assert_eq!(s.verify("nobody", "whatever"), None);
+        // The dummy hash the timing defense verifies against must be a valid,
+        // parseable PHC string. A typo that made it unparseable would skip the
+        // verify and silently reintroduce the username-enumeration timing oracle.
+        assert!(
+            super::PasswordHash::new(super::dummy_password_hash()).is_ok(),
+            "the dummy hash must be a valid PHC string so the timing defense runs"
+        );
     }
 
     #[test]
