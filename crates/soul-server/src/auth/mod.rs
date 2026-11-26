@@ -4,6 +4,8 @@ pub mod oauth;
 pub mod refresh;
 /// The EdDSA token signer/verifier.
 pub mod signer;
+/// Per-IP throttle for repeated failed logins (brute-force mitigation).
+pub mod throttle;
 
 /// Claims embedded in a minted EdDSA access token.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]

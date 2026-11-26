@@ -7,11 +7,12 @@
 //! [`DomainError`] (or success) into a response.
 
 use std::io::{Read, Seek, SeekFrom};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
-use axum::extract::{Form, Path, Query, State};
+use axum::extract::{ConnectInfo, Form, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
@@ -21,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::auth::oauth::{CodeStore, is_loopback_redirect};
 use crate::auth::signer::Signer;
+use crate::auth::throttle::LoginThrottle;
 use crate::domain::ports::IndexPort;
 use crate::domain::service::Services;
 use crate::domain::{DomainError, UserId};
@@ -54,11 +56,15 @@ pub struct AppState {
     /// (60s) and process-local by design, so every `AppState` simply gets
     /// its own empty store, and no existing caller of `new` has to change.
     pub code_store: Arc<CodeStore>,
+    /// Per-IP failed-login throttle (brute-force mitigation). Process-local, like
+    /// `code_store`, and created fresh here so no caller of `new` changes.
+    pub throttle: Arc<LoginThrottle>,
 }
 
 impl AppState {
     /// Build the router state from the shared services, signer, issuer URL, and
-    /// access-token lifetime (a fresh in-memory [`CodeStore`] is created here).
+    /// access-token lifetime (a fresh in-memory [`CodeStore`] + [`LoginThrottle`]
+    /// are created here).
     pub fn new(
         services: Arc<AppServices>,
         signer: Arc<Signer>,
@@ -71,6 +77,7 @@ impl AppState {
             issuer,
             access_ttl,
             code_store: Arc::new(CodeStore::new()),
+            throttle: Arc::new(LoginThrottle::new()),
         }
     }
 }
@@ -105,7 +112,14 @@ pub fn router(state: AppState) -> Router {
 /// Bind `bind` and serve the router until the process stops.
 pub async fn serve(bind: &str, state: AppState) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    axum::serve(listener, router(state)).await?;
+    // `into_make_service_with_connect_info` surfaces each connection's peer
+    // address to handlers (as `ConnectInfo<SocketAddr>`), which the login
+    // throttle keys on.
+    axum::serve(
+        listener,
+        router(state).into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -598,12 +612,30 @@ async fn authorize_get(Query(params): Query<AuthorizeParams>) -> Response {
 
 async fn authorize_post(
     State(state): State<AppState>,
+    connect: Option<ConnectInfo<SocketAddr>>,
     Form(params): Form<AuthorizeParams>,
 ) -> Response {
     let valid = match validate_authorize(&params) {
         Ok(valid) => valid,
         Err(message) => return bad_request(message),
     };
+
+    let now = now_unix();
+    let peer_ip = connect.map(|ConnectInfo(addr)| addr.ip());
+
+    // Throttle brute-force: once an IP has too many recent failures, reject
+    // further attempts up front WITHOUT spending an Argon2 verify, so a guessing
+    // campaign can't keep the server checking. Keyed per IP (not per user) so one
+    // source can't lock out a victim.
+    if let Some(ip) = peer_ip
+        && !state.throttle.allowed(ip, now)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many failed login attempts. Try again later.",
+        )
+            .into_response();
+    }
 
     let username = params.username.as_deref().unwrap_or_default().to_string();
     let password = params.password.as_deref().unwrap_or_default().to_string();
@@ -621,7 +653,11 @@ async fn authorize_post(
 
     match verified {
         Some(user) => {
-            let now = now_unix();
+            // A correct login clears this IP's failure history, so an earlier
+            // run of typos doesn't count against the next real attempt.
+            if let Some(ip) = peer_ip {
+                state.throttle.clear(ip);
+            }
             let code = state.code_store.issue(
                 user,
                 valid.code_challenge.clone(),
@@ -649,7 +685,12 @@ async fn authorize_post(
                 Err(_) => bad_request("invalid redirect_uri"),
             }
         }
-        None => render_login_form(&valid, Some("Incorrect username or password.")),
+        None => {
+            if let Some(ip) = peer_ip {
+                state.throttle.record_failure(ip, now);
+            }
+            render_login_form(&valid, Some("Incorrect username or password."))
+        }
     }
 }
 
