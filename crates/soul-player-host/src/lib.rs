@@ -254,6 +254,34 @@ fn path_under(path: &Path, root: &Path) -> bool {
     }
 }
 
+/// Whether two configured roots are the SAME path, compared the way the watcher
+/// matches events ([`path_under`]): component-wise, and case-insensitively on
+/// Windows (whose filesystem is). Source dedup / remove / enable must use this
+/// rather than raw `PathBuf` equality, or they disagree with the watcher: on
+/// Windows `C:\Music` and `C:\music` would otherwise be two sources (same files
+/// scanned twice, two slots), and a differently-cased `remove_folder` /
+/// `set_folder_enabled` would silently no-op.
+fn same_root(a: &Path, b: &Path) -> bool {
+    let mut ac = a.components();
+    let mut bc = b.components();
+    loop {
+        match (ac.next(), bc.next()) {
+            (None, None) => return true,
+            (Some(x), Some(y)) => {
+                let same = if cfg!(windows) {
+                    x.as_os_str().eq_ignore_ascii_case(y.as_os_str())
+                } else {
+                    x == y
+                };
+                if !same {
+                    return false;
+                }
+            }
+            _ => return false, // different length → different root
+        }
+    }
+}
+
 /// Where [`PlayerHandle::add_remote_source`]'s [`DownloadCache`] keeps
 /// downloaded remote track originals: a dedicated subdirectory of the OS
 /// cache dir (falling back to the system temp dir if that's unavailable,
@@ -1135,7 +1163,7 @@ impl PlayerHandle {
     pub fn set_sources(&self, entries: &[(PathBuf, bool)]) -> anyhow::Result<WatchUpdate> {
         let mut set: Vec<FolderConfig> = Vec::with_capacity(entries.len());
         for (p, en) in entries {
-            if !set.iter().any(|f| &f.path == p) {
+            if !set.iter().any(|f| same_root(&f.path, p)) {
                 set.push(FolderConfig {
                     path: p.clone(),
                     enabled: *en,
@@ -1156,7 +1184,7 @@ impl PlayerHandle {
     pub fn configure_sources(&self, entries: &[(PathBuf, bool)]) {
         let mut set: Vec<FolderConfig> = Vec::with_capacity(entries.len());
         for (p, en) in entries {
-            if !set.iter().any(|f| &f.path == p) {
+            if !set.iter().any(|f| same_root(&f.path, p)) {
                 set.push(FolderConfig {
                     path: p.clone(),
                     enabled: *en,
@@ -1268,10 +1296,10 @@ impl PlayerHandle {
         let prev = self.inner.folders.lock().expect("folders mutex").clone();
         let mut set: Vec<FolderConfig> = Vec::with_capacity(roots.len());
         for r in roots {
-            if !set.iter().any(|f| &f.path == r) {
+            if !set.iter().any(|f| same_root(&f.path, r)) {
                 let enabled = prev
                     .iter()
-                    .find(|f| &f.path == r)
+                    .find(|f| same_root(&f.path, r))
                     .map(|f| f.enabled)
                     .unwrap_or(true);
                 set.push(FolderConfig {
@@ -1289,7 +1317,7 @@ impl PlayerHandle {
     pub fn add_folder(&self, dir: &Path) -> anyhow::Result<WatchUpdate> {
         let mut set = self.watched_folders();
         let dir = dir.to_path_buf();
-        if !set.contains(&dir) {
+        if !set.iter().any(|p| same_root(p, &dir)) {
             // A genuinely new source: refuse before it can push the scan's MultiCatalog past
             // its slot cap and panic the scan thread.
             anyhow::ensure!(
@@ -1305,7 +1333,7 @@ impl PlayerHandle {
     /// re-aggregate.
     pub fn remove_folder(&self, dir: &Path) -> anyhow::Result<WatchUpdate> {
         let mut set = self.watched_folders();
-        set.retain(|p| p != dir);
+        set.retain(|p| !same_root(p, dir));
         self.set_folders(&set)
     }
 
@@ -1316,7 +1344,7 @@ impl PlayerHandle {
     pub fn set_folder_enabled(&self, dir: &Path, enabled: bool) -> anyhow::Result<WatchUpdate> {
         {
             let mut g = self.inner.folders.lock().expect("folders mutex");
-            if let Some(f) = g.iter_mut().find(|f| f.path == dir) {
+            if let Some(f) = g.iter_mut().find(|f| same_root(&f.path, dir)) {
                 f.enabled = enabled;
             }
         }
@@ -2496,6 +2524,36 @@ static TEST_ALLOC_PROBE: alloc_probe::Counting = alloc_probe::Counting;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn same_root_matches_the_watcher_component_wise_and_case_folds_on_windows() {
+        // Exact and component-boundary cases (so `rock` never matches `rockabilly`).
+        assert!(same_root(
+            Path::new("/music/rock"),
+            Path::new("/music/rock")
+        ));
+        assert!(!same_root(
+            Path::new("/music/rock"),
+            Path::new("/music/rockabilly")
+        ));
+        assert!(!same_root(Path::new("/music"), Path::new("/music/rock")));
+
+        #[cfg(windows)]
+        {
+            // Windows filesystem is case-insensitive, so these are the SAME root
+            // (matching `path_under`), not two sources.
+            assert!(same_root(Path::new(r"C:\Music"), Path::new(r"C:\music")));
+            assert!(same_root(
+                Path::new(r"C:\Music\Rock"),
+                Path::new(r"c:\MUSIC\rock")
+            ));
+        }
+        #[cfg(not(windows))]
+        {
+            // Case-sensitive off Windows.
+            assert!(!same_root(Path::new("/Music"), Path::new("/music")));
+        }
+    }
 
     #[test]
     fn index_skew_names_which_side_needs_the_update() {
