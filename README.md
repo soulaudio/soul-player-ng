@@ -1,10 +1,11 @@
-<!-- Theme-aware mark: white-bodied on GitHub's dark theme, dark-bodied on light.
-     Uses GitHub's #gh-*-mode-only fragments, which GitHub hides/shows via CSS keyed
-     on its OWN theme (data-color-mode), rather than <picture>/prefers-color-scheme:
-     fingerprint-resistant browsers (LibreWolf, Tor) force prefers-color-scheme to
-     light, which left the dark-bodied mark sitting on the dark page. -->
-<img alt="Soul Player" src="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon.png#gh-dark-mode-only" width="84" height="84">
-<img alt="Soul Player" src="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon-light.png#gh-light-mode-only" width="84" height="84">
+<!-- Theme-aware mark via GitHub's #gh-*-mode-only fragments on same-repo (markdown)
+     images: GitHub hides the non-matching one with CSS keyed on its OWN theme
+     (data-color-mode), so it also works in fingerprint-resistant browsers (LibreWolf,
+     Tor) that force prefers-color-scheme to light. Same-repo images are proxied, so
+     there is no muted fallback tile and the hide actually applies (an absolute URL in
+     an HTML <img> gets neither). The marks are pre-sized (markdown can't resize). -->
+![Soul Player](docs/soul-mark-dark.png#gh-dark-mode-only)
+![Soul Player](docs/soul-mark-light.png#gh-light-mode-only)
 
 # Soul Player
 
