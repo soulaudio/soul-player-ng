@@ -108,6 +108,7 @@ pub(crate) fn open(s: &mut State, paths: Vec<PathBuf>) {
             last.ok_or_else(|| anyhow::anyhow!("no folder to add"))
         },
         after_scan,
+        after_scan_failed,
     );
 }
 
@@ -128,6 +129,26 @@ fn after_scan(s: &mut State, up: soul_player_host::WatchUpdate) {
             "some opened files did not appear in the library after adding their folders"
         );
     }
+    play(s, ids);
+}
+
+/// The folder-add scan behind an open request failed. Drain the queued paths (so a
+/// dropped Err does not leave `pending_open` stuck, which would wedge every later
+/// open behind the `open`-guard), log it, then play whatever already resolves against
+/// the current library rather than losing the request silently.
+fn after_scan_failed(s: &mut State, e: anyhow::Error) {
+    let paths = std::mem::take(&mut s.pending_open);
+    tracing::error!(
+        error = %e,
+        queued = paths.len(),
+        "adding folders for an open request failed"
+    );
+    let ids: Vec<u32> = s
+        .host
+        .track_ids_for_paths(&paths)
+        .into_iter()
+        .flatten()
+        .collect();
     play(s, ids);
 }
 
