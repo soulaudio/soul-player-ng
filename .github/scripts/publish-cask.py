@@ -115,6 +115,15 @@ def cask_at(ref: str) -> tuple[str | None, str | None]:
     return base64.b64decode(f["content"]).decode(), f["sha"]
 
 
+def settle(ref: str, want: str | None, timeout: int = 120) -> None:
+    """Wait until reading the cask at `ref` returns version `want` (None: no cask)."""
+    deadline = time.time() + timeout
+    while version_of(cask_at(ref)[0]) != want:
+        if time.time() > deadline:
+            raise Failed(f"{ref} still reads {version_of(cask_at(ref)[0])}, expected {want} after {timeout}s")
+        time.sleep(3)
+
+
 def version_of(cask: str | None) -> str | None:
     m = re.search(r'^  version "([^"]+)"', cask or "", re.M)
     return m.group(1) if m else None
@@ -380,6 +389,11 @@ def drill(use_brew: bool) -> None:
             api("PUT", f"repos/{TAP}/contents/{CASK_PATH}", {
                 "message": message, "sha": blob, "branch": branch,
                 "content": base64.b64encode(previous.encode()).decode()})
+        # GitHub's contents API can serve the branch's previous state for a few
+        # seconds after a write; reading it then made publish() see the old
+        # cask and skip ("the tap already has this cask"). Wait until the reset
+        # is what a read returns.
+        settle(branch, before)
     log(f"drill on {branch}: {before or 'no cask'} → publish {version} → roll back")
     try:
         publish(version, branch, use_brew)
