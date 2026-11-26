@@ -127,6 +127,9 @@ pub(crate) struct PlanSummary {
     /// Albums whose disc numbers come only from `CD1/`-style folder names, which
     /// the chosen layout loses ([`organize::OrganizePlan::folder_inferred_discs`]).
     pub folder_inferred: usize,
+    /// `.cue` sheets planned unchanged though they may name renamed tracks
+    /// ([`organize::OrganizePlan::cues_not_rewritten`]).
+    pub cues_not_rewritten: usize,
     /// Whether the planned layout has a Disc sub-folders variant to suggest for
     /// [`folder_inferred`](Self::folder_inferred) albums (`flat` has none).
     pub disc_folders_available: bool,
@@ -156,6 +159,7 @@ pub(crate) fn summarize(plan: &organize::OrganizePlan, template_id: &str) -> Pla
     }
     s.left = plan.side_files_left.iter().map(left_album).collect();
     s.folder_inferred = plan.folder_inferred_discs.len();
+    s.cues_not_rewritten = plan.cues_not_rewritten.len();
     s
 }
 
@@ -433,6 +437,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Cue sheets the planner copies unchanged (their FILE lines do not match the
+    /// moved tracks) are counted for the Confirm modal's notice.
+    #[test]
+    fn summary_counts_cues_that_move_unchanged() {
+        let mut plan = organize::OrganizePlan::default();
+        assert_eq!(summarize(&plan, "artist-album").cues_not_rewritten, 0);
+        plan.cues_not_rewritten = vec![
+            (
+                PathBuf::from("A/a.cue"),
+                organize::CueNotRewritten::UnsupportedEncoding,
+            ),
+            (
+                PathBuf::from("B/b.cue"),
+                organize::CueNotRewritten::Unreadable,
+            ),
+        ];
+        assert_eq!(summarize(&plan, "artist-album").cues_not_rewritten, 2);
+    }
+
     /// The plan summary carries whether the chosen layout offers Disc sub-folders,
     /// so the Confirm modal can word the folder-inferred-discs warning: `flat`
     /// loses them too, but has no Disc sub-folders option to suggest.
@@ -655,16 +678,22 @@ mod e2e {
     }
 
     /// One staged file: its source path, its destination in the one-folder and
-    /// disc-sub-folder layouts (relative to the managed root), and its bytes.
+    /// disc-sub-folder layouts (relative to the managed root), its bytes, and the
+    /// bytes it must have at each destination (only a `.cue` differs: its `FILE`
+    /// lines follow the renamed tracks).
     struct Staged {
         src: String,
         one: String,
         discs: String,
         bytes: Vec<u8>,
+        want_one: Vec<u8>,
+        want_discs: Vec<u8>,
     }
 
     fn staged(src: String, one: String, discs: String, bytes: Vec<u8>) -> Staged {
         Staged {
+            want_one: bytes.clone(),
+            want_discs: bytes.clone(),
             src,
             one,
             discs,
@@ -719,11 +748,18 @@ mod e2e {
                 format!("{j}/{JADE}.log"),
                 b"EAC log, checksum 1234",
             ),
-            same_in_both(
-                format!("{j_src}/{JADE}.cue"),
-                format!("{j}/{JADE}.cue"),
-                b"FILE \"01. Liyue.flac\" WAVE",
-            ),
+            // A cue naming the album's tracks: it sits beside the album and its
+            // FILE lines (CRLF, indentation, the BOM kept) follow the renamed tracks.
+            Staged {
+                want_one: JADE_CUE_ONE.as_bytes().to_vec(),
+                want_discs: JADE_CUE_DISCS.as_bytes().to_vec(),
+                ..staged(
+                    format!("{j_src}/{JADE}.cue"),
+                    format!("{j}/{JADE}.cue"),
+                    format!("{j}/{JADE}.cue"),
+                    JADE_CUE.as_bytes().to_vec(),
+                )
+            },
             // `DiscNN/` sub-folders, tagged (`DISCNUMBER` + `DISCTOTAL`), MBID,
             // a disc subtitle on disc 1, and one same-named EAC log per disc.
             staged(
@@ -804,6 +840,12 @@ mod e2e {
         ]
     }
 
+    /// The Jade album's cue sheet as downloaded, and as the organizer rewrites it
+    /// for the one-folder and the disc-sub-folder layouts.
+    const JADE_CUE: &str = "\u{feff}REM GENRE Game\r\nFILE \"01. Liyue.flac\" WAVE\r\n  TRACK 01 AUDIO\r\nFILE \"02. Rex Incognito.flac\" WAVE\r\nFILE \"03. Gilded Runway.flac\" WAVE\r\n";
+    const JADE_CUE_ONE: &str = "\u{feff}REM GENRE Game\r\nFILE \"1-01 - Liyue.flac\" WAVE\r\n  TRACK 01 AUDIO\r\nFILE \"1-02 - Rex Incognito.flac\" WAVE\r\nFILE \"2-01 - Gilded Runway.flac\" WAVE\r\n";
+    const JADE_CUE_DISCS: &str = "\u{feff}REM GENRE Game\r\nFILE \"Disc 1/01 - Liyue.flac\" WAVE\r\n  TRACK 01 AUDIO\r\nFILE \"Disc 1/02 - Rex Incognito.flac\" WAVE\r\nFILE \"Disc 2/01 - Gilded Runway.flac\" WAVE\r\n";
+
     /// OS junk in the flat album: never organized, never swept, keeps its folder.
     fn junk() -> String {
         format!("Flac/{ARTIST}/2020.11.06 {JADE}/Thumbs.db")
@@ -883,13 +925,17 @@ mod e2e {
         }
         put(&src, &junk(), b"junk");
         let src_before = snapshot(&src);
-        // The exact managed tree, every file byte-identical to its source (the
-        // organizer never rewrites: an EAC log's checksum stays valid, tags survive).
+        // The exact managed tree, every file byte-identical to its source except the
+        // cue (its FILE lines follow the renamed tracks); an EAC log's checksum stays
+        // valid and tags survive.
         let want: BTreeMap<String, Vec<u8>> = stage
             .iter()
             .map(|f| {
-                let dst = if disc_folders { &f.discs } else { &f.one };
-                (dst.clone(), f.bytes.clone())
+                if disc_folders {
+                    (f.discs.clone(), f.want_discs.clone())
+                } else {
+                    (f.one.clone(), f.want_one.clone())
+                }
             })
             .collect();
         assert_eq!(
@@ -1064,6 +1110,40 @@ mod e2e {
             "{tag}"
         );
 
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    /// `Disc CD 0N <subtitle>` folders (doubled prefix, CJK subtitles) are the
+    /// discs of ONE album: one destination folder, never "Album (2)".
+    #[test]
+    fn doubled_prefix_disc_folders_organize_into_one_album_folder() {
+        let (src, dest) = (fresh("cdcd_src"), fresh("cdcd_dst"));
+        for (n, sub) in [
+            (1, "Sakura and Violet Thunder  \u{7a3b}\u{5149}"),
+            (2, "Stories of the Floating World \u{6d6e}\u{4e16}"),
+            (3, "Battles of Inazuma \u{7a3b}\u{59bb}"),
+        ] {
+            let disc = format!("DISCNUMBER={n}/3");
+            put(
+                &src,
+                &format!("Inazuma/Disc CD 0{n} {sub}/01 Song.flac"),
+                &track("Inazuma", &format!("Song {n}"), 1, &[&disc]),
+            );
+        }
+        let plan = plan_import(&src, &dest, "artist-album", Strategy::Move);
+        let s = summarize(&plan, "artist-album");
+        assert_eq!((s.audio, s.side, s.conflict), (3, 0, 0));
+        let summary = run_apply(&plan, |_| {});
+        assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+        let out: Vec<String> = files(&dest).into_keys().collect();
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert!(
+            out.iter()
+                .all(|r| r.starts_with(&format!("{ARTIST}/Inazuma/"))),
+            "one album folder: {out:?}"
+        );
+        assert!(!out.iter().any(|r| r.contains("(2)")), "{out:?}");
         let _ = std::fs::remove_dir_all(&src);
         let _ = std::fs::remove_dir_all(&dest);
     }

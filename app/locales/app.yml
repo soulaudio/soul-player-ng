@@ -2633,6 +2633,34 @@ settings.organizeLeftAudioConflict:
   zh: '其音频与已存在的文件冲突'
   cs: 'jeho zvuk koliduje s již existujícími soubory'
   ja: '音声が既存のファイルと競合'
+settings.organizeLeftPartialSelection:
+  en: "only some of this album's files were picked, so its side files stay"
+  de: 'nur ein Teil der Dateien dieses Albums wurde gewählt, daher bleiben seine Begleitdateien'
+  es: 'solo se eligieron algunos archivos de este álbum, así que sus archivos adjuntos se quedan'
+  zh: '仅选择了此专辑的部分文件，因此其附属文件保留在原处'
+  cs: 'byla vybrána jen část souborů tohoto alba, proto jeho doprovodné soubory zůstávají'
+  ja: 'このアルバムの一部のファイルしか選ばれていないため、付属ファイルは元の場所に残ります'
+settings.organizeLeftSplitAlbumFolders:
+  en: 'its tracks go to more than one album folder, so its side files stay'
+  de: 'seine Titel landen in mehr als einem Albumordner, daher bleiben seine Begleitdateien'
+  es: 'sus pistas van a más de una carpeta de álbum, así que sus archivos adjuntos se quedan'
+  zh: '其曲目会进入多个专辑文件夹，因此其附属文件保留在原处'
+  cs: 'jeho skladby míří do více než jedné složky alba, proto jeho doprovodné soubory zůstávají'
+  ja: 'トラックが複数のアルバムフォルダに入るため、付属ファイルは元の場所に残ります'
+settings.organizeCuesUnchanged.one:
+  en: "%{n} cue sheet will move unchanged (its FILE lines don't match the moved tracks)"
+  de: '%{n} Cue-Datei wird unverändert verschoben (ihre FILE-Zeilen passen nicht zu den verschobenen Titeln)'
+  es: '%{n} hoja cue se moverá sin cambios (sus líneas FILE no coinciden con las pistas movidas)'
+  cs: '%{n} cue soubor se přesune beze změny (jeho řádky FILE neodpovídají přesunutým skladbám)'
+settings.organizeCuesUnchanged.few:
+  cs: '%{n} cue soubory se přesunou beze změny (jejich řádky FILE neodpovídají přesunutým skladbám)'
+settings.organizeCuesUnchanged.other:
+  en: "%{n} cue sheets will move unchanged (their FILE lines don't match the moved tracks)"
+  de: '%{n} Cue-Dateien werden unverändert verschoben (ihre FILE-Zeilen passen nicht zu den verschobenen Titeln)'
+  es: '%{n} hojas cue se moverán sin cambios (sus líneas FILE no coinciden con las pistas movidas)'
+  zh: '%{n} 个 cue 文件将原样移动（其 FILE 行与移动后的曲目不匹配）'
+  cs: '%{n} cue souborů se přesune beze změny (jejich řádky FILE neodpovídají přesunutým skladbám)'
+  ja: '%{n} 件の cue シートは変更されずに移動します（FILE 行が移動後のトラックと一致しません）'
 settings.organizeLeftOther:
   en: 'kept in place'
   de: 'bleiben am Ort'
