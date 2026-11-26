@@ -289,3 +289,26 @@ fn views_have_no_hardcoded_ui_strings() {
         offenders.join("\n"),
     );
 }
+
+/// No key is defined twice in `app.yml`: the loader silently keeps one of the
+/// two values, so a duplicate shows the wrong string somewhere.
+#[test]
+fn no_key_is_defined_twice() {
+    let yaml = include_str!("../locales/app.yml");
+    let mut seen = std::collections::BTreeSet::new();
+    let dups: Vec<&str> = yaml
+        .lines()
+        .filter(|l| !l.starts_with(' ') && !l.starts_with('#') && !l.starts_with('_'))
+        .filter_map(|l| l.trim_end().strip_suffix(':'))
+        .filter(|k| !seen.insert(*k))
+        .collect();
+    assert!(dups.is_empty(), "keys defined twice in app.yml: {dups:?}");
+}
+
+/// The remote row's "Update available" badge has its own key, not the app
+/// updater's "Version %{version} is available." line.
+#[test]
+fn the_remote_update_badge_reads_update_available() {
+    let _locale = crate::config::use_test_locale("en");
+    assert_eq!(t!("settings.remoteUpdateAvailable"), "Update available");
+}

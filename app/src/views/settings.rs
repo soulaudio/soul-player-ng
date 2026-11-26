@@ -1083,7 +1083,7 @@ fn live_source_row(s: &State, p: &Palette, status: &SourceStatus, index: usize) 
                     .gap(space::SM)
                     .center_y()
                     .child(
-                        text(t!("settings.updateAvailable").to_string())
+                        text(t!("settings.remoteUpdateAvailable").to_string())
                             .font(type_::CAPTION)
                             .color(p.accent),
                     )

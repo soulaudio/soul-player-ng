@@ -1326,7 +1326,7 @@ settings.syncingRow:
   zh: '正在同步…'
   cs: 'Synchronizace…'
   ja: '同期中…'
-settings.updateAvailable:
+settings.remoteUpdateAvailable:
   en: 'Update available'
   de: 'Update verfügbar'
   es: 'Actualización disponible'
