@@ -524,6 +524,50 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             album_card(s, &pal, pos, &grouped_cards[vis_cards[pos]], card_w, scale)
         }),
     );
+    // When a filter or search narrows the grid to nothing, show an escape hatch
+    // instead of a blank page. This also recovers the stranded case: a genre filter
+    // whose genre has since left the library has no chip left to deselect, so the
+    // lit Filters button would otherwise be a dead end (empty grid, no way back).
+    let filtering = !genre_filter.is_empty() || !q.is_empty();
+    let body: El = if count == 0 && filtering {
+        col()
+            .key("albums-empty")
+            .grow(1.0)
+            .min_h(0.0)
+            .center()
+            .gap(space::MD)
+            .child(
+                text(t!("genre.noMatches").to_string())
+                    .font(type_::BODY)
+                    .color(p.text_secondary),
+            )
+            .child(
+                row()
+                    .key("albums-clear-filters")
+                    .role("button")
+                    .label(t!("albums.clearFilters").to_string())
+                    .focusable(true)
+                    .center_y()
+                    .px(space::MD)
+                    .py(space::SM)
+                    .radius(radius::SM)
+                    .cursor(Cursor::Pointer)
+                    .fill(p.muted)
+                    .hover(p.fg.alpha(fx::HOVER))
+                    .press(p.fg.alpha(fx::PRESS))
+                    .child(
+                        text(t!("albums.clearFilters").to_string())
+                            .font(type_::ITEM)
+                            .color(p.fg),
+                    )
+                    .on_press(|st: &mut State| {
+                        st.album_genre_filter.clear();
+                        st.album_search = rune::TextEdit::new("");
+                    }),
+            )
+    } else {
+        grid
+    };
     let mut page = col().key("albums").grow(1.0).min_h(0.0).child(search_bar);
     if let Some(chip_row) = chips {
         // Fully shown while open; the shared `reveal` fade+collapse (same as the
@@ -568,7 +612,7 @@ pub fn albums_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
             .scroll_edge_fade(24.0)
             .grow(1.0)
             .min_h(0.0)
-            .child(grid),
+            .child(body),
     )
 }
 
@@ -1846,6 +1890,66 @@ mod tests {
             texts(&rt).iter().any(|t| t == "Crooked Rain")
                 && texts(&rt).iter().any(|t| t == "Tago Mago"),
             "clearing the genre filter shows every album again"
+        );
+    }
+
+    /// A genre filter whose genre is no longer in the library strands the Albums page:
+    /// the grid goes empty, the Filters button stays lit, but there is no chip to
+    /// deselect (the chip row is built from current-library genres). The empty-state
+    /// offers a Clear button so the filter is always escapable.
+    #[test]
+    fn a_stale_genre_filter_can_be_cleared_from_the_empty_state() {
+        use rune::{Env, Runtime};
+
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            albums_page(s, &p, cx, cx.env().scale)
+        }
+
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        let mut rock = atv(1, "Pavement", "Crooked Rain");
+        rock.genre = Some("Rock".into());
+        s.library = vec![rock];
+        s.route = crate::Route::Albums;
+        // A genre no album in the library has (its tracks were removed by a rescan
+        // while the filter was active): the grid empties with no chip left to clear.
+        s.album_genre_filter.insert("Polka".into());
+
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+
+        let texts = |rt: &Runtime<State>| -> Vec<String> {
+            rt.elements()
+                .into_iter()
+                .filter(|e| !e.exiting)
+                .filter_map(|e| e.text)
+                .collect()
+        };
+        assert!(
+            !texts(&rt).iter().any(|t| t == "Crooked Rain"),
+            "the stale filter matches no album, so the grid is empty"
+        );
+
+        let (x, y) = rt
+            .find("albums-clear-filters")
+            .expect("a Clear button is offered when a filter strands the page");
+        rt.pointer_move(x, y);
+        rt.pointer_down(x, y);
+        rt.pointer_up(x, y);
+        rt.frame(0.0);
+
+        assert!(
+            rt.state.album_genre_filter.is_empty(),
+            "pressing Clear drops the stale filter"
+        );
+        assert!(
+            texts(&rt).iter().any(|t| t == "Crooked Rain"),
+            "clearing the filter restores the albums"
         );
     }
 
