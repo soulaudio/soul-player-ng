@@ -1027,9 +1027,18 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --tag "$TAG" --version "$VERSION" \
             --pub-date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --notes "$notes" \
             --out dist/latest.json
-          cat dist/*.sha256 | grep -v '\.sha256$' | sort -k2 > dist/SHA256SUMS
+          # tr -d '\r': the Windows leg writes its sidecar with CRLF, so up to
+          # 0.4.8 the setup.exe line of the published SHA256SUMS ended in a
+          # stray CR. GNU coreutils tolerates it, which is why nothing noticed;
+          # a stricter checker (busybox, or anything that parses the file
+          # itself) reads the filename as "...exe\r" and reports a mismatch on
+          # a download that is perfectly fine.
+          cat dist/*.sha256 | tr -d '\r' | grep -v '\.sha256$' | sort -k2 > dist/SHA256SUMS
           rm dist/*.sha256 dist/*.meta.json
           (cd dist && sha256sum -c SHA256SUMS && ls -la)
+          # Nothing downstream should have to be lenient about whitespace.
+          grep -nP '\r|^\s|\s$' dist/SHA256SUMS \
+            && { echo "::error::SHA256SUMS has stray whitespace"; exit 1; } || true
 
       # SLSA build provenance for every file the release ships: a Sigstore-signed
       # statement that this repo's release workflow, at this commit, built these
@@ -1188,6 +1197,36 @@ jobs:
               || { echo "::error::$key: $name has no valid build provenance"; exit 1; }
             echo "ok: $key → $name"
           done
+
+      # The step above covers the five updater artifacts, and the installer
+      # matrix covers the deb, rpm and universal dmg. That leaves the rest of
+      # what the release page offers (both flatpaks, the per-architecture dmgs,
+      # the screenshots the site and the store metadata link to) downloaded by
+      # nobody until a user tries. 0.4.6 shipped with one rpm returning 500
+      # from GitHub for days while every other asset was fine, so "it uploaded"
+      # is not the same as "it serves". Every line of SHA256SUMS is fetched and
+      # hashed, streamed rather than stored: 1 GB of assets does not need to
+      # land on disk to be checked.
+      - name: Every published asset downloads and matches
+        run: |
+          set -euo pipefail
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+          # SHA256SUMS lists every asset except itself and latest.json, so it
+          # doubles as the manifest of what has to be reachable.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+            --jq '.assets[].name' | grep -vxE 'SHA256SUMS|latest.json' | sort >published.txt
+          awk '{print $2}' SHA256SUMS | sort >checksummed.txt
+          diff -u checksummed.txt published.txt || {
+            echo "::error::the release assets and SHA256SUMS disagree (- missing upload, + unchecksummed)"
+            exit 1
+          }
+          while read -r want name; do
+            got=$(curl -fsSL --retry 3 --retry-all-errors "$base/$name" | sha256sum | cut -d' ' -f1) \
+              || { echo "::error::$name could not be downloaded from the release page"; exit 1; }
+            [ "$got" = "$want" ] \
+              || { echo "::error::$name served $got, SHA256SUMS says $want"; exit 1; }
+            echo "ok: $name"
+          done <SHA256SUMS
 
   # player.soulaudio.co reads the latest release at build time, so the download
   # page keeps offering the previous version until it is rebuilt. If this fails
