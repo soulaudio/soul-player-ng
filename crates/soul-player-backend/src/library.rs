@@ -352,8 +352,8 @@ impl Library {
     }
 
     /// For each `(id, album title)` pair, track `id`'s [`locator_of`](Self::locator_of)
-    /// when its album title (as [`views`](Self::views) reports it, the "Unknown
-    /// Album" sentinel reading as untitled, i.e. `""`) equals `title`, else `None`
+    /// when its album title (as [`views`](Self::views) reports it, the
+    /// `UNKNOWN_ALBUM` sentinel reading as untitled, i.e. `""`) equals `title`, else `None`
     /// (another album, or an id that doesn't resolve). The whole batch runs under
     /// one catalog lock and compares titles as `&str` in one reused buffer.
     #[must_use]
@@ -368,7 +368,7 @@ impl Library {
                     .ok()
                     .and_then(|a| decode_into(&cat, a.title, &mut buf))
                     .unwrap_or("");
-                let name = if name == "Unknown Album" { "" } else { name };
+                let name = if name == UNKNOWN_ALBUM { "" } else { name };
                 if name != title {
                     return None;
                 }
@@ -713,12 +713,19 @@ fn intern_format(
     arc
 }
 
-/// Map the importer's `"Unknown Artist"` / `"Unknown Album"` placeholders back to
+/// The importer's placeholder artist for an untagged file.
+const UNKNOWN_ARTIST: &str = "Unknown Artist";
+
+/// The importer's placeholder album title for an untagged file.
+const UNKNOWN_ALBUM: &str = "Unknown Album";
+
+/// Map the importer's [`UNKNOWN_ARTIST`] / [`UNKNOWN_ALBUM`] placeholders back to
 /// `None`, preserving the UI's "blank, not the word Unknown" presentation for an
 /// untagged file.
 fn real_name(s: Option<String>) -> Option<String> {
     match s.as_deref() {
-        None | Some("Unknown Artist" | "Unknown Album") => None,
+        None => None,
+        Some(name) if name == UNKNOWN_ARTIST || name == UNKNOWN_ALBUM => None,
         Some(_) => s,
     }
 }
