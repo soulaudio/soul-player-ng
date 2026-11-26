@@ -78,7 +78,8 @@ pub use soul_player_backend::{
     BrowseAxis, Command, Cover, DiscSection, Event, LoudnessAnalysisMode, PlayState, QueueState,
     RepeatMode, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath,
     SkipReason, SkippedGroup, SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
-    album_identity_key, album_tracklist, disc_track_key,
+    album_identity_key, album_tracklist, disc_track_key, is_unlocated_album_identity_key,
+    unlocated_album_identity_key,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;
@@ -337,6 +338,44 @@ pub struct RemoteHealth {
     pub last_checked_unix: Option<u64>,
 }
 
+/// A remote server whose `.soulidx` library index is not the format this build
+/// reads: its tracks are missing (read as empty) until the two agree. Says
+/// which side needs updating when the server's version is readable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexSkew {
+    /// The server's index is an older format: update the server.
+    ServerOlder {
+        /// The server index's `.soulidx` format version.
+        server: u16,
+        /// The format version this build reads.
+        ours: u16,
+    },
+    /// The server's index is a newer format: update this app.
+    ServerNewer {
+        /// The server index's `.soulidx` format version.
+        server: u16,
+        /// The format version this build reads.
+        ours: u16,
+    },
+    /// The server's index has no readable header.
+    Unreadable,
+}
+
+impl IndexSkew {
+    /// The skew for a server index of `server` format version (`None`: no
+    /// readable header); `None` when it is the version this build reads.
+    #[must_use]
+    pub fn of(server: Option<u16>) -> Option<Self> {
+        let ours = soul_player_backend::library::INDEX_FORMAT_VERSION;
+        match server {
+            Some(v) if v == ours => None,
+            Some(v) if v < ours => Some(Self::ServerOlder { server: v, ours }),
+            Some(v) => Some(Self::ServerNewer { server: v, ours }),
+            None => Some(Self::Unreadable),
+        }
+    }
+}
+
 /// The per-source status of one configured folder or remote server, as of
 /// the last scan / health probe.
 ///
@@ -374,6 +413,10 @@ pub struct SourceStatus {
     /// (never probed yet is still `Some`, with every field but the timestamp
     /// `None`), always `None` for a [`SourceKind::Local`].
     pub remote: Option<RemoteHealth>,
+    /// For a remote whose index is another `.soulidx` format version, which side
+    /// needs updating ([`IndexSkew`]); `None` for a current remote and for every
+    /// local source.
+    pub index_skew: Option<IndexSkew>,
 }
 
 /// The result of changing the configured-source set: the aggregated track views
@@ -1035,6 +1078,7 @@ impl PlayerHandle {
                         path: f.path.clone(),
                     },
                     remote: None,
+                    index_skew: None,
                 }
             })
             .collect();
@@ -1315,6 +1359,7 @@ impl PlayerHandle {
                         path: f.path.clone(),
                     },
                     remote: None,
+                    index_skew: None,
                 })
                 .collect()
         };
@@ -1344,13 +1389,20 @@ impl PlayerHandle {
         if servers.is_empty() {
             return Vec::new();
         }
-        let source_counts = self
-            .inner
-            .remote_library
-            .lock()
-            .expect("remote_library mutex")
-            .as_ref()
-            .map(|lib| lib.library().source_counts());
+        let (source_counts, stale) = {
+            let guard = self
+                .inner
+                .remote_library
+                .lock()
+                .expect("remote_library mutex");
+            (
+                guard.as_ref().map(|lib| lib.library().source_counts()),
+                guard
+                    .as_ref()
+                    .map(|lib| lib.stale_remotes().to_vec())
+                    .unwrap_or_default(),
+            )
+        };
         let health_cache = self
             .inner
             .remote_health
@@ -1392,6 +1444,7 @@ impl PlayerHandle {
                         url: server.url.clone(),
                     },
                     remote: Some(health),
+                    index_skew: stale.iter().find(|s| s.url == server.url).map(|s| s.skew),
                 }
             })
             .collect()
@@ -1919,6 +1972,28 @@ impl PlayerHandle {
         lib.locator_of(id)
     }
 
+    /// Durable album identities ([`album_identity_key`]) for `(representative
+    /// track id, album title)` pairs, one per pair and in order, resolved against
+    /// the open library (local or remote aggregate) under one lock. A pair whose
+    /// id has no locator (no library open, or a stale id), or whose track in the
+    /// open library carries another album title (the caller's id came from a
+    /// library snapshot the host has since replaced), gets
+    /// [`unlocated_album_identity_key`] for its title, never another album's
+    /// identity.
+    pub fn album_identities(&self, reps: &[(u32, &str)]) -> Vec<String> {
+        let lib = self.inner.library.lock().expect("library mutex").clone();
+        let locs = lib.map(|l| l.album_locators(reps)).unwrap_or_default();
+        reps.iter()
+            .enumerate()
+            .map(
+                |(i, &(_, title))| match locs.get(i).and_then(Option::as_ref) {
+                    Some(loc) => album_identity_key(loc, title),
+                    None => unlocated_album_identity_key(title),
+                },
+            )
+            .collect()
+    }
+
     /// Resolve durable locators back to current track ids against whatever
     /// library is open. Delegates to [`Library::resolve_locators`]; `None`
     /// for each entry (no library open, or that locator doesn't resolve)
@@ -2421,6 +2496,27 @@ static TEST_ALLOC_PROBE: alloc_probe::Counting = alloc_probe::Counting;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_skew_names_which_side_needs_the_update() {
+        let ours = soul_player_backend::library::INDEX_FORMAT_VERSION;
+        assert_eq!(IndexSkew::of(Some(ours)), None);
+        assert_eq!(
+            IndexSkew::of(Some(ours - 1)),
+            Some(IndexSkew::ServerOlder {
+                server: ours - 1,
+                ours
+            })
+        );
+        assert_eq!(
+            IndexSkew::of(Some(ours + 1)),
+            Some(IndexSkew::ServerNewer {
+                server: ours + 1,
+                ours
+            })
+        );
+        assert_eq!(IndexSkew::of(None), Some(IndexSkew::Unreadable));
+    }
 
     #[test]
     fn fan_out_isolates_a_panicking_subscriber_and_never_poisons() {
@@ -3056,6 +3152,64 @@ mod tests {
             path: "D:/nope/gone.flac".into(),
         };
         assert_eq!(h.resolve_locators(&[missing]), vec![None]);
+    }
+
+    /// Same-title albums in two folders get two identities; CD1/CD2 of one album
+    /// get one; an unresolvable id falls back to the title-only identity. (The
+    /// fixtures are untagged, so every track's album title is the empty one.)
+    #[test]
+    fn album_identities_tell_same_title_editions_apart_and_join_disc_folders() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        for rel in [
+            "Hits A/01.wav",
+            "Hits B/01.wav",
+            "Box/CD1/01.wav",
+            "Box/CD2/01.wav",
+        ] {
+            let p = dir.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, wav(48_000, 96_000)).unwrap();
+        }
+        let h = PlayerHandle::offline();
+        h.open_folder(dir.path()).expect("open_folder");
+        let id_of = |suffix: &str| {
+            h.views()
+                .iter()
+                .map(|t| t.id)
+                .find(|&id| {
+                    matches!(h.locator_of(id), Some(TrackLocator::Local { path }) if path.ends_with(suffix))
+                })
+                .unwrap_or_else(|| panic!("no track at {suffix}"))
+        };
+        let (a, b) = (id_of("Hits A/01.wav"), id_of("Hits B/01.wav"));
+        let (c1, c2) = (id_of("Box/CD1/01.wav"), id_of("Box/CD2/01.wav"));
+        let keys = h.album_identities(&[(a, ""), (b, ""), (c1, ""), (c2, "")]);
+        assert_ne!(keys[0], keys[1], "two editions, two identities");
+        assert_eq!(keys[2], keys[3], "CD1 and CD2 are one album");
+        assert!(keys.iter().all(|k| !is_unlocated_album_identity_key(k)));
+        assert_eq!(
+            PlayerHandle::offline().album_identities(&[(a, "Greatest Hits")]),
+            vec![unlocated_album_identity_key("Greatest Hits")],
+            "no library: the title-only fallback"
+        );
+    }
+
+    /// An id whose track carries another album title (the caller's id is from a
+    /// library snapshot the host has since replaced) must not be attributed to
+    /// that title: it falls back to the title-only identity instead.
+    #[test]
+    fn album_identities_fall_back_when_the_id_names_another_album() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = dir.path().join("Hits A/01.wav");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, wav(48_000, 96_000)).unwrap();
+        let h = PlayerHandle::offline();
+        h.open_folder(dir.path()).expect("open_folder");
+        let id = h.views()[0].id;
+        assert_eq!(
+            h.album_identities(&[(id, "Greatest Hits")]),
+            vec![unlocated_album_identity_key("Greatest Hits")]
+        );
     }
 
     /// The playlist's greyed "unavailable" state is UNIVERSAL, not remote-only:

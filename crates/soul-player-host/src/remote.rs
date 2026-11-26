@@ -38,7 +38,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use soul_audio_desktop::{OwnedDecoder, open_seekable_src, open_track};
 use soul_audio_multicatalog::{pack, unpack};
-use soul_player_backend::library::{IndexBlob, Library, TrackSource, index_is_current};
+use soul_player_backend::library::{IndexBlob, Library, TrackSource, index_format_version};
 
 use crate::RemoteHealth;
 
@@ -327,6 +327,15 @@ enum SourceResolve {
     },
 }
 
+/// A remote server whose index is another `.soulidx` format version, and how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaleRemote {
+    /// The server's base URL.
+    pub url: String,
+    /// Which side needs updating (from the first stale blob's header).
+    pub skew: crate::IndexSkew,
+}
+
 /// A [`TrackSource`] over an aggregated [`Library`] whose sources are a mix
 /// of local roots and remote servers: local ids resolve straight through the
 /// aggregate; remote ids are downloaded (and cached) via `fetch`.
@@ -353,9 +362,9 @@ pub struct RemoteLibrary {
     lib: Arc<Library>,
     resolve: Vec<SourceResolve>,
     fetch: Arc<dyn MediaFetch>,
-    /// URLs of the remote servers that served at least one index of another
-    /// `.soulidx` format version (read as empty), see [`Self::stale_remotes`].
-    stale_remotes: Vec<String>,
+    /// Servers that served at least one index of another `.soulidx` format
+    /// version (read as empty), see [`Self::stale_remotes`].
+    stale_remotes: Vec<StaleRemote>,
 }
 
 impl RemoteLibrary {
@@ -389,15 +398,22 @@ impl RemoteLibrary {
         for (server, server_blobs) in remotes {
             // Shared by every source this server contributes below.
             let base = resolve.len();
-            let stale = server_blobs.iter().filter(|b| !index_is_current(b)).count();
-            if stale > 0 {
+            let skews: Vec<crate::IndexSkew> = server_blobs
+                .iter()
+                .filter_map(|b| crate::IndexSkew::of(index_format_version(b)))
+                .collect();
+            if let Some(&skew) = skews.first() {
                 tracing::warn!(
                     server = %server.url,
-                    stale,
+                    stale = skews.len(),
+                    ?skew,
                     "remote index is another .soulidx format version, read as empty: \
                      update the server or this app"
                 );
-                stale_remotes.push(server.url.clone());
+                stale_remotes.push(StaleRemote {
+                    url: server.url.clone(),
+                    skew,
+                });
             }
             for (i, blob) in server_blobs.into_iter().enumerate() {
                 roots.push(PathBuf::from(format!("remote:{}#{i}", server.url)));
@@ -418,11 +434,12 @@ impl RemoteLibrary {
         }
     }
 
-    /// URLs of the remote servers whose index (or one of its roots') is another
-    /// `.soulidx` format version, in build order. Their tracks are missing from
-    /// the aggregate until the server and this app agree on the version.
+    /// The remote servers whose index (or one of its roots') is another
+    /// `.soulidx` format version, in build order, with which side needs updating.
+    /// Their tracks are missing from the aggregate until the server and this app
+    /// agree on the version.
     #[must_use]
-    pub fn stale_remotes(&self) -> &[String] {
+    pub fn stale_remotes(&self) -> &[StaleRemote] {
         &self.stale_remotes
     }
 
@@ -2731,6 +2748,26 @@ mod tests {
         );
     }
 
+    /// A remote album's identity names its server, so it never shares a custom
+    /// cover with a same-title local album.
+    #[test]
+    fn a_remote_album_identity_names_its_server() {
+        let server = start_server();
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("add remote");
+        let t = handle
+            .views()
+            .into_iter()
+            .find(|t| t.remote_source.is_some())
+            .expect("the remote contributed a track");
+        let title = t.album.as_deref().unwrap_or("").to_string();
+        let key = handle.album_identities(&[(t.id, title.as_str())]).remove(0);
+        assert!(key.contains(&server.url.to_lowercase()), "{key:?}");
+        assert_ne!(key, crate::unlocated_album_identity_key(&title));
+    }
+
     /// A server whose index is another `.soulidx` format version (an older or
     /// newer server) reads as an empty catalog; the aggregate flags that server
     /// (and logs a warning) instead of passing it off as an empty library.
@@ -2763,8 +2800,63 @@ mod tests {
             ],
             fetch,
         );
-        assert_eq!(lib.stale_remotes(), ["http://old.invalid"]);
+        assert_eq!(
+            lib.stale_remotes(),
+            [StaleRemote {
+                url: "http://old.invalid".to_owned(),
+                skew: crate::IndexSkew::ServerOlder {
+                    server: 7,
+                    ours: soul_player_backend::library::INDEX_FORMAT_VERSION,
+                },
+            }]
+        );
         assert_eq!(lib.library().len(), 2, "the current blobs still aggregate");
+    }
+
+    /// The Sources list carries the skew for the affected remote only, through
+    /// the same `sources()` the UI folds in.
+    #[test]
+    fn sources_flag_a_remote_whose_index_is_another_format_version() {
+        let handle = crate::PlayerHandle::offline();
+        let mut stale = vec![0u8; 76];
+        stale[..4].copy_from_slice(b"SIDX");
+        stale[4..6].copy_from_slice(&7u16.to_le_bytes());
+        handle.inner.remotes.lock().unwrap().push((
+            Arc::new(RemoteServer::new(
+                "http://old.invalid".to_owned(),
+                String::new(),
+            )),
+            vec![stale.into()],
+        ));
+        handle.rebuild_remote_library();
+        let row = handle
+            .sources()
+            .into_iter()
+            .find(|s| matches!(&s.kind, crate::SourceKind::Remote { url } if url == "http://old.invalid"))
+            .expect("the remote lists");
+        assert_eq!(
+            row.index_skew,
+            Some(crate::IndexSkew::ServerOlder {
+                server: 7,
+                ours: soul_player_backend::library::INDEX_FORMAT_VERSION,
+            })
+        );
+    }
+
+    /// A real, current server is not flagged.
+    #[test]
+    fn a_current_server_is_not_flagged() {
+        let server = start_server();
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .add_remote_source_with_tokens(&server.url, login_as_test_user(&server))
+            .expect("add remote");
+        let row = handle
+            .sources()
+            .into_iter()
+            .find(|s| matches!(s.kind, crate::SourceKind::Remote { .. }))
+            .expect("the remote lists");
+        assert_eq!(row.index_skew, None);
     }
 
     #[test]

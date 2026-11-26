@@ -57,6 +57,7 @@ mod notify;
 mod open_files;
 mod organize_job;
 mod playlists;
+mod plural;
 mod report;
 #[cfg(test)]
 mod test_fixtures;
@@ -80,13 +81,26 @@ fn resolve_locale(pref: &str) -> &'static str {
     if let Some(&code) = LOCALES.iter().find(|&&c| c == pref) {
         return code;
     }
-    let sys = sys_locale::get_locale().unwrap_or_default();
+    let sys = system_locale();
     let lang = sys.split(['-', '_']).next().unwrap_or("en").to_lowercase();
     LOCALES
         .iter()
         .copied()
         .find(|&c| c == lang.as_str())
         .unwrap_or("en")
+}
+
+/// The OS locale tag (`en-US`, `cs-CZ`, ...), empty when unknown.
+#[cfg(not(test))]
+fn system_locale() -> String {
+    sys_locale::get_locale().unwrap_or_default()
+}
+
+/// Test builds read the "system" language as English, so a test never renders
+/// in the language of the machine it runs on.
+#[cfg(test)]
+fn system_locale() -> String {
+    "en".to_string()
 }
 
 /// Point the global `rust_i18n` locale at `pref`'s resolved code, so the next
@@ -367,6 +381,10 @@ type PlaylistCoverCache = std::cell::RefCell<
     )>,
 >;
 
+/// Memoized album page: `(library_fp, album ref, page)` (see [`State::album_page`]).
+type AlbumPageCache =
+    std::cell::RefCell<Option<(u64, AlbumRef, std::rc::Rc<views::albums::AlbumPage>)>>;
+
 struct State {
     /// Read by the view's command handlers (click-to-play, transport).
     host: PlayerHandle,
@@ -397,6 +415,10 @@ struct State {
             std::rc::Rc<[views::albums::Album]>,
         )>,
     >,
+    /// The open album page's content (members, disc sections, play list),
+    /// memoized by (library fingerprint, album ref). `album_detail` otherwise
+    /// re-resolved every member and rebuilt the tracklist EVERY frame.
+    album_page_cache: AlbumPageCache,
     /// A shared `Rc` snapshot of the library for the virtualized Tracks list, so its
     /// per-row closures index the track data by `Rc` instead of CLONING every
     /// visible track every frame, a million clones/frame otherwise. Rebuilt only
@@ -743,6 +765,9 @@ struct State {
     /// `pending_open` (their track ids would be resolved against a library that's about to
     /// be replaced) and are opened when it lands (`apply_startup_scan`).
     startup_scan_pending: bool,
+    /// The incomplete sources last logged as deferring the retirement of legacy
+    /// title-keyed covers (see [`deferral_changed`]); empty when nothing waits.
+    cover_retirement_waiting: Vec<String>,
     /// Whether **exclusive** (bit-perfect) output is requested (persisted), rendered
     /// as a toggle in Settings → Output. Applies to the next playback session; the
     /// device may fall back to shared if it can't open exclusive (reflected live in
@@ -976,8 +1001,9 @@ impl State {
         // Band tables default open within an expanded card.
         let eq_bands_expanded: Vec<bool> = vec![true; dsp_units.len()];
         let (sidebar_width, sidebar_collapsed) = config::load_sidebar();
+        // Applied by the app's `init` (not here), so building a `State` never
+        // flips the process-global locale.
         let locale_pref = config::load_locale();
-        apply_locale(&locale_pref);
         // Restore the managed-library choice (defaults: unset dest, "artist-album"
         // template, Copy); the stored strategy id maps to the organizer enum.
         let (managed_dest, managed_template, managed_strategy_id) = config::load_managed_library();
@@ -996,6 +1022,7 @@ impl State {
             artists_cache: std::cell::RefCell::new(None),
             genres_cache: std::cell::RefCell::new(None),
             artist_discography_cache: std::cell::RefCell::new(None),
+            album_page_cache: std::cell::RefCell::new(None),
             library_rc_cache: std::cell::RefCell::new(None),
             track_index_cache: std::cell::RefCell::new(None),
             visible_tracks_cache: std::cell::RefCell::new(None),
@@ -1069,8 +1096,8 @@ impl State {
             remote_connecting: false,
             // Seeded by `reconnect_remotes_on_startup` at real launch (which
             // reads `config::load_remotes()` there, not here, so an ordinary
-            // `State::new()` in a unit test never touches the shared config
-            // file unless the test calls that function itself).
+            // `State::new()` in a unit test never reads the remote list unless
+            // the test calls that function itself).
             remote_urls: Vec::new(),
             remote_reconnecting: Vec::new(),
             remote_synced_index: std::collections::HashMap::new(),
@@ -1088,6 +1115,7 @@ impl State {
             output_transports: Default::default(),
             pending_open: Vec::new(),
             startup_scan_pending: false,
+            cover_retirement_waiting: Vec::new(),
             exclusive: config::load_output_exclusive(),
             exclusive_strict: config::load_output_exclusive_strict(),
             replaygain_mode,
@@ -1213,10 +1241,67 @@ impl State {
         {
             return rc.clone();
         }
-        let grouped: std::rc::Rc<[views::albums::Album]> =
-            views::albums::group_albums(&self.library).into();
+        let mut albums = views::albums::group_albums(&self.library);
+        self.stamp_album_identities(&mut albums);
+        let grouped: std::rc::Rc<[views::albums::Album]> = albums.into();
         *self.albums_cache.borrow_mut() = Some((fp, grouped.clone()));
         grouped
+    }
+
+    /// The album title an identity is keyed by: track `rep`'s album tag, `""`
+    /// when untagged (matching the host's untitled reading).
+    fn identity_title(&self, rep: u32) -> &str {
+        self.track(rep)
+            .and_then(|t| t.album.as_deref())
+            .unwrap_or("")
+    }
+
+    /// Replace each album's title-only identity with the durable one the host
+    /// derives from its representative track's ([`identity_rep`]) locator (one host call, one lock). Runs
+    /// only on a cache fill, i.e. once per library change.
+    fn stamp_album_identities(&self, albums: &mut [views::albums::Album]) {
+        let reps: Vec<(u32, &str)> = albums
+            .iter()
+            .map(|a| {
+                let rep = identity_rep(a);
+                (rep, self.identity_title(rep))
+            })
+            .collect();
+        let keys = self.host.album_identities(&reps);
+        for (album, key) in albums.iter_mut().zip(keys) {
+            album.identity = covers::AlbumIdentity::new(key);
+        }
+    }
+
+    /// The album detail page's content for `r`, memoized against the library
+    /// fingerprint and the album ref, so the members, disc sections and play list
+    /// are rebuilt only when the library or the open album changes. `None` when
+    /// the album is not in the library.
+    pub(crate) fn album_page(&self, r: &AlbumRef) -> Option<std::rc::Rc<views::albums::AlbumPage>> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, cr, page)) = self.album_page_cache.borrow().as_ref()
+            && *cfp == fp
+            && cr == r
+        {
+            return Some(page.clone());
+        }
+        let albums = self.grouped_albums();
+        let album = views::albums::resolve_album(&albums, r)?.clone();
+        let members: Vec<&TrackView> = album.ids.iter().filter_map(|id| self.track(*id)).collect();
+        let discs = soul_player_host::album_tracklist(&members);
+        let play_ids: std::rc::Rc<[u32]> = discs
+            .iter()
+            .flat_map(|d| d.rows.iter().map(|row| row.0))
+            .collect();
+        let total_secs = members.iter().map(|t| t.duration_secs).sum();
+        let page = std::rc::Rc::new(views::albums::AlbumPage {
+            album,
+            discs,
+            play_ids,
+            total_secs,
+        });
+        *self.album_page_cache.borrow_mut() = Some((fp, r.clone(), page.clone()));
+        Some(page)
     }
 
     /// The open Artist detail page's discography: the artist's own tracks grouped into
@@ -1244,8 +1329,9 @@ impl State {
             .iter()
             .filter_map(|id| self.track(*id).cloned())
             .collect();
-        let disc: std::rc::Rc<[views::albums::Album]> =
-            views::albums::discography_of(&subset, src).into();
+        let mut disc = views::albums::discography_of(&subset, src);
+        self.stamp_album_identities(&mut disc);
+        let disc: std::rc::Rc<[views::albums::Album]> = disc.into();
         *self.artist_discography_cache.borrow_mut() =
             Some((fp, artist.to_string(), src, disc.clone()));
         disc
@@ -1596,6 +1682,111 @@ pub(crate) fn apply_watch(s: &mut State, up: WatchUpdate) {
     s.source_limit_notice = false;
     // A WatchUpdate marks a scan complete, retire the title-bar activity widget.
     s.scan_progress = None;
+    adopt_legacy_album_covers(s);
+}
+
+/// Whether every configured source has landed: the startup scan landed, no
+/// scan running, no remote connect or reconnect in flight, every listed source enabled and reachable, and every configured
+/// remote listed. Until then an album that showed a legacy title-keyed cover
+/// may still be missing, so the legacy file is not retired yet.
+#[cfg(test)]
+fn source_set_complete(s: &State) -> bool {
+    incomplete_sources(s).is_empty()
+}
+
+/// The track an album's durable identity is derived from: its first track in
+/// disc/track order (`Album::ids` is sorted so), which no library sort axis
+/// changes. Falls back to the cover track for an album without members.
+fn identity_rep(album: &views::albums::Album) -> u32 {
+    album.ids.first().copied().unwrap_or(album.cover_id)
+}
+
+/// What keeps the source set from being complete (see [`source_set_complete`]):
+/// the restored library's startup scan still pending, a scan in progress, a
+/// connect in flight, each reconnecting remote, each disabled or unreachable
+/// source, and each configured remote not listed yet. Remote URLs compare
+/// normalized (`views::settings::normalize_remote_url`, case-insensitive), so a
+/// persisted `http://h/` and a live `http://h` are one source.
+fn incomplete_sources(s: &State) -> Vec<String> {
+    use views::settings::normalize_remote_url as norm;
+    let same = |a: &str, b: &str| norm(a).eq_ignore_ascii_case(norm(b));
+    let mut out = Vec::new();
+    if s.startup_scan_pending {
+        out.push("the restored library (startup scan pending)".to_string());
+    }
+    if s.scan_progress.is_some() {
+        out.push("a library scan in progress".to_string());
+    }
+    if s.remote_connecting {
+        out.push("a remote being added".to_string());
+    }
+    out.extend(
+        s.remote_reconnecting
+            .iter()
+            .map(|u| format!("{u} (reconnecting)")),
+    );
+    for x in s.sources.iter().filter(|x| !(x.enabled && x.available)) {
+        let name = match &x.kind {
+            soul_player_host::SourceKind::Remote { url } => url.clone(),
+            soul_player_host::SourceKind::Local { path } => path.display().to_string(),
+        };
+        let why = if x.enabled { "unreachable" } else { "disabled" };
+        out.push(format!("{name} ({why})"));
+    }
+    for u in &s.remote_urls {
+        let listed = s.sources.iter().any(
+            |x| matches!(&x.kind, soul_player_host::SourceKind::Remote { url } if same(url, u)),
+        );
+        if !listed {
+            out.push(format!("{u} (not connected yet)"));
+        }
+    }
+    out
+}
+
+/// Record `now`, the sources a legacy-cover retirement waits for (empty when
+/// none), in `last`; `true` when a non-empty set differs from the one recorded,
+/// i.e. when the deferral is worth logging.
+fn deferral_changed(last: &mut Vec<String>, now: &[String]) -> bool {
+    if now.is_empty() {
+        last.clear();
+        return false;
+    }
+    if last.as_slice() == now {
+        return false;
+    }
+    *last = now.to_vec();
+    true
+}
+
+/// Adopt any legacy title-keyed album covers for the albums now in the library
+/// (see `CoverStore::adopt_legacy_album_covers`). A cheap no-op once none remain
+/// or while the library is empty, so every library replacement calls it.
+pub(crate) fn adopt_legacy_album_covers(s: &mut State) {
+    if s.library.is_empty() || !s.covers.has_legacy_album_covers() {
+        return;
+    }
+    let incomplete = incomplete_sources(s);
+    let albums = s.grouped_albums();
+    let out = s.covers.adopt_legacy_album_covers(
+        albums.iter().map(|a| (a.name.as_str(), &a.identity)),
+        incomplete.is_empty(),
+    );
+    let waiting: &[String] = if out.kept > 0 { &incomplete } else { &[] };
+    if deferral_changed(&mut s.cover_retirement_waiting, waiting) {
+        tracing::info!(
+            incomplete = %incomplete.join(", "),
+            "deferring retirement of title-keyed album covers until every source has landed"
+        );
+    }
+    if out.adopted > 0 || out.retired > 0 {
+        tracing::info!(
+            adopted = out.adopted,
+            retired = out.retired,
+            kept = out.kept,
+            "migrated title-keyed album covers to album identities"
+        );
+    }
 }
 
 /// Apply a `WatchUpdate` and persist the new source set (with each source's
@@ -1627,13 +1818,15 @@ fn should_prewarm(library_empty: bool, exclusive: bool) -> bool {
 /// The restored library's first scan landed: apply it like any Sources edit, then open any
 /// files the OS handed us while it ran.
 pub(crate) fn apply_startup_scan(s: &mut State, up: WatchUpdate) {
+    // Cleared first: the apply below runs the legacy-cover adoption pass, which
+    // may retire covers only once the restored library is in (see `incomplete_sources`).
+    s.startup_scan_pending = false;
     apply_and_save(s, up);
     tracing::debug!(
         library = s.library.len(),
         queued = s.pending_open.len(),
         "startup scan landed"
     );
-    s.startup_scan_pending = false;
     // Pre-warm the audio pipeline now that a library exists: spawn the actor so the output
     // device opens in the BACKGROUND (the device open is seconds on a slow WASAPI/Bluetooth
     // endpoint), instead of making the user's FIRST play wait the whole open. Non-blocking:
@@ -1937,6 +2130,7 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
                     s.library = library;
                     s.sources = sources;
                     reapply_sort(s);
+                    adopt_legacy_album_covers(s);
                 });
             });
         }
@@ -1953,6 +2147,7 @@ pub(crate) fn reconnect_remotes_on_startup(s: &mut State) {
             s.sources = sources;
             s.library = s.host.views();
             reapply_sort(s);
+            adopt_legacy_album_covers(s);
         }
     }
 }
@@ -2056,6 +2251,7 @@ fn apply_remote_connect(s: &mut State, url: &str, result: anyhow::Result<()>) {
             s.library = s.host.views();
             s.sources = s.host.sources();
             reapply_sort(s);
+            adopt_legacy_album_covers(s);
             if !s.remote_urls.iter().any(|u| u == url) {
                 s.remote_urls.push(url.to_string());
             }
@@ -2108,6 +2304,7 @@ pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
                     s.sources = sources;
                     s.library = library;
                     reapply_sort(s);
+                    adopt_legacy_album_covers(s);
                 });
             });
         }
@@ -2120,6 +2317,7 @@ pub(crate) fn disconnect_remote_source(s: &mut State, url: String) {
             s.sources = s.host.sources();
             s.library = s.host.views();
             reapply_sort(s);
+            adopt_legacy_album_covers(s);
         }
     }
 }
@@ -2144,6 +2342,7 @@ pub(crate) fn toggle_remote_enabled(s: &mut State, url: String, enabled: bool) {
     s.sources = s.host.sources();
     s.library = s.host.views();
     reapply_sort(s);
+    adopt_legacy_album_covers(s);
 }
 
 /// Manually reconnect (or re-sync) one remote source, an offline row's
@@ -2188,6 +2387,7 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
                     s.sources = sources;
                     s.library = library;
                     reapply_sort(s);
+                    adopt_legacy_album_covers(s);
                 });
             });
         }
@@ -2200,6 +2400,7 @@ pub(crate) fn reconnect_remote_now(s: &mut State, url: String) {
             let sources = s.host.sources();
             s.library = s.host.views();
             reapply_sort(s);
+            adopt_legacy_album_covers(s);
             s.remote_reconnecting.retain(|u| u != &url);
             if ok {
                 record_synced_index(s, &url, &sources);
@@ -3208,7 +3409,8 @@ pub(crate) fn organize_dismiss(s: &mut State) {
 /// `app_handle` is present (a real run), spawn a worker that applies the plan,
 /// streaming progress back per entry and finishing with the summary. The worker
 /// also registers the destination as a watched source so the organized files
-/// appear in the library. With no handle (headless tests) it stays the pure
+/// appear in the library, and the albums' custom covers follow them to their
+/// new identities ([`organize_cover_carry`], [`carry_album_covers`]). With no handle (headless tests) it stays the pure
 /// Confirm → Applying transition, writing nothing to disk.
 pub(crate) fn organize_confirm(s: &mut State) {
     // Only act from Confirm; take the plan so the worker owns it. Anything else is
@@ -3227,6 +3429,8 @@ pub(crate) fn organize_confirm(s: &mut State) {
     };
     let host = s.host.clone();
     let dest = plan.dest_root.clone();
+    // Read while the source files are still in the library (they move next).
+    let carry = organize_cover_carry(s, &plan);
     std::thread::spawn(move || {
         // The progress callback clones the handle per entry and posts an update,
         // that stream drives the Applying modal's `done / total` + current line.
@@ -3240,12 +3444,100 @@ pub(crate) fn organize_confirm(s: &mut State) {
         // then post the final summary (both on the main thread, in one update).
         let watch = host.add_folder(&dest).ok();
         handle.update(move |s: &mut State, _tx: &mut Tx| {
+            // Before the library refresh, so the moved albums show their covers
+            // (and legacy adoption sees them) on the first frame.
+            carry_album_covers(s, &carry);
             if let Some(up) = watch {
                 apply_and_save(s, up);
             }
             organize_finish(s, summary);
         });
     });
+}
+
+/// One custom album cover an organize run carries to the album's new identity
+/// (its files land in a new album root, so its identity key changes).
+pub(crate) struct CoverCarry {
+    old: covers::AlbumIdentity,
+    new: covers::AlbumIdentity,
+    /// Where the album's identity track lands; the cover is carried only once
+    /// it is there.
+    landed: PathBuf,
+    /// Move re-keys the cover; Copy copies it (the source album stays).
+    moved: bool,
+}
+
+/// The library track locator of local file `path` (as the host builds it).
+fn local_locator(path: &std::path::Path) -> soul_player_host::TrackLocator {
+    soul_player_host::TrackLocator::Local {
+        path: path.to_string_lossy().replace('\\', "/"),
+    }
+}
+
+/// The custom album covers `plan` must carry: for each library album with a
+/// cover whose identity track ([`identity_rep`]) the plan copies or moves, its
+/// identity now and the identity it will have at the destination (the same
+/// album-root rule, [`soul_player_host::album_identity_key`], over the planned
+/// destination path). Computed before the plan runs, while the source files are
+/// still in the library.
+pub(crate) fn organize_cover_carry(s: &State, plan: &organize::OrganizePlan) -> Vec<CoverCarry> {
+    let placing: Vec<&organize::PlanEntry> = plan
+        .entries
+        .iter()
+        .filter(|e| {
+            e.kind == organize::EntryKind::Audio
+                && matches!(e.action, organize::Action::Copy | organize::Action::Move)
+        })
+        .collect();
+    if placing.is_empty() {
+        return Vec::new();
+    }
+    let locs: Vec<soul_player_host::TrackLocator> =
+        placing.iter().map(|e| local_locator(&e.src)).collect();
+    let by_id: std::collections::HashMap<u32, &organize::PlanEntry> = s
+        .host
+        .resolve_locators(&locs)
+        .into_iter()
+        .zip(&placing)
+        .filter_map(|(id, e)| Some((id?, *e)))
+        .collect();
+    let albums = s.grouped_albums();
+    albums
+        .iter()
+        .filter(|a| s.covers.album_cover_path(&a.identity).is_some())
+        .filter_map(|a| {
+            let rep = identity_rep(a);
+            let entry = by_id.get(&rep)?;
+            let key = soul_player_host::album_identity_key(
+                &local_locator(&entry.dst),
+                s.identity_title(rep),
+            );
+            Some(CoverCarry {
+                old: a.identity.clone(),
+                new: covers::AlbumIdentity::new(key),
+                landed: entry.dst.clone(),
+                moved: entry.action == organize::Action::Move,
+            })
+        })
+        .collect()
+}
+
+/// Carry each cover in `carry` whose album's identity track landed: a Move
+/// re-keys the cover (`CoverStore::rekey_album_cover`), a Copy copies it, and
+/// neither ever overwrites a cover the new identity already has.
+pub(crate) fn carry_album_covers(s: &mut State, carry: &[CoverCarry]) {
+    for c in carry.iter().filter(|c| c.landed.is_file()) {
+        let carried = if c.moved {
+            s.covers.rekey_album_cover(&c.old, &c.new)
+        } else {
+            s.covers.copy_album_cover(&c.old, &c.new)
+        };
+        tracing::debug!(
+            carried,
+            moved = c.moved,
+            "carried a custom album cover after organizing"
+        );
+    }
 }
 
 /// Switch the library's sort order, re-fetches the current library's views in
@@ -5019,7 +5311,11 @@ fn scene_artwork_crop(s: &mut State) {
             key: 0,
             name: "Album".to_string(),
         });
-    let album = open.name.clone();
+    let album = views::albums::resolve_album(&s.grouped_albums(), &open)
+        .map(|a| a.identity.clone())
+        .unwrap_or_else(|| {
+            covers::AlbumIdentity::new(soul_player_host::unlocated_album_identity_key(&open.name))
+        });
     s.route = Route::Album;
     s.open_album = Some(open);
     let (w, h) = (480u32, 320u32);
@@ -5063,7 +5359,11 @@ fn scene_artwork_edit(s: &mut State) {
             key: 0,
             name: "Album".to_string(),
         });
-    let album = open.name.clone();
+    let album = views::albums::resolve_album(&s.grouped_albums(), &open)
+        .map(|a| a.identity.clone())
+        .unwrap_or_else(|| {
+            covers::AlbumIdentity::new(soul_player_host::unlocated_album_identity_key(&open.name))
+        });
     s.route = Route::Album;
     s.open_album = Some(open);
     s.artwork_edit = Some(ArtworkTarget::Album(album));
@@ -5087,6 +5387,7 @@ fn scene_remote_health_open(s: &mut State) {
             index_version: Some(7),
             last_checked_unix: Some(1_700_000_000),
         }),
+        index_skew: None,
     });
     s.remote_health_open = true;
 }
@@ -5370,6 +5671,7 @@ fn main() -> anyhow::Result<()> {
         })
         .init(move || {
             let mut s = State::new(init_host.clone());
+            apply_locale(&s.locale_pref);
             s.crashed_last_session = crashed_last_session;
             s.move_offer = move_offer.clone();
             // Only where the switch can actually happen: updates on, and not
@@ -6676,7 +6978,6 @@ mod tests {
                 for (tab_name, tab) in tabs {
                     let mut s = settings_state(std::slice::from_ref(&folder), &[]);
                     s.settings_tab = tab;
-                    // AFTER State::new, which re-applies the persisted locale over ours.
                     apply_locale(loc);
                     let mut rt = Runtime::new(s, view, viewport, env);
                     rt.frame(0.0);
@@ -6919,7 +7220,6 @@ mod tests {
                 for (scene_name, scene) in scenes {
                     let mut s = populated_state();
                     scene(&mut s);
-                    // AFTER State::new, which re-applies the persisted locale.
                     apply_locale(loc);
                     let mut rt = Runtime::new(s, view, viewport, env);
                     rt.frame(0.0);
@@ -6945,7 +7245,7 @@ mod tests {
     /// playlist's detail page. A fresh on-disk playlist is seeded through the
     /// real `PlaylistStore` (two of the testdata library's own tracks, so the
     /// hero's "{n} tracks · {duration}" string and a resolved track row both
-    /// render, not just the empty state) under the shared test config dir.
+    /// render, not just the empty state) under the test thread's config dir.
     #[test]
     fn playlists_layout_contains_itself_in_every_locale() {
         // This test cycles the process-GLOBAL i18n locale over every locale, so it must
@@ -7306,9 +7606,7 @@ mod tests {
             .find_map(|t| t.album.as_deref().map(str::to_string))
             .filter(|a| !a.is_empty())
             .expect("the testdata library has at least one named album");
-        // Isolation: a sibling album-cover test shares this per-process config
-        // dir, so clear any cover it left for this same album first.
-        s.covers.clear_album_cover(&album_name);
+        let album_id = album_identity_named(&s, &album_name);
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(&album_name));
         let env = Env {
@@ -7318,7 +7616,7 @@ mod tests {
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "no custom cover yet"
         );
 
@@ -7348,7 +7646,7 @@ mod tests {
             "the crop dialogue renders"
         );
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "picking alone stores no cover (the crop confirm does)"
         );
     }
@@ -7385,15 +7683,20 @@ mod tests {
             .expect("the testdata library has at least one named album")
     }
 
+    /// The identity of the album named `name` in `s`'s grouping (the cover key).
+    fn album_identity_named(s: &State, name: &str) -> covers::AlbumIdentity {
+        s.grouped_albums()
+            .iter()
+            .find(|a| a.name == name)
+            .map(|a| a.identity.clone())
+            .unwrap_or_else(|| panic!("no album named {name:?}"))
+    }
+
     /// Open an album detail page's "Edit Artwork", answer the file dialog with a
     /// real PNG, and settle so the crop modal is mounted + hittable. Returns the
     /// running `Runtime`. Shared by the two crop e2e tests.
     fn open_artwork_crop(album_name: &str) -> Runtime<State> {
         let mut s = populated_state();
-        // The per-process test config dir persists across tests in this binary
-        // (the `CONFIG_TEST_LOCK` only serialises them), so clear any cover a
-        // sibling album-cover test left for this same album before we start.
-        s.covers.clear_album_cover(album_name);
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(album_name));
         let env = Env {
@@ -7430,6 +7733,7 @@ mod tests {
         let album_name = first_album_name(&populated_state());
 
         let mut rt = open_artwork_crop(&album_name);
+        let album_id = album_identity_named(&rt.state, &album_name);
         assert!(
             rt.find("artwork-crop-dialog").is_some(),
             "the crop dialogue appeared after the pick"
@@ -7439,7 +7743,7 @@ mod tests {
             "the crop state is set (picking opens the crop step, not a direct cover set)"
         );
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "no cover is stored until the crop is confirmed"
         );
 
@@ -7455,7 +7759,7 @@ mod tests {
         let stored = rt
             .state
             .covers
-            .album_cover_path(&album_name)
+            .album_cover_path(&album_id)
             .expect("Set as cover stored a cropped cover");
         assert!(
             rt.state.artwork_crop.is_none(),
@@ -7476,6 +7780,7 @@ mod tests {
         let album_name = first_album_name(&populated_state());
 
         let mut rt = open_artwork_crop(&album_name);
+        let album_id = album_identity_named(&rt.state, &album_name);
         assert!(rt.state.artwork_crop.is_some(), "the crop dialogue is open");
 
         click_key(&mut rt, "artwork-crop-cancel");
@@ -7484,7 +7789,7 @@ mod tests {
             "cancel closes the crop dialogue"
         );
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "cancelling stored no cover"
         );
     }
@@ -7498,7 +7803,8 @@ mod tests {
         let _g = config::use_test_config_dir();
         let mut s = populated_state();
         let album = first_album_name(&s);
-        s.covers.clear_album_cover(&album);
+        let album_id = album_identity_named(&s, &album);
+        s.covers.clear_album_cover(&album_id);
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(&album));
 
@@ -7719,13 +8025,13 @@ mod tests {
         let album_name = first_album_name(&populated_state());
 
         let mut s = populated_state();
+        let album_id = album_identity_named(&s, &album_name);
         // Pre-set a custom cover so the manage dialogue offers Delete.
         assert!(
-            s.covers
-                .set_album_cover(&album_name, &write_temp_real_png()),
+            s.covers.set_album_cover(&album_id, &write_temp_real_png()),
             "the test PNG is a valid cover"
         );
-        assert!(s.covers.album_cover_path(&album_name).is_some());
+        assert!(s.covers.album_cover_path(&album_id).is_some());
         s.route = Route::Album;
         s.open_album = Some(AlbumRef::by_name(&album_name));
 
@@ -7758,8 +8064,426 @@ mod tests {
             "deleting closes the dialogue"
         );
         assert!(
-            rt.state.covers.album_cover_path(&album_name).is_none(),
+            rt.state.covers.album_cover_path(&album_id).is_none(),
             "Delete cleared the custom cover"
+        );
+    }
+
+    /// A temp library with two same-title editions in two folders (the Genshin
+    /// OST and its Chinese edition): two albums, two identities.
+    fn same_title_editions_library(tag: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("soul_rune_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (folder, title) in [("Footprints", "One"), ("Footprints CN", "Yi")] {
+            let title_tag = format!("TITLE={title}");
+            let tags = [
+                "ALBUM=Footprints of the Traveler",
+                "ARTIST=HOYO-MiX",
+                "TRACKNUMBER=1",
+                title_tag.as_str(),
+            ];
+            test_fixtures::put(
+                &root,
+                &format!("{folder}/01.flac"),
+                &test_fixtures::flac_with_comments(&tags),
+            );
+        }
+        root
+    }
+
+    fn editions(s: &State) -> Vec<covers::AlbumIdentity> {
+        s.grouped_albums()
+            .iter()
+            .filter(|a| a.name == "Footprints of the Traveler")
+            .map(|a| a.identity.clone())
+            .collect()
+    }
+
+    /// An album's identity comes from its first track in disc/track order, not
+    /// from whichever track the library's sort axis lists first, so an album
+    /// split over side folders keeps one cover key under every sort.
+    #[test]
+    fn an_albums_identity_does_not_depend_on_the_library_order() {
+        let root =
+            std::env::temp_dir().join(format!("soul_rune_identity_sort_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (file, n) in [("Side B/02.flac", "2"), ("Side A/01.flac", "1")] {
+            let track_tag = format!("TRACKNUMBER={n}");
+            let title_tag = format!("TITLE=Track {n}");
+            test_fixtures::put(
+                &root,
+                file,
+                &test_fixtures::flac_with_comments(&[
+                    "ALBUM=Split Sides",
+                    "ARTIST=Two Rooms",
+                    track_tag.as_str(),
+                    title_tag.as_str(),
+                ]),
+            );
+        }
+        let mut s = State::new(PlayerHandle::offline());
+        let up = s.host.add_folder(&root).expect("scan");
+        apply_watch(&mut s, up);
+        let identity = |s: &State| {
+            let albums = s.grouped_albums();
+            let split: Vec<_> = albums.iter().filter(|a| a.name == "Split Sides").collect();
+            assert_eq!(split.len(), 1, "one album across both folders");
+            split[0].identity.clone()
+        };
+        let before = identity(&s);
+        s.library.reverse();
+        *s.albums_cache.borrow_mut() = None;
+        assert_eq!(
+            identity(&s),
+            before,
+            "the same identity in the reversed order"
+        );
+        assert!(before.is_located());
+    }
+
+    /// Organize `src` (one album, "Carried", with a custom cover) into a fresh
+    /// destination with `strategy`, carrying the covers as the Apply worker
+    /// does, then rescan. Returns the state and the album's old identity.
+    fn organize_an_album_with_a_cover(
+        tag: &str,
+        strategy: organize::Strategy,
+        template: &str,
+    ) -> (State, covers::AlbumIdentity) {
+        let base = std::env::temp_dir().join(format!(
+            "soul_rune_organize_cover_{tag}_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+        let (src, dest) = (base.join("src"), base.join("dest"));
+        for n in ["1", "2"] {
+            let track_tag = format!("TRACKNUMBER={n}");
+            let disc_tag = format!("DISCNUMBER={n}");
+            let title_tag = format!("TITLE=Track {n}");
+            test_fixtures::put(
+                &src,
+                &format!("Some Folder/0{n}.flac"),
+                &test_fixtures::flac_with_comments(&[
+                    "ALBUM=Carried",
+                    "ARTIST=Mover",
+                    "DISCTOTAL=2",
+                    track_tag.as_str(),
+                    disc_tag.as_str(),
+                    title_tag.as_str(),
+                ]),
+            );
+        }
+        let mut s = State::new(PlayerHandle::offline());
+        let up = s.host.add_folder(&src).expect("scan the source");
+        apply_watch(&mut s, up);
+        let old = album_identity_named(&s, "Carried");
+        assert!(s.covers.set_album_cover(&old, &write_temp_real_png()));
+
+        let plan = organize_job::plan_import(&src, &dest, template, strategy);
+        let carry = organize_cover_carry(&s, &plan);
+        let summary = organize_job::run_apply(&plan, |_| {});
+        assert!(summary.failed.is_empty(), "{:?}", summary.failed);
+        carry_album_covers(&mut s, &carry);
+        let up = s.host.add_folder(&dest).expect("scan the destination");
+        apply_watch(&mut s, up);
+        (s, old)
+    }
+
+    /// After an organize Move, the moved two-disc album (a new album root, so a
+    /// new identity) still shows the custom cover after the rescan, in either
+    /// layout (one folder, or a sub-folder per disc).
+    #[test]
+    fn an_organize_move_carries_the_custom_album_cover() {
+        for template in ["artist-album", "artist-album+disc-folders"] {
+            let tag = format!("move_{}", template.replace('+', "_"));
+            let (s, old) = organize_an_album_with_a_cover(&tag, organize::Strategy::Move, template);
+            assert_moved_cover(&s, &old, template);
+        }
+    }
+
+    fn assert_moved_cover(s: &State, old: &covers::AlbumIdentity, template: &str) {
+        let albums = s.grouped_albums();
+        let carried: Vec<_> = albums.iter().filter(|a| a.name == "Carried").collect();
+        assert_eq!(carried.len(), 1, "{template}: the album moved");
+        assert_ne!(
+            &carried[0].identity, old,
+            "{template}: its album root changed"
+        );
+        assert!(
+            s.covers.album_cover_path(&carried[0].identity).is_some(),
+            "{template}: the moved album keeps its cover"
+        );
+        assert!(
+            s.covers.album_cover_path(old).is_none(),
+            "{template}: moved, not copied"
+        );
+    }
+
+    /// After an organize Copy, both the source album and the copy show it.
+    #[test]
+    fn an_organize_copy_gives_the_copy_the_custom_album_cover_too() {
+        let (s, old) =
+            organize_an_album_with_a_cover("copy", organize::Strategy::Copy, "artist-album");
+        let albums = s.grouped_albums();
+        let carried: Vec<_> = albums.iter().filter(|a| a.name == "Carried").collect();
+        assert_eq!(carried.len(), 2, "the source and the copy");
+        assert!(carried.iter().any(|a| a.identity == old));
+        assert!(
+            carried
+                .iter()
+                .all(|a| s.covers.album_cover_path(&a.identity).is_some()),
+            "both show the cover"
+        );
+    }
+
+    #[test]
+    fn same_title_editions_keep_separate_custom_covers() {
+        let root = same_title_editions_library("same_title_covers");
+        let mut s = State::new(PlayerHandle::offline());
+        let up = s.host.add_folder(&root).expect("scan");
+        apply_watch(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 2, "two editions, two albums");
+        assert_ne!(eds[0], eds[1]);
+        let target = views::detail_page::ArtworkTarget::Album(eds[0].clone());
+        assert!(target.set_cover(&mut s, &write_temp_real_png()));
+        assert!(s.covers.album_cover_path(&eds[0]).is_some());
+        assert!(
+            s.covers.album_cover_path(&eds[1]).is_none(),
+            "the other edition keeps its own art"
+        );
+    }
+
+    #[test]
+    fn a_title_keyed_cover_is_adopted_by_both_editions_when_the_library_lands() {
+        let root = same_title_editions_library("legacy_cover_adoption");
+        let covers_dir = config::soul_player_dir().unwrap().join("covers");
+        std::fs::create_dir_all(&covers_dir).unwrap();
+        let legacy = covers_dir.join("album-footprints-of-the-traveler.png");
+        std::fs::copy(write_temp_real_png(), &legacy).unwrap();
+
+        let mut s = State::new(PlayerHandle::offline()); // loads the legacy stem
+        let up = s.host.add_folder(&root).expect("scan");
+        apply_watch(&mut s, up); // adopts
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 2);
+        for id in &eds {
+            assert!(
+                s.covers.album_cover_path(id).is_some(),
+                "{id:?} adopted the cover"
+            );
+        }
+        assert!(!legacy.exists(), "retired");
+        assert!(
+            covers_dir
+                .join("legacy-title-keyed")
+                .join("album-footprints-of-the-traveler.png")
+                .exists(),
+            "kept as a backup"
+        );
+    }
+
+    /// A legacy cover's retirement waits for the full source set: a local library
+    /// landing while a remote is still reconnecting adopts what it can but keeps
+    /// the legacy file; once the rest lands (a third edition here, standing in for
+    /// the remote's album) that album adopts it too and only then is it retired.
+    #[test]
+    fn a_title_keyed_cover_is_retired_only_once_every_source_has_landed() {
+        let root = same_title_editions_library("legacy_cover_deferred");
+        let later = std::env::temp_dir().join(format!(
+            "soul_rune_legacy_cover_deferred_later_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&later);
+        test_fixtures::put(
+            &later,
+            "Footprints JP/01.flac",
+            &test_fixtures::flac_with_comments(&[
+                "ALBUM=Footprints of the Traveler",
+                "ARTIST=HOYO-MiX",
+                "TRACKNUMBER=1",
+                "TITLE=Ichi",
+            ]),
+        );
+        let covers_dir = config::soul_player_dir().unwrap().join("covers");
+        std::fs::create_dir_all(&covers_dir).unwrap();
+        let legacy = covers_dir.join("album-footprints-of-the-traveler.png");
+        std::fs::copy(write_temp_real_png(), &legacy).unwrap();
+
+        let mut s = State::new(PlayerHandle::offline());
+        s.remote_reconnecting = vec!["http://later.test".to_string()];
+        let up = s.host.add_folder(&root).expect("scan");
+        apply_watch(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 2);
+        assert!(eds.iter().all(|id| s.covers.album_cover_path(id).is_some()));
+        assert!(
+            legacy.exists(),
+            "not retired while a source is still reconnecting"
+        );
+
+        s.remote_reconnecting.clear();
+        let up = s.host.add_folder(&later).expect("scan the late source");
+        apply_watch(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 3);
+        assert!(
+            eds.iter().all(|id| s.covers.album_cover_path(id).is_some()),
+            "the late album adopted the cover too"
+        );
+        assert!(!legacy.exists(), "retired once the source set is complete");
+    }
+
+    /// A source landing while the restored library's startup scan is still
+    /// pending (a remote reconnect is the usual case) must not retire a legacy
+    /// cover: the local albums that showed it are not in the library yet. Once
+    /// the startup scan lands, those albums adopt it and only then is it retired.
+    #[test]
+    fn a_title_keyed_cover_waits_for_the_startup_scan_before_retiring() {
+        let root = same_title_editions_library("legacy_cover_startup");
+        let early = std::env::temp_dir().join(format!(
+            "soul_rune_legacy_cover_startup_early_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&early);
+        test_fixtures::put(
+            &early,
+            "Footprints JP/01.flac",
+            &test_fixtures::flac_with_comments(&[
+                "ALBUM=Footprints of the Traveler",
+                "ARTIST=HOYO-MiX",
+                "TRACKNUMBER=1",
+                "TITLE=Ichi",
+            ]),
+        );
+        let covers_dir = config::soul_player_dir().unwrap().join("covers");
+        std::fs::create_dir_all(&covers_dir).unwrap();
+        let legacy = covers_dir.join("album-footprints-of-the-traveler.png");
+        std::fs::copy(write_temp_real_png(), &legacy).unwrap();
+
+        let mut s = State::new(PlayerHandle::offline());
+        s.startup_scan_pending = true;
+        let up = s.host.add_folder(&early).expect("scan the early source");
+        apply_watch(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 1, "only the early source's edition so far");
+        assert!(s.covers.album_cover_path(&eds[0]).is_some(), "it adopted");
+        assert!(
+            legacy.exists(),
+            "not retired while the startup scan is still pending"
+        );
+
+        let up = s.host.add_folder(&root).expect("the startup scan");
+        apply_startup_scan(&mut s, up);
+        let eds = editions(&s);
+        assert_eq!(eds.len(), 3);
+        assert!(
+            eds.iter().all(|id| s.covers.album_cover_path(id).is_some()),
+            "the startup scan's editions adopted the cover too"
+        );
+        assert!(!legacy.exists(), "retired once the startup scan landed");
+    }
+
+    /// A deferred legacy-cover retirement is logged once per distinct set of
+    /// incomplete sources, not on every library change while it waits.
+    #[test]
+    fn the_retirement_deferral_is_logged_only_when_the_waiting_set_changes() {
+        let mut last = Vec::new();
+        let a = vec!["http://a.test (reconnecting)".to_string()];
+        assert!(deferral_changed(&mut last, &a), "first deferral");
+        assert!(!deferral_changed(&mut last, &a), "same set again");
+        let b = vec!["http://b.test (unreachable)".to_string()];
+        assert!(deferral_changed(&mut last, &b), "another set");
+        assert!(!deferral_changed(&mut last, &[]), "nothing waiting");
+        assert!(
+            deferral_changed(&mut last, &b),
+            "waiting again after a clear"
+        );
+    }
+
+    /// A scan in progress keeps the source set incomplete: its albums may be
+    /// about to appear.
+    #[test]
+    fn a_running_scan_keeps_the_source_set_incomplete() {
+        let mut s = State::new(PlayerHandle::offline());
+        assert!(source_set_complete(&s));
+        s.scan_progress = Some(ScanProgress {
+            phase: soul_player_host::ScanPhase::Extracting,
+            done: 1,
+            total: 2,
+        });
+        assert!(!source_set_complete(&s), "a scan in progress");
+        s.scan_progress = None;
+        s.startup_scan_pending = true;
+        assert!(!source_set_complete(&s), "the startup scan has not landed");
+    }
+
+    /// The source set is complete only when nothing is connecting or
+    /// reconnecting, every listed source is enabled and reachable, and every
+    /// configured remote is listed.
+    #[test]
+    fn source_set_completeness_tracks_offline_disabled_and_pending_sources() {
+        let mut s = State::new(PlayerHandle::offline());
+        assert!(source_set_complete(&s));
+        s.sources = vec![online_remote_status("http://a.test")];
+        s.remote_urls = vec!["http://a.test".to_string()];
+        assert!(source_set_complete(&s));
+        s.remote_urls = vec!["http://a.test/".to_string()];
+        assert!(
+            source_set_complete(&s),
+            "a persisted URL with a trailing slash is the same listed remote"
+        );
+        s.remote_urls = vec!["http://a.test".to_string(), "http://b.test".to_string()];
+        assert!(
+            !source_set_complete(&s),
+            "a configured remote not listed yet"
+        );
+        s.remote_urls.pop();
+        s.sources[0].enabled = false;
+        assert!(!source_set_complete(&s), "a disabled source");
+        s.sources = vec![offline_remote_status("http://a.test")];
+        assert!(!source_set_complete(&s), "an offline source");
+        s.sources = vec![online_remote_status("http://a.test")];
+        s.remote_reconnecting = vec!["http://a.test".to_string()];
+        assert!(!source_set_complete(&s), "a reconnect in flight");
+        s.remote_reconnecting.clear();
+        s.remote_connecting = true;
+        assert!(!source_set_complete(&s), "a connect in flight");
+    }
+
+    /// While an album's identity is only its title (its track did not resolve in
+    /// the host), its artwork editor is not offered, so an edit can never land
+    /// under a key every same-title album shares.
+    #[test]
+    fn the_album_artwork_editor_is_not_offered_for_an_unlocated_album() {
+        let mut s = State::new(PlayerHandle::offline()); // no host library: unlocated
+        s.library = vec![TrackView {
+            id: 1,
+            title: Some("One".to_string()),
+            album: Some(std::sync::Arc::from("Box")),
+            album_key: crate::views::albums::test_album_key(Some("Box")),
+            ..Default::default()
+        }];
+        let album = s.grouped_albums()[0].clone();
+        assert!(!album.identity.is_located());
+        assert!(
+            !views::detail_page::ArtworkTarget::Album(album.identity.clone())
+                .set_cover(&mut s, &write_temp_real_png()),
+            "saving under the title-only key is refused"
+        );
+        s.route = Route::Album;
+        s.open_album = Some(album.open_ref());
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find("album-tracks").is_some(), "the album page rendered");
+        assert!(
+            rt.find("album-edit-artwork").is_none(),
+            "no Edit Artwork for an unlocated album"
         );
     }
 
@@ -8323,11 +9047,8 @@ mod tests {
     /// count + folder name), and is absent when there were no deletions.
     #[test]
     fn removal_notice_renders_in_the_sources_page() {
-        // This asserts English UI text. `populated_state()` → `State::new` LOADS the
-        // persisted locale and applies it to the shared `rust_i18n` global, and the
-        // language-picker test persists "de", so set the locale AFTER building the
-        // state (and hold the config lock to serialize against that test).
-        let _guard = config::use_test_config_dir();
+        // This asserts English UI text, so it holds the locale lock.
+        let _locale = config::use_test_locale("en");
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -8336,7 +9057,6 @@ mod tests {
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
         s.removal_notice = Some((PathBuf::from("/music/Concerts"), 2));
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         // The settings page carries a scrollbar whose live-bound layout needs a waker
         // to settle before the scrolled content is laid out for `find`.
@@ -8472,7 +9192,6 @@ mod tests {
                 count: 5,
             }],
         ));
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.set_live_waker(std::sync::Arc::new(|| {}));
         rt.frame(0.0);
@@ -8514,7 +9233,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
 
         // A clean start shows no dialog.
         let mut clean = populated_state();
@@ -8707,7 +9425,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
@@ -8752,7 +9469,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
@@ -8802,7 +9518,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::MusicData;
@@ -8848,7 +9563,6 @@ mod tests {
             exclusive: false,
             loudness: None,
         });
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
@@ -8900,7 +9614,6 @@ mod tests {
             exclusive: false,
             loudness: None,
         });
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         // Settings → Audio is laid out AS the pipeline: one card per stage.
@@ -8928,7 +9641,6 @@ mod tests {
             system_dark: true,
             scale: 2.0,
         };
-        apply_locale("en");
 
         // Exclusive OFF → the Exclusive card renders but no strict sub-toggle.
         let mut s = populated_state();
@@ -8974,7 +9686,6 @@ mod tests {
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         // Card 0 open so its body (graph + bands) lays out.
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         // Tall window so every band row lays out within the scroll content.
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
@@ -9005,10 +9716,8 @@ mod tests {
         let mut s = populated_state();
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
-        // Start from a known-off state (the shared test config dir may carry an
-        // `enabled` flag from another test's persisted EQ).
+        // Start from a known-off state (explicit, not the loaded default).
         active_eq_mut(&mut s).enabled = false;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         assert!(
@@ -9036,7 +9745,6 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         active_eq_mut(&mut s).enabled = true;
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         let (x, y) = rt.find("eq-graph-0").expect("the EQ graph renders");
@@ -9080,7 +9788,6 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         active_eq_mut(&mut s).enabled = true;
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         let (x, y) = rt.find("eq-graph-0").expect("the EQ graph renders");
@@ -9118,7 +9825,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let n0 = active_eq(&rt.state).bands.len();
@@ -9227,7 +9933,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
@@ -9263,7 +9968,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
@@ -9307,7 +10011,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
@@ -9374,7 +10077,6 @@ mod tests {
         active_eq_mut(&mut s).enabled = true;
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt
@@ -9450,7 +10152,6 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         s.dsp_units = vec![DspUnit::Eq(EqUnit::default())];
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
         rt.frame(0.0);
         let (x, y) = rt.find("dsp-name-0").expect("the unit title renders");
@@ -9502,7 +10203,6 @@ mod tests {
             })];
             // Collapse the card so the whole stage lays out within the window.
             s.dsp_expanded = vec![false];
-            apply_locale("en");
             let mut rt = Runtime::new(s, view, (1100.0, 2600.0), env);
             rt.frame(0.0);
             rt.elements()
@@ -9539,7 +10239,6 @@ mod tests {
             DspUnit::Eq(EqUnit::default()),
         ];
         s.dsp_expanded = vec![true, false, false];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1300.0, 640.0), env);
         rt.frame(0.0);
         // Scroll down until the Add control is in view.
@@ -9582,7 +10281,6 @@ mod tests {
         s.settings_tab = SettingsTab::Audio;
         s.dsp_units = vec![DspUnit::Eq(EqUnit::default())];
         s.dsp_expanded = vec![false];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 2200.0), env);
         rt.frame(0.0);
         // Open the dropdown, settle its enter animation.
@@ -9628,7 +10326,6 @@ mod tests {
             ];
             s.dsp_expanded = vec![false, false, false];
             s.dsp_drag = Some(drag);
-            apply_locale("en");
             let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
             rt.frame(0.0);
             let (_, drop) = rt.find("dsp-drop").expect("the drop line renders");
@@ -9673,7 +10370,6 @@ mod tests {
         set_dsp_unit_enabled(&mut s, 2, true);
         // Distinct expand flags so the reorder's flag-tracking is observable.
         s.dsp_expanded = vec![true, false, false];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
         rt.frame(0.0);
         // Enable chip toggles ONLY unit 1.
@@ -9717,8 +10413,7 @@ mod tests {
     fn profile_mutators_switch_create_duplicate_delete_and_autosave() {
         let _g = config::use_test_config_dir();
         let mut s = State::new(PlayerHandle::offline());
-        // The shared test config dir may carry another test's profiles, so set a known
-        // starting state explicitly (per the config-test convention).
+        // Set a known starting state explicitly (per the config-test convention).
         s.profile_set = ProfileSet::new(
             vec![Profile::new(
                 "Default",
@@ -9814,7 +10509,7 @@ mod tests {
         // State-level: importing a file appends + switches; a clashing name is suffixed.
         let _g = config::use_test_config_dir();
         let mut s = State::new(PlayerHandle::offline());
-        // Known starting state (the shared test config dir may carry other tests' data).
+        // Known starting state, set explicitly.
         s.profile_set = ProfileSet::new(
             vec![Profile::new(
                 "Default",
@@ -10002,7 +10697,6 @@ mod tests {
         s.dsp_units = s.profile_set.active_chain().unwrap().units.clone();
         s.dsp_expanded = vec![false];
         s.eq_bands_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1300.0, 900.0), env);
         rt.frame(0.0);
 
@@ -10078,7 +10772,6 @@ mod tests {
         set_eq_preamp(&mut s, 0, -6.0);
         set_eq_preamp(&mut s, 1, 0.0);
         set_eq_preamp(&mut s, 2, 6.0);
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 2600.0), env);
         rt.frame(0.0);
         // Drag unit 0's grip DEEP into unit 1's expanded body (far past one row height).
@@ -10125,7 +10818,6 @@ mod tests {
         })];
         s.dsp_expanded = vec![true];
         s.eq_bands_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1200.0, 2600.0), env);
         rt.frame(0.0);
         assert!(
@@ -10172,7 +10864,6 @@ mod tests {
             eq.bands = soul_player_host::default_bands().to_vec();
         }
         s.dsp_expanded = vec![true, true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1500.0, 4200.0), env);
         rt.frame(0.0);
         // Both graphs render their own nodes, namespaced by unit.
@@ -10258,7 +10949,6 @@ mod tests {
         s.route = Route::Settings;
         s.settings_tab = SettingsTab::Audio;
         s.dsp_expanded = vec![true];
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         // Press Import → an open-file dialog is pending.
@@ -10293,7 +10983,6 @@ mod tests {
         active_eq_mut(&mut s).bands = soul_player_host::default_bands().to_vec();
         active_eq_mut(&mut s).bands[4].gain_db = 5.0; // the 2 kHz bell
         active_eq_mut(&mut s).preamp_db = -1.0;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 2200.0), env);
         rt.frame(0.0);
         click_key(&mut rt, "eq-export-0");
@@ -10337,7 +11026,6 @@ mod tests {
             exclusive: false,
             loudness: None,
         });
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
         // Live-bound thumb rects need a waker to land; the engine's own scrollbar
         // test does the same before framing.
@@ -10399,7 +11087,6 @@ mod tests {
         };
         let mut s = populated_state();
         s.route = Route::Library;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
         // Live-bound thumb rects need a waker to land (same as the settings test).
         rt.set_live_waker(std::sync::Arc::new(|| {}));
@@ -10431,7 +11118,6 @@ mod tests {
             scale: 2.0,
         };
         let s = populated_state();
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         let (bar, _) = rt
@@ -10464,7 +11150,6 @@ mod tests {
             scale: 2.0,
         };
         let s = populated_state();
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         let mut insets = rune::ChromeInsets::default();
         insets.trailing = 138.0; // Windows caption buttons
@@ -10587,7 +11272,6 @@ mod tests {
             scale: 2.0,
         };
         let s = populated_state();
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         let (root, _) = rt.presented("app-root").expect("app-root renders");
@@ -10754,7 +11438,6 @@ mod tests {
         scene_queue(&mut s);
         // Many context rows so the queue list overflows a short sidebar for sure.
         s.context_ids = s.library.iter().map(|t| t.id).collect();
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, height), env);
         rt.set_live_waker(std::sync::Arc::new(|| {}));
         rt.frame(0.0);
@@ -10854,7 +11537,6 @@ mod tests {
             }),
         });
         s.replaygain_mode = ReplayGainMode::Off;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         assert!(
@@ -11007,11 +11689,6 @@ mod tests {
         click_key(&mut rt, "lang-picker-opt-de");
         assert_eq!(rt.state.locale_pref, "de", "picking commits the locale");
         assert_eq!(rt.state.open_dropdown, None, "picking closes the dropdown");
-
-        // Reset the PERSISTED locale and the shared rust_i18n global, sibling tests'
-        // `populated_state()` loads the persisted locale, so "de" must not leak.
-        config::save_locale("en");
-        apply_locale("en");
     }
 
     /// A dropdown is light-dismiss, NOT a scroll-locking modal: an outside scroll or
@@ -11034,7 +11711,6 @@ mod tests {
         {
             let mut s = settings_state(&[], &[]);
             s.settings_tab = SettingsTab::Appearance;
-            apply_locale("en");
             let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
             rt.frame(0.0);
             open(&mut rt);
@@ -11049,7 +11725,6 @@ mod tests {
         {
             let mut s = settings_state(&[], &[]);
             s.settings_tab = SettingsTab::Appearance;
-            apply_locale("en");
             let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
             rt.on_key = Some(handle_key);
             rt.frame(0.0);
@@ -11503,9 +12178,8 @@ mod tests {
     /// persists it to config.
     #[test]
     fn selecting_a_template_preset_persists() {
-        // Picking flows through `set_managed_template`, which writes config,
-        // isolate it from the user's real settings, and serialise with every other
-        // config writer (shared per-process test config dir).
+        // Picking flows through `set_managed_template`, which writes config (to
+        // this test thread's own config dir, never the user's real settings).
         let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -11513,7 +12187,6 @@ mod tests {
         };
         let mut s = settings_state(&[], &[]);
         s.settings_tab = SettingsTab::MusicData;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         // Open the template dropdown, then settle its enter transition (it fades in
@@ -11534,10 +12207,6 @@ mod tests {
             "genre-artist-album",
             "and persists the preset id to config"
         );
-        // Reset the PERSISTED locale and the shared rust_i18n global, sibling tests'
-        // `populated_state()` loads the persisted locale, so "de" must not leak.
-        config::save_locale("en");
-        apply_locale("en");
     }
 
     /// Layout lists only the base presets; the Multi-disc picker composes the
@@ -11551,7 +12220,6 @@ mod tests {
         };
         let mut s = settings_state(&[], &[]);
         s.settings_tab = SettingsTab::MusicData;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         click_key(&mut rt, "managed-template");
@@ -11618,9 +12286,8 @@ mod tests {
     /// Toggling the strategy to Move commits it to state and persists `"move"`.
     #[test]
     fn toggling_strategy_persists() {
-        // The toggle writes config, isolate it from the user's real settings, and
-        // serialise with every other config writer (shared per-process test
-        // config dir).
+        // The toggle writes config (to this test thread's own config dir, never
+        // the user's real settings).
         let _config_guard = config::use_test_config_dir();
         let env = Env {
             system_dark: true,
@@ -11657,7 +12324,6 @@ mod tests {
         let mut s = settings_state(&[], &[]);
         s.settings_tab = SettingsTab::MusicData;
         s.managed_dest = dest;
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         click_key(&mut rt, "add-source");
@@ -11697,12 +12363,17 @@ mod tests {
         };
         let mut s = State::new(PlayerHandle::offline());
         s.organize = Some(phase);
-        apply_locale("en");
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
         rt.settle_all();
         rt.frame(0.0);
         rt
+    }
+
+    /// [`organize_frame`] in `locale` (the caller holds `config::use_test_locale`).
+    fn organize_frame_in(phase: OrganizePhase, locale: &str) -> Runtime<State> {
+        apply_locale(locale);
+        organize_frame(phase)
     }
 
     /// Without a managed destination, the "Add music…" entry is present but a
@@ -11718,7 +12389,6 @@ mod tests {
             !el_info(&rt, "add-source-opt-organize").focusable,
             "without a destination it is a disabled hint (not focusable)"
         );
-        apply_locale("en");
     }
 
     /// With a managed destination set, the "Add music…" entry becomes a focusable
@@ -11730,12 +12400,12 @@ mod tests {
             el_info(&rt, "add-source-opt-organize").focusable,
             "a configured destination makes Add music… focusable"
         );
-        apply_locale("en");
     }
 
     /// The organize modal renders the right keyed controls for each phase.
     #[test]
     fn organize_overlay_renders_each_phase() {
+        let _locale = config::use_test_locale("en");
         // Confirm: title/summary + the Confirm and Cancel buttons.
         let rt = organize_frame(OrganizePhase::confirm(sample_plan(), "artist-album"));
         for k in ["organize-confirm", "organize-confirm-go", "organize-cancel"] {
@@ -11782,7 +12452,7 @@ mod tests {
         let rt = organize_frame(OrganizePhase::confirm(plan, "artist-album"));
         assert_eq!(
             el_info(&rt, "organize-confirm-files").text.as_deref(),
-            Some("2 audio files + 1 side files")
+            Some("2 audio files + 1 side file")
         );
         assert_eq!(
             el_info(&rt, "organize-disc-warning").text.as_deref(),
@@ -11817,7 +12487,7 @@ mod tests {
         let row = |k: &str| el_info(&rt, k).text;
         assert_eq!(
             row("organize-left-0").as_deref(),
-            Some("Album 0: 1 files (folder shared with another album)")
+            Some("Album 0: 1 file (folder shared with another album)")
         );
         assert_eq!(
             row("organize-left-0-names").as_deref(),
@@ -11872,7 +12542,7 @@ mod tests {
         assert_eq!(
             el_info(&rt, "organize-disc-warning").text.as_deref(),
             Some(
-                "1 albums take their disc numbers only from folder names, which this \
+                "1 album takes its disc numbers only from folder names, which this \
                  layout will lose. Tag the discs, or pick an album layout with Disc \
                  sub-folders."
             )
@@ -11910,10 +12580,108 @@ mod tests {
         assert!(rt.find("organize-failed").is_none(), "no failures: no list");
     }
 
+    /// Counted organize strings agree with their count: singular in English,
+    /// one/few/other in Czech.
+    #[test]
+    fn organize_counts_use_the_locales_plural_forms() {
+        let _locale = config::use_test_locale("en");
+        let mut summary = organize_job::summarize(&sample_plan(), "artist-album");
+        summary.audio = 1;
+        summary.side = 1;
+        summary.folder_inferred = 1;
+        summary.disc_folders_available = true;
+        summary.left = vec![organize_job::LeftAlbum {
+            folder: "Album 0".into(),
+            reason: organize::SideFilesLeft::SharedAlbumRoot,
+            files: 1,
+            names: vec![],
+        }];
+        let rt = organize_frame(OrganizePhase::Confirm {
+            plan: sample_plan(),
+            summary,
+        });
+        let text = |rt: &Runtime<State>, k: &str| el_info(rt, k).text;
+        assert_eq!(
+            text(&rt, "organize-confirm-files").as_deref(),
+            Some("1 audio file + 1 side file")
+        );
+        assert_eq!(
+            text(&rt, "organize-left-0").as_deref(),
+            Some("Album 0: 1 file (folder shared with another album)")
+        );
+        assert_eq!(
+            text(&rt, "organize-disc-warning").as_deref(),
+            Some(
+                "1 album takes its disc numbers only from folder names; the one-folder \
+                 layout will lose them. Choose Disc sub-folders."
+            )
+        );
+        let failed = (0..6)
+            .map(|i| (PathBuf::from(format!("{i}.flac")), "x".to_string()))
+            .collect();
+        let rt = organize_frame(OrganizePhase::done(organize::Summary {
+            copied: 1,
+            pruned_dirs: 1,
+            failed,
+            ..Default::default()
+        }));
+        assert_eq!(
+            text(&rt, "organize-pruned").as_deref(),
+            Some("1 emptied folder removed")
+        );
+        assert_eq!(
+            text(&rt, "organize-failed-more").as_deref(),
+            Some("and 1 more")
+        );
+        assert_eq!(
+            text(&rt, "organize-done").as_deref(),
+            Some("1 copied, 0 moved, 0 skipped, 6 failed")
+        );
+
+        summary_counts_read_as_plurals(&text);
+        for (n, want) in [
+            (1, "Odstraněna 1 prázdná složka"),
+            (3, "Odstraněny 3 prázdné složky"),
+            (5, "Odstraněno 5 prázdných složek"),
+        ] {
+            let rt = organize_frame_in(
+                OrganizePhase::done(organize::Summary {
+                    pruned_dirs: n,
+                    ..Default::default()
+                }),
+                "cs",
+            );
+            assert_eq!(
+                text(&rt, "organize-pruned").as_deref(),
+                Some(want),
+                "cs {n}"
+            );
+        }
+        apply_locale("en");
+    }
+
+    /// The Confirm modal's action tally uses each locale's plural forms
+    /// ("1 duplicate", not "1 duplicates"). The caller holds the locale lock.
+    fn summary_counts_read_as_plurals(text: &dyn Fn(&Runtime<State>, &str) -> Option<String>) {
+        for (dup, conflict, want) in [
+            (1, 1, "0 to copy, 0 to move, 1 duplicate, 1 conflict"),
+            (2, 3, "0 to copy, 0 to move, 2 duplicates, 3 conflicts"),
+        ] {
+            let mut summary = organize_job::summarize(&sample_plan(), "artist-album");
+            (summary.copy, summary.moved, summary.dup, summary.conflict) = (0, 0, dup, conflict);
+            let rt = organize_frame(OrganizePhase::Confirm {
+                plan: sample_plan(),
+                summary,
+            });
+            assert_eq!(text(&rt, "organize-confirm-actions").as_deref(), Some(want));
+        }
+    }
+
     /// Confirming the plan advances the flow from Confirm to Applying (pressing
     /// the Confirm button drives `organize_confirm`).
     #[test]
     fn confirm_advances_to_applying() {
+        let _locale = config::use_test_locale("en");
         let mut rt = organize_frame(OrganizePhase::confirm(sample_plan(), "artist-album"));
         click_key(&mut rt, "organize-confirm-go");
         assert!(
@@ -11926,6 +12694,7 @@ mod tests {
     /// Closing a finished run dismisses the modal (clears `State::organize`).
     #[test]
     fn dismiss_clears() {
+        let _locale = config::use_test_locale("en");
         let mut rt = organize_frame(OrganizePhase::done(organize::Summary::default()));
         click_key(&mut rt, "organize-close");
         assert!(
@@ -12552,6 +13321,7 @@ mod tests {
                 index_version: Some(3),
                 last_checked_unix: Some(test_now_unix()),
             }),
+            index_skew: None,
         }
     }
 
@@ -12575,7 +13345,49 @@ mod tests {
                 index_version: None,
                 last_checked_unix: Some(test_now_unix()),
             }),
+            index_skew: None,
         }
+    }
+
+    /// A remote whose index is another format version says which side needs an
+    /// update on its own Sources row; a current remote shows nothing.
+    #[test]
+    fn a_stale_remote_row_says_which_side_needs_an_update() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        let mut old = online_remote_status("http://old.test:8080");
+        old.index_skew = Some(soul_player_host::IndexSkew::ServerOlder { server: 7, ours: 8 });
+        let mut new = online_remote_status("http://new.test:8080");
+        new.index_skew = Some(soul_player_host::IndexSkew::ServerNewer { server: 9, ours: 8 });
+        let mut odd = online_remote_status("http://odd.test:8080");
+        odd.index_skew = Some(soul_player_host::IndexSkew::Unreadable);
+        s.sources = vec![old, new, odd, online_remote_status("http://ok.test:8080")];
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        let text = |k: &str| el_info(&rt, k).text;
+        assert_eq!(
+            text("source-index-skew-0").as_deref(),
+            Some("Server needs an update: its library index is format v7, this app reads v8.")
+        );
+        assert_eq!(
+            text("source-index-skew-1").as_deref(),
+            Some(
+                "This app needs an update: the server library index is format v9, this app reads v8."
+            )
+        );
+        assert_eq!(
+            text("source-index-skew-2").as_deref(),
+            Some("The server library index could not be read. Update the server or this app.")
+        );
+        assert!(
+            rt.find("source-index-skew-3").is_none(),
+            "a current remote: no notice"
+        );
     }
 
     /// Inc 2: a Remote source's row renders a Remote badge plus its health
@@ -12654,6 +13466,7 @@ mod tests {
                 index_version: None,
                 last_checked_unix: Some(test_now_unix()),
             }),
+            index_skew: None,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
@@ -12704,6 +13517,7 @@ mod tests {
                 index_version: None,
                 last_checked_unix: None, // never probed
             }),
+            index_skew: None,
         });
         let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
         rt.frame(0.0);
@@ -12934,6 +13748,7 @@ mod tests {
                         path: PathBuf::from("local-root"),
                     },
                     remote: None,
+                    index_skew: None,
                 },
                 online_remote_status("http://127.0.0.1:8080"),
             ],
@@ -13389,6 +14204,7 @@ mod tests {
                 path: PathBuf::from("/music"),
             },
             remote: None,
+            index_skew: None,
         });
         assert_eq!(enabled_remote_urls(&s), vec![on.to_string()]);
     }
@@ -13470,6 +14286,7 @@ mod tests {
                 path: PathBuf::from("/music"),
             },
             remote: None,
+            index_skew: None,
         });
         assert!(enabled_remote_urls(&s).is_empty());
     }
@@ -14103,8 +14920,8 @@ mod tests {
 
     /// Opening a playlist's detail page sets `route` + `open_playlist`; `go_back`
     /// returns to the Playlists list. The playlist comes from a real on-disk
-    /// store (via `State::new`'s `PlaylistStore::load`), guarded by the shared
-    /// per-process test config dir so this doesn't race another config test.
+    /// store (via `State::new`'s `PlaylistStore::load`) in the test thread's
+    /// own config dir.
     #[test]
     fn opening_a_playlist_sets_open_playlist_and_back_returns() {
         let _guard = config::use_test_config_dir();
@@ -14484,8 +15301,7 @@ mod tests {
         let mut s = State::new(PlayerHandle::offline());
         s.sidebar_collapsed = false;
         s.route = Route::Settings;
-        // Start from a known nav state, the shared test config may carry a leaked
-        // `nav_hidden` from another test (we assert the default, then the toggle).
+        // Start from a known nav state (we assert the default, then the toggle).
         s.nav_hidden.clear();
         let mut rt = Runtime::new(
             s,
@@ -15295,7 +16111,11 @@ mod tests {
     #[test]
     fn update_switches_flip_and_persist() {
         let _locale = config::use_test_locale("en");
+        // Serializes the process-global AUTO_CHECK/AUTO_INSTALL flags with the
+        // other updater tests that flip them.
         let _g = config::use_test_config_dir();
+        update::set_auto_check(true);
+        update::set_auto_install(false);
         let mut rt = updates_rt(updater::UpdateStatus::Idle, true);
         assert!(
             rt.state.update.auto_check && !rt.state.update.auto_install,
@@ -15521,10 +16341,7 @@ mod tests {
         assert_eq!(rt.state.theme_pref, ThemePref::Dark);
         click_key(&mut rt, "theme-light");
         assert_eq!(rt.state.theme_pref, ThemePref::Light);
-        // Don't assert the INITIAL loaded album_year here, it reads the shared
-        // per-process test config file, which a concurrently-running config test
-        // may have just written (see `config::use_test_config_dir`'s doc). Only
-        // assert the click-driven transition, like the theme buttons above.
+        // Assert only the click-driven transition, like the theme buttons above.
         click_key(&mut rt, "album-year-release");
         assert_eq!(rt.state.album_year, config::AlbumYearSource::Release);
         click_key(&mut rt, "album-year-original");
@@ -16302,9 +17119,7 @@ mod tests {
     fn booted(w: f32, h: f32, mutate: impl FnOnce(&mut State)) -> Runtime<State> {
         let mut s = State::new(PlayerHandle::recording());
         s.sidebar_collapsed = false;
-        // Pin the nav visible explicitly, `State::new` loads `nav_hidden` from
-        // the (process-shared) test config, which another test's toggle may have
-        // written, so don't depend on it here.
+        // Pin the nav visible explicitly rather than relying on the loaded default.
         s.nav_hidden = Vec::new();
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         mutate(&mut s);
@@ -17976,5 +18791,30 @@ mod tests {
             }
         }
         assert!(!rt.state.playing, "Space should have paused playback");
+    }
+
+    /// The locale guard hands the global locale back as English when it drops,
+    /// even when the test holding it panicked, so a failing locale test never
+    /// leaks its language into the rest of the suite.
+    #[test]
+    fn the_test_locale_guard_resets_to_english_even_after_a_panic() {
+        let failed = std::thread::spawn(|| {
+            let _locale = config::use_test_locale("cs");
+            panic!("a failing Czech test");
+        })
+        .join();
+        assert!(failed.is_err());
+        let _lock = config::locale_test_lock();
+        assert_eq!(&*rust_i18n::locale(), "en");
+    }
+
+    /// Building the app state never touches the global locale, so a test that
+    /// builds a `State` cannot flip the language under a concurrent locale test.
+    #[test]
+    fn building_the_state_leaves_the_global_locale_alone() {
+        let _locale = config::use_test_locale("cs");
+        config::save_locale("de");
+        let _s = State::new(PlayerHandle::offline());
+        assert_eq!(&*rust_i18n::locale(), "cs");
     }
 }
