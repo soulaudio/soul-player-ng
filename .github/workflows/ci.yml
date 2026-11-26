@@ -213,6 +213,32 @@ jobs:
           scripts/e2e-now-playing-macos.sh
           EXCLUSIVE=1 scripts/e2e-now-playing-macos.sh
 
+  # The app built for Windows. The `rune` job cannot run the UI tests there
+  # (a headless Windows runner has no window session), so before this nothing in
+  # CI compiled the app for Windows at all, and a lockfile refresh that broke
+  # only the Windows build (gpu-allocator resolved against `windows` 0.54 while
+  # wgpu-hal used 0.62, so D3D12 types did not line up) was first seen by a
+  # release rehearsal. A check of every target is enough to catch that class.
+  rune-windows:
+    name: rune (Windows build)
+    runs-on: windows-latest
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: Swatinem/rust-cache@v2.9.3
+        with:
+          workspaces: app
+
+      - name: Check (all targets)
+        run: cargo check --locked --all-targets
+
   rune-wayland:
     name: rune (Wayland)
     # The `rune` job above runs under Xvfb, X11 only. Wayland is the default
@@ -362,7 +388,7 @@ jobs:
   ci-success:
     name: CI success
     runs-on: ubuntu-latest
-    needs: [rust, rune, rune-wayland, prose]
+    needs: [rust, rune, rune-windows, rune-wayland, prose]
     if: always()
     steps:
       - name: Require all checks to pass
@@ -385,6 +411,7 @@ jobs:
           for pair in "prose=${{ needs.prose.result }}" \
                       "rust=${{ needs.rust.result }}" \
                       "rune=${{ needs.rune.result }}" \
+                      "rune-windows=${{ needs.rune-windows.result }}" \
                       "rune-wayland=${{ needs.rune-wayland.result }}"; do
             job=${pair%%=*}
             result=${pair#*=}
