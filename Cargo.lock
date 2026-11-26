@@ -1391,6 +1391,7 @@ dependencies = [
  "axum",
  "base64",
  "clap",
+ "futures-util",
  "http-body-util",
  "jsonwebtoken",
  "rand",
