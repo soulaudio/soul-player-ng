@@ -29,7 +29,7 @@ use crate::views::player::{group_remote_source, remote_badge_for};
 /// the same remote host (`None` for a local or mixed-source genre, see
 /// [`group_remote_source`]).
 pub(crate) struct Genre {
-    name: String,
+    pub(crate) name: String,
     ids: Vec<u32>,
     remote_source: Option<String>,
 }
@@ -156,12 +156,9 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     // Grouping is MEMOIZED (see `State::grouped_genres`); search narrows it to a
     // list of INDICES, never cloning the genre list per frame.
     let grouped = s.grouped_genres();
-    let visible: Vec<usize> = grouped
-        .iter()
-        .enumerate()
-        .filter(|(_, g)| q.is_empty() || g.name.to_lowercase().contains(&q))
-        .map(|(i, _)| i)
-        .collect();
+    // Memoized on the State (see `State::visible_genres`): the search filter runs
+    // only when the library or the query changes, not every frame.
+    let visible: Rc<[usize]> = s.visible_genres(&q);
     // Read this page's own pane width (first frame has no prior layout → a
     // sensible desktop fallback), same rule the Albums/Artists grids use.
     let pane = cx.layout_size("genres").map(|[w, _]| w).unwrap_or(820.0);
@@ -178,7 +175,6 @@ pub fn genres_page(s: &State, p: &Palette, cx: &Cx<State>) -> El {
     // Virtualized grid of cover-less tiles (cover_aspect 0.0); only the on-screen
     // window is built. The closure captures the memoized grouping + visible indices.
     let grouped_cards = grouped.clone();
-    let visible: Rc<[usize]> = visible.into();
     let count = visible.len();
     let vis_cards = visible.clone();
     let pal = *p;
