@@ -6,36 +6,26 @@
 
 Two heads sit on the same headless stack: the desktop UI, and the server.
 
-```
-┌────────────────────────────────┐   ┌────────────────────────────────┐
-│ app (Rune)                │   │ crates/soul-server             │
-│ native GPU UI; binds the host  │   │ remote source server: index,   │
-│ directly, no webview, no IPC.  │   │ auth, and Range streaming.     │
-└──────────────┬─────────────────┘   └──────────────┬─────────────────┘
-               │                                    │
-┌──────────────▼─────────────────┐                  │
-│ crates/soul-player-host        │                  │
-│ the waist: picks the audio     │                  │
-│ sink, owns the live Library,   │                  │
-│ fans backend events out.       │                  │
-└──────────────┬─────────────────┘                  │
-               │                                    │
-┌──────────────▼────────────────────────────────────▼─────────────────┐
-│ crates/soul-player-backend                                          │
-│ headless desktop logic (std): folder scan, actor lifecycle, cover   │
-│ resolution, Command/Event.                                          │
-├─────────────────────────────────────────────────────────────────────┤
-│ soul-audio-core (git dep)    the reusable engine: decode,           │
-│ (core / engine / control /   playback control, queue, tag/          │
-│  queue / tags / desktop)     metadata parsing. no_std-capable.      │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TD
+    app["app (Rune)<br/>native GPU UI, binds the host directly<br/>no webview, no IPC"]
+    server["crates/soul-server<br/>remote source server:<br/>index, auth, Range streaming"]
+    host["crates/soul-player-host<br/>the waist: picks the audio sink,<br/>owns the live Library, fans backend events out"]
+    backend["crates/soul-player-backend<br/>headless desktop logic (std):<br/>folder scan, actor lifecycle, cover resolution, Command/Event"]
+    core["soul-audio-core (git dep)<br/>reusable engine: decode, playback control,<br/>queue, tag/metadata parsing. no_std-capable"]
+
+    app --> host
+    server --> backend
+    host --> backend
+    backend --> core
 ```
 
-Each layer may depend only on the ones below it. The dependency direction is the
-architecture: `app` → `soul-player-host` → `soul-player-backend` →
-`soul-audio-core`, and `soul-server` → `soul-player-backend` → `soul-audio-core`.
-The UI reaches the backend **only** through `PlayerHandle`, calling Rust methods
-directly, never by embedding logic in the view.
+An arrow is a dependency: each layer may depend only on the ones below it. The
+dependency direction is the architecture: `app` → `soul-player-host` →
+`soul-player-backend` → `soul-audio-core`, and `soul-server` →
+`soul-player-backend` → `soul-audio-core`. The UI reaches the backend **only**
+through `PlayerHandle`, calling Rust methods directly, never by embedding logic
+in the view.
 
 `soul-server` skips the host: the host's job is owning an audio *sink*, and a
 server has no speakers. It takes the same backend scan/catalog logic, wraps it in
@@ -61,19 +51,10 @@ untouched file bytes. See [SERVER.md](SERVER.md).
 | Service stays memory-safe | `unsafe_code = "forbid"` | root `Cargo.toml` `[workspace.lints.rust]` |
 | The GUI stack lives only in the UI head | separate `deny.app.toml` (GUI crates allowed there only) | `deny.app.toml`, used by `app`'s `cargo deny` run |
 | UI → host → service → core direction | Cargo path/dep graph (a reverse edge won't compile) | `Cargo.toml` manifests |
-| Editing a playlist does not mutate the active queue (the queue is a decoupled snapshot) | `cargo test` architecture tests | [ADR 0001](adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md); `app` `views/playlist_detail.rs` (`editing_a_playing_playlist_does_not_mutate_the_queue`, `removing_...`) |
+| Editing a playlist does not mutate the active queue (the queue is a decoupled snapshot) | `cargo test` architecture tests | `app` `views/playlist_detail.rs` (`editing_a_playing_playlist_does_not_mutate_the_queue`, `removing_...`) |
 
 Keep the `FORBIDDEN` list in the architecture test in sync with `deny.toml`'s
 `[bans].deny`.
-
-## Decision records (ADRs)
-
-Cross-cutting design decisions that are not pure dependency boundaries are
-recorded as ADRs under [`docs/adr/`](adr/), and (where enforceable) backed by an
-architecture test that cites the ADR by number. Supporting research is archived
-under [`docs/research/`](research/).
-
-- [ADR 0001: The play queue is a stable snapshot, decoupled from playlists](adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md)
 
 ## Migration roadmap (logic → core)
 

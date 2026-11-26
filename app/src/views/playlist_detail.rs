@@ -943,16 +943,14 @@ mod tests {
         }
     }
 
-    /// Architecture invariant (ADR 0001, `docs/adr/0001-play-queue-is-a-snapshot-decoupled-from-playlists.md`):
-    /// the play queue is a stable SNAPSHOT decoupled from playlists. Editing a
-    /// playlist you are currently playing MUST NOT mutate the active queue, no
-    /// playlist-mutation path may issue a playback/queue command. This guards
-    /// against anyone wiring a playlist edit into the queue (the "live-context"
-    /// model the target audiophile community explicitly rejects; see the ADR's
-    /// research citations under `docs/research/`). Play the playlist (which
-    /// snapshots the queue via `PlayContext`), then add a track to that SAME
-    /// playlist through the production handler, and assert no further command
-    /// was issued.
+    /// Architecture invariant: the play queue is a stable SNAPSHOT decoupled
+    /// from playlists. Editing a playlist you are currently playing MUST NOT
+    /// mutate the active queue, no playlist-mutation path may issue a
+    /// playback/queue command. This guards against anyone wiring a playlist
+    /// edit into the queue (the "live-context" model the target audiophile
+    /// community explicitly rejects). Play the playlist (which snapshots the
+    /// queue via `PlayContext`), then add a track to that SAME playlist through
+    /// the production handler, and assert no further command was issued.
     #[test]
     fn editing_a_playing_playlist_does_not_mutate_the_queue() {
         let _g = config::use_test_config_dir();
