@@ -24,16 +24,24 @@ use crate::views::library::fmt_dur;
 use crate::views::media_card::{CardSpec, media_card};
 use crate::views::player::{group_remote_source, remote_badge};
 
-/// One grouped album: display name, its artist, a track id to draw the cover
-/// from, every track id (in library order) to play on click, the album's
+/// One grouped album (grouped by `TrackView::album_key`, so two same-title
+/// albums stay apart and CD1/CD2 of one release join): its identity, display
+/// name, its artist (the album artist, falling back to the first track's
+/// artist), a track id to draw the cover from, every track id (in `(disc,
+/// track)` order) to play on click, the album's
 /// original/release dates (packed `(year<<9)|(month<<5)|day`, `0` = unknown;
 /// see [`album_year`]), and whether every one of its tracks streams from the
 /// same remote host (`None` for a local or mixed-source album, see
 /// [`group_remote_source`]).
 #[derive(Clone)]
 pub(crate) struct Album {
+    /// The album's identity (`TrackView::album_key`).
+    pub(crate) key: u32,
     pub(crate) name: String,
+    /// The album artist, falling back to the first track's artist.
     pub(crate) artist: String,
+    /// The album's disc count (`>= 1`).
+    pub(crate) disc_count: u16,
     pub(crate) cover_id: u32,
     pub(crate) ids: Vec<u32>,
     pub(crate) original_date: u32,
@@ -48,6 +56,25 @@ pub(crate) struct Album {
     pub(crate) genres: Vec<String>,
 }
 
+impl Album {
+    /// The navigation reference that opens this album's detail page.
+    pub(crate) fn open_ref(&self) -> crate::AlbumRef {
+        crate::AlbumRef {
+            key: self.key,
+            name: self.name.clone(),
+        }
+    }
+}
+
+/// The open album: same key AND title, else (after a rescan re-numbered ids) the
+/// first album with that title, else `None`.
+pub(crate) fn resolve_album<'a>(albums: &'a [Album], r: &crate::AlbumRef) -> Option<&'a Album> {
+    albums
+        .iter()
+        .find(|a| a.key == r.key && a.name == r.name)
+        .or_else(|| albums.iter().find(|a| a.name == r.name))
+}
+
 /// An album's DR indicator: the mean of its member tracks' DR over those analyzed so far (the
 /// TT / dr.loudness-war album-DR convention), or `None` when none are analyzed yet. `drs`
 /// yields the DR of each already-analyzed member track.
@@ -58,21 +85,32 @@ pub(crate) fn album_dr<I: IntoIterator<Item = f32>>(drs: I) -> Option<f32> {
     if n == 0 { None } else { Some(sum / n as f32) }
 }
 
-/// Group the flat library into albums, preserving first-seen (library) order so
-/// the grid follows the baked sort. Tracks with no album fall under "Unknown".
+/// Group the flat library into albums by identity (`album_key`), preserving
+/// first-seen (library) order so the grid follows the baked sort; within an
+/// album the ids are in `(disc, track)` order. A track with no album title is
+/// named "Unknown".
 pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
     let mut albums: Vec<Album> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut index: HashMap<u32, usize> = HashMap::new();
     for t in library {
-        let name = t
-            .album
-            .as_deref()
-            .map(str::to_string)
-            .unwrap_or_else(|| t!("library.unknown").to_string());
-        let i = *index.entry(name.clone()).or_insert_with(|| {
+        let i = *index.entry(t.album_key).or_insert_with(|| {
+            let name = t
+                .album
+                .as_deref()
+                .map(str::to_string)
+                .unwrap_or_else(|| t!("library.unknown").to_string());
+            let artist = t
+                .album_artist
+                .as_deref()
+                .filter(|a| !a.is_empty())
+                .or(t.artist.as_deref())
+                .unwrap_or_default()
+                .to_string();
             albums.push(Album {
+                key: t.album_key,
                 name,
-                artist: t.artist.as_deref().unwrap_or_default().to_string(),
+                artist,
+                disc_count: t.disc_count.max(1),
                 cover_id: t.id,
                 ids: Vec::new(),
                 original_date: t.original_date,
@@ -84,6 +122,16 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
             albums.len() - 1
         });
         albums[i].ids.push(t.id);
+    }
+    // Within an album, play and list order is (disc, track) whatever the library's
+    // sort axis; the grid itself keeps first-seen (baked) album order.
+    let view_by_id: HashMap<u32, &TrackView> = library.iter().map(|t| (t.id, t)).collect();
+    for album in &mut albums {
+        album.ids.sort_by_key(|id| {
+            view_by_id.get(id).map_or((u16::MAX, u16::MAX), |t| {
+                soul_player_host::disc_track_key(t)
+            })
+        });
     }
     // A second pass: each album's remote-source consensus needs every one of its
     // member tracks, which aren't all known until the loop above finishes. A
@@ -132,6 +180,19 @@ pub(crate) fn group_albums(library: &[TrackView]) -> Vec<Album> {
         album.genres = gs;
     }
     albums
+}
+
+/// Test-only: a stable album key derived from an album NAME (FNV-1a; `0` for
+/// `None`), so hand-built `TrackView` fixtures that share a title share one album,
+/// the grouping those fixtures were written for. Real views carry the catalog's
+/// compound album id instead.
+#[cfg(test)]
+pub(crate) fn test_album_key(album: Option<&str>) -> u32 {
+    album.map_or(0, |a| {
+        a.bytes().fold(0x811c_9dc5u32, |h, b| {
+            (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+        })
+    })
 }
 
 /// Narrow `albums` to those whose name or artist contains `query`, a
@@ -243,11 +304,12 @@ pub(crate) fn discography_of(
 /// One album card: a square cover with a hover play-overlay, the title, and the
 /// artist. Clicking the body opens the album's detail page; the overlay plays.
 fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale: f32) -> El {
-    let name = a.name.clone();
     // The right-click menu's play context + artwork target (cloned so the outer
     // handler stays `Fn`, like the track row's menu above).
     let menu_ids = a.ids.clone();
     let menu_name = a.name.clone();
+    // What the body click opens: the album's identity, not just its title.
+    let open = a.open_ref();
     media_card(
         s,
         p,
@@ -272,7 +334,7 @@ fn album_card(s: &State, p: &Palette, slot: usize, a: &Album, card_w: f32, scale
             crate::navigate_to(
                 st,
                 crate::Route::Album,
-                Some(name.clone()),
+                Some(open.clone()),
                 None,
                 None,
                 None,
@@ -520,6 +582,8 @@ pub(crate) fn detail_track_row(
     p: &Palette,
     ids: &[u32],
     i: usize,
+    // The row number to show; `None` numbers by position `i + 1`.
+    number: Option<u16>,
     t: &TrackView,
     // Which of the ARTIST / ALBUM columns to show. The old app always shows both;
     // we show them only where they add information: genre and playlist detail
@@ -558,8 +622,9 @@ pub(crate) fn detail_track_row(
             text(if playing {
                 (if is_playing { "⏸" } else { "▶" }).to_string()
             } else {
-                format!("{}", i + 1)
+                number.map_or_else(|| format!("{}", i + 1), |n| n.to_string())
             })
+            .key(format!("album-track-{i}-no"))
             .font(type_::ITEM)
             .color(if playing { p.accent } else { p.text_secondary })
             .align(Align::Center)
@@ -709,6 +774,37 @@ pub(crate) fn detail_track_header(p: &Palette, show_artist: bool, show_album: bo
     )
 }
 
+/// A multi-disc album's disc header row: "Disc 2 · Liyue" (subtitle when present)
+/// and the disc's total duration, aligned with the track rows' insets.
+fn disc_header(d: &soul_player_host::DiscSection, p: &Palette) -> El {
+    let title = match &d.subtitle {
+        Some(sub) => t!("album.discWithSubtitle", n => d.disc_no, subtitle => sub).to_string(),
+        None => t!("album.disc", n => d.disc_no).to_string(),
+    };
+    row()
+        .key(format!("album-disc-{}", d.disc_no))
+        .w_full()
+        .gap(space::MD)
+        .center_y()
+        .px(space::MD)
+        .py(space::SM)
+        .child(
+            text(title)
+                .key(format!("album-disc-{}-title", d.disc_no))
+                .font(type_::TITLE)
+                .color(p.fg)
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        )
+        .child(
+            text(fmt_total_dur(d.duration_secs))
+                .key(format!("album-disc-{}-dur", d.disc_no))
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        )
+}
+
 /// An album's detail page (the old app's AlbumPage): a back link, then the shared
 /// hero, square cover, "ALBUM" eyebrow, title, artist, "{n} tracks · {duration}"
 /// and a Play-All pill, over the album's numbered track list. The album is
@@ -720,8 +816,8 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
     let albums = s.grouped_albums();
     let Some(album) = s
         .open_album
-        .as_deref()
-        .and_then(|name| albums.iter().find(|a| a.name == name).cloned())
+        .as_ref()
+        .and_then(|r| resolve_album(&albums, r).cloned())
     else {
         return col()
             .key("album-detail")
@@ -776,6 +872,15 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
             circular: false,
         },
     };
+    let members: Vec<&TrackView> = album.ids.iter().filter_map(|id| s.track(*id)).collect();
+    let discs = soul_player_host::album_tracklist(&members);
+    // Play exactly the list the page shows: the rendered rows in (disc, track)
+    // order, so a row's play-start index can never drift from `Album::ids` (e.g. a
+    // grouping that lags the library by an id the library no longer resolves).
+    let play_ids: Vec<u32> = discs
+        .iter()
+        .flat_map(|d| d.rows.iter().map(|r| r.0))
+        .collect();
     let hero = detail_hero(
         s,
         p,
@@ -788,23 +893,33 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
         album_subtitle(&album, s.album_year),
         meta,
         Some(&crate::views::icons::CLOCK),
-        detail_actions("album-play-all", album.ids.clone(), p),
+        detail_actions("album-play-all", play_ids.clone(), p),
         Some(ArtworkTarget::Album(album.name.clone())),
     );
 
+    let show_disc_headers = album.disc_count > 1 && discs.len() > 1;
     let mut list = col().key("album-tracks").role("list").gap(space::XXS);
-    for (i, &id) in album.ids.iter().enumerate() {
-        if let Some(t) = s.track(id) {
-            list = list.child(detail_track_row(
-                s.now_playing_id,
-                s.playing,
-                p,
-                &album.ids,
-                i,
-                t,
-                false, // album detail: artist is constant
-                false, // album detail: album is constant
-            ));
+    // `i` indexes `play_ids`: it advances only for rows actually added.
+    let mut i = 0usize;
+    for d in &discs {
+        if show_disc_headers {
+            list = list.child(disc_header(d, p));
+        }
+        for &(id, number) in &d.rows {
+            if let Some(t) = s.track(id) {
+                list = list.child(detail_track_row(
+                    s.now_playing_id,
+                    s.playing,
+                    p,
+                    &play_ids,
+                    i,
+                    Some(number),
+                    t,
+                    false, // album detail: artist is constant
+                    false, // album detail: album is constant
+                ));
+                i += 1;
+            }
         }
     }
 
@@ -827,6 +942,84 @@ pub fn album_detail(s: &State, p: &Palette, scale: f32) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ktv(id: u32, album: &str, key: u32, disc: u16, track: u16) -> TrackView {
+        TrackView {
+            id,
+            title: Some(format!("T{id}")),
+            artist: Some("Guest".into()),
+            album: Some(album.into()),
+            album_key: key,
+            disc_no: disc,
+            track_no: track,
+            disc_count: 1,
+            duration_secs: 60.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn same_title_in_two_folders_stays_two_albums() {
+        let lib = vec![
+            ktv(1, "Greatest Hits", 10, 1, 1),
+            ktv(2, "Greatest Hits", 20, 1, 1),
+        ];
+        let albums = group_albums(&lib);
+        assert_eq!(albums.len(), 2, "grouped by identity, not by title");
+        assert_eq!((albums[0].key, albums[1].key), (10, 20));
+        assert_eq!(albums[0].name, albums[1].name);
+    }
+
+    #[test]
+    fn cd1_cd2_is_one_album_with_two_discs_in_disc_track_order() {
+        // Library order (e.g. Title axis) scrambles the album's tracks.
+        let mut lib = vec![
+            ktv(3, "Box", 7, 2, 1),
+            ktv(2, "Box", 7, 1, 2),
+            ktv(1, "Box", 7, 1, 1),
+        ];
+        for t in &mut lib {
+            t.disc_count = 2;
+        }
+        let albums = group_albums(&lib);
+        assert_eq!(albums.len(), 1);
+        assert_eq!(albums[0].disc_count, 2);
+        assert_eq!(albums[0].ids, vec![1, 2, 3], "play order is (disc, track)");
+    }
+
+    #[test]
+    fn card_artist_is_the_album_artist_falling_back_to_the_track_artist() {
+        let mut with = ktv(1, "Box", 7, 1, 1);
+        with.album_artist = Some("HOYO-MiX".into());
+        let without = ktv(2, "Solo", 8, 1, 1);
+        let albums = group_albums(&[with, without]);
+        assert_eq!(albums[0].artist, "HOYO-MiX");
+        assert_eq!(
+            albums[1].artist, "Guest",
+            "no album artist: the track artist"
+        );
+    }
+
+    #[test]
+    fn resolve_album_prefers_key_and_falls_back_to_title_after_a_rescan() {
+        let albums = group_albums(&[ktv(1, "Hits", 10, 1, 1), ktv(2, "Hits", 20, 1, 1)]);
+        let r = crate::AlbumRef {
+            key: 20,
+            name: "Hits".into(),
+        };
+        assert_eq!(resolve_album(&albums, &r).map(|a| a.key), Some(20));
+        // A rescan renumbered the album ids: the title still finds an album.
+        let stale = crate::AlbumRef {
+            key: 99,
+            name: "Hits".into(),
+        };
+        assert_eq!(resolve_album(&albums, &stale).map(|a| a.key), Some(10));
+        let gone = crate::AlbumRef {
+            key: 10,
+            name: "Nope".into(),
+        };
+        assert!(resolve_album(&albums, &gone).is_none());
+    }
 
     /// Click the element with `key`: find its position, drive a full
     /// move/down/up pointer gesture there, then re-render.
@@ -853,6 +1046,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some(album)),
+            ..Default::default()
         }
     }
 
@@ -974,8 +1169,10 @@ mod tests {
     fn album_year_prefers_selected_source_with_fallback() {
         use crate::config::AlbumYearSource::*;
         let a = Album {
+            key: 1,
             name: "x".into(),
             artist: "y".into(),
+            disc_count: 1,
             cover_id: 0,
             ids: vec![],
             original_date: 1973u32 << 9,
@@ -1292,7 +1489,7 @@ mod tests {
         let mut remote_state = State::new(soul_player_host::PlayerHandle::offline());
         remote_state.library = vec![remote_track];
         remote_state.route = crate::Route::Album;
-        remote_state.open_album = Some("Remote Album".into());
+        remote_state.open_album = Some(crate::AlbumRef::by_name("Remote Album"));
         let remote_rt = render(remote_state);
         let badge = remote_rt
             .elements()
@@ -1312,7 +1509,7 @@ mod tests {
         let mut local_state = State::new(soul_player_host::PlayerHandle::offline());
         local_state.library = vec![local_track];
         local_state.route = crate::Route::Album;
-        local_state.open_album = Some("Local Album".into());
+        local_state.open_album = Some(crate::AlbumRef::by_name("Local Album"));
         let local_rt = render(local_state);
         assert!(
             !local_rt
@@ -1351,7 +1548,7 @@ mod tests {
         let mut s = State::new(soul_player_host::PlayerHandle::offline());
         s.library = vec![dr_track(1, 6.0), dr_track(2, 12.0)]; // mean = 9 → "DR9"
         s.route = crate::Route::Album;
-        s.open_album = Some("Analyzed Album".into());
+        s.open_album = Some(crate::AlbumRef::by_name("Analyzed Album"));
 
         let env = Env {
             system_dark: true,
@@ -1384,7 +1581,7 @@ mod tests {
         let mut s = State::new(soul_player_host::PlayerHandle::offline());
         s.library = vec![atv(1, "Artist", "An Album"), atv(2, "Artist", "An Album")];
         s.route = crate::Route::Album;
-        s.open_album = Some("An Album".into());
+        s.open_album = Some(crate::AlbumRef::by_name("An Album"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -1433,7 +1630,7 @@ mod tests {
             let mut s = State::new(soul_player_host::PlayerHandle::offline());
             s.library = vec![t];
             s.route = crate::Route::Album;
-            s.open_album = Some(album_name.to_string());
+            s.open_album = Some(crate::AlbumRef::by_name(album_name));
             s.album_year = src;
             s
         }
@@ -1690,7 +1887,7 @@ mod tests {
         let mut s = State::new(soul_player_host::PlayerHandle::offline());
         s.library = vec![t];
         s.route = crate::Route::Album;
-        s.open_album = Some("Directionless EP".into());
+        s.open_album = Some(crate::AlbumRef::by_name("Directionless EP"));
 
         let env = Env {
             system_dark: true,
@@ -1710,6 +1907,106 @@ mod tests {
             texts.iter().any(|t| t == "DURATION"),
             "DURATION label renders"
         );
+    }
+
+    /// A two-disc album (disc 1: ids 1, 2; disc 2: id 3) on its open detail page,
+    /// over a recording host so the play commands can be read back.
+    fn two_disc_album_page() -> State {
+        let mut lib = vec![
+            ktv(1, "Box", 7, 1, 1),
+            ktv(2, "Box", 7, 1, 2),
+            ktv(3, "Box", 7, 2, 1),
+        ];
+        for t in &mut lib {
+            t.disc_count = 2;
+        }
+        lib[2].duration_secs = 180.0;
+        let mut s = State::new(soul_player_host::PlayerHandle::recording());
+        s.library = lib;
+        s.route = crate::Route::Album;
+        s.open_album = Some(crate::AlbumRef {
+            key: 7,
+            name: "Box".into(),
+        });
+        s
+    }
+
+    fn render_album_page(s: State) -> rune::Runtime<State> {
+        fn test_view(s: &State, cx: &mut Cx<State>) -> El {
+            let p = crate::theme::palette(crate::is_dark(s.theme_pref, cx.system_dark()));
+            let scale = cx.env().scale;
+            album_detail(s, &p, scale)
+        }
+        let env = rune::Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut rt = rune::Runtime::new(s, test_view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        rt
+    }
+
+    /// The `PlayContext` commands the recording host received.
+    fn play_contexts(rt: &rune::Runtime<State>) -> Vec<(Vec<u32>, u32)> {
+        rt.state
+            .host
+            .recorded_commands()
+            .into_iter()
+            .filter_map(|c| match c {
+                Command::PlayContext { ids, start } => Some((ids, start)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Clicking a disc-2 row plays that track, within the album's (disc, track)
+    /// list; disc 2's header shows its own duration.
+    #[test]
+    fn clicking_a_disc_two_row_plays_that_track() {
+        let _locale = crate::config::use_test_locale("en");
+        let mut rt = render_album_page(two_disc_album_page());
+        let text_of = |rt: &rune::Runtime<State>, k: &str| {
+            rt.elements()
+                .into_iter()
+                .find(|e| e.key.as_deref() == Some(k))
+                .and_then(|e| e.text)
+        };
+        assert_eq!(text_of(&rt, "album-disc-2-dur").as_deref(), Some("3 min"));
+        assert_eq!(text_of(&rt, "album-disc-1-dur").as_deref(), Some("2 min"));
+        click(&mut rt, "album-track-2");
+        assert_eq!(play_contexts(&rt), [(vec![1, 2, 3], 2)]);
+    }
+
+    /// The play list is the rows the page renders, not `Album::ids`: an id the
+    /// library no longer resolves (a grouping that lags the library) must not
+    /// shift which track a row starts.
+    #[test]
+    fn a_row_plays_its_own_track_when_the_grouping_lags_the_library() {
+        let _locale = crate::config::use_test_locale("en");
+        let s = two_disc_album_page();
+        let mut album = group_albums(&s.library).remove(0);
+        album.ids = vec![1, 99, 2, 3];
+        let fp = s.library_fingerprint();
+        *s.albums_cache.borrow_mut() = Some((fp, vec![album].into()));
+        let mut rt = render_album_page(s);
+        click(&mut rt, "album-track-2");
+        assert_eq!(
+            play_contexts(&rt),
+            [(vec![1, 2, 3], 2)],
+            "the disc-2 row starts track 3"
+        );
+    }
+
+    /// A disc header only shows when the page really has more than one disc
+    /// section (a two-disc album with only disc 1 in the library reads flat).
+    #[test]
+    fn no_disc_headers_when_only_one_disc_is_present() {
+        let _locale = crate::config::use_test_locale("en");
+        let mut s = two_disc_album_page();
+        s.library.truncate(2);
+        let rt = render_album_page(s);
+        assert!(rt.find("album-track-1").is_some());
+        assert!(rt.find("album-disc-1").is_none(), "one section: no header");
     }
 
     /// Clicking the detail hero's secondary "add to queue" button enqueues
@@ -1732,7 +2029,7 @@ mod tests {
             atv(2, "Broke For Free", "Directionless EP"),
         ];
         s.route = crate::Route::Album;
-        s.open_album = Some("Directionless EP".into());
+        s.open_album = Some(crate::AlbumRef::by_name("Directionless EP"));
 
         let env = Env {
             system_dark: true,

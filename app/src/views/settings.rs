@@ -25,7 +25,9 @@ use soul_player_host::{
 };
 
 use crate::config::AlbumYearSource;
-use crate::organize_job::{scan_audio, template_for};
+use crate::organize_job::{
+    self, has_disc_folder_variant, layout_presets, plan_import, split_template_id,
+};
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
 use crate::views::dropdown;
@@ -43,10 +45,10 @@ use crate::{
     organize_dismiss, organize_ready, reconnect_remote_now, remove_dsp_unit, remove_eq_band,
     reorder_dsp_units, scan_in_background, set_album_year, set_dsp_unit_enabled,
     set_eq_band_enabled, set_eq_preamp, set_exclusive, set_exclusive_strict, set_indexing_mode,
-    set_locale_pref, set_loudness_analysis_mode, set_managed_dest, set_managed_strategy,
-    set_managed_template, set_nav_visible, set_output_device, set_replaygain_mode,
-    set_replaygain_preamp, set_settings_tab, set_show_loudness_columns, set_theme_pref,
-    start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
+    set_locale_pref, set_loudness_analysis_mode, set_managed_dest, set_managed_disc_folders,
+    set_managed_layout, set_managed_strategy, set_nav_visible, set_output_device,
+    set_replaygain_mode, set_replaygain_preamp, set_settings_tab, set_show_loudness_columns,
+    set_theme_pref, start_dsp_rename, start_profile_rename, switch_profile, toggle_dsp_expanded,
     toggle_eq_bands_expanded, toggle_remote_enabled, unit_bands, unit_enabled, unit_preamp,
 };
 use soul_player_host::{IndexingMode, LoudnessAnalysisMode};
@@ -594,15 +596,9 @@ fn add_music_row(s: &State, p: &Palette) -> El {
                             let template_id = s.managed_template.clone();
                             let strategy = s.managed_strategy;
                             std::thread::spawn(move || {
-                                let files = scan_audio(&src_dir);
-                                let plan = organize::plan(
-                                    &files,
-                                    &dest,
-                                    &organize::Template::new(template_for(&template_id)),
-                                    strategy,
-                                );
+                                let plan = plan_import(&src_dir, &dest, &template_id, strategy);
                                 handle.update(move |s: &mut State, _tx| {
-                                    organize_ready(s, plan);
+                                    organize_ready(s, plan, &template_id);
                                 });
                             });
                         }
@@ -1953,12 +1949,29 @@ fn preset_example(id: &str) -> &'static str {
     }
 }
 
+/// The same example as disc 1 of a multi-disc album, in the chosen multi-disc
+/// layout (`1-01 - ` in the album folder, or a `Disc 1/` sub-folder). `None` for a
+/// layout without album folders (`flat`), where disc numbers leave no trace.
+fn preset_example_multi_disc(id: &str, disc_folders: bool) -> Option<&'static str> {
+    Some(match (id, disc_folders) {
+        ("flat", _) => return None,
+        ("artist-year-album", false) => "Daft Punk/2001 - Discovery/1-01 - One More Time.flac",
+        ("artist-year-album", true) => "Daft Punk/2001 - Discovery/Disc 1/01 - One More Time.flac",
+        ("genre-artist-album", false) => "Electronic/Daft Punk/Discovery/1-01 - One More Time.flac",
+        ("genre-artist-album", true) => {
+            "Electronic/Daft Punk/Discovery/Disc 1/01 - One More Time.flac"
+        }
+        (_, false) => "Daft Punk/Discovery/1-01 - One More Time.flac",
+        (_, true) => "Daft Punk/Discovery/Disc 1/01 - One More Time.flac",
+    })
+}
+
 /// The template presets as `(id, human label)` for the dropdown panel, the ids
 /// come from the organizer so the picker always matches the write path.
 fn preset_options() -> Vec<(String, String)> {
-    organize::presets()
-        .iter()
-        .map(|(id, _)| (id.to_string(), preset_label(id)))
+    layout_presets()
+        .into_iter()
+        .map(|id| (id.to_string(), preset_label(id)))
         .collect()
 }
 
@@ -2022,43 +2035,110 @@ fn managed_dest_row(s: &State, p: &Palette) -> El {
         .child(managed_browse_button(p))
 }
 
-/// The template section: a label, the preset picker (the shared `dropdown`), and
-/// an example destination line for the selected preset (keyed `managed-example`).
+/// The layout section: a label, the preset picker (the shared `dropdown`), and
+/// example destination lines for the selected preset (keyed `managed-example`): a
+/// single-disc track, then disc 1 of a multi-disc album in the chosen multi-disc
+/// layout (omitted for `flat`).
 fn managed_template_section(s: &State, p: &Palette) -> El {
+    let (layout, disc_folders) = split_template_id(&s.managed_template);
+    let mut example = col()
+        .key("managed-example")
+        .w_full()
+        .gap(space::XXS)
+        .child(
+            text(t!("settings.example").to_string())
+                .font(type_::CAPTION)
+                .color(p.text_secondary)
+                .wrap(),
+        )
+        .child(
+            text(preset_example(layout).to_string())
+                .key("managed-example-path")
+                .font(type_::BODY)
+                .color(p.fg)
+                .wrap(),
+        );
+    if let Some(multi) = preset_example_multi_disc(layout, disc_folders) {
+        example = example
+            .child(
+                text(t!("settings.exampleMultiDisc").to_string())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary)
+                    .wrap(),
+            )
+            .child(
+                text(multi.to_string())
+                    .key("managed-example-multidisc")
+                    .font(type_::BODY)
+                    .color(p.fg)
+                    .wrap(),
+            );
+    }
     col()
         .w_full()
         .gap(space::XS)
         .child(
             text(t!("settings.template").to_string())
+                .key("managed-layout-caption")
                 .font(type_::CAPTION)
                 .color(p.text_secondary),
         )
         .child(dropdown::trigger(
             MANAGED_TEMPLATE,
-            preset_label(&s.managed_template),
+            preset_label(layout),
             t!("settings.template").to_string(),
             p,
         ))
-        .child(
-            // A static preview of where a file would land (no real file). `wrap`
-            // keeps a long path inside the card instead of overflowing.
-            col()
-                .key("managed-example")
-                .w_full()
-                .gap(space::XXS)
-                .child(
-                    text(t!("settings.example").to_string())
-                        .font(type_::CAPTION)
-                        .color(p.text_secondary)
-                        .wrap(),
-                )
-                .child(
-                    text(preset_example(&s.managed_template).to_string())
-                        .font(type_::BODY)
-                        .color(p.fg)
-                        .wrap(),
-                ),
-        )
+        // A static preview of where a file would land (no real file). `wrap`
+        // keeps a long path inside the card instead of overflowing.
+        .child(example)
+}
+
+/// The key identifying the managed-library Multi-disc albums picker.
+const MANAGED_MULTI_DISC: &str = "managed-multidisc";
+
+/// `(id, label)` choices of the Multi-disc albums picker.
+fn multi_disc_options() -> Vec<(String, String)> {
+    vec![
+        (
+            "one-folder".into(),
+            t!("settings.multiDiscOneFolder").to_string(),
+        ),
+        (
+            "disc-folders".into(),
+            t!("settings.multiDiscFolders").to_string(),
+        ),
+    ]
+}
+
+/// The Multi-disc albums section: one folder (`1-01 - Title`) or disc sub-folders
+/// (`Disc 1/01 - Title`). Absent for a layout with no album folder (`flat`).
+fn managed_multi_disc_section(s: &State, p: &Palette) -> Option<El> {
+    let (layout, disc_folders) = split_template_id(&s.managed_template);
+    if !has_disc_folder_variant(layout) {
+        return None;
+    }
+    let current = if disc_folders {
+        t!("settings.multiDiscFolders")
+    } else {
+        t!("settings.multiDiscOneFolder")
+    };
+    Some(
+        col()
+            .w_full()
+            .gap(space::XS)
+            .child(
+                text(t!("settings.multiDisc").to_string())
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary),
+            )
+            .child(dropdown::trigger(
+                MANAGED_MULTI_DISC,
+                current.to_string(),
+                t!("settings.multiDisc").to_string(),
+                p,
+            )),
+    )
 }
 
 /// One strategy choice (Copy / Move); the active one is filled with the primary
@@ -2114,20 +2194,24 @@ fn managed_strategy_section(s: &State, p: &Palette) -> El {
         )
 }
 
-/// Managed Library: the write-path destination + template preset + Copy/Move
-/// strategy, persisted to config. Configuring only: the "Add music…" apply flow
-/// that runs the copy/move is a separate task. Rendered under the Sources card on
-/// the Music Data tab.
+/// Managed Library: the write-path destination + template preset (layout plus the
+/// Multi-disc albums choice, absent for `flat`) + Copy/Move strategy, persisted to
+/// config. Configuring only: the copy/move itself runs from the Add source menu's
+/// "Add music…" entry (the organize modal, see [`organize_overlay`]). Rendered
+/// under the Sources card on the Music Data tab.
 fn managed_library_card(s: &State, p: &Palette) -> El {
-    card("managed-library", p)
+    let mut c = card("managed-library", p)
         .child(heading(
             t!("settings.managedLibrary").to_string(),
             t!("settings.managedLibraryDesc").to_string(),
             p,
         ))
         .child(managed_dest_row(s, p))
-        .child(managed_template_section(s, p))
-        .child(managed_strategy_section(s, p))
+        .child(managed_template_section(s, p));
+    if let Some(md) = managed_multi_disc_section(s, p) {
+        c = c.child(md);
+    }
+    c.child(managed_strategy_section(s, p))
 }
 
 /// Output: a "System default" choice plus one button per enumerated output
@@ -4213,19 +4297,103 @@ fn organize_button(
         .on_press(on_press)
 }
 
-/// Count a plan's entries by [`organize::Action`] into
-/// `(copy, moved, duplicates, conflicts)` for the Confirm summary line.
-fn organize_counts(plan: &organize::OrganizePlan) -> (usize, usize, usize, usize) {
-    let (mut copy, mut moved, mut dup, mut conflict) = (0, 0, 0, 0);
-    for e in &plan.entries {
-        match e.action {
-            organize::Action::Copy => copy += 1,
-            organize::Action::Move => moved += 1,
-            organize::Action::SkipDuplicate => dup += 1,
-            organize::Action::SkipConflict => conflict += 1,
+/// How many left-in-place albums the Confirm modal lists before "and N more".
+const LEFT_SHOWN: usize = 5;
+
+/// The localized reason an album's side files stay in place.
+fn left_reason(r: organize::SideFilesLeft) -> String {
+    use organize::SideFilesLeft::{
+        AtSourceRoot, AudioConflict, NoAlbumFolder, NoSourceRoot, SharedAlbumRoot,
+    };
+    match r {
+        SharedAlbumRoot => t!("settings.organizeLeftShared"),
+        NoAlbumFolder => t!("settings.organizeLeftNoAlbumFolder"),
+        AtSourceRoot => t!("settings.organizeLeftAtSourceRoot"),
+        NoSourceRoot => t!("settings.organizeLeftNoSourceRoot"),
+        AudioConflict => t!("settings.organizeLeftAudioConflict"),
+        // `SideFilesLeft` is non-exhaustive: a newer core reason reads generically.
+        _ => t!("settings.organizeLeftOther"),
+    }
+    .to_string()
+}
+
+/// The Confirm modal's list of albums whose side files stay behind (`None` when
+/// none): one row per album (name, count, reason) with a few of its file names.
+fn organize_left_list(left: &[organize_job::LeftAlbum], p: &Palette) -> Option<El> {
+    if left.is_empty() {
+        return None;
+    }
+    let mut c = col().key("organize-left").w_full().gap(space::XXS).child(
+        text(t!("settings.organizeLeftTitle").to_string())
+            .font(type_::CAPTION)
+            .color(p.text_secondary),
+    );
+    for (i, l) in left.iter().take(LEFT_SHOWN).enumerate() {
+        let row_text = t!(
+            "settings.organizeLeftRow",
+            folder => l.folder,
+            files => l.files,
+            reason => left_reason(l.reason)
+        );
+        c = c.child(
+            text(row_text.to_string())
+                .key(format!("organize-left-{i}"))
+                .font(type_::CAPTION)
+                .color(p.fg)
+                .wrap(),
+        );
+        if !l.names.is_empty() {
+            c = c.child(
+                text(l.names.join(", "))
+                    .key(format!("organize-left-{i}-names"))
+                    .font(type_::CAPTION)
+                    .color(p.text_secondary)
+                    .truncate(),
+            );
         }
     }
-    (copy, moved, dup, conflict)
+    if left.len() > LEFT_SHOWN {
+        c = c.child(
+            text(t!("settings.organizeLeftMore", n => left.len() - LEFT_SHOWN).to_string())
+                .key("organize-left-more")
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        );
+    }
+    Some(c)
+}
+
+/// The Done screen's list of files that failed (`None` when none): the first few
+/// as "name: error" (selected and truncated by `organize_job::failed_preview`),
+/// then "and N more".
+fn organize_failed_list(failed: &organize_job::FailedPreview, p: &Palette) -> Option<El> {
+    if failed.rows.is_empty() {
+        return None;
+    }
+    let mut c = col().key("organize-failed").w_full().gap(space::XXS).child(
+        text(t!("settings.organizeFailedTitle").to_string())
+            .key("organize-failed-title")
+            .font(type_::CAPTION)
+            .color(p.text_secondary),
+    );
+    for (i, (name, error)) in failed.rows.iter().enumerate() {
+        c = c.child(
+            text(t!("settings.organizeFailedRow", name => name, error => error).to_string())
+                .key(format!("organize-failed-{i}"))
+                .font(type_::CAPTION)
+                .color(p.fg)
+                .truncate(),
+        );
+    }
+    if failed.more > 0 {
+        c = c.child(
+            text(t!("settings.organizeLeftMore", n => failed.more).to_string())
+                .key("organize-failed-more")
+                .font(type_::CAPTION)
+                .color(p.text_secondary),
+        );
+    }
+    Some(c)
 }
 
 /// The per-phase card content (without the scrim / modal wrapper).
@@ -4238,17 +4406,22 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                 .color(p.fg)
                 .wrap(),
         ),
-        OrganizePhase::Confirm(plan) => {
-            let (copy, moved, dup, conflict) = organize_counts(plan);
-            let summary = t!(
+        OrganizePhase::Confirm { plan, summary } => {
+            let actions = t!(
                 "settings.organizeConfirmSummary",
-                copy => copy,
-                moved => moved,
-                dup => dup,
-                conflict => conflict
+                copy => summary.copy,
+                moved => summary.moved,
+                dup => summary.dup,
+                conflict => summary.conflict
             )
             .to_string();
-            organize_card(p)
+            let files = t!(
+                "settings.organizeConfirmFiles",
+                audio => summary.audio,
+                side => summary.side
+            )
+            .to_string();
+            let mut card = organize_card(p)
                 .child(organize_title(
                     t!("settings.organizeConfirmTitle").to_string(),
                     p,
@@ -4258,33 +4431,58 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                         .key("organize-confirm")
                         .w_full()
                         .gap(space::XXS)
-                        .child(text(summary).font(type_::BODY).color(p.fg).wrap())
+                        .child(
+                            text(files)
+                                .key("organize-confirm-files")
+                                .font(type_::BODY)
+                                .color(p.fg)
+                                .wrap(),
+                        )
+                        .child(text(actions).font(type_::BODY).color(p.fg).wrap())
                         .child(
                             text(plan.dest_root.to_string_lossy().into_owned())
                                 .font(type_::CAPTION)
                                 .color(p.text_secondary)
                                 .truncate(),
                         ),
-                )
-                .child(
-                    row()
-                        .gap(space::SM)
-                        .flex_wrap()
-                        .child(organize_button(
-                            "organize-cancel",
-                            t!("settings.cancel").to_string(),
-                            false,
-                            p,
-                            organize_dismiss,
-                        ))
-                        .child(organize_button(
-                            "organize-confirm-go",
-                            t!("settings.confirm").to_string(),
-                            true,
-                            p,
-                            organize_confirm,
-                        )),
-                )
+                );
+            if summary.folder_inferred > 0 {
+                let n = summary.folder_inferred;
+                let warning = if summary.disc_folders_available {
+                    t!("settings.organizeDiscWarning", n => n)
+                } else {
+                    t!("settings.organizeDiscWarningFlat", n => n)
+                };
+                card = card.child(
+                    text(warning.to_string())
+                        .key("organize-disc-warning")
+                        .font(type_::CAPTION)
+                        .color(p.warning)
+                        .wrap(),
+                );
+            }
+            if let Some(list) = organize_left_list(&summary.left, p) {
+                card = card.child(list);
+            }
+            card.child(
+                row()
+                    .gap(space::SM)
+                    .flex_wrap()
+                    .child(organize_button(
+                        "organize-cancel",
+                        t!("settings.cancel").to_string(),
+                        false,
+                        p,
+                        organize_dismiss,
+                    ))
+                    .child(organize_button(
+                        "organize-confirm-go",
+                        t!("settings.confirm").to_string(),
+                        true,
+                        p,
+                        organize_confirm,
+                    )),
+            )
         }
         OrganizePhase::Applying {
             done,
@@ -4307,7 +4505,7 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                     .color(p.text_secondary)
                     .truncate(),
             ),
-        OrganizePhase::Done(summary) => {
+        OrganizePhase::Done { summary, failed } => {
             let line = t!(
                 "settings.organizeDoneSummary",
                 copied => summary.copied,
@@ -4316,7 +4514,7 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                 failed => summary.failed.len()
             )
             .to_string();
-            organize_card(p)
+            let mut card = organize_card(p)
                 .child(organize_title(
                     t!("settings.organizeDoneTitle").to_string(),
                     p,
@@ -4327,14 +4525,26 @@ fn organize_content(phase: &OrganizePhase, p: &Palette) -> El {
                         .font(type_::BODY)
                         .color(p.fg)
                         .wrap(),
-                )
-                .child(row().child(organize_button(
-                    "organize-close",
-                    t!("settings.close").to_string(),
-                    true,
-                    p,
-                    organize_dismiss,
-                )))
+                );
+            if summary.pruned_dirs > 0 {
+                card = card.child(
+                    text(t!("settings.organizePruned", n => summary.pruned_dirs).to_string())
+                        .key("organize-pruned")
+                        .font(type_::CAPTION)
+                        .color(p.text_secondary)
+                        .wrap(),
+                );
+            }
+            if let Some(list) = organize_failed_list(failed, p) {
+                card = card.child(list);
+            }
+            card.child(row().child(organize_button(
+                "organize-close",
+                t!("settings.close").to_string(),
+                true,
+                p,
+                organize_dismiss,
+            )))
         }
     }
 }
@@ -4416,9 +4626,26 @@ pub fn settings_overlays(s: &State, p: &Palette, cx: &Cx<State>) -> Vec<El> {
         overlays.push(dropdown::panel(
             MANAGED_TEMPLATE,
             &preset_options(),
-            &s.managed_template,
+            split_template_id(&s.managed_template).0,
             width,
-            |s: &mut State, id: &str| set_managed_template(s, id),
+            |s: &mut State, id: &str| set_managed_layout(s, id),
+            None,
+            p,
+        ));
+    }
+    if dropdown::is_open(s, MANAGED_MULTI_DISC) {
+        let width = cx.layout_size(MANAGED_MULTI_DISC).map(|wh| wh[0]);
+        let selected = if split_template_id(&s.managed_template).1 {
+            "disc-folders"
+        } else {
+            "one-folder"
+        };
+        overlays.push(dropdown::panel(
+            MANAGED_MULTI_DISC,
+            &multi_disc_options(),
+            selected,
+            width,
+            |s: &mut State, id: &str| set_managed_disc_folders(s, id == "disc-folders"),
             None,
             p,
         ));

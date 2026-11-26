@@ -75,9 +75,10 @@ pub use soul_audio_playlist::{
     select_cover, slugify,
 };
 pub use soul_player_backend::{
-    BrowseAxis, Command, Cover, Event, LoudnessAnalysisMode, PlayState, QueueState, RepeatMode,
-    ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath, SkipReason,
-    SkippedGroup, SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
+    BrowseAxis, Command, Cover, DiscSection, Event, LoudnessAnalysisMode, PlayState, QueueState,
+    RepeatMode, ReplayGainMode, SCAN_CACHE_VERSION, ScanCache, ScanPhase, ScanProgress, SignalPath,
+    SkipReason, SkippedGroup, SourceCodec, SourceFormat, Tick, TrackLoudness, TrackView,
+    album_identity_key, album_tracklist, disc_track_key,
 };
 
 type Subscriber = Box<dyn Fn(Event) + Send>;

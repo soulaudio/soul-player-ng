@@ -2299,6 +2299,28 @@ mod tests {
     }
 
     #[test]
+    fn a_pre_multi_disc_v3_scan_cache_is_discarded() {
+        // The multi-disc importer bumped the cache to v4 (RawTrack gained disc
+        // total/subtitle/MB release id); a v3 file must cold-start, not decode stale.
+        assert_eq!(SCAN_CACHE_VERSION, 4, "core multi-disc importer is v4");
+        let dir =
+            std::env::temp_dir().join(format!("soul_rune_scancache_v3_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("scan_caches.bin");
+        let v3 = PersistedCaches {
+            version: 3,
+            caches: HashMap::new(),
+        };
+        std::fs::write(&file, postcard::to_allocvec(&v3).unwrap()).unwrap();
+        assert!(
+            load_scan_caches_from(&file).is_empty(),
+            "a v3 cache is discarded"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn load_missing_scan_caches_is_empty() {
         assert!(
             load_scan_caches_from(Path::new("/no/such/soul-player/scan_caches.bin")).is_empty(),

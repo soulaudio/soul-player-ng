@@ -413,6 +413,7 @@ fn entry_row(
                 p,
                 play_ids,
                 play_index.unwrap_or(0),
+                None,
                 t,
                 // Lean: the playlist row carries inline reorder controls
                 // (up/down/remove) the old app doesn't have, so artist/album

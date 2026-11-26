@@ -31,6 +31,16 @@ use Status::{Pending, Wired};
 const LEDGER: &[(&str, Status, &str)] = &[
     // --- surfaced today ---
     (
+        "multi-disc albums (album identity, disc count/subtitle, track/disc no)",
+        Wired,
+        "TrackView.album_key/disc_*; group_albums by key; album page disc headers",
+    ),
+    (
+        "album-aware organizer (side files, disc layouts, Move pruning)",
+        Wired,
+        "organize_job::plan_import (plan_with + source root); Settings multi-disc layout",
+    ),
+    (
         "flat track list (title / artist / album)",
         Wired,
         "Library::views",

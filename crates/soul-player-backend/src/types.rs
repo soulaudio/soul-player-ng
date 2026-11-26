@@ -394,7 +394,7 @@ pub struct QueueState {
 }
 
 /// A library track as sent to the UI (no path, no cover bytes).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrackView {
     /// The track's (possibly compound, source-tagged) id.
     pub id: u32,
@@ -443,6 +443,42 @@ pub struct TrackView {
     /// `Arc<str>`: only a handful of distinct extensions exist across a library,
     /// so one allocation per format is shared by every track that uses it.
     pub format: Option<Arc<str>>,
+    /// The album's identity: the catalog's compound album id
+    /// `soul_audio_multicatalog::pack(source, local_album_id)`, the same scheme as
+    /// `id`, so a local and a remote album never collide. Two albums sharing a
+    /// title (two folders, two MusicBrainz releases) have different keys; a
+    /// `CD1/`+`CD2/` album has one. Volatile across rescans (like `id`).
+    pub album_key: u32,
+    /// The album's album artist (album-level, first-track-wins in the importer,
+    /// which falls back to the track artist), `None` when it is the importer's
+    /// "Unknown Artist" sentinel. Interned like `artist`.
+    pub album_artist: Option<Arc<str>>,
+    /// Tagged track number, `0` when untagged.
+    pub track_no: u16,
+    /// Disc number (tag, else the `CD2/`-style folder's number, else 1).
+    pub disc_no: u16,
+    /// The album's disc count (`>= 1`).
+    pub disc_count: u16,
+    /// The disc's subtitle (`DISCSUBTITLE`/`TSST`, else the disc folder's text,
+    /// e.g. `Disc 1 - Mondstadt`), `None` when absent. Interned.
+    pub disc_subtitle: Option<Arc<str>>,
+}
+
+impl TrackView {
+    /// The playlist-entry snapshot of this view (what a playlist stores beside the
+    /// durable locator): title/artist/album/rounded duration plus the tagged track
+    /// and disc numbers (`None` when untagged, i.e. `0`).
+    #[must_use]
+    pub fn snapshot(&self) -> TrackSnapshot {
+        TrackSnapshot {
+            title: self.title.clone().unwrap_or_default(),
+            artist: self.artist.as_deref().unwrap_or_default().to_string(),
+            album: self.album.as_deref().unwrap_or_default().to_string(),
+            duration_secs: self.duration_secs.round() as u32,
+            track_no: (self.track_no > 0).then_some(u32::from(self.track_no)),
+            disc_no: (self.disc_no > 0).then_some(u32::from(self.disc_no)),
+        }
+    }
 }
 
 /// The current track's ORIGINAL source format, for the signal-path display.

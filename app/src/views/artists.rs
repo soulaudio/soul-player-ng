@@ -76,13 +76,12 @@ pub(crate) fn group_artists(library: &[TrackView]) -> Vec<Artist> {
                 .filter_map(|id| remote_by_id.get(id).copied()),
         );
     }
-    // Album count = distinct albums across the artist's tracks (a `None` album is
-    // the shared "Unknown" bucket, same as `group_albums`). Same `id -> album` map
-    // rationale as the remote pass: avoid an O(n²) find per member id.
-    let album_by_id: HashMap<u32, Option<&str>> =
-        library.iter().map(|t| (t.id, t.album.as_deref())).collect();
+    // Album count = distinct albums by identity, the same grouping as
+    // `group_albums`. Same `id -> album` map rationale as the remote pass: avoid
+    // an O(n²) find per member id.
+    let album_by_id: HashMap<u32, u32> = library.iter().map(|t| (t.id, t.album_key)).collect();
     for artist in &mut artists {
-        let mut albums: Vec<Option<&str>> = artist
+        let mut albums: Vec<u32> = artist
             .ids
             .iter()
             .filter_map(|id| album_by_id.get(id).copied())
@@ -339,6 +338,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 p,
                 &artist.ids,
                 i,
+                None,
                 t,
                 false, // one artist: artist column is constant
                 true,  // but the top songs span albums
@@ -429,7 +429,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                 .flex_wrap()
                 .gaps(space::MD, space::GUTTER);
             for (slot, alb) in discography.iter().enumerate() {
-                let name = alb.name.clone();
+                let open = alb.open_ref();
                 grid_el = grid_el.child(media_card(
                     s,
                     p,
@@ -452,7 +452,7 @@ pub fn artist_detail(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
                         crate::navigate_to(
                             st,
                             crate::Route::Album,
-                            Some(name.clone()),
+                            Some(open.clone()),
                             None,
                             None,
                             None,
@@ -494,7 +494,7 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
         crate::views::library::tracks_label(alb.ids.len()),
         crate::views::albums::fmt_total_dur(total)
     );
-    let name = alb.name.clone();
+    let open = alb.open_ref();
     row()
         .key(format!("artist-disc-row-{i}"))
         .role("button")
@@ -537,7 +537,7 @@ fn album_row(s: &State, p: &Palette, i: usize, alb: &Album, scale: f32) -> El {
             crate::navigate_to(
                 st,
                 crate::Route::Album,
-                Some(name.clone()),
+                Some(open.clone()),
                 None,
                 None,
                 None,
@@ -563,6 +563,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -581,6 +583,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some(album)),
+            ..Default::default()
         }
     }
 

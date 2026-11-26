@@ -861,6 +861,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: format.map(|f| f.into()),
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
