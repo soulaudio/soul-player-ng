@@ -370,6 +370,10 @@ type VisibleAlbumsCache = Option<(
     std::rc::Rc<[usize]>,
 )>;
 
+/// A browse grid's memoized visible-index cache keyed by `(library fingerprint,
+/// lowercased query)` (see [`State::visible_artists`] / [`State::visible_genres`]).
+type VisibleIndexCache = Option<(u64, String, std::rc::Rc<[usize]>)>;
+
 /// Memoized playlist resolution: `(library_fp, playlist_id, entries_fp, resolved)`
 /// (see [`State::resolved_playlist`]).
 type ResolvedPlaylistCache = std::cell::RefCell<
@@ -463,6 +467,13 @@ struct State {
     /// fingerprint. The chip row otherwise re-scanned the WHOLE library (every
     /// track's genre, sorted + deduped) every frame while the panel was open.
     album_genre_set_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<[String]>)>>,
+    /// The Artists grid's visible-artist indices, memoized by (library fingerprint,
+    /// lowercased query). Same per-frame `to_lowercase`-per-artist cost the Albums
+    /// grid had; recomputed only when the library or the query changes.
+    visible_artists_cache: std::cell::RefCell<VisibleIndexCache>,
+    /// The Genres grid's visible-genre indices, memoized by (library fingerprint,
+    /// lowercased query).
+    visible_genres_cache: std::cell::RefCell<VisibleIndexCache>,
     /// The current playlist's resolution against the live library (per-entry
     /// availability, the available play context, total duration), memoized by
     /// (library fingerprint, playlist id, entries fingerprint). Resolving rebuilds a
@@ -1049,6 +1060,8 @@ impl State {
             visible_genre_tracks_cache: std::cell::RefCell::new(None),
             visible_albums_cache: std::cell::RefCell::new(None),
             album_genre_set_cache: std::cell::RefCell::new(None),
+            visible_artists_cache: std::cell::RefCell::new(None),
+            visible_genres_cache: std::cell::RefCell::new(None),
             resolved_playlist_cache: std::cell::RefCell::new(None),
             playlist_cover_cache: std::cell::RefCell::new(None),
             playlists,
@@ -1551,6 +1564,50 @@ impl State {
         let set: std::rc::Rc<[String]> = genres.into_iter().map(String::from).collect();
         *self.album_genre_set_cache.borrow_mut() = Some((fp, set.clone()));
         set
+    }
+
+    /// The Artists grid's visible-artist indices (into the memoized `grouped_artists`),
+    /// narrowed by the lowercased query `q`, memoized by (library fingerprint, query).
+    /// Mirrors [`visible_albums`](Self::visible_albums): the search otherwise allocated
+    /// a lowercased `String` per artist every frame over the whole grouping.
+    pub(crate) fn visible_artists(&self, q: &str) -> std::rc::Rc<[usize]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, cq, vis)) = self.visible_artists_cache.borrow().as_ref()
+            && *cfp == fp
+            && cq == q
+        {
+            return vis.clone();
+        }
+        let grouped = self.grouped_artists();
+        let visible: std::rc::Rc<[usize]> = grouped
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| q.is_empty() || a.name.to_lowercase().contains(q))
+            .map(|(i, _)| i)
+            .collect();
+        *self.visible_artists_cache.borrow_mut() = Some((fp, q.to_string(), visible.clone()));
+        visible
+    }
+
+    /// The Genres grid's visible-genre indices (into the memoized `grouped_genres`),
+    /// narrowed by the lowercased query `q`, memoized by (library fingerprint, query).
+    pub(crate) fn visible_genres(&self, q: &str) -> std::rc::Rc<[usize]> {
+        let fp = self.library_fingerprint();
+        if let Some((cfp, cq, vis)) = self.visible_genres_cache.borrow().as_ref()
+            && *cfp == fp
+            && cq == q
+        {
+            return vis.clone();
+        }
+        let grouped = self.grouped_genres();
+        let visible: std::rc::Rc<[usize]> = grouped
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| q.is_empty() || g.name.to_lowercase().contains(q))
+            .map(|(i, _)| i)
+            .collect();
+        *self.visible_genres_cache.borrow_mut() = Some((fp, q.to_string(), visible.clone()));
+        visible
     }
 
     /// The current playlist's resolution against the live library, per-entry

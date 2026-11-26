@@ -30,7 +30,7 @@ use crate::views::player::{cover, cover_from_path, group_remote_source};
 /// every one of its tracks streams from the same remote host (`None` for a
 /// local or mixed-source artist, see [`group_remote_source`]).
 pub(crate) struct Artist {
-    name: String,
+    pub(crate) name: String,
     cover_id: u32,
     ids: Vec<u32>,
     remote_source: Option<String>,
@@ -196,12 +196,9 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // Grouping is MEMOIZED (see `State::grouped_artists`); search narrows it to a
     // list of INDICES, never cloning the (potentially huge) artist list per frame.
     let grouped = s.grouped_artists();
-    let visible: Vec<usize> = grouped
-        .iter()
-        .enumerate()
-        .filter(|(_, a)| q.is_empty() || a.name.to_lowercase().contains(&q))
-        .map(|(i, _)| i)
-        .collect();
+    // Memoized on the State (see `State::visible_artists`): the search filter runs
+    // only when the library or the query changes, not every frame.
+    let visible: Rc<[usize]> = s.visible_artists(&q);
     // Reuse the albums grid's responsive column rule; read this page's own pane
     // width (first frame has no prior layout → a sensible desktop fallback).
     let pane = cx.layout_size("artists").map(|[w, _]| w).unwrap_or(820.0);
@@ -219,7 +216,6 @@ pub fn artists_page(s: &State, p: &Palette, cx: &Cx<State>, scale: f32) -> El {
     // `grid::virtual_grid`). The closure captures the memoized grouping + visible
     // indices by `Rc`.
     let grouped_cards = grouped.clone();
-    let visible: Rc<[usize]> = visible.into();
     let count = visible.len();
     let vis_cards = visible.clone();
     let pal = *p;

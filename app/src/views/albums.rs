@@ -1133,6 +1133,37 @@ mod tests {
         assert_eq!(v3.len(), 1, "only the matching album is visible");
     }
 
+    /// The Artists and Genres browse grids' per-frame filters are memoized on the
+    /// State the same way (same `Rc::ptr_eq` cache-hit contract).
+    #[test]
+    fn visible_artists_and_genres_are_memoized_across_frames() {
+        use std::rc::Rc;
+
+        let mut s = State::new(soul_player_host::PlayerHandle::offline());
+        let mut rock = atv(1, "Pavement", "Crooked Rain");
+        rock.genre = Some("Rock".into());
+        let mut jazz = atv(2, "Can", "Tago Mago");
+        jazz.genre = Some("Jazz".into());
+        s.library = vec![rock, jazz];
+
+        let a1 = s.visible_artists("");
+        let a2 = s.visible_artists("");
+        assert!(
+            Rc::ptr_eq(&a1, &a2),
+            "visible_artists returns the cached Rc"
+        );
+        assert_eq!(a1.len(), 2, "both artists are visible with no query");
+
+        let g1 = s.visible_genres("");
+        let g2 = s.visible_genres("");
+        assert!(Rc::ptr_eq(&g1, &g2), "visible_genres returns the cached Rc");
+        assert_eq!(g1.len(), 2, "both genres are visible with no query");
+
+        let a3 = s.visible_artists("can");
+        assert!(!Rc::ptr_eq(&a1, &a3), "a changed query recomputes artists");
+        assert_eq!(a3.len(), 1, "the query narrows to the matching artist");
+    }
+
     /// A realistic library of `n` tracks: ~12 tracks per album, ~8 albums per
     /// artist, so grouping produces a believable album/artist fan-out.
     fn synth_library(n: u32) -> Vec<TrackView> {
