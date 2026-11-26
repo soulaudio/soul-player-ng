@@ -354,6 +354,11 @@ fn pump_thread<K, Mk, Pk, Ev>(
     // `None` + dirty means "apply once up front" (sets the deck to unity).
     let mut rg_applied_for: Option<u32> = None;
     let mut rg_dirty = true;
+    // Caches the current track's loudness-key path (id -> path_of(id)) so the
+    // per-tick signal-path emission reuses it instead of calling `path_of` ~8x/s.
+    // `path_of` can block on a remote cache miss (a whole-file download), so doing
+    // it every tick churned the pump thread; resolve it once per track change.
+    let mut sp_key_cache: Option<(u32, Option<PathBuf>)> = None;
 
     loop {
         // 1. Drain commands.
@@ -691,7 +696,7 @@ fn pump_thread<K, Mk, Pk, Ev>(
             // consistent with the track-list length.
             if tick.duration_secs.is_none()
                 && let Some(id) = tick.now_playing_id
-                && let Some(d) = library.lock().expect("library mutex").duration_of(id)
+                && let Some(d) = resolve_duration(&library, id)
             {
                 tick.duration_secs = Some(d);
             }
@@ -717,7 +722,8 @@ fn pump_thread<K, Mk, Pk, Ev>(
             let mut sp = project_signal_path(&player);
             if let Some(sp) = sp.as_mut()
                 && let Some(id) = cur_id
-                && let Some(path) = resolve_source_path(&library, id)
+                && let Some(path) =
+                    loudness_key_path(&mut sp_key_cache, id, || resolve_source_path(&library, id))
             {
                 sp.loudness = loudness.metrics(&path);
             }
@@ -804,6 +810,33 @@ fn resolve_source_path(library: &Arc<Mutex<Arc<dyn TrackSource>>>, id: u32) -> O
     source.path_of(id)
 }
 
+/// Resolve track `id`'s tag-derived duration without holding the library mutex
+/// across the trait call (snapshot the `Arc`, release the lock, then call). Today
+/// `duration_of` is a cheap in-memory lookup for every source, but mirroring
+/// [`resolve_source_path`]'s clone-and-release keeps the pump (and the loader,
+/// which shares this lock) safe if a future remote `duration_of` ever touches the
+/// network, the same held-lock-across-IO hazard removed elsewhere on this path.
+fn resolve_duration(library: &Arc<Mutex<Arc<dyn TrackSource>>>, id: u32) -> Option<f64> {
+    let source = library.lock().expect("library mutex").clone();
+    source.duration_of(id)
+}
+
+/// The loudness-key path for `id`, resolved through `resolve` only when `id`
+/// differs from the cached entry, else reused. `resolve` (a `path_of` that can
+/// block on a remote whole-file download) then runs at most once per track change
+/// instead of once per tick (~8 Hz), keeping the pump thread off the blocking I/O
+/// path for the signal-path loudness readout. Returns a clone of the cached path.
+fn loudness_key_path(
+    cache: &mut Option<(u32, Option<PathBuf>)>,
+    id: u32,
+    resolve: impl FnOnce() -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    if cache.as_ref().map(|(cached_id, _)| *cached_id) != Some(id) {
+        *cache = Some((id, resolve()));
+    }
+    cache.as_ref().and_then(|(_, path)| path.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -811,6 +844,64 @@ mod tests {
     use crate::testutil::NullSink;
     use std::path::PathBuf;
     use std::sync::mpsc::RecvTimeoutError;
+
+    /// The per-tick signal-path emission resolves its loudness-key path through
+    /// [`loudness_key_path`], which must call the (blocking-capable) resolver only
+    /// ONCE per track change and reuse the cache for every subsequent tick, so the
+    /// pump never re-runs `path_of` ~8x/second.
+    #[test]
+    fn loudness_key_path_resolves_once_per_track_then_reuses_the_cache() {
+        use std::cell::Cell;
+
+        let calls = Cell::new(0u32);
+        let resolve = |id: u32| -> Option<PathBuf> {
+            calls.set(calls.get() + 1);
+            Some(PathBuf::from(format!("/track/{id}")))
+        };
+        let mut cache: Option<(u32, Option<PathBuf>)> = None;
+
+        // First tick for track 7: resolves once.
+        assert_eq!(
+            loudness_key_path(&mut cache, 7, || resolve(7)),
+            Some(PathBuf::from("/track/7"))
+        );
+        assert_eq!(calls.get(), 1);
+
+        // Further ticks for the SAME track reuse the cache: the blocking resolver
+        // is not called again.
+        for _ in 0..5 {
+            assert_eq!(
+                loudness_key_path(&mut cache, 7, || resolve(7)),
+                Some(PathBuf::from("/track/7"))
+            );
+        }
+        assert_eq!(
+            calls.get(),
+            1,
+            "resolve runs once per track, not once per tick"
+        );
+
+        // A track change resolves exactly once more.
+        assert_eq!(
+            loudness_key_path(&mut cache, 8, || resolve(8)),
+            Some(PathBuf::from("/track/8"))
+        );
+        assert_eq!(calls.get(), 2);
+
+        // An unresolvable id caches the `None` too, so a failing `path_of` is not
+        // retried every tick (the continuous-churn case the audit flagged).
+        let unresolved = |_id: u32| -> Option<PathBuf> {
+            calls.set(calls.get() + 1);
+            None
+        };
+        assert_eq!(loudness_key_path(&mut cache, 9, || unresolved(9)), None);
+        assert_eq!(loudness_key_path(&mut cache, 9, || unresolved(9)), None);
+        assert_eq!(
+            calls.get(),
+            3,
+            "even an unresolved path is cached, not re-resolved per tick"
+        );
+    }
 
     /// `resolve_source_path` must RELEASE the library mutex before calling `path_of`:
     /// a remote `path_of` does blocking I/O (a cache stat, or a whole-file download on
