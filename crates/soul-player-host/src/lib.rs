@@ -934,7 +934,8 @@ impl PlayerHandle {
     /// change, a manual Rescan, and the deferred startup scan. See
     /// [`rescan_build`](Self::rescan_build).
     fn rescan_compute(&self) -> anyhow::Result<ScanReport> {
-        self.rescan_build(None)
+        let cfg = self.inner.folders.lock().expect("folders mutex").clone();
+        self.rescan_build(cfg, None)
     }
 
     /// A **scoped** rescan: re-read only the roots in `affected` (that are enabled +
@@ -946,7 +947,8 @@ impl PlayerHandle {
         &self,
         affected: &std::collections::HashSet<PathBuf>,
     ) -> anyhow::Result<ScanReport> {
-        self.rescan_build(Some(affected))
+        let cfg = self.inner.folders.lock().expect("folders mutex").clone();
+        self.rescan_build(cfg, Some(affected))
     }
 
     /// The scan itself, **without emitting any event**: (incrementally) re-read the
@@ -958,10 +960,10 @@ impl PlayerHandle {
     /// synchronous path emits inline right after, ordering the same way).
     fn rescan_build(
         &self,
+        cfg: Vec<FolderConfig>,
         affected: Option<&std::collections::HashSet<PathBuf>>,
     ) -> anyhow::Result<ScanReport> {
         use std::collections::HashSet;
-        let cfg = self.inner.folders.lock().expect("folders mutex").clone();
         let to_scan: Vec<PathBuf> = cfg
             .iter()
             .filter(|f| f.enabled && f.path.is_dir())
@@ -1059,6 +1061,26 @@ impl PlayerHandle {
             drop(cached);
             (Library::from_source_bytes(&roots, merged), store)
         };
+
+        // If the configured folder set changed WHILE this scan ran, this result is
+        // stale: a source was added / removed / toggled since `cfg` was snapshotted,
+        // and that change triggered its OWN fresh rescan which owns the authoritative
+        // commit. Committing this stale scan would clobber that and could resurrect a
+        // just-removed source (library / source_bytes / last_sources would show it
+        // while `folders` already says it is gone). Bail without touching any shared
+        // state and report the current committed view; the config-change rescan has
+        // it right. (The common case, no concurrent config change, compares equal and
+        // falls straight through.)
+        if *self.inner.folders.lock().expect("folders mutex") != cfg {
+            return Ok(ScanReport {
+                update: WatchUpdate {
+                    views: self.views(),
+                    sources: self.sources(),
+                },
+                removed,
+                skipped,
+            });
+        }
 
         let configured: HashSet<&PathBuf> = cfg.iter().map(|f| &f.path).collect();
         // Refresh the re-scanned roots' caches; keep configured-but-unscanned roots
@@ -3449,6 +3471,56 @@ mod tests {
             vec![a.path().to_path_buf(), b.path().to_path_buf()]
         );
         assert_eq!(h.views().len(), 3, "views() reflects the union");
+    }
+
+    /// A rescan whose `cfg` snapshot is stale (a source was removed after the scan
+    /// started, so the live `folders` no longer match) must NOT commit its result,
+    /// or it would resurrect the removed source. The config-change rescan owns the
+    /// commit; the stale one bails.
+    #[test]
+    fn a_rescan_whose_config_changed_mid_scan_does_not_commit_stale_sources() {
+        let a = folder_with("src_a", &["a1.wav"]);
+        let x = folder_with("src_x", &["x1.wav"]);
+
+        let h = PlayerHandle::offline();
+        // Live, committed config: just [a].
+        h.set_folders(&[a.path().to_path_buf()]).unwrap();
+        assert_eq!(
+            h.views().len(),
+            1,
+            "the committed library holds only a's track"
+        );
+
+        // A scan whose snapshot still held x (as if x was removed mid-scan). The
+        // live folders are now just [a], so committing x's bytes would resurrect
+        // the removed source. The staleness guard must skip the commit.
+        let stale_cfg = vec![
+            FolderConfig {
+                path: a.path().to_path_buf(),
+                enabled: true,
+            },
+            FolderConfig {
+                path: x.path().to_path_buf(),
+                enabled: true,
+            },
+        ];
+        let report = h.rescan_build(stale_cfg, None).unwrap();
+
+        assert_eq!(
+            h.views().len(),
+            1,
+            "the stale scan did not commit x: the live library still holds only a"
+        );
+        assert_eq!(
+            h.watched_folders(),
+            vec![a.path().to_path_buf()],
+            "the configured set is untouched by the stale scan"
+        );
+        assert_eq!(
+            report.update.views.len(),
+            1,
+            "the report reflects the current committed state, not the stale scan"
+        );
     }
 
     #[test]
