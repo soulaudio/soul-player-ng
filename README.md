@@ -1,14 +1,10 @@
-<!-- Theme-aware mark: the white-bodied logo on GitHub's dark theme, the
-     dark-bodied one on light, so it stays legible either way (the app's own
-     icon pair). Both prefers-color-scheme sources are explicit and use absolute
-     raw URLs: GitHub resolves those in a <source srcset> reliably, where a
-     relative srcset can fail to load and fall through to the <img> fallback,
-     which is what left dark mode showing the dark-bodied mark. -->
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon-light.png">
-  <img alt="Soul Player" src="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon-light.png" width="84" height="84">
-</picture>
+<!-- Theme-aware mark: white-bodied on GitHub's dark theme, dark-bodied on light.
+     Uses GitHub's #gh-*-mode-only fragments, which GitHub hides/shows via CSS keyed
+     on its OWN theme (data-color-mode), rather than <picture>/prefers-color-scheme:
+     fingerprint-resistant browsers (LibreWolf, Tor) force prefers-color-scheme to
+     light, which left the dark-bodied mark sitting on the dark page. -->
+<img alt="Soul Player" src="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon.png#gh-dark-mode-only" width="84" height="84">
+<img alt="Soul Player" src="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon-light.png#gh-light-mode-only" width="84" height="84">
 
 # Soul Player
 
