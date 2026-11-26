@@ -373,7 +373,7 @@ mod tests {
 
     #[test]
     fn every_data_path_is_ours() {
-        // Under test the config folder is a per-process temp dir; the real
+        // Under test the config folder is a per-thread temp dir; the real
         // one is `<config>/soul-player`.
         let test_dir = crate::config::soul_player_dir();
         for p in data_paths()
