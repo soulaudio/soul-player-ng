@@ -3061,6 +3061,19 @@ fn spectrum_poll_inner(s: &mut State, _now: f64, tx: &mut Tx) -> bool {
             return true;
         }
     }
+    // Same blur-commit for the inline PROFILE-rename editor: once its buffer loses
+    // focus (click elsewhere, or Escape) commit the typed name and close it, so a
+    // rename started then clicked away from doesn't strand the field open (which also
+    // left the profile switcher inaccessible and the typed name neither saved nor
+    // discarded). Mirrors `eq_edit` / `dsp_rename` above.
+    if s.profile_rename.is_some() {
+        if s.profile_rename_buf.focused {
+            tx.wake_after(std::time::Duration::from_millis(50));
+        } else {
+            commit_profile_rename(s);
+            return true;
+        }
+    }
     let visible = matches!(s.route, Route::Settings) && s.settings_tab == SettingsTab::Audio;
     if !(visible && s.playing) {
         if s.spectrum.is_empty() {
@@ -14508,6 +14521,45 @@ mod tests {
         );
     }
 
+    /// The inline profile-rename editor commits on blur. Start a rename, type a new
+    /// name, then let the field lose focus (click away, or Escape) WITHOUT pressing
+    /// Enter: the poll's blur-commit applies the typed name and closes the editor,
+    /// rather than stranding the field open (which also locked the profile switcher
+    /// away and dropped the edit). Mirrors the eq_edit / dsp_rename blur guarantees.
+    #[test]
+    fn profile_rename_commits_on_blur_instead_of_stranding_the_field() {
+        let _g = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        start_profile_rename(&mut s);
+        assert!(s.profile_rename.is_some(), "the rename editor opens");
+        // Type a new name, then blur the field (focus lost) without pressing Enter.
+        s.profile_rename_buf = rune::TextEdit::new("Live Mix");
+        s.profile_rename_buf.focused = false;
+
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        // Runtime::new doesn't wire the app poll; attach it so the blur-commit runs.
+        rt.poll = Some(spectrum_poll);
+        rt.frame(0.0);
+
+        assert!(
+            rt.state.profile_rename.is_none(),
+            "blur closes the rename editor instead of leaving it stranded open"
+        );
+        assert_eq!(
+            rt.state.profile_set.active().map(|p| p.name.as_str()),
+            Some("Live Mix"),
+            "the typed name was committed on blur, not dropped"
+        );
+    }
+
     /// Hiding a nav item plays a *sequential* reveal driven by the poll: first the
     /// label fades while the row keeps full height (nothing below reflows), THEN,
     /// once it's invisible, the height collapses, and finally the row leaves.
@@ -17704,6 +17756,45 @@ mod tests {
             rt.state.host.recorded_commands(),
             vec![Command::MoveInQueue { from: 0, to: 1 }],
             "releasing the drag commits a MoveInQueue for the dragged row"
+        );
+    }
+
+    /// Pressing Escape mid-drag CANCELS a queue reorder rather than committing it: Rune
+    /// delivers `Phase::Up { cancelled: true }`, and the handler must abort, not move.
+    #[test]
+    fn escape_mid_drag_cancels_a_queue_reorder_instead_of_committing() {
+        use crate::views::queue::QUEUE_ROW_H;
+        let mut rt = Runtime::new(
+            recording_queue_state(&[10, 20, 30], &[]),
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        rt.frame(0.0);
+        let (gx, gy) = rt.find("grip-0").expect("manual row grip");
+        rt.pointer_move(gx, gy);
+        rt.pointer_down(gx, gy);
+        rt.pointer_move(gx, gy - QUEUE_ROW_H);
+        rt.frame(0.0);
+        assert!(rt.state.queue_drag.is_some(), "the drag is in progress");
+
+        // Escape cancels the in-flight gesture.
+        rt.key(KeyEvent {
+            key: Key::Escape,
+            mods: Mods::default(),
+        });
+        rt.frame(0.0);
+
+        assert_eq!(
+            rt.state.queue_drag, None,
+            "the cancelled gesture ends the drag"
+        );
+        assert!(
+            rt.state.host.recorded_commands().is_empty(),
+            "a cancelled reorder must NOT dispatch a MoveInQueue"
         );
     }
 

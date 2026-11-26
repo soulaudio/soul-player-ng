@@ -169,8 +169,10 @@ fn manual_row(s: &State, p: &Palette, scale: f32, i: usize, id: u32, k: u32, dra
                 }
             }
             Phase::Up => {
+                // Abort on Escape / a cancelled gesture rather than committing the move.
                 if let Some((from, to)) = st.queue_drag.take()
                     && from != to
+                    && !d.cancelled()
                 {
                     st.host.send(Command::MoveInQueue {
                         from: from as u32,
