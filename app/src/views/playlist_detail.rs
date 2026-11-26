@@ -498,7 +498,12 @@ fn grip_handle(i: usize, id: PlaylistId, p: &Palette) -> El {
                 }
                 Phase::Up => {
                     if let Some((from, to)) = st.playlist_drag.take() {
-                        st.playlists.move_entry(id, from, to);
+                        // Escape mid-drag (or any cancelled gesture) must ABORT the
+                        // reorder, not commit it, the move persists to disk. Mirrors the
+                        // slider's `d.cancelled()` check.
+                        if !d.cancelled() {
+                            st.playlists.move_entry(id, from, to);
+                        }
                     }
                 }
             },
