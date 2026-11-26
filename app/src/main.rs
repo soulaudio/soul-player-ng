@@ -3252,6 +3252,19 @@ fn spectrum_poll_inner(s: &mut State, _now: f64, tx: &mut Tx) -> bool {
             return true;
         }
     }
+    // Same blur-commit for the inline PROFILE-rename editor: once its buffer loses
+    // focus (click elsewhere, or Escape) commit the typed name and close it, so a
+    // rename started then clicked away from doesn't strand the field open (which also
+    // left the profile switcher inaccessible and the typed name neither saved nor
+    // discarded). Mirrors `eq_edit` / `dsp_rename` above.
+    if s.profile_rename.is_some() {
+        if s.profile_rename_buf.focused {
+            tx.wake_after(std::time::Duration::from_millis(50));
+        } else {
+            commit_profile_rename(s);
+            return true;
+        }
+    }
     let visible = matches!(s.route, Route::Settings) && s.settings_tab == SettingsTab::Audio;
     if !(visible && s.playing) {
         if s.spectrum.is_empty() {
@@ -15258,6 +15271,45 @@ mod tests {
         assert!(
             !visible(&rt, "nav-albums"),
             "the hidden item is no longer drawn once the reveal finishes"
+        );
+    }
+
+    /// The inline profile-rename editor commits on blur. Start a rename, type a new
+    /// name, then let the field lose focus (click away, or Escape) WITHOUT pressing
+    /// Enter: the poll's blur-commit applies the typed name and closes the editor,
+    /// rather than stranding the field open (which also locked the profile switcher
+    /// away and dropped the edit). Mirrors the eq_edit / dsp_rename blur guarantees.
+    #[test]
+    fn profile_rename_commits_on_blur_instead_of_stranding_the_field() {
+        let _g = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        start_profile_rename(&mut s);
+        assert!(s.profile_rename.is_some(), "the rename editor opens");
+        // Type a new name, then blur the field (focus lost) without pressing Enter.
+        s.profile_rename_buf = rune::TextEdit::new("Live Mix");
+        s.profile_rename_buf.focused = false;
+
+        let mut rt = Runtime::new(
+            s,
+            view,
+            (1100.0, 720.0),
+            Env {
+                system_dark: true,
+                scale: 2.0,
+            },
+        );
+        // Runtime::new doesn't wire the app poll; attach it so the blur-commit runs.
+        rt.poll = Some(spectrum_poll);
+        rt.frame(0.0);
+
+        assert!(
+            rt.state.profile_rename.is_none(),
+            "blur closes the rename editor instead of leaving it stranded open"
+        );
+        assert_eq!(
+            rt.state.profile_set.active().map(|p| p.name.as_str()),
+            Some("Live Mix"),
+            "the typed name was committed on blur, not dropped"
         );
     }
 
