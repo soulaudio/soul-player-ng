@@ -1650,21 +1650,52 @@ pub(crate) fn scan_in_background(
     s: &mut State,
     op: impl FnOnce(&PlayerHandle) -> anyhow::Result<WatchUpdate> + Send + 'static,
     apply: fn(&mut State, WatchUpdate),
+    on_err: fn(&mut State, anyhow::Error),
 ) {
     match s.app_handle.clone() {
         Some(handle) => {
             let host = s.host.clone();
-            std::thread::spawn(move || {
-                if let Ok(up) = op(&host) {
-                    handle.update(move |s: &mut State, _tx: &mut Tx| apply(s, up));
-                }
+            std::thread::spawn(move || match op(&host) {
+                Ok(up) => handle.update(move |s: &mut State, _tx: &mut Tx| apply(s, up)),
+                // A dropped Err used to be invisible AND could wedge gating state
+                // (see `startup_scan_failed`); marshal it back so the handler runs on
+                // the UI thread.
+                Err(e) => handle.update(move |s: &mut State, _tx: &mut Tx| on_err(s, e)),
             });
         }
-        None => {
-            if let Ok(up) = op(&s.host) {
-                apply(s, up);
-            }
-        }
+        None => match op(&s.host) {
+            Ok(up) => apply(s, up),
+            Err(e) => on_err(s, e),
+        },
+    }
+}
+
+/// Default failure handler for a background scan: record it. Most scans (a Sources
+/// rescan, enable/disable, add/remove a folder) have no gating to unwind, so the only
+/// bug was the silent drop that made a failure undiagnosable.
+pub(crate) fn log_scan_error(_s: &mut State, e: anyhow::Error) {
+    tracing::error!(error = %e, "background library scan failed");
+}
+
+/// Failure handler for the one-shot startup scan. Besides logging, it must release
+/// the open gate: `startup_scan_pending` is otherwise cleared ONLY by
+/// [`apply_startup_scan`], so a dropped Err left it stuck true forever, and every OS
+/// "Open With" file queued to `pending_open` without ever playing (and prewarm never
+/// ran). Mirror the success path's tail: release the gate, prewarm, and retry any
+/// queued opens against whatever library we have.
+pub(crate) fn startup_scan_failed(s: &mut State, e: anyhow::Error) {
+    tracing::error!(
+        error = %e,
+        queued = s.pending_open.len(),
+        "startup library scan failed; releasing the open gate"
+    );
+    s.startup_scan_pending = false;
+    if should_prewarm(s.library.is_empty(), s.exclusive) {
+        s.host.prewarm();
+    }
+    let waiting = std::mem::take(&mut s.pending_open);
+    if !waiting.is_empty() {
+        open_files::open(s, waiting);
     }
 }
 
@@ -5482,7 +5513,12 @@ fn main() -> anyhow::Result<()> {
             // main thread. Results fold in via `apply_and_save` and the title-bar
             // activity widget animates meanwhile, no blocked first paint (#102).
             if needs_startup_scan {
-                scan_in_background(s, |host| host.rescan_sources(), apply_startup_scan);
+                scan_in_background(
+                    s,
+                    |host| host.rescan_sources(),
+                    apply_startup_scan,
+                    startup_scan_failed,
+                );
             }
             // Reconnect every persisted remote source (Inc 5), also off the main
             // thread, same "don't block the first paint" reasoning as the local
@@ -8195,6 +8231,7 @@ mod tests {
             &mut rt.state,
             move |h| h.set_folder_enabled(&testdata_dir(), false),
             apply_watch,
+            log_scan_error,
         );
         rt.frame(0.0);
         rt.settle_all();
@@ -8220,6 +8257,7 @@ mod tests {
             &mut rt.state,
             move |h| h.set_folder_enabled(&testdata_dir(), true),
             apply_watch,
+            log_scan_error,
         );
         rt.frame(0.0);
         rt.settle_all();
@@ -11403,6 +11441,50 @@ mod tests {
                 .iter()
                 .all(|src| !matches!(&src.kind, SourceKind::Remote { url } if url == "http://unreachable-remote.invalid")),
             "a remote that never reconnected (no stored credential) is not added to Inner::remotes"
+        );
+    }
+
+    /// A failed startup scan must RELEASE the open gate. The startup scan is the only
+    /// thing that clears `startup_scan_pending`; if it errored and was silently dropped,
+    /// the gate stayed true forever and every OS "Open With" file queued to `pending_open`
+    /// and never played. The failure handler releases the gate so opens resume.
+    #[test]
+    fn a_failed_startup_scan_releases_the_open_gate() {
+        let _config_guard = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.startup_scan_pending = true;
+
+        startup_scan_failed(&mut s, anyhow::anyhow!("scan boom"));
+
+        assert!(
+            !s.startup_scan_pending,
+            "a failed startup scan releases the gate so OS file-opens are not wedged forever"
+        );
+        assert!(
+            s.pending_open.is_empty(),
+            "nothing was queued, so there is nothing left pending"
+        );
+    }
+
+    /// `scan_in_background` routes a failed op to its error handler instead of silently
+    /// dropping it (the old `if let Ok(up)` swallowed every Err). With no `app_handle`
+    /// the op runs synchronously, so the handler runs inline.
+    #[test]
+    fn scan_in_background_routes_a_failed_op_to_the_error_handler() {
+        let _config_guard = config::use_test_config_dir();
+        let mut s = State::new(PlayerHandle::offline());
+        s.startup_scan_pending = true;
+
+        scan_in_background(
+            &mut s,
+            |_h| Err(anyhow::anyhow!("boom")),
+            apply_startup_scan,
+            startup_scan_failed,
+        );
+
+        assert!(
+            !s.startup_scan_pending,
+            "the error handler ran (released the gate) rather than the Err being dropped"
         );
     }
 
