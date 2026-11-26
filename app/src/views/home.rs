@@ -10,6 +10,7 @@ use soul_player_host::Command;
 use crate::State;
 use crate::theme::Palette;
 use crate::ui::{fx, radius, space, type_};
+use crate::views::albums::Album;
 use crate::views::icons;
 use crate::views::player::cover;
 
@@ -19,8 +20,10 @@ const TILE: f32 = 132.0;
 const PREVIEW: usize = 12;
 
 /// One album preview tile: a cover + the album name, opening the album's detail.
-fn album_tile(s: &State, p: &Palette, slot: usize, name: String, cover_id: u32, scale: f32) -> El {
-    let open = name.clone();
+fn album_tile(s: &State, p: &Palette, slot: usize, a: &Album, scale: f32) -> El {
+    let name = a.name.clone();
+    let cover_id = a.cover_id;
+    let open = a.open_ref();
     col()
         .key(format!("home-album-{slot}"))
         .role("button")
@@ -158,7 +161,7 @@ pub fn home_page(s: &State, p: &Palette, _cx: &Cx<State>, scale: f32) -> El {
             .flex_wrap()
             .gaps(space::MD, space::GUTTER);
         for (slot, a) in albums.iter().take(PREVIEW).enumerate() {
-            grid = grid.child(album_tile(s, p, slot, a.name.clone(), a.cover_id, scale));
+            grid = grid.child(album_tile(s, p, slot, a, scale));
         }
         section = section.child(grid);
         content = content.child(section);

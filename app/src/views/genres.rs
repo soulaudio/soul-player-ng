@@ -317,6 +317,7 @@ pub fn genre_detail(s: &State, p: &Palette, scale: f32) -> El {
                         &pal,
                         &build_ids,
                         i,
+                        None,
                         &build_lib[build_idxs[i]],
                         true, // a genre spans many artists
                         true, // and many albums
@@ -365,6 +366,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 

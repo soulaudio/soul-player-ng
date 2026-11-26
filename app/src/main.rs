@@ -58,6 +58,8 @@ mod open_files;
 mod organize_job;
 mod playlists;
 mod report;
+#[cfg(test)]
+mod test_fixtures;
 // The tray (Rune `Tray`) has Linux/Windows backends only; macOS uses `macos_menu`.
 #[cfg(any(not(target_os = "macos"), test))]
 mod systray;
@@ -130,12 +132,33 @@ pub(crate) enum Route {
     Settings,
 }
 
+/// Which album a detail page shows: its identity (`TrackView::album_key`, so two
+/// same-title albums are different pages) plus its title, the fallback
+/// `views::albums::resolve_album` uses when a rescan re-numbers album ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AlbumRef {
+    pub key: u32,
+    pub name: String,
+}
+
+#[cfg(test)]
+impl AlbumRef {
+    /// A title-only reference (key 0 never matches a real key, so it resolves by
+    /// title), for tests written against album names.
+    pub(crate) fn by_name(name: &str) -> Self {
+        Self {
+            key: 0,
+            name: name.to_string(),
+        }
+    }
+}
+
 /// One entry in the navigation back-stack: a full location (route + which
 /// album/artist/genre is open). Pushed by `navigate_to`, restored by `go_back`.
 #[derive(Clone, PartialEq)]
 pub(crate) struct NavEntry {
     pub route: Route,
-    pub open_album: Option<String>,
+    pub open_album: Option<AlbumRef>,
     pub open_artist: Option<String>,
     pub open_genre: Option<String>,
     pub open_playlist: Option<playlists::PlaylistId>,
@@ -158,7 +181,7 @@ fn here(s: &State) -> NavEntry {
 pub(crate) fn navigate_to(
     s: &mut State,
     route: Route,
-    open_album: Option<String>,
+    open_album: Option<AlbumRef>,
     open_artist: Option<String>,
     open_genre: Option<String>,
     open_playlist: Option<playlists::PlaylistId>,
@@ -274,22 +297,46 @@ impl ThemePref {
 /// The managed-library "Add music → organize" flow as an explicit phase machine,
 /// driven entirely by direct state transitions (the pure `organize_*` helpers
 /// below) so it is fully headless-testable. `State::organize` holds the current
-/// phase (`None` = the flow is idle, no modal). The thread wiring that fills
-/// `Planning`/`Applying` with real `organize::plan`/`apply` work is a separate
-/// task; this type and its transitions carry only the UI state machine.
+/// phase (`None` = the flow is idle, no modal). Worker threads do the real work
+/// (`organize_job::plan_import`, which calls `organize::plan_with` with the picked
+/// folder as source root, then `organize_job::run_apply`) and post their results
+/// back through these transitions; this type carries only the UI state machine.
 pub(crate) enum OrganizePhase {
-    /// Scanning the chosen files and computing the plan (Task 2 fills the work).
+    /// Scanning the picked folder and computing the plan (`plan_import`, off-thread).
     Planning,
     /// The plan is ready; the user confirms or cancels before anything is written.
-    Confirm(organize::OrganizePlan),
+    /// `summary` is computed once from the plan (the modal only renders it).
+    Confirm {
+        plan: organize::OrganizePlan,
+        summary: organize_job::PlanSummary,
+    },
     /// The plan is being applied; progress ticks in per finished entry.
     Applying {
         done: usize,
         total: usize,
         current: String,
     },
-    /// The run finished; the outcome tally is shown.
-    Done(organize::Summary),
+    /// The run finished; the outcome tally is shown, with the first failures
+    /// (`failed`, precomputed from `summary.failed`).
+    Done {
+        summary: organize::Summary,
+        failed: organize_job::FailedPreview,
+    },
+}
+
+impl OrganizePhase {
+    /// The Confirm phase for `plan` (made with the stored `template_id`), with its
+    /// summary precomputed.
+    pub(crate) fn confirm(plan: organize::OrganizePlan, template_id: &str) -> Self {
+        let summary = organize_job::summarize(&plan, template_id);
+        OrganizePhase::Confirm { plan, summary }
+    }
+
+    /// The Done phase for an apply's `summary`, with its failure list precomputed.
+    pub(crate) fn done(summary: organize::Summary) -> Self {
+        let failed = organize_job::failed_preview(&summary.failed);
+        OrganizePhase::Done { summary, failed }
+    }
 }
 
 /// A memoized `track id -> library index` map (see [`State::track_positions`]).
@@ -505,9 +552,9 @@ struct State {
     signal_path_open: bool,
     /// Current page (Library vs Settings).
     route: Route,
-    /// The album whose detail page is open (by album name, the `group_albums`
-    /// key), when `route == Route::Album`. Set from an album card's body click.
-    open_album: Option<String>,
+    /// The album whose detail page is open (identity + title fallback), when
+    /// `route == Route::Album`. Set from an album card's body click.
+    open_album: Option<AlbumRef>,
     /// Which artist's detail page is showing, when `route == Route::Artist`.
     /// Set from an artist card's body click.
     open_artist: Option<String>,
@@ -515,9 +562,10 @@ struct State {
     /// Set from a genre row's click.
     open_genre: Option<String>,
     /// Which playlist's detail page is showing, when `route == Route::Playlist`.
-    /// Unlike `open_album`/`open_artist`/`open_genre` (keyed by display name),
-    /// this is the playlist's stable [`playlists::PlaylistId`]: a
-    /// playlist has no natural unique name, so the id is the only durable key.
+    /// Like `open_album` (an [`AlbumRef`]: album identity plus title) and unlike
+    /// `open_artist`/`open_genre` (keyed by display name), this is the playlist's
+    /// stable [`playlists::PlaylistId`]: a playlist has no natural unique name, so
+    /// the id is the only durable key.
     /// Set from a playlist row's click.
     open_playlist: Option<playlists::PlaylistId>,
     /// The navigation back-stack (ephemeral): locations behind the current one, so
@@ -933,6 +981,9 @@ impl State {
         // Restore the managed-library choice (defaults: unset dest, "artist-album"
         // template, Copy); the stored strategy id maps to the organizer enum.
         let (managed_dest, managed_template, managed_strategy_id) = config::load_managed_library();
+        // Migrate the stored template id (old preset ids stay; an impossible
+        // `+disc-folders` id keeps its layout; an unknown id falls back).
+        let managed_template = organize_job::normalize_template_id(&managed_template);
         let managed_strategy = if managed_strategy_id == "move" {
             Strategy::Move
         } else {
@@ -1115,7 +1166,8 @@ impl State {
     /// ORDER, or per-track LOUDNESS of tracks changes, used to invalidate the
     /// grouping / `library_rc` caches. Samples ~16 tracks at even strides plus the
     /// length rather than hashing every track, so it stays O(1)-ish even at a
-    /// million tracks. A scan (content change) moves the length/ids; a sort
+    /// million tracks. A scan (content change) moves the length/ids (and the sampled
+    /// album keys, which a rescan can re-group under the same ids); a sort
     /// (reorder) moves the sampled ids; a background loudness sweep landing values
     /// (which refills the library with same-id, same-order tracks that now carry
     /// DR) moves the sampled loudness, so the DR-bearing caches (album badges, the
@@ -1131,6 +1183,8 @@ impl State {
             let mut i = 0;
             while i < n {
                 lib[i].id.hash(&mut h);
+                // A rescan can re-group albums under the same sampled ids.
+                lib[i].album_key.hash(&mut h);
                 lib[i]
                     .loudness
                     .as_ref()
@@ -1139,6 +1193,7 @@ impl State {
                 i += step;
             }
             lib[n - 1].id.hash(&mut h);
+            lib[n - 1].album_key.hash(&mut h);
             lib[n - 1]
                 .loudness
                 .as_ref()
@@ -3047,6 +3102,20 @@ pub(crate) fn set_managed_template(s: &mut State, template_id: &str) {
     );
 }
 
+/// Settings → Layout: keep the current multi-disc choice, swap the layout.
+pub(crate) fn set_managed_layout(s: &mut State, layout: &str) {
+    let (_, disc_folders) = organize_job::split_template_id(&s.managed_template);
+    set_managed_template(s, &organize_job::compose_template_id(layout, disc_folders));
+}
+
+/// Settings → Multi-disc albums: keep the current layout, set the disc layout.
+pub(crate) fn set_managed_disc_folders(s: &mut State, disc_folders: bool) {
+    let layout = organize_job::split_template_id(&s.managed_template)
+        .0
+        .to_string();
+    set_managed_template(s, &organize_job::compose_template_id(&layout, disc_folders));
+}
+
 /// Set + persist the managed-library file strategy (Copy / Move).
 pub(crate) fn set_managed_strategy(s: &mut State, strategy: Strategy) {
     s.managed_strategy = strategy;
@@ -3060,10 +3129,11 @@ pub(crate) fn set_managed_strategy(s: &mut State, strategy: Strategy) {
 // ── Organize flow transitions ────────────────────────────────────────────────
 //
 // Pure phase transitions for the "Add music → organize" modal, each setting
-// `State::organize`. They carry no IO: Task 2 calls `organize_ready` /
-// `organize_progress` / `organize_finish` from `organize::plan`/`apply` thread
-// callbacks, while the UI (this task) wires the modal buttons to `organize_begin`
-// / `organize_confirm` / `organize_dismiss`. Driving these directly is the whole
+// `State::organize`. They carry no IO: the "Add music…" worker posts
+// `organize_ready` with its `organize_job::plan_import` result, the apply worker
+// (spawned by `organize_confirm`) posts `organize_progress` / `organize_finish`
+// from `organize_job::run_apply`, and the modal buttons drive `organize_begin` /
+// `organize_confirm` / `organize_dismiss`. Driving these directly is the whole
 // headless-testable surface.
 
 /// Open the modal in its scanning/planning phase (the "Add music…" menu entry).
@@ -3071,10 +3141,11 @@ pub(crate) fn organize_begin(s: &mut State) {
     s.organize = Some(OrganizePhase::Planning);
 }
 
-/// Planning → Confirm: a computed plan is ready for the user to review.
-// Posted from the `organize::plan` worker (the "Add music…" menu handler).
-pub(crate) fn organize_ready(s: &mut State, plan: organize::OrganizePlan) {
-    s.organize = Some(OrganizePhase::Confirm(plan));
+/// Planning → Confirm: a computed plan (made with the stored `template_id`) is
+/// ready for the user to review.
+// Posted from the `organize_job::plan_import` worker (the "Add music…" menu handler).
+pub(crate) fn organize_ready(s: &mut State, plan: organize::OrganizePlan, template_id: &str) {
+    s.organize = Some(OrganizePhase::confirm(plan, template_id));
 }
 
 /// Enter the Applying phase at 0 / `total` (progress ticks in via
@@ -3088,7 +3159,7 @@ pub(crate) fn organize_apply_begin(s: &mut State, total: usize) {
 }
 
 /// Update the Applying phase with the latest per-entry progress.
-// Posted from the `organize::apply` progress callback (see `organize_confirm`).
+// Posted from the `organize_job::run_apply` progress callback (see `organize_confirm`).
 pub(crate) fn organize_progress(s: &mut State, done: usize, total: usize, current: String) {
     s.organize = Some(OrganizePhase::Applying {
         done,
@@ -3098,9 +3169,9 @@ pub(crate) fn organize_progress(s: &mut State, done: usize, total: usize, curren
 }
 
 /// Applying → Done: the run finished with this outcome tally.
-// Posted when the `organize::apply` worker completes (see `organize_confirm`).
+// Posted when the `organize_job::run_apply` worker completes (see `organize_confirm`).
 pub(crate) fn organize_finish(s: &mut State, summary: organize::Summary) {
-    s.organize = Some(OrganizePhase::Done(summary));
+    s.organize = Some(OrganizePhase::done(summary));
 }
 
 /// Close the modal (Cancel / Close, an outside press, or Escape), the flow is
@@ -3120,7 +3191,7 @@ pub(crate) fn organize_confirm(s: &mut State) {
     // Only act from Confirm; take the plan so the worker owns it. Anything else is
     // restored untouched.
     let plan = match s.organize.take() {
-        Some(OrganizePhase::Confirm(plan)) => plan,
+        Some(OrganizePhase::Confirm { plan, .. }) => plan,
         other => {
             s.organize = other;
             return;
@@ -3136,15 +3207,11 @@ pub(crate) fn organize_confirm(s: &mut State) {
     std::thread::spawn(move || {
         // The progress callback clones the handle per entry and posts an update,
         // that stream drives the Applying modal's `done / total` + current line.
-        let summary = organize::apply(&plan, |pr| {
+        let summary = organize_job::run_apply(&plan, |pr| {
             let h = handle.clone();
             h.update(move |s: &mut State, _tx: &mut Tx| {
                 organize_progress(s, pr.done, pr.total, pr.current.display().to_string());
             });
-        })
-        .unwrap_or_else(|e| organize::Summary {
-            failed: vec![(dest.clone(), e.to_string())],
-            ..Default::default()
         });
         // Watch the destination so the just-copied files show up in the library,
         // then post the final summary (both on the main thread, in one update).
@@ -3859,7 +3926,8 @@ fn mobile_title(s: &State) -> String {
         Route::Albums => t!("nav.albums").to_string(),
         Route::Album => s
             .open_album
-            .clone()
+            .as_ref()
+            .map(|r| r.name.clone())
             .unwrap_or_else(|| t!("nav.albums").to_string()),
         Route::Artists => t!("nav.artists").to_string(),
         Route::Artist => s
@@ -4625,6 +4693,8 @@ fn seed_demo_library(s: &mut State) {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: a + 1,
+                ..Default::default()
             });
             id += 1;
         }
@@ -4721,10 +4791,12 @@ fn scene_artist_detail(s: &mut State) {
 }
 fn scene_album_detail(s: &mut State) {
     s.route = Route::Album;
-    s.open_album = s
-        .library
-        .first()
-        .and_then(|t| t.album.as_deref().map(str::to_string));
+    s.open_album = s.library.first().and_then(|t| {
+        t.album.as_deref().map(|n| AlbumRef {
+            key: t.album_key,
+            name: n.to_string(),
+        })
+    });
     s.now_playing_id = s.library.first().map(|t| t.id);
     s.playing = true;
 }
@@ -4793,31 +4865,57 @@ fn scene_signal_path_open(s: &mut State) {
 
 /// The managed-library organize modal mid-flow, on the Music Data tab, with a
 /// small real `Confirm` plan so `--snap` captures the scrim + card + the
-/// copy/skip counts + the Confirm/Cancel buttons. Pair with `--size 1100x860`.
+/// audio/side-file and copy/skip counts, the folder-inferred disc warning, the
+/// side-files-left list and the Confirm/Cancel buttons. Pair with `--size 1100x860`.
 fn scene_organize_confirm(s: &mut State) {
     s.route = Route::Settings;
     s.settings_tab = SettingsTab::MusicData;
     let dest = PathBuf::from("/Users/you/Music/Managed");
-    s.organize = Some(OrganizePhase::Confirm(organize::OrganizePlan {
-        dest_root: dest.clone(),
-        entries: vec![
-            organize::PlanEntry {
-                src: PathBuf::from("Daft Punk - One More Time.flac"),
-                dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
-                action: organize::Action::Copy,
-            },
-            organize::PlanEntry {
-                src: PathBuf::from("Daft Punk - Aerodynamic.flac"),
-                dst: dest.join("Daft Punk/Discovery/02 - Aerodynamic.flac"),
-                action: organize::Action::Copy,
-            },
-            organize::PlanEntry {
-                src: PathBuf::from("already-there.flac"),
-                dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
-                action: organize::Action::SkipDuplicate,
-            },
-        ],
-    }));
+    // `LeftInPlace` is core-constructed only, so the left list is set on the
+    // summary directly.
+    let mut phase = OrganizePhase::confirm(
+        organize::OrganizePlan {
+            dest_root: dest.clone(),
+            entries: vec![
+                organize::PlanEntry {
+                    src: PathBuf::from("Daft Punk - One More Time.flac"),
+                    dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
+                    action: organize::Action::Copy,
+                    kind: organize::EntryKind::Audio,
+                },
+                organize::PlanEntry {
+                    src: PathBuf::from("Daft Punk - Aerodynamic.flac"),
+                    dst: dest.join("Daft Punk/Discovery/02 - Aerodynamic.flac"),
+                    action: organize::Action::Copy,
+                    kind: organize::EntryKind::Audio,
+                },
+                organize::PlanEntry {
+                    src: PathBuf::from("already-there.flac"),
+                    dst: dest.join("Daft Punk/Discovery/01 - One More Time.flac"),
+                    action: organize::Action::SkipDuplicate,
+                    kind: organize::EntryKind::Audio,
+                },
+                organize::PlanEntry {
+                    src: PathBuf::from("Discovery/Discovery.log"),
+                    dst: dest.join("Daft Punk/Discovery/Discovery.log"),
+                    action: organize::Action::Copy,
+                    kind: organize::EntryKind::SideFile,
+                },
+            ],
+            folder_inferred_discs: vec![PathBuf::from("Alive 2007")],
+            ..Default::default()
+        },
+        "artist-album",
+    );
+    if let OrganizePhase::Confirm { summary, .. } = &mut phase {
+        summary.left = vec![organize_job::LeftAlbum {
+            folder: "Downloads".to_string(),
+            reason: organize::SideFilesLeft::AtSourceRoot,
+            files: 2,
+            names: vec!["cover.jpg".to_string(), "notes.txt".to_string()],
+        }];
+    }
+    s.organize = Some(phase);
 }
 
 /// Two user playlists (one populated, one empty) built entirely in memory, so
@@ -4882,15 +4980,25 @@ fn scene_add_to_playlist_open(s: &mut State) {
 /// tall so the square frame leaves horizontal pan room).
 fn scene_artwork_crop(s: &mut State) {
     use views::detail_page::{ArtworkCrop, ArtworkTarget};
-    let album = s
+    let open = s
         .library
         .iter()
-        .find_map(|t| t.album.as_deref())
-        .filter(|a| !a.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "Album".to_string());
+        .find_map(|t| {
+            t.album
+                .as_deref()
+                .filter(|a| !a.is_empty())
+                .map(|n| AlbumRef {
+                    key: t.album_key,
+                    name: n.to_string(),
+                })
+        })
+        .unwrap_or_else(|| AlbumRef {
+            key: 0,
+            name: "Album".to_string(),
+        });
+    let album = open.name.clone();
     s.route = Route::Album;
-    s.open_album = Some(album.clone());
+    s.open_album = Some(open);
     let (w, h) = (480u32, 320u32);
     let mut img = image::RgbImage::new(w, h);
     for (x, y, px) in img.enumerate_pixels_mut() {
@@ -4916,15 +5024,25 @@ fn scene_artwork_crop(s: &mut State) {
 /// no cover set so no Delete) for the a11y sweep + snapshots.
 fn scene_artwork_edit(s: &mut State) {
     use views::detail_page::ArtworkTarget;
-    let album = s
+    let open = s
         .library
         .iter()
-        .find_map(|t| t.album.as_deref())
-        .filter(|a| !a.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "Album".to_string());
+        .find_map(|t| {
+            t.album
+                .as_deref()
+                .filter(|a| !a.is_empty())
+                .map(|n| AlbumRef {
+                    key: t.album_key,
+                    name: n.to_string(),
+                })
+        })
+        .unwrap_or_else(|| AlbumRef {
+            key: 0,
+            name: "Album".to_string(),
+        });
+    let album = open.name.clone();
     s.route = Route::Album;
-    s.open_album = Some(album.clone());
+    s.open_album = Some(open);
     s.artwork_edit = Some(ArtworkTarget::Album(album));
 }
 
@@ -5511,6 +5629,8 @@ mod tests {
                     release_date: 0,
                     loudness: None,
                     format: None,
+                    album_key: album,
+                    ..Default::default()
                 }
             })
             .collect()
@@ -5587,6 +5707,8 @@ mod tests {
                     release_date: 0,
                     loudness: None,
                     format: None,
+                    album_key: album,
+                    ..Default::default()
                 }
             })
             .collect();
@@ -5692,6 +5814,8 @@ mod tests {
                     release_date: 0,
                     loudness: None,
                     format: None,
+                    album_key: album,
+                    ..Default::default()
                 }
             })
             .collect();
@@ -5766,6 +5890,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Al")),
+                ..Default::default()
             })
             .collect();
         let mut rt2 = Runtime::new(
@@ -7161,7 +7287,7 @@ mod tests {
         // dir, so clear any cover it left for this same album first.
         s.covers.clear_album_cover(&album_name);
         s.route = Route::Album;
-        s.open_album = Some(album_name.clone());
+        s.open_album = Some(AlbumRef::by_name(&album_name));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -7246,7 +7372,7 @@ mod tests {
         // sibling album-cover test left for this same album before we start.
         s.covers.clear_album_cover(album_name);
         s.route = Route::Album;
-        s.open_album = Some(album_name.to_string());
+        s.open_album = Some(AlbumRef::by_name(album_name));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -7351,7 +7477,7 @@ mod tests {
         let album = first_album_name(&s);
         s.covers.clear_album_cover(&album);
         s.route = Route::Album;
-        s.open_album = Some(album);
+        s.open_album = Some(AlbumRef::by_name(&album));
 
         let env = Env {
             system_dark: true,
@@ -7578,7 +7704,7 @@ mod tests {
         );
         assert!(s.covers.album_cover_path(&album_name).is_some());
         s.route = Route::Album;
-        s.open_album = Some(album_name.clone());
+        s.open_album = Some(AlbumRef::by_name(&album_name));
 
         let env = Env {
             system_dark: true,
@@ -11281,7 +11407,8 @@ mod tests {
     }
 
     /// The Managed Library card renders on the Music Data tab with its destination
-    /// Browse button, template picker, example line, and Copy/Move strategy buttons.
+    /// Browse button, template picker, example line, Multi-disc albums picker, and
+    /// Copy/Move strategy buttons.
     #[test]
     fn managed_library_card_renders() {
         let env = Env {
@@ -11298,9 +11425,55 @@ mod tests {
             "managed-copy",
             "managed-move",
             "managed-example",
+            "managed-multidisc",
         ] {
             assert!(rt.find(k).is_some(), "the Managed Library card shows {k}");
         }
+    }
+
+    /// The Layout caption reads "Layout", and the example shows a single-disc path
+    /// plus a multi-disc one that follows the Multi-disc albums choice (none for
+    /// `flat`, which has no album folder).
+    #[test]
+    fn managed_example_follows_the_multi_disc_choice() {
+        let _locale = config::use_test_locale("en");
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let render = |template: &str| {
+            let mut s = settings_state(&[], &[]);
+            s.settings_tab = SettingsTab::MusicData;
+            s.managed_template = template.to_string();
+            let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+            rt.frame(0.0);
+            rt
+        };
+        let text = |rt: &Runtime<State>, k: &str| el_info(rt, k).text;
+        let rt = render("artist-album");
+        assert_eq!(
+            text(&rt, "managed-layout-caption").as_deref(),
+            Some("Layout")
+        );
+        assert_eq!(
+            text(&rt, "managed-example-path").as_deref(),
+            Some("Daft Punk/Discovery/01 - One More Time.flac")
+        );
+        assert_eq!(
+            text(&rt, "managed-example-multidisc").as_deref(),
+            Some("Daft Punk/Discovery/1-01 - One More Time.flac")
+        );
+        let rt = render("artist-year-album+disc-folders");
+        assert_eq!(
+            text(&rt, "managed-example-multidisc").as_deref(),
+            Some("Daft Punk/2001 - Discovery/Disc 1/01 - One More Time.flac")
+        );
+        let rt = render("flat");
+        assert!(rt.find("managed-example-multidisc").is_none());
+        assert_eq!(
+            text(&rt, "managed-example-path").as_deref(),
+            Some("Daft Punk - One More Time.flac")
+        );
     }
 
     /// Picking a template preset from the dropdown commits its id to state and
@@ -11344,6 +11517,81 @@ mod tests {
         apply_locale("en");
     }
 
+    /// Layout lists only the base presets; the Multi-disc picker composes the
+    /// stored template id, which round-trips through config; `flat` hides it.
+    #[test]
+    fn multi_disc_choice_composes_and_persists_the_template() {
+        let _config_guard = config::use_test_config_dir();
+        let env = Env {
+            system_dark: true,
+            scale: 2.0,
+        };
+        let mut s = settings_state(&[], &[]);
+        s.settings_tab = SettingsTab::MusicData;
+        apply_locale("en");
+        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template");
+        rt.settle_all();
+        rt.frame(0.0);
+        assert!(rt.find("managed-template-opt-artist-album").is_some());
+        assert!(
+            rt.find("managed-template-opt-artist-album+disc-folders")
+                .is_none(),
+            "disc-folder variants are not layouts"
+        );
+        click_key(&mut rt, "managed-template-opt-genre-artist-album");
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-multidisc");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-multidisc-opt-disc-folders");
+        assert_eq!(rt.state.managed_template, "genre-artist-album+disc-folders");
+        assert_eq!(
+            config::load_managed_library().1,
+            "genre-artist-album+disc-folders"
+        );
+        // Switching layout keeps the disc choice.
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template-opt-artist-album");
+        assert_eq!(rt.state.managed_template, "artist-album+disc-folders");
+        assert_eq!(
+            config::load_managed_library().1,
+            "artist-album+disc-folders"
+        );
+        // flat has no album folder: no multi-disc picker, plain id.
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template");
+        rt.settle_all();
+        rt.frame(0.0);
+        click_key(&mut rt, "managed-template-opt-flat");
+        assert_eq!(rt.state.managed_template, "flat");
+        rt.frame(0.0);
+        assert!(rt.find("managed-multidisc").is_none());
+    }
+
+    /// Old config values load unchanged; impossible ones are migrated on load.
+    #[test]
+    fn stored_managed_template_is_migrated_on_load() {
+        let _config_guard = config::use_test_config_dir();
+        for (stored, loaded) in [
+            ("artist-year-album", "artist-year-album"),
+            ("artist-album+disc-folders", "artist-album+disc-folders"),
+            ("flat+disc-folders", "flat"),
+            ("removed-preset", "artist-album"),
+        ] {
+            config::save_managed_library(None, stored, "copy");
+            assert_eq!(
+                State::new(PlayerHandle::offline()).managed_template,
+                loaded,
+                "{stored}"
+            );
+        }
+    }
+
     /// Toggling the strategy to Move commits it to state and persists `"move"`.
     #[test]
     fn toggling_strategy_persists() {
@@ -11357,7 +11605,9 @@ mod tests {
         };
         let mut s = settings_state(&[], &[]);
         s.settings_tab = SettingsTab::MusicData;
-        let mut rt = Runtime::new(s, view, (1100.0, 720.0), env);
+        // Tall enough that the Copy/Move row (below the Multi-disc albums picker)
+        // is inside the viewport, a click only lands on a visible control.
+        let mut rt = Runtime::new(s, view, (1100.0, 900.0), env);
         rt.frame(0.0);
         click_key(&mut rt, "managed-move");
         assert_eq!(
@@ -11402,13 +11652,16 @@ mod tests {
                     src: PathBuf::from("a.flac"),
                     dst: testdata_dir().join("A/a.flac"),
                     action: organize::Action::Copy,
+                    kind: organize::EntryKind::Audio,
                 },
                 organize::PlanEntry {
                     src: PathBuf::from("b.flac"),
                     dst: testdata_dir().join("B/b.flac"),
                     action: organize::Action::SkipDuplicate,
+                    kind: organize::EntryKind::Audio,
                 },
             ],
+            ..Default::default()
         }
     }
 
@@ -11461,7 +11714,7 @@ mod tests {
     #[test]
     fn organize_overlay_renders_each_phase() {
         // Confirm: title/summary + the Confirm and Cancel buttons.
-        let rt = organize_frame(OrganizePhase::Confirm(sample_plan()));
+        let rt = organize_frame(OrganizePhase::confirm(sample_plan(), "artist-album"));
         for k in ["organize-confirm", "organize-confirm-go", "organize-cancel"] {
             assert!(rt.find(k).is_some(), "Confirm phase renders {k}");
         }
@@ -11478,7 +11731,7 @@ mod tests {
         );
 
         // Done: the summary + Close button.
-        let rt = organize_frame(OrganizePhase::Done(organize::Summary {
+        let rt = organize_frame(OrganizePhase::done(organize::Summary {
             copied: 2,
             skipped: 1,
             ..Default::default()
@@ -11489,11 +11742,156 @@ mod tests {
         apply_locale("en");
     }
 
+    /// Confirm shows the audio + side-file counts, the folder-inferred disc
+    /// warning, and the albums whose side files stay behind (with the reason, a
+    /// few file names and an "and N more" tail); Done reports pruned folders.
+    #[test]
+    fn organize_modal_shows_side_files_left_albums_and_pruned_folders() {
+        let _locale = config::use_test_locale("en");
+        let mut plan = sample_plan();
+        plan.entries.push(organize::PlanEntry {
+            src: PathBuf::from("A/a.log"),
+            dst: testdata_dir().join("A/a.log"),
+            action: organize::Action::Copy,
+            kind: organize::EntryKind::SideFile,
+        });
+        plan.folder_inferred_discs = vec![PathBuf::from("S/Box"), PathBuf::from("S/Set")];
+        let rt = organize_frame(OrganizePhase::confirm(plan, "artist-album"));
+        assert_eq!(
+            el_info(&rt, "organize-confirm-files").text.as_deref(),
+            Some("2 audio files + 1 side files")
+        );
+        assert_eq!(
+            el_info(&rt, "organize-disc-warning").text.as_deref(),
+            Some(
+                "2 albums take their disc numbers only from folder names; the one-folder \
+                 layout will lose them. Choose Disc sub-folders."
+            )
+        );
+        assert!(rt.find("organize-left").is_none(), "nothing left: no list");
+
+        let left = |i: usize, reason| organize_job::LeftAlbum {
+            folder: format!("Album {i}"),
+            reason,
+            files: i + 1,
+            names: vec!["a.log".into(), "cover.jpg".into()],
+        };
+        let mut summary = organize_job::summarize(&sample_plan(), "artist-album");
+        summary.left = vec![
+            left(0, organize::SideFilesLeft::SharedAlbumRoot),
+            left(1, organize::SideFilesLeft::NoAlbumFolder),
+            left(2, organize::SideFilesLeft::AtSourceRoot),
+            left(3, organize::SideFilesLeft::NoSourceRoot),
+            left(4, organize::SideFilesLeft::AudioConflict),
+            left(5, organize::SideFilesLeft::SharedAlbumRoot),
+            left(6, organize::SideFilesLeft::SharedAlbumRoot),
+        ];
+        let rt = organize_frame(OrganizePhase::Confirm {
+            plan: sample_plan(),
+            summary,
+        });
+        assert!(rt.find("organize-disc-warning").is_none(), "no warning");
+        let row = |k: &str| el_info(&rt, k).text;
+        assert_eq!(
+            row("organize-left-0").as_deref(),
+            Some("Album 0: 1 files (folder shared with another album)")
+        );
+        assert_eq!(
+            row("organize-left-0-names").as_deref(),
+            Some("a.log, cover.jpg")
+        );
+        assert_eq!(
+            row("organize-left-1").as_deref(),
+            Some("Album 1: 2 files (the layout has no album folder)")
+        );
+        assert_eq!(
+            row("organize-left-2").as_deref(),
+            Some("Album 2: 3 files (loose in the chosen folder)")
+        );
+        assert_eq!(
+            row("organize-left-3").as_deref(),
+            Some("Album 3: 4 files (outside the chosen folder)")
+        );
+        assert_eq!(
+            row("organize-left-4").as_deref(),
+            Some("Album 4: 5 files (its audio conflicts with files already there)")
+        );
+        assert!(
+            rt.find("organize-left-5").is_none(),
+            "only the first 5 rows"
+        );
+        assert_eq!(row("organize-left-more").as_deref(), Some("and 2 more"));
+
+        let rt = organize_frame(OrganizePhase::done(organize::Summary {
+            moved: 3,
+            pruned_dirs: 2,
+            ..Default::default()
+        }));
+        assert_eq!(
+            el_info(&rt, "organize-pruned").text.as_deref(),
+            Some("2 emptied folders removed")
+        );
+        let rt = organize_frame(OrganizePhase::done(organize::Summary::default()));
+        assert!(
+            rt.find("organize-pruned").is_none(),
+            "nothing pruned: no line"
+        );
+    }
+
+    /// A layout without Disc sub-folders (`flat`) still loses folder-inferred disc
+    /// numbers, so the warning there suggests tagging or an album layout instead.
+    #[test]
+    fn organize_disc_warning_for_a_layout_without_disc_folders() {
+        let _locale = config::use_test_locale("en");
+        let mut plan = sample_plan();
+        plan.folder_inferred_discs = vec![PathBuf::from("S/Box")];
+        let rt = organize_frame(OrganizePhase::confirm(plan, "flat"));
+        assert_eq!(
+            el_info(&rt, "organize-disc-warning").text.as_deref(),
+            Some(
+                "1 albums take their disc numbers only from folder names, which this \
+                 layout will lose. Tag the discs, or pick an album layout with Disc \
+                 sub-folders."
+            )
+        );
+    }
+
+    /// Done lists the first few failed files (name + error) and counts the rest.
+    #[test]
+    fn organize_done_lists_the_first_failures() {
+        let _locale = config::use_test_locale("en");
+        let failed = (0..7)
+            .map(|i| (PathBuf::from(format!("in/{i}.flac")), format!("denied {i}")))
+            .collect();
+        let rt = organize_frame(OrganizePhase::done(organize::Summary {
+            copied: 1,
+            failed,
+            ..Default::default()
+        }));
+        let row = |k: &str| el_info(&rt, k).text;
+        assert_eq!(
+            row("organize-failed-title").as_deref(),
+            Some("Not organized")
+        );
+        assert_eq!(
+            row("organize-failed-0").as_deref(),
+            Some("0.flac: denied 0")
+        );
+        assert_eq!(
+            row("organize-failed-4").as_deref(),
+            Some("4.flac: denied 4")
+        );
+        assert!(rt.find("organize-failed-5").is_none(), "only the first 5");
+        assert_eq!(row("organize-failed-more").as_deref(), Some("and 2 more"));
+        let rt = organize_frame(OrganizePhase::done(organize::Summary::default()));
+        assert!(rt.find("organize-failed").is_none(), "no failures: no list");
+    }
+
     /// Confirming the plan advances the flow from Confirm to Applying (pressing
     /// the Confirm button drives `organize_confirm`).
     #[test]
     fn confirm_advances_to_applying() {
-        let mut rt = organize_frame(OrganizePhase::Confirm(sample_plan()));
+        let mut rt = organize_frame(OrganizePhase::confirm(sample_plan(), "artist-album"));
         click_key(&mut rt, "organize-confirm-go");
         assert!(
             matches!(rt.state.organize, Some(OrganizePhase::Applying { .. })),
@@ -11505,7 +11903,7 @@ mod tests {
     /// Closing a finished run dismisses the modal (clears `State::organize`).
     #[test]
     fn dismiss_clears() {
-        let mut rt = organize_frame(OrganizePhase::Done(organize::Summary::default()));
+        let mut rt = organize_frame(OrganizePhase::done(organize::Summary::default()));
         click_key(&mut rt, "organize-close");
         assert!(
             rt.state.organize.is_none(),
@@ -13237,6 +13635,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -13253,6 +13653,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -13269,6 +13671,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -13387,6 +13791,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -13400,6 +13806,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
         ];
         s.route = Route::Artist;
@@ -13509,7 +13917,10 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "a list row opens the album"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+        assert_eq!(
+            rt.state.open_album.as_ref().map(|r| r.name.as_str()),
+            Some("Cello Suites")
+        );
     }
 
     /// A discography album card opens that album's detail page.
@@ -13535,7 +13946,14 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "a disc card opens the album"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Cello Suites"));
+        assert_eq!(
+            rt.state.open_album,
+            Some(AlbumRef {
+                key: crate::views::albums::test_album_key(Some("Cello Suites")),
+                name: "Cello Suites".into(),
+            }),
+            "the card opens the album by identity, with its title as the fallback"
+        );
     }
 
     #[test]
@@ -13761,6 +14179,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some(album)),
+            ..Default::default()
         }
     }
 
@@ -13882,6 +14302,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -13895,6 +14317,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
         ];
         s.route = Route::Genre;
@@ -14147,7 +14571,10 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "an album tile opens its detail page"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
+        assert_eq!(
+            rt.state.open_album.as_ref().map(|r| r.name.as_str()),
+            Some("Alb")
+        );
     }
 
     /// Clicking the card body (its title/artist area, not the play button) opens
@@ -14170,7 +14597,10 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "the card body opens the album detail page"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
+        assert_eq!(
+            rt.state.open_album.as_ref().map(|r| r.name.as_str()),
+            Some("Alb")
+        );
         assert!(
             rt.state.host.recorded_commands().is_empty(),
             "navigating does not start playback"
@@ -14214,7 +14644,7 @@ mod tests {
         s.sidebar_collapsed = false;
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         s.route = Route::Album;
-        s.open_album = Some("Alb".into());
+        s.open_album = Some(AlbumRef::by_name("Alb"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -14271,6 +14701,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -14284,10 +14716,12 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
         ];
         s.route = Route::Album;
-        s.open_album = Some("Alb".into());
+        s.open_album = Some(AlbumRef::by_name("Alb"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -14326,7 +14760,7 @@ mod tests {
         s.sidebar_collapsed = false;
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         s.route = Route::Album;
-        s.open_album = Some("Alb".into());
+        s.open_album = Some(AlbumRef::by_name("Alb"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -14351,7 +14785,7 @@ mod tests {
         s.sidebar_collapsed = false;
         s.library = vec![album_track(1, "T1"), album_track(2, "T2")];
         s.route = Route::Album;
-        s.open_album = Some("Alb".into());
+        s.open_album = Some(AlbumRef::by_name("Alb"));
         let env = Env {
             system_dark: true,
             scale: 2.0,
@@ -14494,7 +14928,10 @@ mod tests {
             matches!(rt.state.route, Route::Album),
             "the now-playing title opens its album"
         );
-        assert_eq!(rt.state.open_album.as_deref(), Some("Alb"));
+        assert_eq!(
+            rt.state.open_album.as_ref().map(|r| r.name.as_str()),
+            Some("Alb")
+        );
     }
 
     /// The now-playing title line shows the remote badge when the current track
@@ -14519,6 +14956,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: 0,
+            ..Default::default()
         }];
         s.now_playing_id = Some(1);
         let env = Env {
@@ -15192,6 +15631,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn library_fingerprint_moves_when_album_keys_regroup() {
+        let host = PlayerHandle::offline();
+        host.open_folder(&testdata_dir()).expect("scan testdata");
+        let mut s = State::new(host);
+        assert!(!s.library.is_empty(), "the test library has tracks");
+        let before = s.library_fingerprint();
+        // A rescan re-groups the same ids, in the same order, under new albums.
+        s.library[0].album_key = s.library[0].album_key.wrapping_add(1);
+        assert_ne!(
+            before,
+            s.library_fingerprint(),
+            "a re-grouped album must move the fingerprint so the album grouping refreshes"
+        );
+    }
+
     /// Build a track with (or without) a loudness reading `(dr, integrated_lufs)`, for the
     /// client-side loudness-sort tests.
     fn tv_loud(id: u32, metrics: Option<(f32, f32)>) -> soul_player_host::TrackView {
@@ -15213,6 +15668,8 @@ mod tests {
                 dr,
             }),
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Alb")),
+            ..Default::default()
         }
     }
 
@@ -15462,6 +15919,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
             soul_player_host::TrackView {
                 id: 2,
@@ -15475,6 +15934,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some("Alb")),
+                ..Default::default()
             },
         ];
         let env = Env {
@@ -15917,6 +16378,110 @@ mod tests {
 
     // ── Keyboard & accessibility ─────────────────────────────────────────────
 
+    /// The album page orders by (disc, track) whatever the library sort, numbers
+    /// rows by the TAGGED track number, and draws one header per disc
+    /// ("Disc 2 · Liyue") when the album has more than one disc.
+    #[test]
+    fn album_detail_orders_by_disc_and_draws_disc_headers() {
+        let _locale = config::use_test_locale("en");
+        let t =
+            |id: u32, title: &str, disc: u16, track: u16, sub: &str| soul_player_host::TrackView {
+                id,
+                title: Some(title.into()),
+                artist: Some("HOYO-MiX".into()),
+                album: Some("Box".into()),
+                album_key: 7,
+                disc_no: disc,
+                track_no: track,
+                disc_count: 2,
+                disc_subtitle: Some(sub.into()),
+                duration_secs: 90.0,
+                ..Default::default()
+            };
+        let mut s = State::new(PlayerHandle::offline());
+        // Title-sorted library order: Intro, Reprise, Theme.
+        s.library = vec![
+            t(1, "Intro", 1, 5, "Mondstadt"),
+            t(3, "Reprise", 2, 1, "Liyue"),
+            t(2, "Theme", 1, 6, "Mondstadt"),
+        ];
+        s.route = Route::Album;
+        s.open_album = Some(AlbumRef {
+            key: 7,
+            name: "Box".into(),
+        });
+        let env = Env {
+            system_dark: true,
+            scale: 1.0,
+        };
+        let mut rt = Runtime::new(s, view, (1200.0, 900.0), env);
+        rt.frame(0.0);
+        rt.frame(0.0);
+        let labels: Vec<Option<String>> = (0..3)
+            .map(|i| el_info(&rt, &format!("album-track-{i}")).label)
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                Some("Intro".into()),
+                Some("Theme".into()),
+                Some("Reprise".into())
+            ],
+            "disc 1 (tracks 5, 6) then disc 2"
+        );
+        let no = |i: usize| el_info(&rt, &format!("album-track-{i}-no")).text;
+        assert_eq!(
+            (no(0), no(1), no(2)),
+            (Some("5".into()), Some("6".into()), Some("1".into()))
+        );
+        assert_eq!(
+            el_info(&rt, "album-disc-1-title").text.as_deref(),
+            Some("Disc 1 · Mondstadt")
+        );
+        assert_eq!(
+            el_info(&rt, "album-disc-2-title").text.as_deref(),
+            Some("Disc 2 · Liyue")
+        );
+        assert_eq!(
+            el_info(&rt, "album-disc-1-dur").text.as_deref(),
+            Some("3 min")
+        );
+        let y = |k: &str| el_info(&rt, k).rect[1];
+        assert!(y("album-disc-1") < y("album-track-0"));
+        assert!(y("album-track-1") < y("album-disc-2") && y("album-disc-2") < y("album-track-2"));
+    }
+
+    /// A single-disc album draws no disc header.
+    #[test]
+    fn single_disc_album_has_no_disc_header() {
+        let _locale = config::use_test_locale("en");
+        let mut s = State::new(PlayerHandle::offline());
+        s.library = vec![soul_player_host::TrackView {
+            id: 1,
+            title: Some("Solo".into()),
+            album: Some("One".into()),
+            album_key: 3,
+            disc_no: 1,
+            track_no: 1,
+            disc_count: 1,
+            duration_secs: 60.0,
+            ..Default::default()
+        }];
+        s.route = Route::Album;
+        s.open_album = Some(AlbumRef {
+            key: 3,
+            name: "One".into(),
+        });
+        let env = Env {
+            system_dark: true,
+            scale: 1.0,
+        };
+        let mut rt = Runtime::new(s, view, (1200.0, 900.0), env);
+        rt.frame(0.0);
+        assert!(rt.find("album-track-0").is_some());
+        assert!(rt.find("album-disc-1").is_none());
+    }
+
     /// The key of the currently-focused element, from the a11y element tree.
     fn focused_key(rt: &Runtime<State>) -> Option<String> {
         rt.elements()
@@ -15978,6 +16543,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some(&format!("Album {a:02}"))),
+                ..Default::default()
             })
             .collect();
         let env = Env {
@@ -16060,6 +16627,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some(&format!("Album {a:02}"))),
+                ..Default::default()
             })
             .collect();
         let env = Env {
@@ -16170,6 +16739,8 @@ mod tests {
                 release_date: 0,
                 loudness: None,
                 format: None,
+                album_key: crate::views::albums::test_album_key(Some(&format!("Album {id:02}"))),
+                ..Default::default()
             }
         }
         let mut s = State::new(PlayerHandle::offline());
@@ -16225,6 +16796,8 @@ mod tests {
             release_date: 0,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some(&format!("Album {id:02}"))),
+            ..Default::default()
         }
     }
 
@@ -16445,6 +17018,8 @@ mod tests {
             release_date: 2015u32 << 9,
             loudness: None,
             format: None,
+            album_key: crate::views::albums::test_album_key(Some("Dark Side")),
+            ..Default::default()
         }];
         let env = Env {
             system_dark: true,

@@ -538,7 +538,10 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         .clone()
         .unwrap_or_else(|| t!("library.unknown").to_string());
     let artist = track.artist.as_deref().unwrap_or_default().to_string();
-    let album = track.album.as_deref().map(str::to_string);
+    let album = track.album.as_deref().map(|n| crate::AlbumRef {
+        key: track.album_key,
+        name: n.to_string(),
+    });
     let title_el = text(title).font(type_::TITLE).color(p.fg).truncate();
     // A local track (the overwhelming default) keeps the plain title text
     // unchanged; only a remote one gains the badge row, so the common case
@@ -587,7 +590,7 @@ fn now_playing_row(s: &State, now: Option<&TrackView>, p: &Palette, scale: f32) 
         );
     }
     if album.is_some() {
-        let a11y_label = album.clone().unwrap_or_default();
+        let a11y_label = album.as_ref().map(|r| r.name.clone()).unwrap_or_default();
         text_col = text_col
             .role("button")
             .label(a11y_label)

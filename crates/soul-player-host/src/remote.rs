@@ -38,7 +38,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest, Sha256};
 use soul_audio_desktop::{OwnedDecoder, open_seekable_src, open_track};
 use soul_audio_multicatalog::{pack, unpack};
-use soul_player_backend::library::{IndexBlob, Library, TrackSource};
+use soul_player_backend::library::{IndexBlob, Library, TrackSource, index_is_current};
 
 use crate::RemoteHealth;
 
@@ -353,6 +353,9 @@ pub struct RemoteLibrary {
     lib: Arc<Library>,
     resolve: Vec<SourceResolve>,
     fetch: Arc<dyn MediaFetch>,
+    /// URLs of the remote servers that served at least one index of another
+    /// `.soulidx` format version (read as empty), see [`Self::stale_remotes`].
+    stale_remotes: Vec<String>,
 }
 
 impl RemoteLibrary {
@@ -362,6 +365,10 @@ impl RemoteLibrary {
     /// order given. Each remote blob gets a sentinel root path (never read as
     /// a real filesystem path; it only occupies `Library`'s per-source root
     /// list so `source_counts` / compound ids line up with `resolve`).
+    ///
+    /// A remote blob of another `.soulidx` format version (a server running an
+    /// older or newer core) aggregates as an empty source; it is logged as a
+    /// warning and its server listed in [`stale_remotes`](Self::stale_remotes).
     #[must_use]
     pub fn build(
         local: Vec<(PathBuf, IndexBlob)>,
@@ -378,9 +385,20 @@ impl RemoteLibrary {
             resolve.push(SourceResolve::Local);
         }
 
+        let mut stale_remotes = Vec::new();
         for (server, server_blobs) in remotes {
             // Shared by every source this server contributes below.
             let base = resolve.len();
+            let stale = server_blobs.iter().filter(|b| !index_is_current(b)).count();
+            if stale > 0 {
+                tracing::warn!(
+                    server = %server.url,
+                    stale,
+                    "remote index is another .soulidx format version, read as empty: \
+                     update the server or this app"
+                );
+                stale_remotes.push(server.url.clone());
+            }
             for (i, blob) in server_blobs.into_iter().enumerate() {
                 roots.push(PathBuf::from(format!("remote:{}#{i}", server.url)));
                 blobs.push(blob);
@@ -396,7 +414,16 @@ impl RemoteLibrary {
             lib,
             resolve,
             fetch,
+            stale_remotes,
         }
+    }
+
+    /// URLs of the remote servers whose index (or one of its roots') is another
+    /// `.soulidx` format version, in build order. Their tracks are missing from
+    /// the aggregate until the server and this app agree on the version.
+    #[must_use]
+    pub fn stale_remotes(&self) -> &[String] {
+        &self.stale_remotes
     }
 
     /// The aggregate library, for browsing/views, `path_of`
@@ -2399,6 +2426,47 @@ mod tests {
         );
     }
 
+    /// The remote aggregate packs album ids per source exactly like track ids:
+    /// the test server serves the SAME `testdata/` the local source scans, so
+    /// both sides have identical LOCAL album ids, and only the source bits of
+    /// `album_key` keep a local album and its remote twin apart.
+    #[test]
+    fn local_and_remote_album_keys_never_collide() {
+        use std::collections::HashSet;
+        let server = start_server();
+        let tokens = login_as_test_user(&server);
+        let handle = crate::PlayerHandle::offline();
+        handle
+            .set_sources(&[(testdata_dir(), true)])
+            .expect("seed a local source");
+        handle
+            .add_remote_source_with_tokens(&server.url, tokens)
+            .expect("add remote source with tokens");
+
+        let views = handle.views();
+        let keys = |remote: bool| -> HashSet<u32> {
+            views
+                .iter()
+                .filter(|v| v.remote_source.is_some() == remote)
+                .map(|v| v.album_key)
+                .collect()
+        };
+        let (local, remote) = (keys(false), keys(true));
+        assert!(
+            !local.is_empty() && !remote.is_empty(),
+            "both sides contribute albums"
+        );
+        assert!(
+            local.is_disjoint(&remote),
+            "no local album key equals a remote one"
+        );
+        let ids = |s: &HashSet<u32>| -> HashSet<u32> { s.iter().map(|k| unpack(*k).1).collect() };
+        assert!(
+            !ids(&local).is_disjoint(&ids(&remote)),
+            "the local album ids DO coincide, so the disjointness above is meaningful"
+        );
+    }
+
     /// The Inc-5 reconnect seam, end to end: a [`MemStore`] pre-seeded with a
     /// valid refresh token (obtained via the same [`login_as_test_user`] flow
     /// [`add_remote_source_with_tokens_lists_views`] uses) lets
@@ -2661,6 +2729,47 @@ mod tests {
             vec![Some(remote_id)],
             "re-enabling the remote restores resolution"
         );
+    }
+
+    /// A server whose index is another `.soulidx` format version (an older or
+    /// newer server) reads as an empty catalog; the aggregate flags that server
+    /// (and logs a warning) instead of passing it off as an empty library.
+    #[test]
+    fn remote_library_flags_a_server_index_of_another_format_version() {
+        let dir = tempfile::tempdir().expect("fixture dir");
+        fs::copy(
+            testdata_dir().join("meta.flac"),
+            dir.path().join("meta.flac"),
+        )
+        .expect("copy the fixture");
+        let current = scan_blob(dir.path());
+        // A v7 header: the magic, then an older `format_version`.
+        let mut stale = vec![0u8; 76];
+        stale[..4].copy_from_slice(b"SIDX");
+        stale[4..6].copy_from_slice(&7u16.to_le_bytes());
+        let server = |url: &str| {
+            Arc::new(RemoteServer {
+                url: url.to_owned(),
+                access_token: String::new(),
+            })
+        };
+        let cache_dir = tempfile::tempdir().expect("download cache dir");
+        let fetch: Arc<dyn MediaFetch> = Arc::new(DownloadCache {
+            dir: cache_dir.path().to_path_buf(),
+        });
+        let lib = RemoteLibrary::build(
+            Vec::new(),
+            vec![
+                (
+                    server("http://old.invalid"),
+                    vec![current.clone(), stale.into()],
+                ),
+                (server("http://new.invalid"), vec![current]),
+            ],
+            fetch,
+        );
+        assert_eq!(lib.stale_remotes(), ["http://old.invalid"]);
+        assert_eq!(lib.library().len(), 2, "the current blobs still aggregate");
     }
 
     #[test]
