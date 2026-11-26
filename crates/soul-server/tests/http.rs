@@ -669,3 +669,100 @@ async fn authorize_does_not_panic_on_a_redirect_uri_with_control_bytes() {
         "a redirect_uri with header-illegal bytes is rejected cleanly, not via a panic"
     );
 }
+
+/// Find the track id whose backing file is largest, so a test exercises a body
+/// that spans several stream chunks (the prod chunk is 64 KiB; testdata holds
+/// files into the hundreds of KiB).
+fn largest_track(services: &AppServices) -> (u32, std::path::PathBuf, u64) {
+    let mut best: Option<(u32, std::path::PathBuf, u64)> = None;
+    for id in 0..64u32 {
+        if let Some(path) = services.index.locate(id) {
+            let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            if best.as_ref().is_none_or(|(_, _, b)| size > *b) {
+                best = Some((id, path, size));
+            }
+        }
+    }
+    best.expect("at least one track in testdata")
+}
+
+/// A full (no-Range) track response streams the whole file, byte-identical, with
+/// a matching Content-Length, across multiple chunk boundaries.
+#[tokio::test]
+async fn track_streams_a_full_file_byte_identical() {
+    let (router, _dir, services, _signer) = test_router();
+    let token = login(&router).await;
+
+    let (id, path, size) = largest_track(&services);
+    assert!(
+        size > 64 * 1024,
+        "the largest testdata track ({size} B) should span multiple 64 KiB chunks"
+    );
+    let file_bytes = std::fs::read(&path).expect("read the located file directly");
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v0/track/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .and_then(|v| v.to_str().ok()),
+        Some(size.to_string().as_str()),
+        "Content-Length is the full file size"
+    );
+    let body = body_bytes(response).await;
+    assert_eq!(body.len() as u64, size, "the whole file was streamed");
+    assert_eq!(
+        body, file_bytes,
+        "streamed bytes are byte-identical to the file"
+    );
+}
+
+/// A Range request that spans multiple chunks streams exactly that slice,
+/// byte-identical, with a correct Content-Range and Content-Length.
+#[tokio::test]
+async fn track_streams_a_multi_chunk_range_byte_identical() {
+    let (router, _dir, services, _signer) = test_router();
+    let token = login(&router).await;
+
+    let (id, path, size) = largest_track(&services);
+    let file_bytes = std::fs::read(&path).expect("read the located file directly");
+
+    // A window that starts off a chunk boundary and runs past several chunks.
+    let start: u64 = 100;
+    let end: u64 = size - 2;
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri(format!("/v0/track/{id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                .header(header::RANGE, format!("bytes={start}-{end}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CONTENT_RANGE)
+            .and_then(|v| v.to_str().ok()),
+        Some(format!("bytes {start}-{end}/{size}").as_str()),
+    );
+    let body = body_bytes(response).await;
+    assert_eq!(
+        body,
+        &file_bytes[start as usize..=end as usize],
+        "the streamed slice matches the file window exactly"
+    );
+}
