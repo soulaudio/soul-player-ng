@@ -113,6 +113,18 @@ impl FileUsers {
     }
 }
 
+/// Drop refresh records whose idle window has elapsed
+/// (`now - created_at >= REFRESH_MAX_IDLE_SECS`). Returns whether anything was
+/// removed, so the caller can decide to persist. `saturating_sub` keeps a
+/// backwards clock jump harmless: it reads as zero idle, i.e. not expired.
+fn prune_expired_refresh(store: &mut Store, now: u64) -> bool {
+    let before = store.refresh.len();
+    store
+        .refresh
+        .retain(|r| now.saturating_sub(r.created_at) < refresh::REFRESH_MAX_IDLE_SECS);
+    store.refresh.len() != before
+}
+
 impl UserStore for FileUsers {
     fn verify(&self, user: &str, pass: &str) -> Option<UserId> {
         let store = self.lock().ok()?;
@@ -152,6 +164,7 @@ impl RefreshStore for FileUsers {
         };
 
         let mut store = self.lock()?;
+        prune_expired_refresh(&mut store, now);
         store.refresh.push(rec);
         self.persist(&store)?;
         Ok(raw)
@@ -164,6 +177,13 @@ impl RefreshStore for FileUsers {
         // a token can never be redeemed by two concurrent callers (no
         // double-spend of a rotated refresh token).
         let mut store = self.lock().ok()?;
+        // Drop idle-expired records first: this enforces the max lifetime (an
+        // expired token is then simply not found below) and bounds the store's
+        // growth. Persist the prune even when the token itself is a miss, so an
+        // abandoned record can't linger on disk forever.
+        if prune_expired_refresh(&mut store, now) {
+            let _ = self.persist(&store);
+        }
         let idx = store.refresh.iter().position(|r| r.token_sha256 == hash)?;
         let user_id = store.refresh.remove(idx).user_id;
 
@@ -243,6 +263,37 @@ mod tests {
         assert!(
             !raw_file.contains(&t1),
             "raw refresh token must never appear in the on-disk store"
+        );
+    }
+
+    #[test]
+    fn a_refresh_token_idle_past_the_max_lifetime_is_rejected_and_pruned() {
+        use crate::auth::refresh::{REFRESH_MAX_IDLE_SECS, sha256_hex};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("u.json");
+        let s = FileUsers::open(&path).unwrap();
+
+        let issued_at = 1_000_000;
+        let stale = s.issue(7, issued_at).unwrap();
+
+        // A token still within its idle window rotates normally (sanity).
+        let (_u, fresh) = s
+            .consume_rotate(&stale, issued_at + 10)
+            .expect("a token within the idle window rotates");
+
+        // Long after the replacement was issued (idle past the max lifetime), it
+        // no longer rotates...
+        let way_later = issued_at + 10 + REFRESH_MAX_IDLE_SECS + 1;
+        assert!(
+            s.consume_rotate(&fresh, way_later).is_none(),
+            "an idle-expired refresh token must not rotate"
+        );
+        // ...and the expired record is pruned from the store, not left to grow it.
+        let on_disk = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !on_disk.contains(&sha256_hex(&fresh)),
+            "the expired record is pruned from the on-disk store"
         );
     }
 
