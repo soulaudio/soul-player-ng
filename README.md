@@ -1,9 +1,13 @@
-<!-- Theme-aware mark: the dark-bodied logo on GitHub's light theme, the
-     white-bodied one on dark, so it stays legible either way (the same pair the
-     app ships as its icon). -->
+<!-- Theme-aware mark: the white-bodied logo on GitHub's dark theme, the
+     dark-bodied one on light, so it stays legible either way (the app's own
+     icon pair). Both prefers-color-scheme sources are explicit and use absolute
+     raw URLs: GitHub resolves those in a <source srcset> reliably, where a
+     relative srcset can fail to load and fall through to the <img> fallback,
+     which is what left dark mode showing the dark-bodied mark. -->
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="app/icons/icon.png">
-  <img alt="Soul Player" src="app/icons/icon-light.png" width="84" height="84">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon-light.png">
+  <img alt="Soul Player" src="https://raw.githubusercontent.com/soulaudio/soul-player-ng/main/app/icons/icon-light.png" width="84" height="84">
 </picture>
 
 # Soul Player
