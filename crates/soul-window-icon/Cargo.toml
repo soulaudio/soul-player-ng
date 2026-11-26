@@ -1,0 +1,22 @@
+[package]
+name = "soul-window-icon"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+publish = false
+description = "Set a live window's taskbar/title-bar icon by HWND (Win32 WM_SETICON), isolated so the UI crate stays #![forbid(unsafe_code)]."
+
+# Standalone workspace: a leaf crate consumed via a path dependency by the player
+# crate (which is its own workspace), so it must not be swept into it.
+[workspace]
+
+# Deliberately NOT `unsafe_code = "forbid"`: a runtime window-icon change needs the
+# `unsafe` Win32 `WM_SETICON`/`CreateIconFromResourceEx`. Confining it here lets the
+# consumer stay `#![forbid(unsafe_code)]` and call the safe `set_window_icon`
+# wrapper (same pattern as `alloc-probe`).
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Registry"] }

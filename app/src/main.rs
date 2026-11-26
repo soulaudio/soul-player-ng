@@ -3903,6 +3903,12 @@ pub(crate) fn set_nav_visible(s: &mut State, id: &str, visible: bool) {
 /// before exit). `None` in headless tests.
 static WINDOW: std::sync::Mutex<Option<rune::WindowHandle>> = std::sync::Mutex::new(None);
 
+/// The system tray, kept (not leaked) so the theme watcher can recreate it in the
+/// other colour variant when the OS taskbar flips light/dark (Rune has no live
+/// tray-icon update). `None` on macOS / where the tray couldn't start.
+#[cfg(any(not(target_os = "macos"), test))]
+static TRAY: std::sync::Mutex<Option<rune::Tray>> = std::sync::Mutex::new(None);
+
 /// Whether this process is running inside a Flatpak sandbox.
 ///
 /// `FLATPAK_ID` is set by the Flatpak runtime for every app it starts, and is
@@ -4157,6 +4163,48 @@ fn window_hwnd(wh: &rune::WindowHandle) -> Option<isize> {
 #[cfg(not(target_os = "windows"))]
 fn window_hwnd(_wh: &rune::WindowHandle) -> Option<isize> {
     None
+}
+
+/// Start following the OS taskbar theme with the window icon, so the no-tile mark
+/// never vanishes when the user flips Windows between light and dark. The mark is a
+/// filled polygon with no backing tile, so the two variants are colour-inverted
+/// (white body for a dark taskbar, dark body for a light one), the same trick the
+/// website favicon uses.
+///
+/// Call once, after the window exists. Rune only sets an icon at window creation, and
+/// winit does not reliably emit a theme-change event on Windows, so `soul_window_icon`
+/// runs a tiny background thread that blocks on the theme registry key and re-points
+/// the window icon the instant it flips (it owns the `unsafe`, so this crate stays
+/// `#![forbid(unsafe_code)]`). On each later flip it also recreates the system tray
+/// in the other colour variant, since Rune can't repaint a live tray icon. No-op off
+/// Windows: macOS keeps its tile (legible on either Appearance) and Linux takes its
+/// icon from the `.desktop` file.
+fn start_taskbar_icon_theming(
+    hwnd: Option<isize>,
+    tray_host: PlayerHandle,
+    ah: rune::AppHandle<State>,
+) {
+    // macOS has no Rune tray backend (and its Dock icon is handled separately), so
+    // the whole watcher-plus-tray-recreation is gated to where `systray` exists.
+    #[cfg(any(not(target_os = "macos"), test))]
+    {
+        let Some(hwnd) = hwnd else { return };
+        soul_window_icon::watch_taskbar_icon(
+            hwnd,
+            include_bytes!("../icons/icon.png"), // dark taskbar → white-bodied mark
+            include_bytes!("../icons/icon-light.png"), // light taskbar → dark-bodied mark
+            move |dark: bool| {
+                // The window icon is handled inside the watcher; follow with the
+                // tray. Drop the old one first (removes its icon) so there are never
+                // two.
+                let mut guard = TRAY.lock().unwrap_or_else(|e| e.into_inner());
+                *guard = None;
+                *guard = systray::create(tray_host.clone(), ah.clone(), dark);
+            },
+        );
+    }
+    #[cfg(all(target_os = "macos", not(test)))]
+    let _ = (hwnd, tray_host, ah);
 }
 
 /// `AppSpec::setup`: wires the app's `Waker` into the cover-art cache
@@ -5224,10 +5272,18 @@ fn main() -> anyhow::Result<()> {
                 // Not on macOS: Rune has no macOS tray backend (it would only log
                 // "Unsupported"); the native Controls + Dock menus (`macos_menu`) carry
                 // the same transport there. A menu-bar extra is on the roadmap.
+                // System tray (not macOS): build it in the variant that suits the
+                // current taskbar theme, kept in `TRAY` so the theme watcher can
+                // recreate it in the other variant on a flip.
                 #[cfg(not(target_os = "macos"))]
-                if let Some(tray) = systray::create(tray_host.clone(), ah.clone()) {
-                    std::mem::forget(tray);
+                {
+                    let dark = soul_window_icon::taskbar_dark();
+                    *TRAY.lock().unwrap_or_else(|e| e.into_inner()) =
+                        systray::create(tray_host.clone(), ah.clone(), dark);
                 }
+                // Follow the OS taskbar theme live: swap the window icon and recreate
+                // the tray when the user flips light/dark (Windows only).
+                start_taskbar_icon_theming(hwnd, tray_host.clone(), ah.clone());
             }
         })
         // Flush on the real exit paths: a window close (Windows/Linux → quit) and
